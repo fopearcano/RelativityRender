@@ -7,6 +7,8 @@
 
 #include <string>
 
+namespace rr::gpu { class GpuScene; }
+
 // Host-side, CUDA-Runtime-free header. The implementation lives in
 // `CudaRenderer.cu` and is only compiled when `-DRR_ENABLE_CUDA=ON`;
 // callers gate use of this class on the `RR_HAS_CUDA` macro that the
@@ -55,6 +57,14 @@ public:
         const rr::relativity::RelativityParams& params,
         const rr::geometry::Sphere&           sphere,
         int width, int height);
+
+    // M10: render an uploaded `GpuScene`. The kernel reads camera /
+    // observer / relativity / sphere array directly from the device
+    // and runs a closest-hit loop per pixel. The CPU's only job is
+    // to populate the `GpuScene` (via `upload_from(...)` or the
+    // individual upload methods) and call this function.
+    static Result render_scene(const rr::gpu::GpuScene& scene,
+                               int width, int height);
 };
 
 }

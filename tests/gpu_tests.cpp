@@ -13,8 +13,14 @@
 // device list is non-empty - we don't assert that, since CI machines
 // without GPUs are valid environments.
 
+#include "camera/Camera.h"
+#include "geometry/Sphere.h"
 #include "gpu/GpuBuffer.h"
 #include "gpu/GpuDevice.h"
+#include "gpu/GpuScene.h"
+#include "math/Vec3.h"
+#include "relativity/RelativityParams.h"
+#include "scene/Scene.h"
 
 #include <cstdio>
 #include <string>
@@ -153,6 +159,97 @@ void test_buffer_roundtrip_floats_with_real_device() {
 
 }
 
+// --- GpuScene -----------------------------------------------------------
+
+void test_scene_default_state() {
+    rr::gpu::GpuScene s;
+    RR_CHECK(!s.has_camera());
+    RR_CHECK(!s.has_relativity());
+    RR_CHECK(s.sphere_count()    == 0u);
+    RR_CHECK(s.device_spheres()  == nullptr);
+}
+
+void test_scene_camera_and_relativity_uploads_succeed_unconditionally() {
+    // Camera + relativity are pure host snapshots, so they always
+    // succeed - even on a host-only build with no GPU backend.
+    rr::gpu::GpuScene s;
+
+    rr::camera::Camera cam;
+    cam.set_aspect(2.0f);
+    RR_CHECK(s.upload_camera(cam));
+    RR_CHECK(s.has_camera());
+    RR_CHECK(s.gpu_camera().aspect == 2.0f);
+
+    rr::relativity::Observer        observer;
+    rr::relativity::RelativityParams params;
+    observer.velocity = rr::math::Vec3{0.5f, 0.0f, 0.0f};
+    RR_CHECK(s.upload_relativity(observer, params));
+    RR_CHECK(s.has_relativity());
+    RR_CHECK(s.observer().velocity == rr::math::Vec3{0.5f, 0.0f, 0.0f});
+    RR_CHECK(s.relativity().enable_aberration);
+}
+
+void test_scene_empty_sphere_upload_succeeds_everywhere() {
+    rr::gpu::GpuScene s;
+    RR_CHECK(s.upload_spheres(nullptr, 0));   // no buffer needed
+    RR_CHECK(s.sphere_count()   == 0u);
+    RR_CHECK(s.device_spheres() == nullptr);
+}
+
+void test_scene_sphere_upload_without_backend_fails_predictably() {
+    if (rr::gpu::gpu_backend_available()) return;  // host-only path only
+
+    rr::gpu::GpuScene s;
+    const rr::geometry::Sphere data[] = {
+        {{0.0f, 0.0f, -3.0f}, 1.0f},
+        {{1.0f, 0.0f, -3.0f}, 0.5f},
+    };
+    RR_CHECK(!s.upload_spheres(data, 2));
+    RR_CHECK(s.sphere_count()   == 0u);
+    RR_CHECK(s.device_spheres() == nullptr);
+}
+
+void test_scene_upload_from_filters_invisible_spheres() {
+    rr::scene::Scene host_scene;
+    host_scene.camera.set_aspect(1.0f);
+    {
+        rr::scene::SceneSphere a;
+        a.object.visible  = true;
+        a.geometry.center = rr::math::Vec3{0, 0, -3};
+        a.geometry.radius = 1.0f;
+        host_scene.spheres.push_back(a);
+
+        rr::scene::SceneSphere b;
+        b.object.visible  = false;          // should be dropped
+        b.geometry.center = rr::math::Vec3{1, 0, -3};
+        b.geometry.radius = 0.5f;
+        host_scene.spheres.push_back(b);
+    }
+
+    rr::gpu::GpuScene gpu_scene;
+    const bool ok = gpu_scene.upload_from(host_scene);
+
+    // Camera + relativity should always be uploaded, regardless of
+    // backend availability. The sphere upload outcome depends on the
+    // backend; on host-only builds the visible-sphere count is zero
+    // because the GPU allocation failed.
+    RR_CHECK(gpu_scene.has_camera());
+    RR_CHECK(gpu_scene.has_relativity());
+
+    if (rr::gpu::gpu_backend_available()
+        && !rr::gpu::enumerate_devices().empty()) {
+        RR_CHECK(ok);
+        RR_CHECK(gpu_scene.sphere_count()   == 1u);  // invisible dropped
+        RR_CHECK(gpu_scene.device_spheres() != nullptr);
+    } else {
+        // ok is false because sphere upload failed; the camera/
+        // relativity uploads still succeeded so partial state is
+        // visible.
+        RR_CHECK(!ok);
+        RR_CHECK(gpu_scene.sphere_count() == 0u);
+    }
+}
+
 int main() {
     test_backend_name_consistency();
     test_enumerate_when_unavailable_is_empty();
@@ -161,6 +258,11 @@ int main() {
     test_buffer_move_default();
     test_buffer_no_backend_fails_predictably();
     test_buffer_roundtrip_floats_with_real_device();
+    test_scene_default_state();
+    test_scene_camera_and_relativity_uploads_succeed_unconditionally();
+    test_scene_empty_sphere_upload_succeeds_everywhere();
+    test_scene_sphere_upload_without_backend_fails_predictably();
+    test_scene_upload_from_filters_invisible_spheres();
 
     std::printf("gpu_tests: %d/%d passed\n", g_total - g_failed, g_total);
     return g_failed == 0 ? 0 : 1;

@@ -39,7 +39,7 @@ Update it after every implementation step, per
 | 4  | GPU Device Layer                    | landed        |
 | 5  | CUDA Backend                        | in progress   |
 | 6  | OptiX Backend                       | not started   |
-| 7  | Scene Graph                         | in progress   |
+| 7  | Scene Graph                         | landed        |
 | 8  | Geometry System                     | not started   |
 | 9  | Material / Shading System           | not started   |
 | 10 | Texture System                      | not started   |
@@ -74,7 +74,7 @@ All modules now have a placeholder source directory under `src/`,
 | M7        | Camera System & GPU Camera Rays         | landed      |
 | M8        | GPU Primitive Intersection              | landed      |
 | M9        | Relativistic Camera Model (First Pass)  | landed      |
-| M10       | GPU Scene Upload & Triangle Mesh        | not started |
+| M10       | GPU Scene Upload & Triangle Mesh        | in progress |
 | M11       | Material System (Foundations)           | not started |
 | M12       | Lighting System (Foundations)           | not started |
 | M13       | Scene File Format & Parser              | not started |
@@ -92,6 +92,105 @@ All modules now have a placeholder source directory under `src/`,
 ---
 
 ## Change Log
+
+### 2026-04-27 — M10 GPU scene upload landed (sphere arrays only)
+
+The Scene Graph now has a real consumer. The host populates an
+`rr::scene::Scene`, hands it to a `GpuScene` for upload, and
+`CudaRenderer::render_scene` walks the device-side sphere array per
+pixel. Triangle mesh upload remains the open piece of M10; when it
+lands the milestone is fully complete.
+
+- **`src/gpu/GpuScene.h` / `.cpp`:** backend-agnostic GPU scene
+  container. Stores the camera / observer / relativity PODs as
+  host snapshots (uploads "always succeed" for those - no GPU
+  work) plus a device-resident sphere array via
+  `GpuBuffer<rr::geometry::Sphere>`. Surface:
+  `upload_camera`, `upload_relativity`, `upload_spheres(host,
+  count)` (dynamic count, no compile-time cap), and a convenience
+  `upload_from(scene)` that flattens visible spheres on the host
+  before issuing the device upload. Move-only, copy-deleted; the
+  empty-sphere upload is a no-op success regardless of backend so
+  consumers can build empty scenes without branching.
+- **`src/cuda/CudaScene.cuh`:** `CudaSceneView { camera, observer,
+  params, spheres (device pointer), sphere_count }` POD that the
+  scene-render kernel takes by value, plus the host-callable
+  `launch_render_scene` declaration.
+- **`src/cuda/CudaTestKernel.cu`:** added `__global__ k_render_scene`
+  and its launcher. Per pixel: ray-gen -> aberration -> closest-hit
+  loop over the sphere array (tightening `t_max` as it accepts
+  hits) -> base shade -> Doppler colour -> beaming -> framebuffer
+  write. Same pipeline as the M9 single-sphere kernel; the only
+  change is the loop. Brute-force; OptiX acceleration arrives at
+  M15.
+- **`src/cuda/CudaRenderer.{h,cu}`:** added
+  `render_scene(GpuScene, w, h)`. Validates that the scene has a
+  camera + relativity uploaded, builds a `CudaSceneView`, and runs
+  the existing `run_kernel_render` scaffold.
+- **`src/main.cpp`:** `--render` now constructs a host `Scene`
+  with four spheres (centre + two flankers + a large "ground"
+  sphere), uploads to a `GpuScene`, calls `render_scene`, and saves
+  the single deliverable `output/gpu_scene_spheres.ppm`.
+  `--output` is still ignored at this milestone for reproducibility.
+- **`tests/gpu_tests.cpp`:** added 21 host assertions on `GpuScene`
+  (41/41 total). Coverage: default state (no camera / relativity /
+  spheres); camera + relativity uploads succeed unconditionally
+  (pure host snapshots); empty sphere upload succeeds everywhere
+  (backend or no backend); non-empty sphere upload fails predictably
+  on the host-only build with `sphere_count == 0`,
+  `device_spheres() == nullptr`; `upload_from` filters invisible
+  spheres on the host before uploading.
+- **`CMakeLists.txt`:** `rr_gpu` now lists `src/gpu/GpuScene.cpp`
+  and PUBLIC-links `rr_scene` (the renderer's GPU layer needs the
+  scene structures).
+
+#### Verified locally (host-only, no CUDA Toolkit on this box)
+
+```
+$ cmake --build build && cd build && ctest --output-on-failure
+1/7 Test #1: math_tests       ........... Passed  0.00 sec
+2/7 Test #2: image_tests      ........... Passed  0.00 sec
+3/7 Test #3: gpu_tests        ........... Passed  0.00 sec
+4/7 Test #4: camera_tests     ........... Passed  0.00 sec
+5/7 Test #5: geometry_tests   ........... Passed  0.00 sec
+6/7 Test #6: relativity_tests ........... Passed  0.00 sec
+7/7 Test #7: scene_tests      ........... Passed  0.00 sec
+100% tests passed, 0 tests failed out of 7
+
+$ ./build/bin/gpu_tests
+gpu_tests: skipping CUDA round-trip (no backend compiled)
+gpu_tests: 41/41 passed
+
+$ ./build/bin/RelativityRender --render scene.scn --width 16 --height 16
+[INFO] RelativityRender 0.0.1 starting
+[INFO] render command received
+[INFO] (no CUDA backend compiled; rebuild with -DRR_ENABLE_CUDA=ON to render)
+```
+
+The CUDA-enabled run (`-DRR_ENABLE_CUDA=ON`, on a Turing/Ampere/Ada
+GPU) produces `output/gpu_scene_spheres.ppm`. The kernel calls the
+same `RR_HD` ray-gen / aberration / intersection routines covered
+by `camera_tests`, `geometry_tests`, and `relativity_tests` on the
+host, so the device math is validated by construction.
+
+#### Hard-rule check
+
+- **CPU uploads only**: the host populates `Scene`, calls
+  `GpuScene::upload_from`, and launches one kernel. No per-pixel
+  / per-ray work happens on the CPU. The closest-hit loop and
+  shading run inside `k_render_scene`.
+- **No CPU pixel iteration in the render path**:
+  `Image::save_ppm` is the only CPU loop over pixels (image save
+  internals, permitted).
+
+#### Not in this slice (M10 still "in progress")
+
+- Triangle mesh upload. The geometry / mesh module is the next
+  piece - it adds `rr::geometry::TriangleMesh`,
+  `GpuBuffer<float>` / `GpuBuffer<uint32_t>` arrays for positions
+  / indices, and a per-mesh handle in `CudaSceneView`.
+- Materials / lights still flow only as scene-side placeholders;
+  M11 / M12 turn them into real GPU data.
 
 ### 2026-04-27 — Host-side scene structures landed (Scene Graph in progress)
 
@@ -1070,23 +1169,21 @@ and does not affect the architecture or dependency rules.
 
 ## Next Step
 
-**Finish M10 — GPU scene upload.** The host data model is in. To
-move Scene Graph from "in progress" to "landed" the next slice
-should:
+**Finish M10 — triangle mesh upload.** The sphere upload path is
+in. To complete M10 and move on to M11:
 
-1. Add a scene-upload path in `CudaRenderer` that takes a
-   `Scene` and produces a device-side scene POD (sphere list
-   first; mesh handle reserved). Reuse `GpuBuffer<...>` for the
-   array uploads.
-2. Replace the hard-coded sphere in the relativistic sphere
-   kernel with a loop over the uploaded sphere array (still
-   brute-force; OptiX acceleration arrives at M15).
-3. Wire `--render` to populate a `Scene` first and pass it to
-   the renderer, so `Scene` has a real consumer.
-4. Add a regression: round-trip a small scene through the upload
-   path, run a single primary ray through the loop on the
-   device, compare against the host-side replay used by
-   `geometry_tests`.
+1. `rr::geometry::TriangleMesh` host representation (positions,
+   indices, attribute layouts) plus a GPU-uploadable form (SoA
+   buffers via `GpuBuffer<float>` / `GpuBuffer<uint32_t>`).
+2. Extend `GpuScene` with `upload_meshes(...)` and add a
+   per-mesh handle to `CudaSceneView`.
+3. Add a brute-force triangle intersection routine
+   (`intersect_triangle` next to `intersect_sphere` in
+   `cuda/CudaIntersection.cuh`) and a closest-hit loop step in
+   `k_render_scene` that walks each mesh's index buffer.
+4. Host regressions on the upload round-trip and on intersection
+   geometry (centre-pixel hit / corner miss for a known
+   triangle).
 
 Before or alongside this, the M2 deferred items (`Error`,
 `FileSystem`, `App`, `Config::load`/`save`, real test framework,

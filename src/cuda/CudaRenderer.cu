@@ -1,7 +1,9 @@
 #include "cuda/CudaRenderer.h"
 
 #include "cuda/CudaKernels.cuh"
+#include "cuda/CudaScene.cuh"
 #include "gpu/GpuBuffer.h"
+#include "gpu/GpuScene.h"
 #include "image/Color.h"
 
 #include <cuda_runtime.h>
@@ -121,6 +123,33 @@ CudaRenderer::Result CudaRenderer::render_relativistic_sphere(
         [cam, observer, params, sphere](float* device_pixels, int w, int h) {
             launch_sphere_relativistic(device_pixels, w, h, cam, observer,
                                        params, sphere, /*stream=*/nullptr);
+        });
+}
+
+CudaRenderer::Result CudaRenderer::render_scene(const rr::gpu::GpuScene& scene,
+                                                int width, int height) {
+    if (!scene.has_camera()) {
+        Result r;
+        r.message = "scene has no camera (call GpuScene::upload_camera first)";
+        return r;
+    }
+    if (!scene.has_relativity()) {
+        Result r;
+        r.message = "scene has no relativity state "
+                    "(call GpuScene::upload_relativity first)";
+        return r;
+    }
+
+    CudaSceneView view;
+    view.camera       = scene.gpu_camera();
+    view.observer     = scene.observer();
+    view.params       = scene.relativity();
+    view.spheres      = scene.device_spheres();
+    view.sphere_count = static_cast<int>(scene.sphere_count());
+
+    return run_kernel_render(width, height,
+        [view](float* device_pixels, int w, int h) {
+            launch_render_scene(device_pixels, w, h, view, /*stream=*/nullptr);
         });
 }
 

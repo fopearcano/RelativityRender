@@ -1,7 +1,9 @@
 #include "cuda/CudaIntersection.cuh"
 #include "cuda/CudaKernels.cuh"
+#include "cuda/CudaScene.cuh"
 #include "math/Vec3.h"
 #include "relativity/RelativityMath.cuh"
+#include "renderer/Hit.h"
 
 namespace rr::cuda {
 
@@ -226,6 +228,96 @@ void launch_sphere_relativistic(float* device_pixels, int width, int height,
 
     k_sphere_relativistic<<<grid, block, 0, stream>>>(
         device_pixels, width, height, cam, observer, params, sphere);
+}
+
+namespace {
+
+// Scene-aware variant of k_sphere_relativistic. Reads the camera /
+// observer / params from a CudaSceneView passed by value, and runs a
+// closest-hit loop over the uploaded sphere array instead of a single
+// hard-coded primitive. Everything else (aberration, Doppler colour,
+// searchlight) matches the M9 single-sphere pipeline.
+__global__ void k_render_scene(float* pixels, int width, int height,
+                               rr::cuda::CudaSceneView scene) {
+    const int x = blockIdx.x * blockDim.x + threadIdx.x;
+    const int y = blockIdx.y * blockDim.y + threadIdx.y;
+    if (x >= width || y >= height) return;
+
+    using rr::math::Vec3;
+
+    // 1. Camera ray.
+    auto ray = rr::camera::generate_camera_ray(scene.camera, x, y, width, height);
+
+    // 2. Aberration in the observer frame.
+    if (scene.params.enable_aberration) {
+        ray.direction = rr::relativity::aberrateDirection(scene.observer.velocity,
+                                                          ray.direction);
+    }
+
+    // 3. Closest-hit loop over the uploaded sphere array. `t_max`
+    //    tightens as we accept hits so each candidate only needs to
+    //    beat the running best.
+    rr::renderer::Hit best;
+    float             t_max = 1.0e30f;
+    for (int i = 0; i < scene.sphere_count; ++i) {
+        const auto h = rr::cuda::intersect_sphere(ray, scene.spheres[i],
+                                                  /*t_min=*/0.0f, t_max);
+        if (h.hit) {
+            best  = h;
+            t_max = h.t;
+        }
+    }
+
+    // 4. Base shade.
+    Vec3 color;
+    if (best.hit) {
+        color = Vec3{0.5f * best.normal.x + 0.5f,
+                     0.5f * best.normal.y + 0.5f,
+                     0.5f * best.normal.z + 0.5f};
+    } else {
+        const float t = 0.5f * (ray.direction.y + 1.0f);
+        color = Vec3{(1.0f - t) * 1.0f + t * 0.5f,
+                     (1.0f - t) * 1.0f + t * 0.7f,
+                     (1.0f - t) * 1.0f + t * 1.0f};
+    }
+
+    // Doppler factor from the (possibly aberrated) photon direction.
+    const float D = rr::relativity::dopplerFactor(scene.observer.velocity,
+                                                  ray.direction);
+
+    // 5. Doppler colour shift (artistic placeholder).
+    if (scene.params.enable_doppler) {
+        color = rr::relativity::applyDopplerColor(color, D,
+                                                  scene.params.doppler_color_strength);
+    }
+
+    // 6. Relativistic beaming.
+    if (scene.params.enable_searchlight) {
+        const float D4    = rr::relativity::searchlightFactor(D);
+        const float scale = 1.0f + (D4 - 1.0f) * scene.params.searchlight_strength;
+        color = color * scale;
+    }
+
+    // 7. Framebuffer write.
+    const int idx = (y * width + x) * 4;
+    pixels[idx + 0] = color.x;
+    pixels[idx + 1] = color.y;
+    pixels[idx + 2] = color.z;
+    pixels[idx + 3] = 1.0f;
+}
+
+}
+
+void launch_render_scene(float* device_pixels, int width, int height,
+                         rr::cuda::CudaSceneView scene,
+                         cudaStream_t stream) {
+    if (!device_pixels || width <= 0 || height <= 0) return;
+
+    const dim3 block(16, 16);
+    const dim3 grid((width  + block.x - 1) / block.x,
+                    (height + block.y - 1) / block.y);
+
+    k_render_scene<<<grid, block, 0, stream>>>(device_pixels, width, height, scene);
 }
 
 }
