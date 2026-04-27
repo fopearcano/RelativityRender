@@ -1,6 +1,8 @@
 #include "cuda/CudaIntersection.cuh"
 #include "cuda/CudaKernels.cuh"
+#include "cuda/CudaMaterial.cuh"
 #include "cuda/CudaScene.cuh"
+#include "material/MaterialTypes.h"
 #include "math/Vec3.h"
 #include "relativity/RelativityMath.cuh"
 #include "renderer/Hit.h"
@@ -280,20 +282,44 @@ __global__ void k_render_scene(float* pixels, int width, int height,
         const auto v0  = mesh.vertices[tri.v0].position;
         const auto v1  = mesh.vertices[tri.v1].position;
         const auto v2  = mesh.vertices[tri.v2].position;
-        const auto h   = rr::cuda::intersect_triangle(ray, v0, v1, v2,
-                                                      /*t_min=*/0.0f, t_max);
+        auto h = rr::cuda::intersect_triangle(ray, v0, v1, v2,
+                                              /*t_min=*/0.0f, t_max);
         if (h.hit) {
-            best  = h;
-            t_max = h.t;
+            // Triangles inherit the per-mesh material id.
+            h.material_index = mesh.material_id;
+            best             = h;
+            t_max            = h.t;
         }
     }
 
     // 4. Base shade.
+    //    Hit  -> evaluate the material: simple normal-driven diffuse
+    //            term against a fixed up-pointing key direction, plus
+    //            emission. The full BSDF interface (eval / sample /
+    //            pdf) lands with the path tracer (M14); for now this
+    //            "ambient + diffuse + emission" lobe is enough to
+    //            validate that materials flow end-to-end.
+    //    Miss -> existing vertical sky gradient.
     Vec3 color;
     if (best.hit) {
-        color = Vec3{0.5f * best.normal.x + 0.5f,
-                     0.5f * best.normal.y + 0.5f,
-                     0.5f * best.normal.z + 0.5f};
+        rr::material::MaterialParams mat;  // neutral defaults
+        if (best.material_index >= 0
+            && best.material_index < scene.material_count
+            && scene.materials != nullptr) {
+            mat = scene.materials[best.material_index];
+        }
+
+        // Hemispherical-key shade. Direction (0, 1, 0) is the
+        // implicit "sky"; the 0.4 floor keeps shadowed surfaces from
+        // collapsing to black before real lighting (M12) lands.
+        const Vec3 sky_dir = Vec3{0.0f, 1.0f, 0.0f};
+        float ndotl = rr::math::dot(best.normal, sky_dir);
+        if (ndotl < 0.0f) ndotl = 0.0f;
+        const float shade_term = 0.4f + 0.6f * ndotl;
+
+        const Vec3 diffuse  = mat.baseColor * shade_term;
+        const Vec3 emission = mat.emissionColor * mat.emissionStrength;
+        color = diffuse + emission;
     } else {
         const float t = 0.5f * (ray.direction.y + 1.0f);
         color = Vec3{(1.0f - t) * 1.0f + t * 0.5f,

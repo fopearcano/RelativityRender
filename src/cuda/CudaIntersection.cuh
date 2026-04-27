@@ -58,12 +58,13 @@ RR_HD inline rr::renderer::Hit intersect_sphere(const rr::camera::CameraRay& ray
         }
     }
 
-    out.hit      = true;
-    out.t        = t;
-    out.position = ray.origin + ray.direction * t;
+    out.hit            = true;
+    out.t              = t;
+    out.position       = ray.origin + ray.direction * t;
     // Inverse-radius multiply rather than `normalize`: `radius > 0` is
     // a precondition, and this avoids a redundant `length` call.
-    out.normal   = (out.position - sphere.center) * (1.0f / sphere.radius);
+    out.normal         = (out.position - sphere.center) * (1.0f / sphere.radius);
+    out.material_index = sphere.material_index;
     return out;
 }
 

@@ -5,6 +5,7 @@
 #include "geometry/Sphere.h"
 #include "gpu/GpuBuffer.h"
 #include "gpu/GpuMesh.h"
+#include "material/MaterialTypes.h"
 #include "relativity/RelativityParams.h"
 
 #include <cstddef>
@@ -62,6 +63,13 @@ public:
     // slot. Multi-mesh support is the next M11 slice.
     bool upload_mesh(const rr::geometry::Mesh& mesh);
 
+    // Upload `count` `MaterialParams` PODs. Sphere `material_index`
+    // and `mesh.material_id` index into this array on the device.
+    // `count == 0` clears the buffer and is always a success.
+    // Non-empty uploads require a working GPU backend.
+    bool upload_materials(const rr::material::MaterialParams* host,
+                          std::size_t count);
+
     // Convenience: pull camera + relativity + visible spheres from a
     // host `rr::scene::Scene`. Invisible spheres are filtered out on
     // the host before upload. Returns the AND of every individual
@@ -76,6 +84,7 @@ public:
     bool        has_relativity()  const noexcept { return has_relativity_; }
     std::size_t sphere_count()    const noexcept { return spheres_count_; }
     bool        has_mesh()        const noexcept { return mesh_.has_data(); }
+    std::size_t material_count()  const noexcept { return materials_count_; }
 
     // --- Backend accessors used by the CUDA renderer -----------------
 
@@ -91,6 +100,12 @@ public:
 
     const GpuMesh& gpu_mesh() const noexcept { return mesh_; }
 
+    // Device pointer to the material array. Returns nullptr when no
+    // materials have been successfully uploaded.
+    const rr::material::MaterialParams* device_materials() const noexcept {
+        return materials_.device_ptr();
+    }
+
 private:
     rr::camera::GpuCamera             camera_{};
     rr::relativity::Observer          observer_{};
@@ -102,6 +117,9 @@ private:
     std::size_t                              spheres_count_ = 0;
 
     GpuMesh                                  mesh_;
+
+    rr::gpu::GpuBuffer<rr::material::MaterialParams> materials_;
+    std::size_t                                       materials_count_ = 0;
 };
 
 }

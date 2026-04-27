@@ -21,6 +21,7 @@
 #include "gpu/GpuDevice.h"
 #include "gpu/GpuMesh.h"
 #include "gpu/GpuScene.h"
+#include "material/MaterialTypes.h"
 #include "math/Transform.h"
 #include "math/Vec2.h"
 #include "math/Vec3.h"
@@ -362,6 +363,34 @@ void test_mesh_move_only_preserves_metadata() {
     RR_CHECK(c.material_id() == 5);
 }
 
+// --- GpuScene::upload_materials -----------------------------------------
+
+void test_scene_default_has_no_materials() {
+    rr::gpu::GpuScene s;
+    RR_CHECK(s.material_count()    == 0u);
+    RR_CHECK(s.device_materials()  == nullptr);
+}
+
+void test_scene_empty_material_upload_succeeds_everywhere() {
+    rr::gpu::GpuScene s;
+    RR_CHECK(s.upload_materials(nullptr, 0));
+    RR_CHECK(s.material_count()    == 0u);
+    RR_CHECK(s.device_materials()  == nullptr);
+}
+
+void test_scene_material_upload_without_backend_fails_predictably() {
+    if (rr::gpu::gpu_backend_available()) return;  // host-only path only
+
+    rr::gpu::GpuScene s;
+    rr::material::MaterialParams mats[2];
+    mats[0].baseColor = rr::math::Vec3{0.9f, 0.1f, 0.1f};
+    mats[1].baseColor = rr::math::Vec3{0.1f, 0.9f, 0.1f};
+
+    RR_CHECK(!s.upload_materials(mats, 2));
+    RR_CHECK(s.material_count()    == 0u);
+    RR_CHECK(s.device_materials()  == nullptr);
+}
+
 int main() {
     test_backend_name_consistency();
     test_enumerate_when_unavailable_is_empty();
@@ -381,6 +410,9 @@ int main() {
     test_mesh_non_empty_upload_without_backend_fails_predictably();
     test_mesh_upload_from_round_trip_or_skip();
     test_mesh_move_only_preserves_metadata();
+    test_scene_default_has_no_materials();
+    test_scene_empty_material_upload_succeeds_everywhere();
+    test_scene_material_upload_without_backend_fails_predictably();
 
     std::printf("gpu_tests: %d/%d passed\n", g_total - g_failed, g_total);
     return g_failed == 0 ? 0 : 1;

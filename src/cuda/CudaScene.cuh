@@ -13,8 +13,10 @@
 #include <cuda_runtime.h>
 
 #include "camera/CameraRay.h"
+#include "cuda/CudaMaterial.cuh"
 #include "cuda/CudaMesh.cuh"
 #include "geometry/Sphere.h"
+#include "material/MaterialTypes.h"
 #include "relativity/RelativityParams.h"
 
 namespace rr::cuda {
@@ -32,6 +34,14 @@ struct CudaSceneView {
     // alongside the M11 material system; a single slot is enough to
     // demonstrate the M10 closest-hit logic across primitive types.
     CudaMeshView                      mesh;
+
+    // Material array. Sphere `material_index` and `mesh.material_id`
+    // are integer indices into `materials[0 .. material_count - 1]`;
+    // values outside that range fall back to a neutral default in
+    // the kernel. `nullptr` + `material_count == 0` is allowed and
+    // means "no materials uploaded - everything uses the default".
+    const rr::material::MaterialParams* materials      = nullptr;
+    int                                  material_count = 0;
 };
 
 // Host-callable launch wrapper for the scene-render kernel.

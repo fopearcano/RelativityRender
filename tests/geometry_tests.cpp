@@ -166,6 +166,29 @@ void test_make_sphere_factory_matches_aggregate() {
     const auto s = rr::geometry::make_sphere(Vec3{1, 2, 3}, 4.0f);
     RR_CHECK(s.center == Vec3{1, 2, 3});
     RR_CHECK(s.radius == 4.0f);
+    RR_CHECK(s.material_index == -1);   // factory uses the "no material" sentinel
+}
+
+void test_sphere_intersection_propagates_material_index() {
+    using rr::cuda::intersect_sphere;
+    const Sphere s_default{Vec3{0, 0, -3}, 1.0f};                  // material_index = -1
+    const Sphere s_tagged {Vec3{0, 0, -3}, 1.0f, /*material*/ 7};
+
+    const auto r = make_ray(Vec3{0, 0, 0}, Vec3{0, 0, -1});
+
+    auto h = intersect_sphere(r, s_default, 0.0f, 1.0e30f);
+    RR_CHECK(h.hit);
+    RR_CHECK(h.material_index == -1);
+
+    h = intersect_sphere(r, s_tagged, 0.0f, 1.0e30f);
+    RR_CHECK(h.hit);
+    RR_CHECK(h.material_index == 7);
+
+    // Aggregate init with only `{center, radius}` still works -
+    // material_index defaults to -1.
+    const Sphere s_agg{Vec3{0, 0, -3}, 1.0f};
+    h = intersect_sphere(r, s_agg, 0.0f, 1.0e30f);
+    RR_CHECK(h.material_index == -1);
 }
 
 // --- Triangle (Moller-Trumbore) -----------------------------------------
@@ -271,6 +294,7 @@ int main() {
     test_corner_pixel_misses_test_sphere();
     test_make_miss_is_default_state();
     test_make_sphere_factory_matches_aggregate();
+    test_sphere_intersection_propagates_material_index();
 
     test_triangle_centre_hit();
     test_triangle_outside_misses();

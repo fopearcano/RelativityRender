@@ -25,6 +25,25 @@ bool GpuScene::upload_mesh(const rr::geometry::Mesh& mesh) {
     return mesh_.upload_from(mesh);
 }
 
+bool GpuScene::upload_materials(const rr::material::MaterialParams* host,
+                                std::size_t count) {
+    if (count == 0) {
+        materials_.reset();
+        materials_count_ = 0;
+        return true;
+    }
+    if (host == nullptr) {
+        return false;
+    }
+    if (!materials_.upload(host, count)) {
+        materials_.reset();
+        materials_count_ = 0;
+        return false;
+    }
+    materials_count_ = count;
+    return true;
+}
+
 bool GpuScene::upload_spheres(const rr::geometry::Sphere* host, std::size_t count) {
     if (count == 0) {
         spheres_.reset();

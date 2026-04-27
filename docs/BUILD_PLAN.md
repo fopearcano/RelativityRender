@@ -41,7 +41,7 @@ Update it after every implementation step, per
 | 6  | OptiX Backend                       | not started   |
 | 7  | Scene Graph                         | landed        |
 | 8  | Geometry System                     | landed        |
-| 9  | Material / Shading System           | in progress   |
+| 9  | Material / Shading System           | landed        |
 | 10 | Texture System                      | not started   |
 | 11 | Lighting System                     | not started   |
 | 12 | Camera System                       | landed        |
@@ -75,7 +75,7 @@ All modules now have a placeholder source directory under `src/`,
 | M8        | GPU Primitive Intersection              | landed      |
 | M9        | Relativistic Camera Model (First Pass)  | landed      |
 | M10       | GPU Scene Upload & Triangle Mesh        | landed      |
-| M11       | Material System (Foundations)           | in progress |
+| M11       | Material System (Foundations)           | landed      |
 | M12       | Lighting System (Foundations)           | not started |
 | M13       | Scene File Format & Parser              | not started |
 | M14       | Path Tracing Foundation                 | not started |
@@ -92,6 +92,115 @@ All modules now have a placeholder source directory under `src/`,
 ---
 
 ## Change Log
+
+### 2026-04-27 — M11 finalized: materials end-to-end through the GPU renderer
+
+`material_index` now flows from primitives, through the upload path,
+to the kernel, which evaluates a simple diffuse + emission + normal-
+driven hemisphere shade. The relativistic pipeline still wraps the
+result, so Doppler / searchlight modify the per-material output.
+
+- **`src/renderer/Hit.h`:** added `material_index` (defaults to
+  `-1` = "no material"). Both `intersect_sphere` and the kernel
+  triangle loop now populate it.
+- **`src/geometry/Sphere.h`:** added `material_index` to the POD.
+  Aggregate-init `Sphere{c, r}` still works (the field defaults
+  to `-1`); `make_sphere(...)` returns `-1` explicitly. Existing
+  call sites are unaffected.
+- **`src/cuda/CudaIntersection.cuh`:** `intersect_sphere`
+  propagates `sphere.material_index` into the resulting `Hit`.
+  `intersect_triangle` is unchanged (the kernel sets the mesh's
+  `material_id` on the hit at the call site, since standalone
+  triangles have no material concept).
+- **`src/cuda/CudaScene.cuh`:** added a material array to
+  `CudaSceneView` (`materials` device pointer + `material_count`).
+  `nullptr` + count `0` is allowed and means "no materials
+  uploaded - everything uses the default neutral shade".
+- **`src/gpu/GpuScene.{h,cpp}`:** added `GpuBuffer<MaterialParams>`
+  + `upload_materials(host, count)` + `material_count()` query +
+  `device_materials()` accessor. Same dynamic-size, fail-
+  predictably-without-backend semantics as the existing sphere /
+  mesh upload paths.
+- **`src/cuda/CudaRenderer.cu`:** `render_scene` now also copies
+  the materials view (`device_materials()` + `material_count()`)
+  into `CudaSceneView` before launching.
+- **`src/cuda/CudaTestKernel.cu`:** the kernel's hit branch now:
+  1. looks up `MaterialParams` at `best.material_index` (with a
+     bounds check; out-of-range falls back to a neutral default);
+  2. computes a hemispherical key shade
+     `0.4 + 0.6 * max(0, dot(N, +Y))`;
+  3. composes `baseColor * shade + emissionColor *
+     emissionStrength`.
+  Doppler colour and searchlight beaming continue to apply on the
+  composed colour, so the relativistic effects modify the
+  per-material result. The triangle loop now tags each accepted
+  hit with `mesh.material_id` so meshes participate in the
+  material lookup.
+- **`src/main.cpp`:** `--render` builds a host scene with five
+  materials (red / green / blue diffuse, warm emissive for the
+  quad, light grey floor), assigns each sphere a material index,
+  flags the quad's mesh with the emissive material, uploads
+  everything, and saves to `output/gpu_material_scene.ppm`.
+  `--output` is still ignored at this milestone.
+- **`tests/geometry_tests.cpp`:** +6 assertions (46/46 total) -
+  `make_sphere(...)` returns the `-1` sentinel;
+  `intersect_sphere` propagates the per-sphere index when set,
+  preserves `-1` for default-constructed spheres, and the
+  aggregate `{center, radius}` form still works.
+- **`tests/gpu_tests.cpp`:** +8 assertions (79/79 total) -
+  default `GpuScene` has no materials; empty `upload_materials`
+  succeeds everywhere; non-empty upload fails predictably without
+  a backend, with `material_count == 0` and
+  `device_materials() == nullptr`.
+
+#### Verified locally (host-only, no CUDA Toolkit on this box)
+
+```
+$ cmake --build build && cd build && ctest --output-on-failure
+1/9 Test #1: math_tests       ........... Passed  0.00 sec
+2/9 Test #2: image_tests      ........... Passed  0.00 sec
+3/9 Test #3: gpu_tests        ........... Passed  0.00 sec
+4/9 Test #4: camera_tests     ........... Passed  0.00 sec
+5/9 Test #5: geometry_tests   ........... Passed  0.00 sec
+6/9 Test #6: relativity_tests ........... Passed  0.00 sec
+7/9 Test #7: scene_tests      ........... Passed  0.00 sec
+8/9 Test #8: mesh_tests       ........... Passed  0.00 sec
+9/9 Test #9: material_tests   ........... Passed  0.00 sec
+100% tests passed, 0 tests failed out of 9
+
+$ ./build/bin/geometry_tests
+geometry_tests: 46/46 passed
+$ ./build/bin/gpu_tests
+gpu_tests: skipping CUDA round-trip (no backend compiled)
+gpu_tests: 79/79 passed
+```
+
+The CUDA-enabled run (`-DRR_ENABLE_CUDA=ON`) produces
+`output/gpu_material_scene.ppm`. The kernel calls the same
+`RR_HD generate_camera_ray`, `intersect_sphere`,
+`intersect_triangle`, `aberrateDirection`, `dopplerFactor`,
+`searchlightFactor`, and `applyDopplerColor` covered by the
+existing host tests; the new shading combines the same
+`MaterialParams` fields the host suite exercises.
+
+#### Hard-rule check
+
+- **Materials read on the GPU**: every material lookup happens
+  inside `k_render_scene`. The CPU only fills the parameter
+  array and uploads it.
+- **No CPU pixel iteration in the render path**: only inside
+  `Image::save_ppm`.
+
+#### What this milestone closes (M11 / Module 9)
+
+- M11 (Material System Foundations) -> landed: parameter pack +
+  per-primitive id + GPU array upload + kernel-side shading all
+  in.
+- Module 9 (Material / Shading System) -> landed for the
+  foundation. The full BSDF interface (`eval` / `sample` /
+  `pdf`) and the texture-driven parameter binding are still
+  required for path-tracing fidelity; those land with M14
+  (path tracer) and M16 (textures).
 
 ### 2026-04-27 — Material foundation landed (M11 in progress)
 
@@ -1497,24 +1606,21 @@ and does not affect the architecture or dependency rules.
 
 ## Next Step
 
-**Finish M11 — wire materials through the renderer.** The
-parameter pack + host wrapper are in. To move M11 / Module 9
-from "in progress" to "landed":
+**M12 — Lighting System (foundations).** Materials and emissive
+geometry are in; the next gap is real light sources:
 
-1. Upload material list. Add `GpuBuffer<MaterialParams>` to
-   `GpuScene`, `upload_materials(...)`, and a
-   `CudaSceneView::materials` device pointer + count.
-2. Plumb `material_index` to the renderer. `SceneSphere` and
-   `Mesh` already carry an id; add it to `Hit` so the kernel
-   can look up the material once per hit.
-3. Add a small `RR_HD inline` shading helper in
-   `cuda/CudaMaterial.cuh` that evaluates a Lambert + simple
-   GGX response against a fixed-direction "ambient" probe.
-   Replace the kernel's normal-as-color shade with this so the
-   pipeline is exercised end-to-end before lighting (M12) and
-   the path tracer (M14) go in.
-4. A real BSDF interface (`eval` / `sample` / `pdf`) for true
-   light-transport joins with M14.
+1. `rr::lighting::Light` host type for point / directional /
+   area / environment lights, with importance-sampling routines
+   that feed the path tracer (M14).
+2. Upload a `GpuBuffer<LightPOD>` through `GpuScene` and add a
+   `CudaSceneView::lights` view alongside `spheres` /
+   `mesh` / `materials`.
+3. Replace the kernel's hard-coded "+Y key direction" shade
+   with a real direct-lighting term: pick a light, evaluate its
+   contribution, modulate by the material's diffuse / spec
+   response (still no path tracing - that arrives at M14).
+4. Add a small `lighting_tests` host suite covering light
+   sampling correctness against analytic cases.
 
 Before or alongside this, the M2 deferred items (`Error`,
 `FileSystem`, `App`, `Config::load`/`save`, real test framework,

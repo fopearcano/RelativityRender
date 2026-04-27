@@ -155,6 +155,9 @@ CudaRenderer::Result CudaRenderer::render_scene(const rr::gpu::GpuScene& scene,
     view.mesh.material_id    = gpu_mesh.material_id();
     view.mesh.transform      = gpu_mesh.transform();
 
+    view.materials      = scene.device_materials();
+    view.material_count = static_cast<int>(scene.material_count());
+
     return run_kernel_render(width, height,
         [view](float* device_pixels, int w, int h) {
             launch_render_scene(device_pixels, w, h, view, /*stream=*/nullptr);
