@@ -43,7 +43,7 @@ Update it after every implementation step, per
 | 8  | Geometry System                     | landed        |
 | 9  | Material / Shading System           | landed        |
 | 10 | Texture System                      | not started   |
-| 11 | Lighting System                     | not started   |
+| 11 | Lighting System                     | in progress   |
 | 12 | Camera System                       | landed        |
 | 13 | Relativistic Camera Model           | landed        |
 | 14 | Path Tracer                         | not started   |
@@ -76,7 +76,7 @@ All modules now have a placeholder source directory under `src/`,
 | M9        | Relativistic Camera Model (First Pass)  | landed      |
 | M10       | GPU Scene Upload & Triangle Mesh        | landed      |
 | M11       | Material System (Foundations)           | landed      |
-| M12       | Lighting System (Foundations)           | not started |
+| M12       | Lighting System (Foundations)           | in progress |
 | M13       | Scene File Format & Parser              | not started |
 | M14       | Path Tracing Foundation                 | not started |
 | M15       | OptiX Backend (Upgrade Path)            | not started |
@@ -92,6 +92,77 @@ All modules now have a placeholder source directory under `src/`,
 ---
 
 ## Change Log
+
+### 2026-04-27 — M12 lighting data model landed (M12 in progress)
+
+Host-side lighting POD + factories + CUDA-side re-export. No path
+tracing, no kernel changes; the data shape is the contract M14 (path
+tracer) and M16 (env-map textures) populate.
+
+- **`src/lighting/Light.h`:** `LightType` enum (`Point`,
+  `Directional`, `Area`, `Environment`) with stable ordinals so
+  the upload contract is forward-compatible. `Light` POD with a
+  flat layout (no union) so `GpuBuffer<Light>` can carry it via
+  `std::is_trivially_copyable`. Field semantics are
+  type-discriminated and documented in the header. Defaults
+  describe a neutral white point light at the origin with unit
+  intensity.
+- **`src/lighting/Light.cpp`:** factory functions
+  `make_point_light` / `make_directional_light` /
+  `make_area_light` / `make_environment_light`. Direction-bearing
+  factories normalize the input via a `safe_normalize` helper that
+  falls back to `(0, -1, 0)` on degenerate (zero-length) input.
+  `make_area_light` clamps negative dimensions to zero. The Area
+  and Environment slots are explicitly documented as placeholders
+  - the geometry / sampling routines arrive at M14, env-map
+  textures at M16.
+- **`src/cuda/CudaLight.cuh`:** thin re-export of `Light.h` so
+  kernel TUs can include a `.cuh`. Future `RR_HD inline` sampling
+  / eval / pdf helpers per `LightType` land here without touching
+  the host surface.
+- **`tests/lighting_tests.cpp`:** 35 host assertions covering
+  `LightType` ordinals (upload contract); default `Light` is a
+  neutral point at origin; each factory produces the expected
+  fields; directional / area factories normalize their input
+  vector and fall back to `(0, -1, 0)` for zero-length input;
+  area light clamps negative width / height to zero.
+- **`CMakeLists.txt`:** added `rr_lighting` static library and
+  the `lighting_tests` test executable.
+
+#### Verified locally (host-only, no CUDA Toolkit on this box)
+
+```
+$ cmake --build build && cd build && ctest --output-on-failure
+ 1/10 Test  #1: math_tests       ........... Passed  0.00 sec
+ 2/10 Test  #2: image_tests      ........... Passed  0.00 sec
+ 3/10 Test  #3: gpu_tests        ........... Passed  0.00 sec
+ 4/10 Test  #4: camera_tests     ........... Passed  0.00 sec
+ 5/10 Test  #5: geometry_tests   ........... Passed  0.00 sec
+ 6/10 Test  #6: relativity_tests ........... Passed  0.00 sec
+ 7/10 Test  #7: scene_tests      ........... Passed  0.00 sec
+ 8/10 Test  #8: mesh_tests       ........... Passed  0.00 sec
+ 9/10 Test  #9: material_tests   ........... Passed  0.00 sec
+10/10 Test #10: lighting_tests   ........... Passed  0.00 sec
+100% tests passed, 0 tests failed out of 10
+
+$ ./build/bin/lighting_tests
+lighting_tests: 35/35 passed
+```
+
+#### Not in this slice (M12 / Module 11 still "in progress")
+
+- No path tracing, per the prompt; nothing reads `Light` yet.
+- No GPU upload of the light array; `GpuScene` does not yet
+  expose `upload_lights(...)` and `CudaSceneView` has no light
+  array.
+- No kernel-side direct-lighting evaluation. The current shade
+  is still the M11 hemispherical key term.
+- Area and Environment are explicit placeholders - geometry +
+  sampling routines for area lights arrive at M14; env-map
+  textures at M16.
+- No update to `scene::SceneLight`, which remains the M9
+  placeholder. It will be rewritten to embed
+  `rr::lighting::Light` when a real consumer lands.
 
 ### 2026-04-27 — M11 finalized: materials end-to-end through the GPU renderer
 
@@ -1606,21 +1677,23 @@ and does not affect the architecture or dependency rules.
 
 ## Next Step
 
-**M12 — Lighting System (foundations).** Materials and emissive
-geometry are in; the next gap is real light sources:
+**Finish M12 — wire lights through the renderer.** The data model
++ factories + CUDA re-export are in. To move M12 / Module 11
+from "in progress" to "landed":
 
-1. `rr::lighting::Light` host type for point / directional /
-   area / environment lights, with importance-sampling routines
-   that feed the path tracer (M14).
-2. Upload a `GpuBuffer<LightPOD>` through `GpuScene` and add a
-   `CudaSceneView::lights` view alongside `spheres` /
-   `mesh` / `materials`.
-3. Replace the kernel's hard-coded "+Y key direction" shade
-   with a real direct-lighting term: pick a light, evaluate its
-   contribution, modulate by the material's diffuse / spec
-   response (still no path tracing - that arrives at M14).
-4. Add a small `lighting_tests` host suite covering light
-   sampling correctness against analytic cases.
+1. Upload light list. Add `GpuBuffer<Light>` to `GpuScene`,
+   `upload_lights(...)`, and a `CudaSceneView::lights` device
+   pointer + count alongside `materials`.
+2. Replace the kernel's hard-coded "+Y hemisphere key" shade
+   with a real direct-lighting term that loops over the
+   uploaded lights, evaluates `eval(light, hit)` for the
+   point / directional kinds, and accumulates the contribution
+   weighted by the material's diffuse response. Area lights
+   stay deferred (sampling lands at M14).
+3. Hook the environment-light slot up as a flat sky tint that
+   replaces the current hard-coded sky gradient on a miss.
+4. A real `sample` / `eval` / `pdf` interface for true light-
+   transport joins with M14 (path tracer).
 
 Before or alongside this, the M2 deferred items (`Error`,
 `FileSystem`, `App`, `Config::load`/`save`, real test framework,

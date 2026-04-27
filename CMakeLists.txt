@@ -111,6 +111,21 @@ else()
     target_compile_options(rr_material PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 
+# Lighting module. Host-side data model only - point /
+# directional / area placeholder / environment placeholder. The
+# importance-sampling helpers and kernel-side direct-lighting
+# evaluation live behind the same API and arrive with the path
+# tracer (M14).
+add_library(rr_lighting STATIC
+    src/lighting/Light.cpp
+)
+target_include_directories(rr_lighting PUBLIC src)
+if(MSVC)
+    target_compile_options(rr_lighting PRIVATE /W4 /permissive-)
+else()
+    target_compile_options(rr_lighting PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+
 # Scene module. Host-only authoring data model: Camera + render
 # settings + Observer + RelativityParams + lists of spheres /
 # meshes (placeholder) / materials (placeholder) / lights
@@ -283,4 +298,16 @@ if(RR_BUILD_TESTS)
         target_compile_options(material_tests PRIVATE -Wall -Wextra -Wpedantic)
     endif()
     add_test(NAME material_tests COMMAND material_tests)
+
+    # Lighting foundation tests. Links rr_lighting for the factory
+    # symbols; Light POD and math headers come through the PUBLIC
+    # src include path.
+    add_executable(lighting_tests tests/lighting_tests.cpp)
+    target_link_libraries(lighting_tests PRIVATE rr_lighting)
+    if(MSVC)
+        target_compile_options(lighting_tests PRIVATE /W4 /permissive-)
+    else()
+        target_compile_options(lighting_tests PRIVATE -Wall -Wextra -Wpedantic)
+    endif()
+    add_test(NAME lighting_tests COMMAND lighting_tests)
 endif()
