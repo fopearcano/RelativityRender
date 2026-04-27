@@ -67,6 +67,20 @@ else()
     target_compile_options(rr_image PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 
+# Camera module. Host-only; depends on math (header-only). The
+# device-side `GpuCamera` POD and the host/device `generate_camera_ray`
+# helper live in `camera/CameraRay.h`, included from `.cu` files in the
+# CUDA backend.
+add_library(rr_camera STATIC
+    src/camera/Camera.cpp
+)
+target_include_directories(rr_camera PUBLIC src)
+if(MSVC)
+    target_compile_options(rr_camera PRIVATE /W4 /permissive-)
+else()
+    target_compile_options(rr_camera PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+
 # GPU device layer. Backend-agnostic surface in src/gpu/. The CUDA
 # backend (src/cuda/CudaContext.cpp) is only added to the build when
 # RR_ENABLE_CUDA is ON; otherwise the gpu layer compiles with no
@@ -92,9 +106,10 @@ if(RR_ENABLE_CUDA)
     # PUBLIC: targets linking rr_gpu (RelativityRender, gpu_tests) gate
     # CUDA-specific call sites on the same RR_HAS_CUDA macro.
     target_compile_definitions(rr_gpu PUBLIC RR_HAS_CUDA)
-    # CudaRenderer downloads into rr::image::Image, so the image module
-    # is part of the public ABI of rr_gpu when CUDA is on.
-    target_link_libraries(rr_gpu PUBLIC  rr_image)
+    # CudaRenderer downloads into rr::image::Image and consumes
+    # rr::camera::Camera, so both modules are part of the public ABI
+    # of rr_gpu when CUDA is on.
+    target_link_libraries(rr_gpu PUBLIC  rr_image rr_camera)
     target_link_libraries(rr_gpu PRIVATE CUDA::cudart)
     set_target_properties(rr_gpu PROPERTIES POSITION_INDEPENDENT_CODE ON)
 endif()
@@ -146,4 +161,13 @@ if(RR_BUILD_TESTS)
         target_compile_options(gpu_tests PRIVATE -Wall -Wextra -Wpedantic)
     endif()
     add_test(NAME gpu_tests COMMAND gpu_tests)
+
+    add_executable(camera_tests tests/camera_tests.cpp)
+    target_link_libraries(camera_tests PRIVATE rr_camera)
+    if(MSVC)
+        target_compile_options(camera_tests PRIVATE /W4 /permissive-)
+    else()
+        target_compile_options(camera_tests PRIVATE -Wall -Wextra -Wpedantic)
+    endif()
+    add_test(NAME camera_tests COMMAND camera_tests)
 endif()

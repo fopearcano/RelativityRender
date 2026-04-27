@@ -5,6 +5,7 @@
 #include "gpu/GpuDevice.h"
 
 #ifdef RR_HAS_CUDA
+    #include "camera/Camera.h"
     #include "cuda/CudaRenderer.h"
 #endif
 
@@ -79,18 +80,25 @@ int main(int argc, char** argv) {
         Logger::info("render command received");
 
 #ifdef RR_HAS_CUDA
-        // M6 test path: the GPU writes a UV-gradient framebuffer; the CPU
-        // only allocates, launches, downloads, and saves. No CPU pixel
-        // loop runs in this code path (save_ppm internals are the one
-        // permitted exception per the engineering rules).
+        // M7 test path: the GPU generates a primary pinhole ray per
+        // pixel and encodes the (normalised) direction as RGB. The CPU
+        // only configures the camera, launches the kernel, downloads
+        // the framebuffer, and saves. No CPU pixel loop runs in this
+        // code path (save_ppm internals are the one permitted
+        // exception per the engineering rules).
         const std::filesystem::path out_path =
-            cfg.output_image_path.value_or("output/gpu_gradient.ppm");
+            cfg.output_image_path.value_or("output/gpu_camera_rays.ppm");
 
-        Logger::info("rendering gradient on GPU: "
+        rr::camera::Camera camera;  // origin, looking down -Z, +Y up
+        camera.set_aspect(static_cast<float>(cfg.width)
+                          / static_cast<float>(cfg.height));
+
+        Logger::info("rendering camera rays on GPU: "
                      + std::to_string(cfg.width) + "x"
                      + std::to_string(cfg.height));
 
-        auto result = rr::cuda::CudaRenderer::render_gradient(cfg.width, cfg.height);
+        auto result = rr::cuda::CudaRenderer::render_camera_rays(
+            camera, cfg.width, cfg.height);
         if (!result.ok) {
             Logger::error("GPU render failed: " + result.message);
             return 1;

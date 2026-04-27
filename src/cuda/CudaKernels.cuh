@@ -6,6 +6,8 @@
 
 #include <cuda_runtime.h>
 
+#include "camera/CameraRay.h"
+
 namespace rr::cuda {
 
 // Host-callable launch wrapper for the gradient test kernel.
@@ -14,4 +16,14 @@ namespace rr::cuda {
 void launch_gradient_rgba32f(float* device_pixels, int width, int height,
                              cudaStream_t stream = 0);
 
+// Host-callable launch wrapper for the camera-ray visualisation kernel.
+// Defined in CudaTestKernel.cu. For each pixel, generates the primary
+// pinhole ray from `cam` via `rr::camera::generate_camera_ray` and
+// encodes the (normalised) direction into RGB by mapping each
+// component from [-1, 1] to [0, 1]. Alpha is 1.
+void launch_camera_rays_visualize(float* device_pixels, int width, int height,
+                                  rr::camera::GpuCamera cam,
+                                  cudaStream_t stream = 0);
+
 }
+

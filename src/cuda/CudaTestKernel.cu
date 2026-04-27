@@ -36,4 +36,40 @@ void launch_gradient_rgba32f(float* device_pixels, int width, int height,
     k_gradient_rgba32f<<<grid, block, 0, stream>>>(device_pixels, width, height);
 }
 
+namespace {
+
+// Generates a primary ray per pixel and encodes the (normalised)
+// direction as RGB by mapping each component from [-1, 1] to [0, 1].
+// Alpha is 1. The kernel does all per-pixel work; the host only
+// launches and downloads.
+__global__ void k_camera_rays_visualize(float* pixels, int width, int height,
+                                        rr::camera::GpuCamera cam) {
+    const int x = blockIdx.x * blockDim.x + threadIdx.x;
+    const int y = blockIdx.y * blockDim.y + threadIdx.y;
+    if (x >= width || y >= height) return;
+
+    const auto ray = rr::camera::generate_camera_ray(cam, x, y, width, height);
+
+    const int idx = (y * width + x) * 4;
+    pixels[idx + 0] = 0.5f * ray.direction.x + 0.5f;
+    pixels[idx + 1] = 0.5f * ray.direction.y + 0.5f;
+    pixels[idx + 2] = 0.5f * ray.direction.z + 0.5f;
+    pixels[idx + 3] = 1.0f;
 }
+
+}
+
+void launch_camera_rays_visualize(float* device_pixels, int width, int height,
+                                  rr::camera::GpuCamera cam,
+                                  cudaStream_t stream) {
+    if (!device_pixels || width <= 0 || height <= 0) return;
+
+    const dim3 block(16, 16);
+    const dim3 grid((width  + block.x - 1) / block.x,
+                    (height + block.y - 1) / block.y);
+
+    k_camera_rays_visualize<<<grid, block, 0, stream>>>(device_pixels, width, height, cam);
+}
+
+}
+

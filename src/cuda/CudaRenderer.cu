@@ -21,17 +21,23 @@ std::string cuda_error_string(cudaError_t e) {
 
 }
 
-CudaRenderer::Result CudaRenderer::render_gradient(int width, int height) {
-    Result result;
+namespace {
+
+// Shared kernel-driven render scaffold: validate dims, allocate the
+// device buffer, run `launch_kernel` (which is expected to enqueue one
+// or more kernels writing the Rgba32F framebuffer), drain CUDA errors,
+// and download into a host Image. `launch_kernel` does the per-pixel
+// work; the host never iterates over pixels here.
+template <typename Launch>
+CudaRenderer::Result run_kernel_render(int width, int height, Launch&& launch_kernel) {
+    CudaRenderer::Result result;
 
     if (width <= 0 || height <= 0) {
         result.message = "invalid dimensions";
         return result;
     }
 
-    // Reset any sticky CUDA error from earlier in the process so our
-    // success path observes a clean state.
-    (void)cudaGetLastError();
+    (void)cudaGetLastError();  // clear any sticky error
 
     const std::size_t pixel_count = static_cast<std::size_t>(width) * height;
     const std::size_t float_count = pixel_count * 4;  // Rgba32F
@@ -42,7 +48,7 @@ CudaRenderer::Result CudaRenderer::render_gradient(int width, int height) {
         return result;
     }
 
-    launch_gradient_rgba32f(dev.device_ptr(), width, height, /*stream=*/nullptr);
+    launch_kernel(dev.device_ptr(), width, height);
 
     if (const auto launch_err = cudaGetLastError(); launch_err != cudaSuccess) {
         result.message = "kernel launch failed: " + cuda_error_string(launch_err);
@@ -66,3 +72,22 @@ CudaRenderer::Result CudaRenderer::render_gradient(int width, int height) {
 }
 
 }
+
+CudaRenderer::Result CudaRenderer::render_gradient(int width, int height) {
+    return run_kernel_render(width, height,
+        [](float* device_pixels, int w, int h) {
+            launch_gradient_rgba32f(device_pixels, w, h, /*stream=*/nullptr);
+        });
+}
+
+CudaRenderer::Result CudaRenderer::render_camera_rays(const rr::camera::Camera& camera,
+                                                     int width, int height) {
+    const auto cam = camera.to_gpu();
+    return run_kernel_render(width, height,
+        [cam](float* device_pixels, int w, int h) {
+            launch_camera_rays_visualize(device_pixels, w, h, cam, /*stream=*/nullptr);
+        });
+}
+
+}
+

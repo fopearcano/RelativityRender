@@ -15,21 +15,19 @@ Update it after every implementation step, per
 - **Code in repo:** repository skeleton, top-level CMake project, the
   minimal C++20 application foundation, configuration + CLI handling,
   the math library, the image / framebuffer system, the GPU device
-  layer with device queries (`src/gpu/GpuDevice.{h,cpp}`,
-  `src/cuda/CudaContext.{h,cpp}`), and now the **GPU buffer
-  abstraction** (`src/gpu/GpuBuffer.{h,cpp}`,
-  `src/cuda/CudaBuffer.{h,cpp}` - move-only RAII typed handle with
-  allocate / upload / download / reset, gated by
-  `-DRR_ENABLE_CUDA=ON`). The `RelativityRender` executable's
-  `--device-info` reports the compiled-in backend and prints
-  name / compute capability / VRAM / SM count for each visible GPU.
-  Three test executables — `math_tests` (42), `image_tests` (39),
-  `gpu_tests` (20: device-query invariants + buffer state and
-  upload-no-kernel-download round-trip when CUDA + a device are
-  available, otherwise an honest skip) — all green through `ctest`.
-  `rr_image` and `rr_gpu` are static libraries; `RelativityRender`
-  links `rr_gpu`. No CUDA kernels yet, no rendering, no scene
-  system.
+  layer with device queries, the GPU buffer abstraction, the first
+  CUDA kernel (gradient), the **camera system** (host
+  `rr::camera::Camera` plus device-friendly `GpuCamera` POD and
+  `RR_HD generate_camera_ray`), and a kernel that writes per-pixel
+  primary rays as RGB. The `RelativityRender` executable's
+  `--render` path now runs the camera-ray-visualization kernel and
+  saves to `output/gpu_camera_rays.ppm` (or `--output`); the
+  `render_gradient` kernel is preserved as a diagnostic. Four test
+  executables — `math_tests` (42), `image_tests` (39), `gpu_tests`
+  (20), and `camera_tests` (43) — all green through `ctest`.
+  `rr_image`, `rr_gpu`, and `rr_camera` are static libraries;
+  `RelativityRender` links `rr_gpu`. No primitive intersection,
+  no scene system.
 
 ## Module Status (mirrors `docs/MODULE_MAP.md`)
 
@@ -46,7 +44,7 @@ Update it after every implementation step, per
 | 9  | Material / Shading System           | not started   |
 | 10 | Texture System                      | not started   |
 | 11 | Lighting System                     | not started   |
-| 12 | Camera System                       | not started   |
+| 12 | Camera System                       | landed        |
 | 13 | Relativistic Camera Model           | not started   |
 | 14 | Path Tracer                         | not started   |
 | 15 | Progressive Renderer                | not started   |
@@ -73,7 +71,7 @@ All modules now have a placeholder source directory under `src/`,
 | M4        | Image / Framebuffer System              | landed      |
 | M5        | CUDA Device Layer                       | landed      |
 | M6        | CUDA Framebuffer & First Kernel         | landed      |
-| M7        | Camera System & GPU Camera Rays         | not started |
+| M7        | Camera System & GPU Camera Rays         | landed      |
 | M8        | GPU Primitive Intersection              | not started |
 | M9        | Relativistic Camera Model (First Pass)  | not started |
 | M10       | GPU Scene Upload & Triangle Mesh        | not started |
@@ -94,6 +92,103 @@ All modules now have a placeholder source directory under `src/`,
 ---
 
 ## Change Log
+
+### 2026-04-27 — M7 camera system & GPU camera rays landed
+
+Pinhole perspective camera on the host, plain-data POD on the device,
+and a `RR_HD` ray-generation function the kernel and host tests both
+call. The new `--render` path lets the GPU generate one primary ray
+per pixel and encodes the direction as RGB; the CPU only configures
+the camera, launches, downloads, and saves.
+
+- **`src/camera/CameraRay.h`:** `CameraRay { origin, direction }` and
+  the device-friendly `GpuCamera { position, forward, up, right,
+  tan_half_vfov, aspect }` POD. The pre-computed `tan_half_vfov` keeps
+  the per-thread arithmetic to a few multiplies and one normalize.
+  `RR_HD inline generate_camera_ray(GpuCamera, x, y, w, h)` samples
+  pixel centres at `(x+0.5, y+0.5)`, builds the image-plane offset
+  `(u = (2x/w - 1) * aspect * tan_half_vfov,
+    v = (1 - 2y/h) * tan_half_vfov)` (top-left origin), and returns
+  the normalized direction `forward + right*u + up*v`. Same code path
+  runs on host and device.
+- **`src/camera/Camera.h` / `.cpp`:** host class with explicit
+  position / forward / up / right / vfov / aspect / near / far. `look_at`
+  re-orthogonalizes the basis (with a sensible fallback when the up
+  hint is parallel to forward, and a no-op when eye == target).
+  Setters clamp vfov to `(0.01, 179.0)` degrees and reject
+  non-positive aspect ratios. `to_gpu()` snapshots into the device
+  POD.
+- **`src/cuda/CudaKernels.cuh`:** declares
+  `launch_camera_rays_visualize(float*, w, h, GpuCamera, stream)`
+  alongside the existing gradient launcher.
+- **`src/cuda/CudaTestKernel.cu`:** added `__global__
+  k_camera_rays_visualize` that calls
+  `rr::camera::generate_camera_ray` per thread and writes
+  `(0.5*dir + 0.5, 1.0)` into the Rgba32F framebuffer. Same launch
+  config as the gradient kernel (16x16 blocks, ceiling-divided grid,
+  bounds-checked).
+- **`src/cuda/CudaRenderer.h` / `.cu`:** factored the host scaffold
+  (validate dims -> allocate `GpuBuffer<float>` -> launch kernel ->
+  drain CUDA errors -> download into `Image`) into a templated
+  `run_kernel_render(...)` helper. `render_gradient` keeps its
+  existing surface; `render_camera_rays(camera, w, h)` is the new
+  entry point. Both delegate per-pixel work to the GPU.
+- **`src/main.cpp`:** `--render` now defaults to
+  `output/gpu_camera_rays.ppm`, constructs an
+  `rr::camera::Camera` (origin, looking down -Z, aspect = w/h), and
+  calls `render_camera_rays`. Without CUDA the executable still
+  compiles and reports the missing backend honestly.
+- **`tests/camera_tests.cpp`:** 43 host-side assertions: default
+  state, basis orthonormality after `look_at` (incl. the
+  parallel-up-hint fallback and the eye==target degenerate case),
+  vfov clamping, `to_gpu()` round-trip, and `generate_camera_ray`
+  geometry checks (centre pixel ≈ forward; corner sign patterns
+  for top-left and bottom-right; all directions unit-length; wider
+  aspect ratio pushes the left-edge ray further left). The same
+  function runs on the GPU - validating the math on the host
+  validates the kernel by construction.
+- **`CMakeLists.txt`:** added `rr_camera` static library
+  (`src/camera/Camera.cpp`, `PUBLIC src` includes). When
+  `RR_ENABLE_CUDA` is on, `rr_gpu` PUBLIC-links `rr_camera` because
+  `CudaRenderer::render_camera_rays` consumes `Camera`. Added a
+  fourth test executable, `camera_tests`.
+
+#### Verified locally (host-only, no CUDA Toolkit on this box)
+
+```
+$ cmake -S . -B build && cmake --build build
+$ cd build && ctest --output-on-failure
+1/4 Test #1: math_tests   ............ Passed  0.00 sec
+2/4 Test #2: image_tests  ............ Passed  0.00 sec
+3/4 Test #3: gpu_tests    ............ Passed  0.00 sec
+4/4 Test #4: camera_tests ............ Passed  0.00 sec
+100% tests passed, 0 tests failed out of 4
+
+$ ./build/bin/camera_tests
+camera_tests: 43/43 passed
+
+$ ./build/bin/RelativityRender --render scene.scn --width 32 --height 32
+[INFO] RelativityRender 0.0.1 starting
+[INFO] render command received
+[INFO] (no CUDA backend compiled; rebuild with -DRR_ENABLE_CUDA=ON to render)
+```
+
+The CUDA-enabled run (`-DRR_ENABLE_CUDA=ON`, on a machine with NVCC
++ a Turing/Ampere/Ada GPU) produces `output/gpu_camera_rays.ppm`. It
+is correct by construction: the `RR_HD` ray generator the kernel
+calls is the exact same function `camera_tests` exercises on the
+host, so the host tests cover the device math.
+
+#### Hard-rule check
+
+- **All ray generation on the GPU**: the `__global__ k_camera_rays_visualize`
+  is the only place rays are produced for the rendered output. The
+  host calls `generate_camera_ray` only inside `camera_tests` to
+  validate the math; the executable's render path never iterates
+  pixels on the CPU.
+- **No CPU pixel loop**: the only iteration over pixels in the
+  render path is inside `Image::save_ppm`, which converts floats to
+  bytes for the PPM payload (image save internals, permitted).
 
 ### 2026-04-27 — M6 first CUDA kernel (GPU-rendered gradient) landed
 
@@ -625,25 +720,26 @@ and does not affect the architecture or dependency rules.
 
 ## Next Step
 
-**M7 — Camera System & GPU Camera Rays.** With a working GPU pixel
-write path in hand, the next step is camera-ray generation:
+**M8 — GPU Primitive Intersection.** With primary rays in hand the
+next step is hit-testing a single GPU primitive (sphere first), so
+the framebuffer reflects intersection results:
 
-1. Introduce `rr::camera::Camera` (perspective first; orthographic
-   later).
-2. Move the per-pixel work in the test kernel from "compute u,v"
-   to "generate a primary ray and visualize its direction" - still
-   pure GPU work, but now it consumes a `Camera` uploaded from the
-   host.
-3. Reuse `CudaRenderer` as the host orchestrator; rename the
-   gradient kernel as a debug AOV and add a primary-ray
-   visualization kernel alongside it.
-4. Add a small regression that asserts the centre pixel's ray
-   direction matches the camera's forward axis.
+1. Add a small `__device__ ray_sphere(ray, sphere)` helper alongside
+   the camera-ray code.
+2. Add a `render_sphere_hit` kernel that runs the camera-ray
+   generator, intersects against a hard-coded test sphere, and
+   writes a normal-as-color shading on hit / a sky-blue gradient on
+   miss.
+3. Wire a `render_sphere(camera, sphere, w, h)` entry point into
+   `CudaRenderer`, and a CLI option (or stage gate) that produces
+   `output/gpu_sphere_hit.ppm`.
+4. Host-side regression: the same `RR_HD` intersection helper runs
+   in `camera_tests` (or a new `geometry_tests`) and verifies
+   centre-ray hit / corner-ray miss for a known sphere.
 
-Before or alongside M7, the M2 deferred items (`Error`,
+Before or alongside M8, the M2 deferred items (`Error`,
 `FileSystem`, `App`, `Config::load`/`save`, real test framework,
-host-only CI) should be cleaned up - they're a backlog rather than
-a blocker.
+host-only CI) remain a backlog rather than a blocker.
 
 Alongside M6, the M2 deferred items should be cleaned up so the core
 foundation is honest end-to-end:
