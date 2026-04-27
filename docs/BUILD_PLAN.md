@@ -8,17 +8,19 @@ Update it after every implementation step, per
 
 ## Current State
 
-- **Active milestone:** M1 — Repository Skeleton & Build System (landed).
-- **Next milestone:** M2 — Core Engine (Logging, Config, Lifecycle).
+- **Active milestone:** M2 — Core Engine (in progress).
 - **Active branch:** `claude/create-docs-architecture-T2Dp5`.
-- **Code in repo:** repository skeleton + top-level CMake project. No
-  renderer code yet.
+- **Code in repo:** repository skeleton, top-level CMake project, and the
+  minimal C++20 application foundation: `src/main.cpp`,
+  `src/core/Version.h`, `src/core/Logger.{h,cpp}`. The `RelativityRender`
+  executable builds, runs, and prints a startup banner via the logger.
+  No GPU, no rendering, no scene system.
 
 ## Module Status (mirrors `docs/MODULE_MAP.md`)
 
 | #  | Module                              | Status        |
 |----|-------------------------------------|---------------|
-| 1  | Core Engine                         | not started   |
+| 1  | Core Engine                         | in progress   |
 | 2  | Math Library                        | not started   |
 | 3  | Image / Framebuffer System          | not started   |
 | 4  | GPU Device Layer                    | not started   |
@@ -51,7 +53,7 @@ All modules now have a placeholder source directory under `src/`,
 |-----------|-----------------------------------------|-------------|
 | M0        | Architecture & Documentation            | landed      |
 | M1        | Repository Skeleton & Build System      | landed      |
-| M2        | Core Engine: Logging, Config, Lifecycle | next        |
+| M2        | Core Engine: Logging, Config, Lifecycle | in progress |
 | M3        | Math Library                            | not started |
 | M4        | Image / Framebuffer System              | not started |
 | M5        | CUDA Device Layer                       | not started |
@@ -77,6 +79,55 @@ All modules now have a placeholder source directory under `src/`,
 ---
 
 ## Change Log
+
+### 2026-04-27 — M2 minimal C++20 application foundation landed
+
+First compiled binary in the project. Scope was deliberately restricted to a
+minimal application foundation; config, lifecycle, error type, filesystem
+helper, and tests are not in this slice and remain on the M2 todo list.
+
+- **CMakeLists.txt:** bumped C++ standard from C++17 to **C++20** (pinned
+  project-wide). Added the `RelativityRender` executable target with sources
+  `src/main.cpp` and `src/core/Logger.cpp`, `src/` on the include path, and
+  `-Wall -Wextra -Wpedantic` (or `/W4 /permissive-` on MSVC). Removed the
+  commented-out `add_subdirectory(...)` placeholder block now that the build
+  links source files directly; modules will be promoted to static libraries
+  as they grow.
+- **`src/core/Version.h`:** `rr::core::kProjectName`,
+  `kVersionMajor/Minor/Patch`, `kVersionString` as `inline constexpr`.
+  Hand-written, not CMake-generated, to keep the foundation self-contained.
+- **`src/core/Logger.h`:** `rr::core::Logger` class with three static
+  methods — `info`, `warning`, `error`. Accepts `std::string_view`.
+- **`src/core/Logger.cpp`:** thread-safe implementation. `info` writes to
+  `stdout`; `warning` and `error` write to `stderr`. Each line is
+  `[HH:MM:SS.mmm] [LEVEL] message`. A single `std::mutex` serializes
+  writes across threads. No external logging library; this is honest minimal
+  code, not a stub.
+- **`src/main.cpp`:** entry point that logs the project name, version, the
+  platform tagline, and a "Core application foundation online" message,
+  then exits 0.
+- **Verified locally:** `cmake -S . -B build && cmake --build build`
+  succeeds with the warning flags above; running `build/bin/RelativityRender`
+  prints three timestamped INFO lines.
+
+#### Naming choice
+
+Constants in `Version.h` use the `kPascalCase` `inline constexpr` style
+(e.g. `kVersionString`). This is the convention to expect for compile-time
+constants throughout the renderer. `docs/DEVELOPMENT_RULES.md` §8 will be
+updated to record this in a follow-up doc-only pass.
+
+#### Deliberately deferred (still part of M2)
+
+- `core::Config` (load / save).
+- `core::Error` type.
+- `core::App` lifecycle.
+- `core::FileSystem` minimal IO.
+- A test framework dependency under `third_party/` and tests for the logger.
+- Host-only CI.
+
+These will be added in subsequent M2 sub-prompts before M2 is marked
+landed and M3 (Math Library) begins.
 
 ### 2026-04-27 — M1 repository skeleton landed
 
@@ -160,25 +211,22 @@ and does not affect the architecture or dependency rules.
 
 ## Next Step
 
-**M2 — Core Engine: Logging, Config, Lifecycle.**
+**Finish M2 — Core Engine.**
 
-Concretely, the next implementation prompt should:
+The minimal application foundation is in place. To complete M2 and move on
+to M3 (Math Library), the next implementation prompts should add, in
+roughly this order:
 
-1. Add `src/core/CMakeLists.txt` and uncomment the matching
-   `add_subdirectory(src/core)` call in the top-level `CMakeLists.txt`.
-2. Implement `core::Logger` (severity levels + sinks), `core::Config`
-   (load / save), `core::Error`, minimal `core::FileSystem`, and a
-   `core::App` lifecycle wrapper.
-3. Add a small CLI entry point under `src/core/` (or a new `src/cli/`)
-   that uses the engine to print a structured banner. This is the first
-   compiled binary in the project.
-4. Add a test framework dependency under `third_party/` and the first
-   tests for logging and config round-trips.
-5. Wire up host-only CI (build + run tests).
-6. Update this file:
-   - Flip M2 to `in progress`, then `landed` once shipped.
-   - Flip Module 1 (Core Engine) to `landed`.
-   - Add a Change Log entry describing what landed and any deferred work.
+1. `core::Error` — a small result/error type used at module boundaries.
+2. `core::Config` — minimal load / save (TOML or JSON via a vendored
+   parser under `third_party/`).
+3. `core::FileSystem` — minimal path / read / write helpers using
+   `std::filesystem` plus a thin error-aware wrapper.
+4. `core::App` — application lifecycle wrapper: parse CLI args, run, exit.
+5. A test framework (Catch2 or doctest) under `third_party/`, plus tests
+   for `Logger`, `Config` round-trip, and `FileSystem` read / write.
+6. Host-only CI configuration that runs the build and tests.
 
-Per development rules, M2 must not introduce code from M3+ modules. No
-math, image, or GPU code yet — Core Engine is host-only and renderer-free.
+Only after these land is M2 considered finished. Per development rules,
+M2 must not introduce code from M3+ modules — no math, image, or GPU
+code. Core Engine is host-only and renderer-free.
