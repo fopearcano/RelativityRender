@@ -105,6 +105,25 @@ CudaRenderer::Result CudaRenderer::render_sphere(const rr::camera::Camera&    ca
         });
 }
 
+CudaRenderer::Result CudaRenderer::render_relativistic_sphere(
+    const rr::camera::Camera&             camera,
+    const rr::relativity::Observer&       observer,
+    const rr::relativity::RelativityParams& params,
+    const rr::geometry::Sphere&           sphere,
+    int width, int height) {
+    if (sphere.radius <= 0.0f) {
+        Result r;
+        r.message = "sphere radius must be positive";
+        return r;
+    }
+    const auto cam = camera.to_gpu();
+    return run_kernel_render(width, height,
+        [cam, observer, params, sphere](float* device_pixels, int w, int h) {
+            launch_sphere_relativistic(device_pixels, w, h, cam, observer,
+                                       params, sphere, /*stream=*/nullptr);
+        });
+}
+
 }
 
 

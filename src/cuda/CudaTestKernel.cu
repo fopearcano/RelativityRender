@@ -1,5 +1,7 @@
 #include "cuda/CudaIntersection.cuh"
 #include "cuda/CudaKernels.cuh"
+#include "math/Vec3.h"
+#include "relativity/RelativityMath.cuh"
 
 namespace rr::cuda {
 
@@ -132,6 +134,98 @@ void launch_sphere_visualize(float* device_pixels, int width, int height,
 
     k_sphere_visualize<<<grid, block, 0, stream>>>(device_pixels, width, height,
                                                    cam, sphere);
+}
+
+namespace {
+
+// Composes the full relativistic perception pipeline on the device:
+// generate ray -> aberrate -> intersect -> base shade -> Doppler colour
+// -> beaming. The whole per-pixel path is GPU-only.
+//
+// The pipeline orders aberration *before* intersection so the geometry
+// is hit-tested with the ray as observed by the boosted frame (i.e.
+// the apparent sphere position is what gets sampled), and Doppler /
+// searchlight come *after* shading so they modify the perceived
+// radiance rather than the underlying surface state.
+__global__ void k_sphere_relativistic(float* pixels, int width, int height,
+                                      rr::camera::GpuCamera           cam,
+                                      rr::relativity::Observer        observer,
+                                      rr::relativity::RelativityParams params,
+                                      rr::geometry::Sphere            sphere) {
+    const int x = blockIdx.x * blockDim.x + threadIdx.x;
+    const int y = blockIdx.y * blockDim.y + threadIdx.y;
+    if (x >= width || y >= height) return;
+
+    using rr::math::Vec3;
+
+    // 1. Camera ray.
+    auto ray = rr::camera::generate_camera_ray(cam, x, y, width, height);
+
+    // 2. Aberration.
+    if (params.enable_aberration) {
+        ray.direction = rr::relativity::aberrateDirection(observer.velocity,
+                                                          ray.direction);
+    }
+
+    // 3. Sphere intersection.
+    const auto hit = rr::cuda::intersect_sphere(ray, sphere, /*t_min=*/0.0f,
+                                                /*t_max=*/1.0e30f);
+
+    // 4. Base shade.
+    Vec3 color;
+    if (hit.hit) {
+        color = Vec3{0.5f * hit.normal.x + 0.5f,
+                     0.5f * hit.normal.y + 0.5f,
+                     0.5f * hit.normal.z + 0.5f};
+    } else {
+        const float t = 0.5f * (ray.direction.y + 1.0f);
+        color = Vec3{(1.0f - t) * 1.0f + t * 0.5f,
+                     (1.0f - t) * 1.0f + t * 0.7f,
+                     (1.0f - t) * 1.0f + t * 1.0f};
+    }
+
+    // Doppler factor for the (possibly aberrated) photon direction in
+    // the scene frame. Computed once and reused for steps 5 and 6.
+    const float D = rr::relativity::dopplerFactor(observer.velocity,
+                                                  ray.direction);
+
+    // 5. Doppler colour shift (artistic approximation).
+    if (params.enable_doppler) {
+        color = rr::relativity::applyDopplerColor(color, D,
+                                                  params.doppler_color_strength);
+    }
+
+    // 6. Searchlight / relativistic beaming.
+    if (params.enable_searchlight) {
+        const float D4    = rr::relativity::searchlightFactor(D);
+        const float scale = 1.0f + (D4 - 1.0f) * params.searchlight_strength;
+        color = color * scale;
+    }
+
+    // 7. Framebuffer write.
+    const int idx = (y * width + x) * 4;
+    pixels[idx + 0] = color.x;
+    pixels[idx + 1] = color.y;
+    pixels[idx + 2] = color.z;
+    pixels[idx + 3] = 1.0f;
+}
+
+}
+
+void launch_sphere_relativistic(float* device_pixels, int width, int height,
+                                rr::camera::GpuCamera           cam,
+                                rr::relativity::Observer        observer,
+                                rr::relativity::RelativityParams params,
+                                rr::geometry::Sphere            sphere,
+                                cudaStream_t stream) {
+    if (!device_pixels || width <= 0 || height <= 0) return;
+
+    const dim3 block(16, 16);
+    const dim3 grid((width  + block.x - 1) / block.x,
+                    (height + block.y - 1) / block.y);
+
+    k_sphere_relativistic<<<grid, block, 0, stream>>>(
+        device_pixels, width, height, cam, observer, params, sphere);
 }
 
 }

@@ -3,6 +3,7 @@
 #include "camera/Camera.h"
 #include "geometry/Sphere.h"
 #include "image/Image.h"
+#include "relativity/RelativityParams.h"
 
 #include <string>
 
@@ -42,6 +43,18 @@ public:
     static Result render_sphere(const rr::camera::Camera& camera,
                                 const rr::geometry::Sphere& sphere,
                                 int width, int height);
+
+    // M9: same scene as `render_sphere`, but the kernel runs the full
+    // relativistic perception pipeline (aberration -> intersection ->
+    // Doppler colour -> beaming). The CPU configures the camera,
+    // observer, params, and sphere, then launches; every per-pixel
+    // step happens on the GPU.
+    static Result render_relativistic_sphere(
+        const rr::camera::Camera&             camera,
+        const rr::relativity::Observer&       observer,
+        const rr::relativity::RelativityParams& params,
+        const rr::geometry::Sphere&           sphere,
+        int width, int height);
 };
 
 }

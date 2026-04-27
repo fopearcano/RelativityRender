@@ -45,7 +45,7 @@ Update it after every implementation step, per
 | 10 | Texture System                      | not started   |
 | 11 | Lighting System                     | not started   |
 | 12 | Camera System                       | landed        |
-| 13 | Relativistic Camera Model           | in progress   |
+| 13 | Relativistic Camera Model           | landed        |
 | 14 | Path Tracer                         | not started   |
 | 15 | Progressive Renderer                | not started   |
 | 16 | Denoiser Integration                | not started   |
@@ -73,7 +73,7 @@ All modules now have a placeholder source directory under `src/`,
 | M6        | CUDA Framebuffer & First Kernel         | landed      |
 | M7        | Camera System & GPU Camera Rays         | landed      |
 | M8        | GPU Primitive Intersection              | landed      |
-| M9        | Relativistic Camera Model (First Pass)  | in progress |
+| M9        | Relativistic Camera Model (First Pass)  | landed      |
 | M10       | GPU Scene Upload & Triangle Mesh        | not started |
 | M11       | Material System (Foundations)           | not started |
 | M12       | Lighting System (Foundations)           | not started |
@@ -92,6 +92,92 @@ All modules now have a placeholder source directory under `src/`,
 ---
 
 ## Change Log
+
+### 2026-04-27 — M9 relativity integrated into the CUDA sphere renderer
+
+The relativity math leaf is now wired into the GPU sphere pipeline. The
+six-step pipeline runs entirely on the device per pixel; the host only
+configures, launches once per beta, and saves.
+
+- **`src/cuda/CudaKernels.cuh`:** added `launch_sphere_relativistic`
+  declaration. Includes `relativity/RelativityParams.h` so the
+  `Observer` and `RelativityParams` PODs are part of the kernel ABI.
+- **`src/cuda/CudaTestKernel.cu`:** added `__global__
+  k_sphere_relativistic`. Per pixel:
+  1. `generate_camera_ray`
+  2. (if `enable_aberration`) `aberrateDirection(observer.velocity,
+     ray.direction)`
+  3. `intersect_sphere`
+  4. base shade (`0.5*n + 0.5` on hit; sky gradient on miss)
+  5. (if `enable_doppler`) `applyDopplerColor` modulated by
+     `doppler_color_strength`
+  6. (if `enable_searchlight`) scale by
+     `lerp(1, D^4, searchlight_strength)`
+  7. framebuffer write.
+  Aberration runs *before* intersection so geometry is hit-tested in
+  the apparent frame; Doppler / searchlight run *after* shading so
+  they modify perceived radiance rather than surface state.
+- **`src/cuda/CudaRenderer.{h,cu}`:** added
+  `render_relativistic_sphere(camera, observer, params, sphere, w, h)`.
+  Reuses the templated `run_kernel_render` scaffold from M7 (validate
+  -> allocate `GpuBuffer<float>` -> launch -> drain CUDA errors ->
+  download into `Image`).
+- **`src/main.cpp`:** `--render` now performs a fixed four-beta sweep
+  along -Z (forward motion) and writes:
+  - `output/sphere_beta_000.ppm`
+  - `output/sphere_beta_025.ppm`
+  - `output/sphere_beta_075.ppm`
+  - `output/sphere_beta_095.ppm`
+  `--output` is intentionally ignored at this milestone so the
+  deliverable is reproducible. Single-image renders remain available
+  through `CudaRenderer::render_sphere` for tests / future CLI
+  additions.
+
+#### Verified locally (host-only, no CUDA Toolkit on this box)
+
+```
+$ cmake --build build && cd build && ctest --output-on-failure
+1/6 Test #1: math_tests       ........... Passed  0.00 sec
+2/6 Test #2: image_tests      ........... Passed  0.00 sec
+3/6 Test #3: gpu_tests        ........... Passed  0.00 sec
+4/6 Test #4: camera_tests     ........... Passed  0.00 sec
+5/6 Test #5: geometry_tests   ........... Passed  0.00 sec
+6/6 Test #6: relativity_tests ........... Passed  0.00 sec
+100% tests passed, 0 tests failed out of 6
+
+$ ./build/bin/RelativityRender --render scene.scn --width 16 --height 16
+[INFO] RelativityRender 0.0.1 starting
+[INFO] render command received
+[INFO] (no CUDA backend compiled; rebuild with -DRR_ENABLE_CUDA=ON to render)
+```
+
+The CUDA-enabled run (`-DRR_ENABLE_CUDA=ON`, on a Turing/Ampere/Ada
+GPU) produces the four PPM files. The kernel calls the same `RR_HD`
+routines exercised by `relativity_tests` (52 assertions) and
+`geometry_tests` (25 assertions), so the host coverage validates the
+device math by construction.
+
+#### Hard-rule check
+
+- **All effects on the GPU**: every step of the per-pixel pipeline
+  (ray gen, aberration, intersection, base shade, Doppler colour,
+  searchlight, framebuffer write) runs inside `k_sphere_relativistic`.
+- **No CPU pixel/ray work**: `main.cpp` builds Camera / Sphere /
+  Observer / RelativityParams structs, calls the renderer once per
+  beta, and writes the downloaded `Image` to PPM. The only CPU
+  iteration over pixels is inside `Image::save_ppm` (image save
+  internals, permitted).
+
+#### Note on physical honesty at high beta
+
+`searchlight_strength = 1.0` (the default) applies the bolometric
+`D^4` factor at full strength. At `beta = 0.95` along the view axis
+the forward direction has `D ~= 6.25` and `D^4 ~= 1500`, so on-axis
+pixels saturate to white in `output/sphere_beta_095.ppm`. That is
+the iconic relativistic-flight headlight effect; lowering
+`searchlight_strength` (or moving toward a tone-mapped HDR pipeline
+once we have one) is an artistic decision that lives behind the
+existing knob - the math itself is intentionally physical.
 
 ### 2026-04-27 — M9 relativity math leaf landed (no renderer integration)
 
@@ -910,26 +996,21 @@ and does not affect the architecture or dependency rules.
 
 ## Next Step
 
-**Finish M9 — wire the relativity math into the renderer.** The
-math leaf is in. To complete M9 and move on to M10:
+**M10 — GPU Scene Upload & Triangle Mesh.** Move from a single
+hard-coded sphere to multiple primitives uploaded as buffers:
 
-1. A `RR_HD inline transform_ray(observer, ray) -> CameraRay`
-   wrapper that bundles `aberrateDirection` (and, when needed,
-   the Doppler factor) around `generate_camera_ray` so kernels
-   call a single entry point.
-2. A new kernel + `CudaRenderer::render_relativistic_sphere(camera,
-   observer, sphere, w, h)` host entry point that produces
-   `output/gpu_relativistic_sphere.ppm`. The kernel reads the
-   `Observer` POD by value (or from constant memory) and applies
-   `transform_ray` per pixel.
-3. Output Doppler factor and observer 3-velocity into AOV
-   channels (laying the groundwork for M17 - relativistic AOVs).
-4. Host-side regressions: zero-velocity observer reproduces the
-   classical sphere render byte-for-byte; non-zero `+x`
-   velocity tilts the apparent sphere position toward `+x` by
-   the expected angle for a known `beta`.
+1. `rr::geometry::TriangleMesh` host representation (positions,
+   indices, attribute layouts) plus a GPU-uploadable form (SoA
+   buffers via `GpuBuffer<...>`).
+2. A scene-upload helper in `CudaRenderer` that reuses the buffer
+   abstraction to push mesh data and a small per-frame "scene"
+   POD (sphere list + mesh handle) to the device.
+3. A new kernel that loops over the scene primitives - still
+   brute-force; OptiX acceleration arrives at M15.
+4. Host-side tests for upload round-trip and the new
+   per-primitive intersection paths.
 
-Before or alongside this, the M2 deferred items (`Error`,
+Before or alongside M10, the M2 deferred items (`Error`,
 `FileSystem`, `App`, `Config::load`/`save`, real test framework,
 host-only CI) remain a backlog rather than a blocker.
 

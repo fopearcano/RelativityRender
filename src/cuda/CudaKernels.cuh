@@ -8,6 +8,7 @@
 
 #include "camera/CameraRay.h"
 #include "geometry/Sphere.h"
+#include "relativity/RelativityParams.h"
 
 namespace rr::cuda {
 
@@ -35,6 +36,29 @@ void launch_sphere_visualize(float* device_pixels, int width, int height,
                              rr::camera::GpuCamera cam,
                              rr::geometry::Sphere  sphere,
                              cudaStream_t stream = 0);
+
+// Host-callable launch wrapper for the relativistic-sphere kernel.
+// Defined in CudaTestKernel.cu. Per pixel:
+//   1. Generate the primary camera ray.
+//   2. (If `params.enable_aberration`) apply Lorentz aberration to the
+//      ray's direction in the observer's frame.
+//   3. Intersect the (possibly aberrated) ray against `sphere`.
+//   4. Compute base shading (`0.5*n + 0.5` on hit; sky gradient on
+//      miss).
+//   5. (If `params.enable_doppler`) apply the artistic Doppler colour
+//      shift, modulated by `params.doppler_color_strength`.
+//   6. (If `params.enable_searchlight`) scale the colour by
+//      `lerp(1, D^4, params.searchlight_strength)` (relativistic
+//      beaming).
+//   7. Write the framebuffer.
+// The CPU never touches per-ray state - the entire pipeline runs on
+// the device.
+void launch_sphere_relativistic(float* device_pixels, int width, int height,
+                                rr::camera::GpuCamera           cam,
+                                rr::relativity::Observer        observer,
+                                rr::relativity::RelativityParams params,
+                                rr::geometry::Sphere            sphere,
+                                cudaStream_t stream = 0);
 
 }
 
