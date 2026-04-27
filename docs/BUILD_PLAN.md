@@ -45,7 +45,7 @@ Update it after every implementation step, per
 | 10 | Texture System                      | not started   |
 | 11 | Lighting System                     | not started   |
 | 12 | Camera System                       | landed        |
-| 13 | Relativistic Camera Model           | not started   |
+| 13 | Relativistic Camera Model           | in progress   |
 | 14 | Path Tracer                         | not started   |
 | 15 | Progressive Renderer                | not started   |
 | 16 | Denoiser Integration                | not started   |
@@ -73,7 +73,7 @@ All modules now have a placeholder source directory under `src/`,
 | M6        | CUDA Framebuffer & First Kernel         | landed      |
 | M7        | Camera System & GPU Camera Rays         | landed      |
 | M8        | GPU Primitive Intersection              | landed      |
-| M9        | Relativistic Camera Model (First Pass)  | not started |
+| M9        | Relativistic Camera Model (First Pass)  | in progress |
 | M10       | GPU Scene Upload & Triangle Mesh        | not started |
 | M11       | Material System (Foundations)           | not started |
 | M12       | Lighting System (Foundations)           | not started |
@@ -92,6 +92,97 @@ All modules now have a placeholder source directory under `src/`,
 ---
 
 ## Change Log
+
+### 2026-04-27 — M9 relativity math leaf landed (no renderer integration)
+
+The mathematical core of the differentiator: Lorentz factor, length
+contraction, relativistic Doppler, beaming, aberration, and a clearly
+labelled artistic Doppler colour shift. Every function is `RR_HD
+inline`, callable from kernels and host tests alike. No camera or
+renderer wiring yet - that comes in the next slice.
+
+- **`src/relativity/RelativityParams.h`:** two PODs.
+  - `Observer { velocity (Vec3 in c-units) }` - kinematic state of
+    the boosted frame; position lives on the camera.
+  - `RelativityParams { enable_aberration, enable_doppler,
+    enable_searchlight, doppler_color_strength,
+    searchlight_strength, max_beta }` - artist-facing toggles and
+    intensities, separated from `Observer` so artistic knobs don't
+    pollute the physical state.
+- **`src/relativity/RelativityMath.h`:** the math leaf. Natural
+  units (c = 1) throughout. Each function carries an explicit
+  PHYSICAL or ARTISTIC APPROXIMATION tag in its docstring:
+  - `clampBeta` (PHYSICAL): magnitude clamp below the lightspeed
+    singularity; `max_beta` itself capped at `0.999999`.
+  - `gamma` (PHYSICAL): `1 / sqrt(1 - beta^2)` with a numerical
+    safety net when the caller forgets to clamp.
+  - `lorentzContraction` (PHYSICAL): `sqrt(1 - beta^2)` (i.e.
+    `1/gamma`).
+  - `dopplerFactor` (PHYSICAL): `1 / [gamma * (1 - beta . dir)]`
+    with `dir` the photon's scene-frame direction of travel.
+  - `searchlightFactor` (PHYSICAL, bolometric): `D^4` (specific
+    intensity uses `D^3` if the renderer wants monochromatic
+    light).
+  - `aberrateDirection` (PHYSICAL): textbook Lorentz aberration in
+    vector form, identity at `|beta| = 0`, output renormalised.
+    Treats `direction` as the photon's direction of travel
+    (the SOURCE position is the opposite vector).
+  - `applyDopplerColor` (ARTISTIC APPROXIMATION): bounded
+    `tanh(0.5 * log(D)) * strength` mix toward a cool tint for
+    blueshift and a warm tint for redshift. Identity at
+    `strength = 0` and at `D = 1`. Marked clearly as a
+    placeholder until the spectral pipeline arrives in M16/M17.
+- **`src/relativity/RelativityMath.cuh`:** thin re-export of
+  `RelativityMath.h` so kernel TUs can include a `.cuh`. Future
+  device-specific intrinsics (`rsqrtf`, `__fdividef`) can land
+  here without touching the host surface.
+- **`tests/relativity_tests.cpp`:** 52 host-side assertions covering
+  every function on the requested list. Spot-checks include
+  `gamma(0.6) = 1.25` (3-4-5), `lorentzContraction(0.6) = 0.8`,
+  Doppler identity at rest, longitudinal `D_blue * D_red = 1`,
+  transverse-Doppler `D = 1/gamma`, `searchlightFactor(2) = 16`,
+  aberration zero-beta identity, unit-length output, the
+  along-motion invariant, and the perpendicular case which gives
+  the closed-form result `d' = (-beta, perp/gamma, 0)`. The
+  artistic colour shift is checked for `strength = 0` identity,
+  `D = 1` identity, and the warm/cool tint behaviour at strong
+  red/blueshift.
+- **`CMakeLists.txt`:** added `relativity_tests` test executable.
+  Header-only module; just needs `src/` on the include path.
+
+#### Verified locally (host-only, no CUDA Toolkit on this box)
+
+```
+$ cmake --build build && cd build && ctest --output-on-failure
+1/6 Test #1: math_tests       ........... Passed  0.00 sec
+2/6 Test #2: image_tests      ........... Passed  0.00 sec
+3/6 Test #3: gpu_tests        ........... Passed  0.00 sec
+4/6 Test #4: camera_tests     ........... Passed  0.00 sec
+5/6 Test #5: geometry_tests   ........... Passed  0.00 sec
+6/6 Test #6: relativity_tests ........... Passed  0.00 sec
+100% tests passed, 0 tests failed out of 6
+
+$ ./build/bin/relativity_tests
+relativity_tests: 52/52 passed
+```
+
+#### Not in this slice (M9 still "in progress")
+
+- No renderer integration, per the explicit instruction in the
+  prompt. `Observer` does not yet flow into `Camera`, the kernels
+  do not yet call `aberrateDirection`, and `--render` continues
+  to use the classical sphere kernel.
+- Retarded-time approximation: out of scope for this slice; lands
+  with the path tracer (M14) where it can interact with motion
+  blur sampling.
+
+#### Naming note
+
+The functions use camelCase (`clampBeta`, `gamma`,
+`lorentzContraction`, `dopplerFactor`, `searchlightFactor`,
+`aberrateDirection`, `applyDopplerColor`) per the prompt. The
+rest of the project uses snake_case; the relativity module is the
+exception so the API names match the physics literature.
 
 ### 2026-04-27 — M8 GPU primitive intersection landed
 
@@ -819,27 +910,26 @@ and does not affect the architecture or dependency rules.
 
 ## Next Step
 
-**M9 — Relativistic Camera Model (first pass).** With primary rays
-and a working hit/shade pipeline, the next step is the
-differentiator:
+**Finish M9 — wire the relativity math into the renderer.** The
+math leaf is in. To complete M9 and move on to M10:
 
-1. `rr::relativity::Observer` POD on the device side: position
-   plus 4-velocity (or the spatial 3-velocity with `c = 1`
-   convention).
-2. `RR_HD inline rel::transform_ray(observer, camera_ray) ->
-   CameraRay` that applies aberration in the simplest correct
-   form (Lorentz boost on the direction). Companion helpers for
-   `doppler_factor` and the relativistic ray pipeline that wraps
-   `generate_camera_ray`.
-3. Plug the wrapper into a new kernel
-   `k_relativistic_sphere_visualize` (or a flag on the existing
-   sphere kernel) and host entry point
-   `render_relativistic_sphere(camera, observer, sphere, w, h)`.
+1. A `RR_HD inline transform_ray(observer, ray) -> CameraRay`
+   wrapper that bundles `aberrateDirection` (and, when needed,
+   the Doppler factor) around `generate_camera_ray` so kernels
+   call a single entry point.
+2. A new kernel + `CudaRenderer::render_relativistic_sphere(camera,
+   observer, sphere, w, h)` host entry point that produces
+   `output/gpu_relativistic_sphere.ppm`. The kernel reads the
+   `Observer` POD by value (or from constant memory) and applies
+   `transform_ray` per pixel.
+3. Output Doppler factor and observer 3-velocity into AOV
+   channels (laying the groundwork for M17 - relativistic AOVs).
 4. Host-side regressions: zero-velocity observer reproduces the
-   classical centre / corner rays exactly; non-zero `+x` velocity
-   pulls the centre ray toward `+x` by the expected aberration.
+   classical sphere render byte-for-byte; non-zero `+x`
+   velocity tilts the apparent sphere position toward `+x` by
+   the expected angle for a known `beta`.
 
-Before or alongside M9, the M2 deferred items (`Error`,
+Before or alongside this, the M2 deferred items (`Error`,
 `FileSystem`, `App`, `Config::load`/`save`, real test framework,
 host-only CI) remain a backlog rather than a blocker.
 

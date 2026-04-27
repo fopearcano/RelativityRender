@@ -183,4 +183,16 @@ if(RR_BUILD_TESTS)
         target_compile_options(geometry_tests PRIVATE -Wall -Wextra -Wpedantic)
     endif()
     add_test(NAME geometry_tests COMMAND geometry_tests)
+
+    # Relativity math tests. Header-only module; just needs `src/` on the
+    # include path. The same RR_HD inline functions run in the GPU
+    # kernels later, so the host coverage validates the device path.
+    add_executable(relativity_tests tests/relativity_tests.cpp)
+    target_include_directories(relativity_tests PRIVATE src)
+    if(MSVC)
+        target_compile_options(relativity_tests PRIVATE /W4 /permissive-)
+    else()
+        target_compile_options(relativity_tests PRIVATE -Wall -Wextra -Wpedantic)
+    endif()
+    add_test(NAME relativity_tests COMMAND relativity_tests)
 endif()
