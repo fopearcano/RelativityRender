@@ -40,7 +40,7 @@ Update it after every implementation step, per
 | 5  | CUDA Backend                        | in progress   |
 | 6  | OptiX Backend                       | not started   |
 | 7  | Scene Graph                         | landed        |
-| 8  | Geometry System                     | not started   |
+| 8  | Geometry System                     | in progress   |
 | 9  | Material / Shading System           | not started   |
 | 10 | Texture System                      | not started   |
 | 11 | Lighting System                     | not started   |
@@ -92,6 +92,84 @@ All modules now have a placeholder source directory under `src/`,
 ---
 
 ## Change Log
+
+### 2026-04-27 — Mesh geometry structures landed (Geometry System in progress)
+
+Host-side mesh data model. No renderer wiring; no GPU upload yet.
+The structures are sized and laid out so the next M10 slice can
+upload them with `GpuBuffer<Vertex>` / `GpuBuffer<Triangle>`
+without any reshape.
+
+- **`src/math/Transform.h`:** the canonical Transform now lives
+  in math, with the same fields and `identity()` factory as the
+  former `scene::Transform`. Promotion was needed so geometry
+  could carry a transform without crossing back into scene
+  (scene already depends on geometry via Sphere; the inverse
+  would have been a cycle).
+- **`src/scene/Transform.h`:** thin back-compat shim. Now reads
+  `using Transform = rr::math::Transform;` so existing callers
+  (`SceneObject`, scene tests, the parser when it lands) keep
+  working unchanged.
+- **`src/geometry/Triangle.h`:** plain `Triangle { uint32_t v0,
+  v1, v2 }` POD. CCW front-face winding (matches the convention
+  the upcoming `intersect_triangle` will use). Layout-compatible
+  with a flat `uint32_t[3*N]` index array - the form most kernels
+  will read. `RR_HD make_triangle` factory for symmetry with
+  `make_sphere`.
+- **`src/geometry/Mesh.h`:** `Vertex { position, normal, uv }`
+  with sensible defaults so callers with positions only can still
+  construct a mesh and fill the rest later. `Mesh { vertices,
+  triangles, material_id (-1 = renderer default), transform }`
+  plus `vertex_count`, `triangle_count`, `empty`, `clear`,
+  `reserve` helpers. Vector-of-vertex / vector-of-triangle storage
+  is the contiguous form the GPU upload path consumes via
+  `GpuBuffer<...>`.
+- **`src/geometry/Mesh.cpp`:** `Mesh::empty()` (returns true if
+  either list is empty - both are required for a renderable mesh),
+  `Mesh::clear()` (full reset including transform and
+  material_id), `Mesh::reserve` (pure capacity hint, does not
+  change reported counts).
+- **`tests/mesh_tests.cpp`:** 47 host assertions covering Triangle
+  aggregate / factory / defaults; Vertex defaults and explicit
+  init; Mesh default state; populating a unit quad as two CCW
+  triangles with material_id and transform set; the
+  "empty if either list empty" rule (vertices alone is empty,
+  triangles alone is empty); `clear()` reset; back-compat that
+  `rr::scene::Transform` still resolves to the same type as
+  `rr::math::Transform`.
+- **`CMakeLists.txt`:** added `rr_geometry` static library
+  (`src/geometry/Mesh.cpp`) and the `mesh_tests` executable.
+
+#### Verified locally (host-only, no CUDA Toolkit on this box)
+
+```
+$ cmake --build build && cd build && ctest --output-on-failure
+1/8 Test #1: math_tests       ........... Passed  0.00 sec
+2/8 Test #2: image_tests      ........... Passed  0.00 sec
+3/8 Test #3: gpu_tests        ........... Passed  0.00 sec
+4/8 Test #4: camera_tests     ........... Passed  0.00 sec
+5/8 Test #5: geometry_tests   ........... Passed  0.00 sec
+6/8 Test #6: relativity_tests ........... Passed  0.00 sec
+7/8 Test #7: scene_tests      ........... Passed  0.00 sec
+8/8 Test #8: mesh_tests       ........... Passed  0.00 sec
+100% tests passed, 0 tests failed out of 8
+
+$ ./build/bin/mesh_tests
+mesh_tests: 47/47 passed
+```
+
+#### Not in this slice
+
+- No renderer wiring per the prompt: `--render` continues to use
+  the M10 sphere-only scene; no kernel reads `Mesh` yet.
+- No GPU upload: `GpuScene` does not yet expose
+  `upload_meshes(...)` and `CudaSceneView` has no mesh handle.
+  Those are the next M10 deliverable.
+- No triangle intersection routine in `cuda/CudaIntersection.cuh`
+  yet; lands with the GPU mesh upload.
+- `SceneMesh` in `scene/Scene.h` remains the M9 placeholder
+  (name + source_path + material_index). It rewrites to embed an
+  `rr::geometry::Mesh` once the upload path uses it.
 
 ### 2026-04-27 — M10 GPU scene upload landed (sphere arrays only)
 
@@ -1169,21 +1247,24 @@ and does not affect the architecture or dependency rules.
 
 ## Next Step
 
-**Finish M10 — triangle mesh upload.** The sphere upload path is
-in. To complete M10 and move on to M11:
+**Finish M10 — triangle mesh upload.** The host data model is
+now in place (`rr::geometry::Mesh` with vertices, triangles,
+material id, transform). To complete M10 and move on to M11:
 
-1. `rr::geometry::TriangleMesh` host representation (positions,
-   indices, attribute layouts) plus a GPU-uploadable form (SoA
-   buffers via `GpuBuffer<float>` / `GpuBuffer<uint32_t>`).
-2. Extend `GpuScene` with `upload_meshes(...)` and add a
-   per-mesh handle to `CudaSceneView`.
-3. Add a brute-force triangle intersection routine
-   (`intersect_triangle` next to `intersect_sphere` in
-   `cuda/CudaIntersection.cuh`) and a closest-hit loop step in
-   `k_render_scene` that walks each mesh's index buffer.
+1. Extend `GpuScene` with `upload_meshes(const std::vector<Mesh>&)`
+   that pushes vertex / index buffers via
+   `GpuBuffer<Vertex>` / `GpuBuffer<Triangle>` and snapshots the
+   per-mesh transform + material_id.
+2. Add a `MeshDescriptor` POD to `CudaSceneView` (vertex pointer,
+   index pointer, counts, material id, world matrix) so the
+   kernel can iterate scene meshes.
+3. Add `RR_HD inline intersect_triangle` next to
+   `intersect_sphere` in `cuda/CudaIntersection.cuh` and a
+   closest-hit loop step in `k_render_scene` that walks each
+   mesh's index buffer.
 4. Host regressions on the upload round-trip and on intersection
    geometry (centre-pixel hit / corner miss for a known
-   triangle).
+   triangle, mirroring the sphere replay).
 
 Before or alongside this, the M2 deferred items (`Error`,
 `FileSystem`, `App`, `Config::load`/`save`, real test framework,

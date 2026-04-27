@@ -81,6 +81,22 @@ else()
     target_compile_options(rr_camera PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 
+# Geometry module. Host-side primitive structures.
+# `Sphere`, `Triangle`, and the intersection routines remain
+# header-only; `Mesh` carries non-trivial vector storage so it has a
+# small `.cpp` for `clear` / `reserve` / `empty`. GPU-uploadable
+# variants and acceleration structures arrive alongside the CUDA
+# scene-upload path (M10) and OptiX backend (M15).
+add_library(rr_geometry STATIC
+    src/geometry/Mesh.cpp
+)
+target_include_directories(rr_geometry PUBLIC src)
+if(MSVC)
+    target_compile_options(rr_geometry PRIVATE /W4 /permissive-)
+else()
+    target_compile_options(rr_geometry PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+
 # Scene module. Host-only authoring data model: Camera + render
 # settings + Observer + RelativityParams + lists of spheres /
 # meshes (placeholder) / materials (placeholder) / lights
@@ -227,4 +243,16 @@ if(RR_BUILD_TESTS)
         target_compile_options(scene_tests PRIVATE -Wall -Wextra -Wpedantic)
     endif()
     add_test(NAME scene_tests COMMAND scene_tests)
+
+    # Mesh / triangle tests. Links rr_geometry for the Mesh symbols;
+    # math and the Transform alias come along through the PUBLIC src
+    # include path.
+    add_executable(mesh_tests tests/mesh_tests.cpp)
+    target_link_libraries(mesh_tests PRIVATE rr_geometry)
+    if(MSVC)
+        target_compile_options(mesh_tests PRIVATE /W4 /permissive-)
+    else()
+        target_compile_options(mesh_tests PRIVATE -Wall -Wextra -Wpedantic)
+    endif()
+    add_test(NAME mesh_tests COMMAND mesh_tests)
 endif()
