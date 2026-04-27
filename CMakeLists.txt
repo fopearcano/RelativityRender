@@ -153,10 +153,10 @@ add_library(rr_gpu STATIC
     src/gpu/GpuMesh.cpp
 )
 target_include_directories(rr_gpu PUBLIC src)
-# rr_scene + rr_geometry are part of the public ABI of rr_gpu since
-# `GpuScene` consumes `rr::scene::Scene` and `GpuMesh` consumes
-# `rr::geometry::Mesh`.
-target_link_libraries(rr_gpu PUBLIC rr_scene rr_geometry)
+# rr_scene + rr_geometry + rr_material + rr_lighting are part of the
+# public ABI of rr_gpu since `GpuScene` consumes scene structures,
+# meshes, materials, and lights.
+target_link_libraries(rr_gpu PUBLIC rr_scene rr_geometry rr_material rr_lighting)
 if(MSVC)
     target_compile_options(rr_gpu PRIVATE /W4 /permissive-)
 else()

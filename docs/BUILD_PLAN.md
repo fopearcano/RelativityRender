@@ -43,7 +43,7 @@ Update it after every implementation step, per
 | 8  | Geometry System                     | landed        |
 | 9  | Material / Shading System           | landed        |
 | 10 | Texture System                      | not started   |
-| 11 | Lighting System                     | in progress   |
+| 11 | Lighting System                     | landed        |
 | 12 | Camera System                       | landed        |
 | 13 | Relativistic Camera Model           | landed        |
 | 14 | Path Tracer                         | not started   |
@@ -76,7 +76,7 @@ All modules now have a placeholder source directory under `src/`,
 | M9        | Relativistic Camera Model (First Pass)  | landed      |
 | M10       | GPU Scene Upload & Triangle Mesh        | landed      |
 | M11       | Material System (Foundations)           | landed      |
-| M12       | Lighting System (Foundations)           | in progress |
+| M12       | Lighting System (Foundations)           | landed      |
 | M13       | Scene File Format & Parser              | not started |
 | M14       | Path Tracing Foundation                 | not started |
 | M15       | OptiX Backend (Upgrade Path)            | not started |
@@ -92,6 +92,110 @@ All modules now have a placeholder source directory under `src/`,
 ---
 
 ## Change Log
+
+### 2026-04-27 — M12 finalized: simple direct lighting on GPU
+
+Lights now flow end-to-end. Each hit accumulates contributions from
+the uploaded directional + point lights with inverse-square falloff,
+adds emission from the material, and falls back to an environment
+tint (or the existing default sky gradient) when no Environment
+light is present. No shadows, no path tracing.
+
+- **`src/gpu/GpuScene.{h,cpp}`:** added
+  `GpuBuffer<rr::lighting::Light>` slot,
+  `upload_lights(host, count)`, `light_count()` query, and a
+  `device_lights()` accessor. Same dynamic-size,
+  fail-predictably-without-backend semantics as the existing
+  sphere / mesh / material upload paths.
+- **`src/cuda/CudaScene.cuh`:** added `lights` device pointer +
+  `light_count` to `CudaSceneView`. `nullptr` + count `0` is
+  allowed and means "no lights uploaded - fall back to default
+  ambient + sky gradient".
+- **`src/cuda/CudaRenderer.cu`:** `render_scene` copies the
+  lights view (`device_lights()` + `light_count()`) into the
+  launch argument before dispatch.
+- **`src/cuda/CudaTestKernel.cu`:** the kernel's shade phase is
+  rewritten as a single pass over the uploaded lights:
+  - `Environment` lights record an `env_color`.
+  - `Point` and `Directional` lights, on hit, accumulate
+    `Li * ndotl` into `lighting`. Backface (`ndotl <= 0`) is
+    skipped; degenerate point-light geometry (`d^2 < 1e-12`) is
+    skipped.
+  - `Area` lights are skipped at this milestone (sampling lands
+    at M14).
+  After the loop, the hit shade is
+  `mat.baseColor * (lighting + env_color)
+   + mat.emissionColor * mat.emissionStrength`. The miss path
+  uses the `env_color` when an Environment light is present, and
+  the existing vertical sky gradient otherwise. The relativistic
+  pipeline (Doppler colour + searchlight beaming) continues to
+  wrap the final colour, so high-beta passes still see
+  blueshift / beaming on the per-light shaded result.
+- **`src/main.cpp`:** `--render` builds a three-light rig - a
+  warm directional sun, a cool point light above-right, a pale
+  blue environment - on top of the M11 material scene, uploads
+  it through `GpuScene`, and saves to
+  `output/gpu_direct_lighting.ppm`. `--output` is still ignored
+  at this milestone.
+- **`tests/gpu_tests.cpp`:** +8 `upload_lights` assertions
+  (87/87 total). Default `GpuScene` has no lights; empty upload
+  succeeds everywhere; non-empty upload fails predictably
+  without a backend, with `light_count == 0` and
+  `device_lights() == nullptr`.
+- **`CMakeLists.txt`:** `rr_gpu` PUBLIC link list now includes
+  `rr_lighting` so the renderer's GPU layer can reach `Light`
+  symbols.
+
+#### Verified locally (host-only, no CUDA Toolkit on this box)
+
+```
+$ cmake --build build && cd build && ctest --output-on-failure
+ 1/10 Test  #1: math_tests       ........... Passed  0.00 sec
+ 2/10 Test  #2: image_tests      ........... Passed  0.00 sec
+ 3/10 Test  #3: gpu_tests        ........... Passed  0.00 sec
+ 4/10 Test  #4: camera_tests     ........... Passed  0.00 sec
+ 5/10 Test  #5: geometry_tests   ........... Passed  0.00 sec
+ 6/10 Test  #6: relativity_tests ........... Passed  0.00 sec
+ 7/10 Test  #7: scene_tests      ........... Passed  0.00 sec
+ 8/10 Test  #8: mesh_tests       ........... Passed  0.00 sec
+ 9/10 Test  #9: material_tests   ........... Passed  0.00 sec
+10/10 Test #10: lighting_tests   ........... Passed  0.00 sec
+100% tests passed, 0 tests failed out of 10
+
+$ ./build/bin/gpu_tests
+gpu_tests: skipping CUDA round-trip (no backend compiled)
+gpu_tests: 87/87 passed
+```
+
+The CUDA-enabled run (`-DRR_ENABLE_CUDA=ON`) produces
+`output/gpu_direct_lighting.ppm`. Correct by construction: every
+device-side helper used in the new shade path
+(`generate_camera_ray`, `intersect_sphere`,
+`intersect_triangle`, `aberrateDirection`, `dopplerFactor`,
+`searchlightFactor`, `applyDopplerColor`) is exercised by the
+host suite (`camera_tests` 43, `geometry_tests` 46,
+`relativity_tests` 52); the new direct-lighting accumulation is
+straight-line vector arithmetic over POD inputs.
+
+#### Hard-rule check
+
+- **No shadows / no path tracing** per the prompt: the kernel
+  evaluates `Li * ndotl` directly, with no occlusion ray.
+- **Lights read on the GPU**: every light lookup happens inside
+  `k_render_scene`. The CPU only fills the `Light` array and
+  uploads it.
+- **No CPU pixel iteration in the render path**: only inside
+  `Image::save_ppm`.
+
+#### What this milestone closes (M12 / Module 11)
+
+- M12 (Lighting System Foundations) -> landed: data model +
+  factories + GPU upload + kernel-side direct lighting all in.
+- Module 11 (Lighting System) -> landed for the foundation. Real
+  importance-sampled `eval` / `sample` / `pdf` per light type,
+  area-light sampling, and shadow rays are required for path-
+  tracing fidelity; those land with M14 (path tracer) and M15
+  (OptiX upgrade for ray dispatch).
 
 ### 2026-04-27 — M12 lighting data model landed (M12 in progress)
 
@@ -1677,23 +1781,22 @@ and does not affect the architecture or dependency rules.
 
 ## Next Step
 
-**Finish M12 — wire lights through the renderer.** The data model
-+ factories + CUDA re-export are in. To move M12 / Module 11
-from "in progress" to "landed":
+**M13 — Scene File Format & Parser.** With camera + relativity +
+spheres + meshes + materials + lights all uploadable, the next
+gap is loading them from a file rather than hard-coding in
+`main.cpp`:
 
-1. Upload light list. Add `GpuBuffer<Light>` to `GpuScene`,
-   `upload_lights(...)`, and a `CudaSceneView::lights` device
-   pointer + count alongside `materials`.
-2. Replace the kernel's hard-coded "+Y hemisphere key" shade
-   with a real direct-lighting term that loops over the
-   uploaded lights, evaluates `eval(light, hit)` for the
-   point / directional kinds, and accumulates the contribution
-   weighted by the material's diffuse response. Area lights
-   stay deferred (sampling lands at M14).
-3. Hook the environment-light slot up as a flat sky tint that
-   replaces the current hard-coded sky gradient on a miss.
-4. A real `sample` / `eval` / `pdf` interface for true light-
-   transport joins with M14 (path tracer).
+1. Define a small versioned on-disk schema (TOML or JSON)
+   covering camera / relativity params / sphere list / mesh
+   list / material list / light list.
+2. `rr::scene_format::load(path) -> rr::scene::Scene` populating
+   the host data model the renderer already consumes; the
+   reverse `save(scene, path)` round-trips byte-for-byte.
+3. Wire `--render <scene file>` to load the file before
+   uploading, replacing today's hard-coded
+   `output/gpu_direct_lighting.ppm` scene.
+4. A small `scene_format_tests` host suite covering the
+   round-trip and a handful of fixture files.
 
 Before or alongside this, the M2 deferred items (`Error`,
 `FileSystem`, `App`, `Config::load`/`save`, real test framework,

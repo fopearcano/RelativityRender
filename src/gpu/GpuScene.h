@@ -5,6 +5,7 @@
 #include "geometry/Sphere.h"
 #include "gpu/GpuBuffer.h"
 #include "gpu/GpuMesh.h"
+#include "lighting/Light.h"
 #include "material/MaterialTypes.h"
 #include "relativity/RelativityParams.h"
 
@@ -70,6 +71,12 @@ public:
     bool upload_materials(const rr::material::MaterialParams* host,
                           std::size_t count);
 
+    // Upload `count` `Light` PODs. The kernel iterates the array
+    // per hit (and once per pixel for the environment fallback).
+    // `count == 0` clears the buffer; non-empty uploads require a
+    // working GPU backend.
+    bool upload_lights(const rr::lighting::Light* host, std::size_t count);
+
     // Convenience: pull camera + relativity + visible spheres from a
     // host `rr::scene::Scene`. Invisible spheres are filtered out on
     // the host before upload. Returns the AND of every individual
@@ -85,6 +92,7 @@ public:
     std::size_t sphere_count()    const noexcept { return spheres_count_; }
     bool        has_mesh()        const noexcept { return mesh_.has_data(); }
     std::size_t material_count()  const noexcept { return materials_count_; }
+    std::size_t light_count()     const noexcept { return lights_count_; }
 
     // --- Backend accessors used by the CUDA renderer -----------------
 
@@ -106,6 +114,12 @@ public:
         return materials_.device_ptr();
     }
 
+    // Device pointer to the light array. Returns nullptr when no
+    // lights have been successfully uploaded.
+    const rr::lighting::Light* device_lights() const noexcept {
+        return lights_.device_ptr();
+    }
+
 private:
     rr::camera::GpuCamera             camera_{};
     rr::relativity::Observer          observer_{};
@@ -120,6 +134,9 @@ private:
 
     rr::gpu::GpuBuffer<rr::material::MaterialParams> materials_;
     std::size_t                                       materials_count_ = 0;
+
+    rr::gpu::GpuBuffer<rr::lighting::Light> lights_;
+    std::size_t                              lights_count_ = 0;
 };
 
 }

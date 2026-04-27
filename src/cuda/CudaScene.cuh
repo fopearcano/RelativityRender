@@ -13,9 +13,11 @@
 #include <cuda_runtime.h>
 
 #include "camera/CameraRay.h"
+#include "cuda/CudaLight.cuh"
 #include "cuda/CudaMaterial.cuh"
 #include "cuda/CudaMesh.cuh"
 #include "geometry/Sphere.h"
+#include "lighting/Light.h"
 #include "material/MaterialTypes.h"
 #include "relativity/RelativityParams.h"
 
@@ -42,6 +44,13 @@ struct CudaSceneView {
     // means "no materials uploaded - everything uses the default".
     const rr::material::MaterialParams* materials      = nullptr;
     int                                  material_count = 0;
+
+    // Light array. Iterated per hit (and once per pixel for the
+    // environment-fallback colour). `nullptr` + `light_count == 0`
+    // is allowed and means "no lights uploaded - the kernel
+    // falls back to its default ambient + sky-gradient response".
+    const rr::lighting::Light*           lights         = nullptr;
+    int                                  light_count    = 0;
 };
 
 // Host-callable launch wrapper for the scene-render kernel.

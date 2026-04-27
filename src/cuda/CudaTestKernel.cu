@@ -1,11 +1,15 @@
 #include "cuda/CudaIntersection.cuh"
 #include "cuda/CudaKernels.cuh"
+#include "cuda/CudaLight.cuh"
 #include "cuda/CudaMaterial.cuh"
 #include "cuda/CudaScene.cuh"
+#include "lighting/Light.h"
 #include "material/MaterialTypes.h"
 #include "math/Vec3.h"
 #include "relativity/RelativityMath.cuh"
 #include "renderer/Hit.h"
+
+#include <cmath>  // sqrtf is host- and device-callable
 
 namespace rr::cuda {
 
@@ -293,34 +297,85 @@ __global__ void k_render_scene(float* pixels, int width, int height,
     }
 
     // 4. Base shade.
-    //    Hit  -> evaluate the material: simple normal-driven diffuse
-    //            term against a fixed up-pointing key direction, plus
-    //            emission. The full BSDF interface (eval / sample /
-    //            pdf) lands with the path tracer (M14); for now this
-    //            "ambient + diffuse + emission" lobe is enough to
-    //            validate that materials flow end-to-end.
-    //    Miss -> existing vertical sky gradient.
-    Vec3 color;
-    if (best.hit) {
-        rr::material::MaterialParams mat;  // neutral defaults
-        if (best.material_index >= 0
-            && best.material_index < scene.material_count
-            && scene.materials != nullptr) {
-            mat = scene.materials[best.material_index];
+    //    Single pass over the uploaded lights.  Per-hit lights
+    //    (Point / Directional) accumulate into `lighting`; an
+    //    Environment light is recorded as `env_color` for the
+    //    ambient + miss-fallback path.  Area lights are skipped at
+    //    this milestone (sampling lands with the path tracer).
+    //
+    //    No shadow rays - this is direct lighting only.  The path
+    //    tracer (M14) adds occlusion + indirect bounces.
+    Vec3 lighting  = Vec3{0.0f, 0.0f, 0.0f};
+    Vec3 env_color = Vec3{0.5f, 0.65f, 0.85f};  // pale-blue default sky
+    bool has_env   = false;
+
+    rr::material::MaterialParams mat;
+    const bool have_material =
+        best.hit
+        && best.material_index >= 0
+        && best.material_index < scene.material_count
+        && scene.materials != nullptr;
+    if (have_material) {
+        mat = scene.materials[best.material_index];
+    }
+
+    for (int i = 0; i < scene.light_count; ++i) {
+        const rr::lighting::Light L = scene.lights[i];
+
+        if (L.type == rr::lighting::LightType::Environment) {
+            env_color = L.color * L.intensity;
+            has_env   = true;
+            continue;
+        }
+        if (!best.hit)                                 continue;
+        if (L.type == rr::lighting::LightType::Area)   continue;  // placeholder
+
+        Vec3  wi;       // unit vector from hit toward the light
+        float E_lum;    // scalar attenuation (1 for directional, 1/r^2 for point)
+        bool  use_light = false;
+
+        if (L.type == rr::lighting::LightType::Directional) {
+            // L.direction is the propagation direction; the
+            // surface-to-light vector is its negation.
+            wi        = -L.direction;
+            E_lum     = 1.0f;
+            use_light = true;
+        } else if (L.type == rr::lighting::LightType::Point) {
+            const Vec3  to_light = L.position - best.position;
+            const float d2       = rr::math::dot(to_light, to_light);
+            if (d2 > 1.0e-12f) {
+                const float inv_d = 1.0f / sqrtf(d2);
+                wi        = to_light * inv_d;
+                E_lum     = 1.0f / d2;     // inverse-square falloff
+                use_light = true;
+            }
         }
 
-        // Hemispherical-key shade. Direction (0, 1, 0) is the
-        // implicit "sky"; the 0.4 floor keeps shadowed surfaces from
-        // collapsing to black before real lighting (M12) lands.
-        const Vec3 sky_dir = Vec3{0.0f, 1.0f, 0.0f};
-        float ndotl = rr::math::dot(best.normal, sky_dir);
-        if (ndotl < 0.0f) ndotl = 0.0f;
-        const float shade_term = 0.4f + 0.6f * ndotl;
+        if (!use_light) continue;
 
-        const Vec3 diffuse  = mat.baseColor * shade_term;
+        float ndotl = rr::math::dot(best.normal, wi);
+        if (ndotl <= 0.0f) continue;       // backface; no contribution
+
+        const Vec3 Li = L.color * (L.intensity * E_lum);
+        lighting = lighting + Li * ndotl;
+    }
+
+    Vec3 color;
+    if (best.hit) {
+        // Lambertian diffuse for direct lights + ambient (env tint
+        // or default), plus self-emission. The /pi normalisation is
+        // skipped at this milestone (no path-traced light transport
+        // yet); the relativistic searchlight scale wraps the result
+        // anyway, so the absolute brightness is artistic.
+        const Vec3 diffuse  = mat.baseColor * (lighting + env_color);
         const Vec3 emission = mat.emissionColor * mat.emissionStrength;
         color = diffuse + emission;
+    } else if (has_env) {
+        // Environment light overrides the hard-coded sky on a miss.
+        color = env_color;
     } else {
+        // Default vertical sky gradient when no Environment light
+        // is present.
         const float t = 0.5f * (ray.direction.y + 1.0f);
         color = Vec3{(1.0f - t) * 1.0f + t * 0.5f,
                      (1.0f - t) * 1.0f + t * 0.7f,

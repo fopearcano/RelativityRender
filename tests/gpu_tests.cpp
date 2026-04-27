@@ -21,6 +21,7 @@
 #include "gpu/GpuDevice.h"
 #include "gpu/GpuMesh.h"
 #include "gpu/GpuScene.h"
+#include "lighting/Light.h"
 #include "material/MaterialTypes.h"
 #include "math/Transform.h"
 #include "math/Vec2.h"
@@ -391,6 +392,38 @@ void test_scene_material_upload_without_backend_fails_predictably() {
     RR_CHECK(s.device_materials()  == nullptr);
 }
 
+// --- GpuScene::upload_lights --------------------------------------------
+
+void test_scene_default_has_no_lights() {
+    rr::gpu::GpuScene s;
+    RR_CHECK(s.light_count()    == 0u);
+    RR_CHECK(s.device_lights()  == nullptr);
+}
+
+void test_scene_empty_light_upload_succeeds_everywhere() {
+    rr::gpu::GpuScene s;
+    RR_CHECK(s.upload_lights(nullptr, 0));
+    RR_CHECK(s.light_count()    == 0u);
+    RR_CHECK(s.device_lights()  == nullptr);
+}
+
+void test_scene_light_upload_without_backend_fails_predictably() {
+    if (rr::gpu::gpu_backend_available()) return;  // host-only path only
+
+    rr::gpu::GpuScene s;
+    const rr::lighting::Light L[3] = {
+        rr::lighting::make_directional_light(
+            rr::math::Vec3{0, -1, 0}, rr::math::Vec3{1, 1, 1}, 1.0f),
+        rr::lighting::make_point_light(
+            rr::math::Vec3{0, 5, 0}, rr::math::Vec3{1, 1, 1}, 5.0f),
+        rr::lighting::make_environment_light(
+            rr::math::Vec3{0.5f, 0.6f, 0.8f}, 0.4f),
+    };
+    RR_CHECK(!s.upload_lights(L, 3));
+    RR_CHECK(s.light_count()    == 0u);
+    RR_CHECK(s.device_lights()  == nullptr);
+}
+
 int main() {
     test_backend_name_consistency();
     test_enumerate_when_unavailable_is_empty();
@@ -413,6 +446,9 @@ int main() {
     test_scene_default_has_no_materials();
     test_scene_empty_material_upload_succeeds_everywhere();
     test_scene_material_upload_without_backend_fails_predictably();
+    test_scene_default_has_no_lights();
+    test_scene_empty_light_upload_succeeds_everywhere();
+    test_scene_light_upload_without_backend_fails_predictably();
 
     std::printf("gpu_tests: %d/%d passed\n", g_total - g_failed, g_total);
     return g_failed == 0 ? 0 : 1;

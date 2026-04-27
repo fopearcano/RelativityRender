@@ -44,6 +44,24 @@ bool GpuScene::upload_materials(const rr::material::MaterialParams* host,
     return true;
 }
 
+bool GpuScene::upload_lights(const rr::lighting::Light* host, std::size_t count) {
+    if (count == 0) {
+        lights_.reset();
+        lights_count_ = 0;
+        return true;
+    }
+    if (host == nullptr) {
+        return false;
+    }
+    if (!lights_.upload(host, count)) {
+        lights_.reset();
+        lights_count_ = 0;
+        return false;
+    }
+    lights_count_ = count;
+    return true;
+}
+
 bool GpuScene::upload_spheres(const rr::geometry::Sphere* host, std::size_t count) {
     if (count == 0) {
         spheres_.reset();

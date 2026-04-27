@@ -158,6 +158,9 @@ CudaRenderer::Result CudaRenderer::render_scene(const rr::gpu::GpuScene& scene,
     view.materials      = scene.device_materials();
     view.material_count = static_cast<int>(scene.material_count());
 
+    view.lights         = scene.device_lights();
+    view.light_count    = static_cast<int>(scene.light_count());
+
     return run_kernel_render(width, height,
         [view](float* device_pixels, int w, int h) {
             launch_render_scene(device_pixels, w, h, view, /*stream=*/nullptr);

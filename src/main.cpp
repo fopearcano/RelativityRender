@@ -11,6 +11,7 @@
     #include "geometry/Sphere.h"
     #include "geometry/Triangle.h"
     #include "gpu/GpuScene.h"
+    #include "lighting/Light.h"
     #include "material/MaterialTypes.h"
     #include "math/Vec2.h"
     #include "math/Vec3.h"
@@ -91,21 +92,24 @@ int main(int argc, char** argv) {
         Logger::info("render command received");
 
 #ifdef RR_HAS_CUDA
-        // M11 deliverable: materials integrated end-to-end. Each
-        // primitive references a material by id; the GPU uploads the
-        // material array; the kernel reads the material per hit and
-        // shades with diffuse baseColor + emission + a simple
-        // normal-driven hemisphere term. The existing relativistic
-        // pipeline (aberration -> Doppler colour -> searchlight)
-        // still wraps the final shaded value, so high beta still
-        // produces blueshift / beaming on the per-material output.
+        // M12 deliverable: simple direct lighting on GPU.
         //
-        // Output: output/gpu_material_scene.ppm
+        //   For each hit:
+        //     - evaluate directional light(s)
+        //     - evaluate point light(s) with inverse-square falloff
+        //     - add emission
+        //     - add ambient/environment fallback
         //
-        // CPU only constructs the scene and uploads it - every per-ray
-        // step (intersection, shading, relativistic effects, write)
-        // runs on the GPU. The only CPU pixel iteration is in
-        // `Image::save_ppm`.
+        // No shadows, no path tracing - those arrive at M14.  The
+        // existing relativistic pipeline (aberration -> Doppler ->
+        // searchlight) still wraps the shaded colour.
+        //
+        // Output: output/gpu_direct_lighting.ppm
+        //
+        // CPU only constructs the scene + uploads it - every per-ray
+        // step (intersection, shading, lighting accumulation,
+        // relativistic effects, write) runs on the GPU.  The only
+        // CPU pixel iteration is in `Image::save_ppm`.
         //
         // `--output` is ignored at this milestone for reproducibility.
 
@@ -178,6 +182,25 @@ int main(int argc, char** argv) {
         quad.triangles.push_back({0, 2, 3});
         quad.material_id = 3;  // emissive
 
+        // Light rig: a warm key sun (directional), a cool point light
+        // sitting above and slightly to the right, and a pale-blue
+        // environment that doubles as the miss-fallback sky. Real
+        // light sampling (and shadows) lands at M14; until then this
+        // is direct N.L lighting only.
+        std::vector<rr::lighting::Light> lights;
+        lights.reserve(3);
+        lights.push_back(rr::lighting::make_directional_light(
+            /*direction=*/rr::math::Vec3{-0.4f, -1.0f, -0.3f},
+            /*color=*/   rr::math::Vec3{1.0f, 0.95f, 0.85f},
+            /*intensity=*/0.9f));
+        lights.push_back(rr::lighting::make_point_light(
+            /*position=*/ rr::math::Vec3{1.5f, 2.5f, -1.5f},
+            /*color=*/    rr::math::Vec3{0.7f, 0.8f, 1.0f},
+            /*intensity=*/8.0f));
+        lights.push_back(rr::lighting::make_environment_light(
+            /*color=*/    rr::math::Vec3{0.40f, 0.55f, 0.85f},
+            /*intensity=*/0.35f));
+
         rr::gpu::GpuScene gpu_scene;
         if (!gpu_scene.upload_from(scene)) {
             Logger::error("scene upload failed (camera/relativity/spheres)");
@@ -193,11 +216,17 @@ int main(int argc, char** argv) {
                           "device allocation refused)");
             return 1;
         }
-        Logger::info("uploaded material scene: "
+        if (!gpu_scene.upload_lights(lights.data(), lights.size())) {
+            Logger::error("light upload failed (no GPU backend or "
+                          "device allocation refused)");
+            return 1;
+        }
+        Logger::info("uploaded direct-lighting scene: "
                      + std::to_string(gpu_scene.sphere_count())  + " spheres, "
                      + std::to_string(gpu_scene.gpu_mesh().triangle_count())
                                                                  + " triangles, "
-                     + std::to_string(gpu_scene.material_count()) + " materials");
+                     + std::to_string(gpu_scene.material_count()) + " materials, "
+                     + std::to_string(gpu_scene.light_count())   + " lights");
 
         auto result = rr::cuda::CudaRenderer::render_scene(
             gpu_scene, cfg.width, cfg.height);
@@ -206,7 +235,7 @@ int main(int argc, char** argv) {
             return 1;
         }
 
-        const std::filesystem::path out_path = "output/gpu_material_scene.ppm";
+        const std::filesystem::path out_path = "output/gpu_direct_lighting.ppm";
         std::error_code ec;
         if (out_path.has_parent_path()) {
             std::filesystem::create_directories(out_path.parent_path(), ec);
