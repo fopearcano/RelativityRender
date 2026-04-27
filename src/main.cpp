@@ -7,6 +7,8 @@
 #ifdef RR_HAS_CUDA
     #include "camera/Camera.h"
     #include "cuda/CudaRenderer.h"
+    #include "geometry/Sphere.h"
+    #include "math/Vec3.h"
 #endif
 
 #include <filesystem>
@@ -80,25 +82,30 @@ int main(int argc, char** argv) {
         Logger::info("render command received");
 
 #ifdef RR_HAS_CUDA
-        // M7 test path: the GPU generates a primary pinhole ray per
-        // pixel and encodes the (normalised) direction as RGB. The CPU
-        // only configures the camera, launches the kernel, downloads
-        // the framebuffer, and saves. No CPU pixel loop runs in this
-        // code path (save_ppm internals are the one permitted
-        // exception per the engineering rules).
+        // M8 test path: the GPU generates a primary ray per pixel,
+        // intersects against a single sphere, and shades. The CPU
+        // only constructs the camera + sphere structs, launches the
+        // kernel, downloads the framebuffer, and saves. No CPU pixel
+        // loop runs in this code path (save_ppm internals are the
+        // one permitted exception per the engineering rules).
         const std::filesystem::path out_path =
-            cfg.output_image_path.value_or("output/gpu_camera_rays.ppm");
+            cfg.output_image_path.value_or("output/gpu_sphere.ppm");
 
         rr::camera::Camera camera;  // origin, looking down -Z, +Y up
         camera.set_aspect(static_cast<float>(cfg.width)
                           / static_cast<float>(cfg.height));
 
-        Logger::info("rendering camera rays on GPU: "
+        // Hard-coded test scene: one sphere centred 3 units in front of
+        // the camera with unit radius. Real scene loading lands at M13.
+        const rr::geometry::Sphere sphere{
+            rr::math::Vec3{0.0f, 0.0f, -3.0f}, 1.0f};
+
+        Logger::info("rendering sphere on GPU: "
                      + std::to_string(cfg.width) + "x"
                      + std::to_string(cfg.height));
 
-        auto result = rr::cuda::CudaRenderer::render_camera_rays(
-            camera, cfg.width, cfg.height);
+        auto result = rr::cuda::CudaRenderer::render_sphere(
+            camera, sphere, cfg.width, cfg.height);
         if (!result.ok) {
             Logger::error("GPU render failed: " + result.message);
             return 1;

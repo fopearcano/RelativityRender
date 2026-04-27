@@ -72,7 +72,7 @@ All modules now have a placeholder source directory under `src/`,
 | M5        | CUDA Device Layer                       | landed      |
 | M6        | CUDA Framebuffer & First Kernel         | landed      |
 | M7        | Camera System & GPU Camera Rays         | landed      |
-| M8        | GPU Primitive Intersection              | not started |
+| M8        | GPU Primitive Intersection              | landed      |
 | M9        | Relativistic Camera Model (First Pass)  | not started |
 | M10       | GPU Scene Upload & Triangle Mesh        | not started |
 | M11       | Material System (Foundations)           | not started |
@@ -92,6 +92,105 @@ All modules now have a placeholder source directory under `src/`,
 ---
 
 ## Change Log
+
+### 2026-04-27 — M8 GPU primitive intersection landed
+
+First real ray-traced output: per pixel the GPU generates the primary
+ray, intersects against a single sphere, and shades. The CPU only
+constructs the camera and sphere structs and launches the kernel.
+
+- **`src/geometry/Sphere.h`:** plain-data sphere POD (`center`,
+  `radius`) with an `RR_HD make_sphere(...)` factory. Trivial
+  aggregate so it can be passed to kernels by value with no
+  ABI surprises. The full geometry system (triangle meshes,
+  instancing, AS-build inputs) lands in M10; this is the minimum
+  primitive needed to validate GPU intersection.
+- **`src/renderer/Hit.h`:** `Hit { hit, t, position, normal }` POD
+  plus an `RR_HD make_miss()` factory. Material / primitive ids
+  are deferred to M14 (path tracer); keeping `Hit` minimal here
+  avoids leaking later concerns into the geometry layer.
+- **`src/cuda/CudaIntersection.cuh`:** `RR_HD inline
+  intersect_sphere(ray, sphere, t_min, t_max) -> Hit`. Solves the
+  half-`b` quadratic with `disc = b*b - a*c`, falls back to the far
+  root when the near one is out of `(t_min, t_max)`, returns a miss
+  on a degenerate ray (`a <= 0`). Uses `sqrtf` and the inverse-radius
+  multiply to avoid a redundant `length` call. Despite the `.cuh`
+  extension the header is host- and device-callable and pulls in no
+  CUDA runtime, so the host tests exercise the same code path the
+  kernel runs.
+- **`src/cuda/CudaKernels.cuh` / `CudaTestKernel.cu`:** added
+  `launch_sphere_visualize` and `__global__ k_sphere_visualize`.
+  Per pixel the kernel calls `generate_camera_ray`, runs
+  `intersect_sphere`, and writes either the normal-as-color shade
+  (`0.5*n + 0.5`) on hit or a vertical sky gradient
+  (`mix(white, sky_blue, 0.5*(dir.y + 1))`) on miss. Same launch
+  config as the earlier kernels (16x16 blocks, ceiling-divided
+  grid, bounds-checked).
+- **`src/cuda/CudaRenderer.h` / `.cu`:** added
+  `render_sphere(camera, sphere, w, h)`. Validates the radius,
+  snapshots the camera into the device POD, and reuses the
+  templated `run_kernel_render` scaffold from M7. `render_gradient`
+  and `render_camera_rays` are kept as diagnostics.
+- **`src/main.cpp`:** `--render` now defaults to
+  `output/gpu_sphere.ppm`, builds a default `Camera` and a
+  hard-coded test sphere `{(0, 0, -3), r = 1}`, and calls
+  `render_sphere`. Real scene loading lands at M13. Without CUDA
+  the executable still compiles and reports the missing backend
+  honestly.
+- **`tests/geometry_tests.cpp`:** 25 host-side assertions. Direct
+  unit tests on `intersect_sphere`: rays pointing the wrong way
+  miss; the centre ray hits the front of a sphere with `t = 2`,
+  `position = (0, 0, -2)`, `normal = (0, 0, 1)`; grazing rays
+  miss; `(t_min, t_max)` clipping behaves correctly (including
+  forcing the far-root fallback); rays starting inside a sphere
+  hit at the far root. Plus a "kernel replay" pair: build the same
+  default camera the M8 kernel uses, generate the centre / corner
+  primary rays, intersect against the same hard-coded test sphere,
+  and assert hit / miss + geometry. The kernel runs the same
+  `RR_HD` routine, so these host tests cover the device path by
+  construction.
+- **`CMakeLists.txt`:** added `geometry_tests` test executable
+  (links `rr_camera` for math + camera headers; `Sphere.h`,
+  `Hit.h`, and `CudaIntersection.cuh` are header-only and need no
+  library).
+
+#### Verified locally (host-only, no CUDA Toolkit on this box)
+
+```
+$ cmake -S . -B build && cmake --build build
+$ cd build && ctest --output-on-failure
+1/5 Test #1: math_tests     ........... Passed  0.00 sec
+2/5 Test #2: image_tests    ........... Passed  0.00 sec
+3/5 Test #3: gpu_tests      ........... Passed  0.00 sec
+4/5 Test #4: camera_tests   ........... Passed  0.00 sec
+5/5 Test #5: geometry_tests ........... Passed  0.00 sec
+100% tests passed, 0 tests failed out of 5
+
+$ ./build/bin/geometry_tests
+geometry_tests: 25/25 passed
+
+$ ./build/bin/RelativityRender --render scene.scn --width 16 --height 16
+[INFO] RelativityRender 0.0.1 starting
+[INFO] render command received
+[INFO] (no CUDA backend compiled; rebuild with -DRR_ENABLE_CUDA=ON to render)
+```
+
+The CUDA-enabled run (`-DRR_ENABLE_CUDA=ON`, on a machine with
+NVCC + a Turing/Ampere/Ada GPU) produces `output/gpu_sphere.ppm`.
+The kernel calls the exact same `RR_HD` ray and intersection
+routines exercised by `camera_tests` + `geometry_tests`, so the
+host tests cover the device math.
+
+#### Hard-rule check
+
+- **No CPU ray tracing:** the rendered output is produced entirely
+  by `k_sphere_visualize`. Host calls to `intersect_sphere` exist
+  only inside `geometry_tests` for validation.
+- **CPU only creates struct + launches:** `main.cpp` builds a
+  `Camera` and a `Sphere`, calls `CudaRenderer::render_sphere`,
+  and writes the downloaded `Image` to PPM. The only CPU iteration
+  over pixels is in `Image::save_ppm` (image save internals,
+  permitted).
 
 ### 2026-04-27 — M7 camera system & GPU camera rays landed
 
@@ -720,24 +819,27 @@ and does not affect the architecture or dependency rules.
 
 ## Next Step
 
-**M8 — GPU Primitive Intersection.** With primary rays in hand the
-next step is hit-testing a single GPU primitive (sphere first), so
-the framebuffer reflects intersection results:
+**M9 — Relativistic Camera Model (first pass).** With primary rays
+and a working hit/shade pipeline, the next step is the
+differentiator:
 
-1. Add a small `__device__ ray_sphere(ray, sphere)` helper alongside
-   the camera-ray code.
-2. Add a `render_sphere_hit` kernel that runs the camera-ray
-   generator, intersects against a hard-coded test sphere, and
-   writes a normal-as-color shading on hit / a sky-blue gradient on
-   miss.
-3. Wire a `render_sphere(camera, sphere, w, h)` entry point into
-   `CudaRenderer`, and a CLI option (or stage gate) that produces
-   `output/gpu_sphere_hit.ppm`.
-4. Host-side regression: the same `RR_HD` intersection helper runs
-   in `camera_tests` (or a new `geometry_tests`) and verifies
-   centre-ray hit / corner-ray miss for a known sphere.
+1. `rr::relativity::Observer` POD on the device side: position
+   plus 4-velocity (or the spatial 3-velocity with `c = 1`
+   convention).
+2. `RR_HD inline rel::transform_ray(observer, camera_ray) ->
+   CameraRay` that applies aberration in the simplest correct
+   form (Lorentz boost on the direction). Companion helpers for
+   `doppler_factor` and the relativistic ray pipeline that wraps
+   `generate_camera_ray`.
+3. Plug the wrapper into a new kernel
+   `k_relativistic_sphere_visualize` (or a flag on the existing
+   sphere kernel) and host entry point
+   `render_relativistic_sphere(camera, observer, sphere, w, h)`.
+4. Host-side regressions: zero-velocity observer reproduces the
+   classical centre / corner rays exactly; non-zero `+x` velocity
+   pulls the centre ray toward `+x` by the expected aberration.
 
-Before or alongside M8, the M2 deferred items (`Error`,
+Before or alongside M9, the M2 deferred items (`Error`,
 `FileSystem`, `App`, `Config::load`/`save`, real test framework,
 host-only CI) remain a backlog rather than a blocker.
 

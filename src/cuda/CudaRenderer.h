@@ -1,6 +1,7 @@
 #pragma once
 
 #include "camera/Camera.h"
+#include "geometry/Sphere.h"
 #include "image/Image.h"
 
 #include <string>
@@ -32,7 +33,17 @@ public:
     // downloads.
     static Result render_camera_rays(const rr::camera::Camera& camera,
                                      int width, int height);
+
+    // Render the first real scene: one sphere intersected against
+    // primary rays. On hit the GPU shades with `0.5*n + 0.5`; on miss
+    // it draws a simple vertical sky gradient. The CPU only constructs
+    // the camera + sphere structs and launches; the kernel does
+    // ray-gen, intersection, shading, and framebuffer writes.
+    static Result render_sphere(const rr::camera::Camera& camera,
+                                const rr::geometry::Sphere& sphere,
+                                int width, int height);
 };
 
 }
+
 

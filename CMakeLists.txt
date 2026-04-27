@@ -170,4 +170,17 @@ if(RR_BUILD_TESTS)
         target_compile_options(camera_tests PRIVATE -Wall -Wextra -Wpedantic)
     endif()
     add_test(NAME camera_tests COMMAND camera_tests)
+
+    # Geometry / intersection tests. Includes the RR_HD inline routines
+    # in cuda/CudaIntersection.cuh directly - no CUDA toolchain needed
+    # since the header has no runtime calls. Linking rr_camera also
+    # supplies math + camera headers transitively.
+    add_executable(geometry_tests tests/geometry_tests.cpp)
+    target_link_libraries(geometry_tests PRIVATE rr_camera)
+    if(MSVC)
+        target_compile_options(geometry_tests PRIVATE /W4 /permissive-)
+    else()
+        target_compile_options(geometry_tests PRIVATE -Wall -Wextra -Wpedantic)
+    endif()
+    add_test(NAME geometry_tests COMMAND geometry_tests)
 endif()
