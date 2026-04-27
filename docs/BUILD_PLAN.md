@@ -10,11 +10,15 @@ Update it after every implementation step, per
 
 - **Active milestone:** M2 — Core Engine (in progress).
 - **Active branch:** `claude/create-docs-architecture-T2Dp5`.
-- **Code in repo:** repository skeleton, top-level CMake project, and the
-  minimal C++20 application foundation: `src/main.cpp`,
-  `src/core/Version.h`, `src/core/Logger.{h,cpp}`. The `RelativityRender`
-  executable builds, runs, and prints a startup banner via the logger.
-  No GPU, no rendering, no scene system.
+- **Code in repo:** repository skeleton, top-level CMake project, the
+  minimal C++20 application foundation (`src/main.cpp`,
+  `src/core/Version.h`, `src/core/Logger.{h,cpp}`), and now basic
+  configuration + command-line handling (`src/core/Config.{h,cpp}`,
+  `src/core/CommandLine.{h,cpp}`). The `RelativityRender` executable
+  parses `--help`, `--version`, `--device-info`, `--render`, `--output`,
+  `--width`, `--height`, and reports honest "not implemented yet"
+  responses for the GPU- and rendering-dependent actions. No GPU, no
+  rendering, no scene system.
 
 ## Module Status (mirrors `docs/MODULE_MAP.md`)
 
@@ -79,6 +83,62 @@ All modules now have a placeholder source directory under `src/`,
 ---
 
 ## Change Log
+
+### 2026-04-27 — M2 configuration + command-line handling landed
+
+Continues M2 (Core Engine). Adds the runtime configuration struct and the
+command-line parser that populates it. No rendering, no GPU calls — every
+command-line surface is parsed today and acted on for real once the
+underlying backends arrive.
+
+- **`src/core/Config.h` / `.cpp`:** `rr::core::Config` plain-data struct
+  with `show_device_info`, `render_scene_path` (`std::optional<string>`),
+  `output_image_path` (`std::optional<string>`), `width` (default 1280),
+  `height` (default 720), and a `wants_render()` helper. The `.cpp` is
+  intentionally near-empty — Config is a data carrier; future load/save
+  (TOML / JSON) lands here without churn.
+- **`src/core/CommandLine.h` / `.cpp`:** `rr::core::CommandLine` class
+  with `Status { Ok, Help, Version, Error }`, a `ParseResult { status,
+  message }`, a `parse(argc, argv, Config&)` static method, and a
+  `usage()` static method. The parser is stateless, dependency-free,
+  and handles missing values, non-positive sizes, malformed integers,
+  and unknown flags by returning `Status::Error` with a human message.
+  Integers go through `std::from_chars` to avoid `atoi`-style silent
+  truncation.
+- **`src/main.cpp`:** wired to `CommandLine::parse`. `--help` and
+  `--version` are handled before the startup banner so their output is
+  clean. `--device-info` logs honestly that the CUDA backend lands at
+  M5. `--render <scene>` logs `render command received` and exits — per
+  this milestone's scope it does not render. Unknown flags / bad values
+  return exit code 2 and print usage on stderr.
+- **`CMakeLists.txt`:** added `src/core/Config.cpp` and
+  `src/core/CommandLine.cpp` to the `RelativityRender` executable.
+
+#### Verified locally
+
+```
+$ ./build/bin/RelativityRender --help          # prints usage, rc=0
+$ ./build/bin/RelativityRender --version       # prints "RelativityRender 0.0.1", rc=0
+$ ./build/bin/RelativityRender --device-info   # logs CUDA-not-yet message, rc=0
+$ ./build/bin/RelativityRender --render scene.scn --output out.exr \
+                                --width 1920 --height 1080  # logs "render command received", rc=0
+$ ./build/bin/RelativityRender --width foo     # error + usage on stderr, rc=2
+$ ./build/bin/RelativityRender --render        # error (missing path), rc=2
+$ ./build/bin/RelativityRender --bogus         # error (unknown arg), rc=2
+```
+
+#### Deliberately deferred (still inside M2)
+
+- `core::Error` type.
+- `core::App` lifecycle wrapper.
+- `core::FileSystem` minimal IO.
+- `Config::load` / `Config::save` (TOML or JSON).
+- A test framework dependency under `third_party/` and tests for `Logger`,
+  `Config`, and `CommandLine`.
+- Host-only CI.
+
+These will be added in subsequent M2 sub-prompts before M2 is marked
+landed and M3 (Math Library) begins.
 
 ### 2026-04-27 — M2 minimal C++20 application foundation landed
 
@@ -213,18 +273,21 @@ and does not affect the architecture or dependency rules.
 
 **Finish M2 — Core Engine.**
 
-The minimal application foundation is in place. To complete M2 and move on
+Logger, Config, and CommandLine are in place. To complete M2 and move on
 to M3 (Math Library), the next implementation prompts should add, in
 roughly this order:
 
 1. `core::Error` — a small result/error type used at module boundaries.
-2. `core::Config` — minimal load / save (TOML or JSON via a vendored
-   parser under `third_party/`).
-3. `core::FileSystem` — minimal path / read / write helpers using
+2. `core::FileSystem` — minimal path / read / write helpers using
    `std::filesystem` plus a thin error-aware wrapper.
-4. `core::App` — application lifecycle wrapper: parse CLI args, run, exit.
+3. `Config::load` / `Config::save` — TOML or JSON persistence via a
+   vendored parser under `third_party/`. Keep the on-disk schema small;
+   it grows as later milestones add their own settings.
+4. `core::App` — application lifecycle wrapper that owns parse → run →
+   exit.
 5. A test framework (Catch2 or doctest) under `third_party/`, plus tests
-   for `Logger`, `Config` round-trip, and `FileSystem` read / write.
+   for `Logger`, `CommandLine` (every flag + every error path), `Config`
+   round-trip, and `FileSystem` read / write.
 6. Host-only CI configuration that runs the build and tests.
 
 Only after these land is M2 considered finished. Per development rules,
