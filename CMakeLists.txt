@@ -34,6 +34,15 @@ message(STATUS "  Build tests        : ${RR_BUILD_TESTS}")
 message(STATUS "  Build tools        : ${RR_BUILD_TOOLS}")
 message(STATUS "  Build integrations : ${RR_BUILD_INTEGRATIONS}")
 
+# Optional CUDA toolchain. Only required when RR_ENABLE_CUDA is ON.
+# When OFF, the host build still configures cleanly with no CUDA on the
+# system - the GPU layer reports backend "(none)" and an empty device
+# list.
+if(RR_ENABLE_CUDA)
+    find_package(CUDAToolkit REQUIRED)
+    message(STATUS "  CUDA Toolkit       : ${CUDAToolkit_VERSION}")
+endif()
+
 # Module libraries. As each module grows it gets promoted from "sources
 # listed directly in the executable" to its own static library so the
 # dependency direction stays visible in the link list. rr_image is the
@@ -49,6 +58,26 @@ else()
     target_compile_options(rr_image PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 
+# GPU device layer. Backend-agnostic surface in src/gpu/. The CUDA
+# backend (src/cuda/CudaContext.cpp) is only added to the build when
+# RR_ENABLE_CUDA is ON; otherwise the gpu layer compiles with no
+# backend and reports the absence at runtime.
+add_library(rr_gpu STATIC
+    src/gpu/GpuDevice.cpp
+)
+target_include_directories(rr_gpu PUBLIC src)
+if(MSVC)
+    target_compile_options(rr_gpu PRIVATE /W4 /permissive-)
+else()
+    target_compile_options(rr_gpu PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+
+if(RR_ENABLE_CUDA)
+    target_sources(rr_gpu PRIVATE src/cuda/CudaContext.cpp)
+    target_compile_definitions(rr_gpu PRIVATE RR_HAS_CUDA)
+    target_link_libraries(rr_gpu PRIVATE CUDA::cudart)
+endif()
+
 # Main executable. As more modules land they will be promoted to their
 # own static libraries and linked here.
 add_executable(RelativityRender
@@ -57,6 +86,7 @@ add_executable(RelativityRender
     src/core/Config.cpp
     src/core/CommandLine.cpp
 )
+target_link_libraries(RelativityRender PRIVATE rr_gpu)
 
 target_include_directories(RelativityRender PRIVATE src)
 
@@ -86,4 +116,13 @@ if(RR_BUILD_TESTS)
         target_compile_options(image_tests PRIVATE -Wall -Wextra -Wpedantic)
     endif()
     add_test(NAME image_tests COMMAND image_tests)
+
+    add_executable(gpu_tests tests/gpu_tests.cpp)
+    target_link_libraries(gpu_tests PRIVATE rr_gpu)
+    if(MSVC)
+        target_compile_options(gpu_tests PRIVATE /W4 /permissive-)
+    else()
+        target_compile_options(gpu_tests PRIVATE -Wall -Wextra -Wpedantic)
+    endif()
+    add_test(NAME gpu_tests COMMAND gpu_tests)
 endif()

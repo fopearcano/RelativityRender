@@ -2,9 +2,43 @@
 #include "core/Config.h"
 #include "core/Logger.h"
 #include "core/Version.h"
+#include "gpu/GpuDevice.h"
 
 #include <iostream>
+#include <sstream>
 #include <string>
+
+namespace {
+
+void log_device_info() {
+    using rr::core::Logger;
+
+    Logger::info(std::string("GPU backend: ") + rr::gpu::gpu_backend_name());
+
+    if (!rr::gpu::gpu_backend_available()) {
+        Logger::info("No GPU backend compiled in. "
+                     "Reconfigure with -DRR_ENABLE_CUDA=ON to enable CUDA.");
+        return;
+    }
+
+    const auto devices = rr::gpu::enumerate_devices();
+    if (devices.empty()) {
+        Logger::warning("No CUDA-capable devices visible.");
+        return;
+    }
+
+    Logger::info(std::to_string(devices.size()) + " device(s) visible:");
+    for (const auto& d : devices) {
+        std::ostringstream os;
+        os << "  [" << d.index << "] " << d.name
+           << "  (cc "  << d.compute_capability_string()
+           << ", "      << d.total_memory_human()
+           << ", "      << d.multiprocessor_count << " SMs)";
+        Logger::info(os.str());
+    }
+}
+
+}
 
 int main(int argc, char** argv) {
     using rr::core::CommandLine;
@@ -32,9 +66,7 @@ int main(int argc, char** argv) {
     Logger::info(std::string(rr::core::kProjectName) + " " + rr::core::kVersionString + " starting");
 
     if (cfg.show_device_info) {
-        // The CUDA backend lands at M5; until then there is no device
-        // enumeration to perform. Be honest about that rather than fake it.
-        Logger::info("device-info: no GPU backend available yet (CUDA backend lands at M5)");
+        log_device_info();
         return 0;
     }
 

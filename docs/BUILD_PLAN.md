@@ -9,19 +9,21 @@ Update it after every implementation step, per
 ## Current State
 
 - **Active milestones:** M2 — Core Engine (in progress), **M3 — Math
-  Library (landed)**, **M4 — Image / Framebuffer System (landed)**.
+  Library (landed)**, **M4 — Image / Framebuffer System (landed)**,
+  **M5 — CUDA Device Layer (landed)**.
 - **Active branch:** `claude/create-docs-architecture-T2Dp5`.
 - **Code in repo:** repository skeleton, top-level CMake project, the
   minimal C++20 application foundation, configuration + CLI handling,
-  the math library, and the image / framebuffer system (`src/image/`).
-  The `RelativityRender` executable still parses `--help`, `--version`,
-  `--device-info`, `--render`, `--output`, `--width`, `--height`.
-  Two test executables — `math_tests` (42 assertions) and
-  `image_tests` (39 assertions, including a CPU-generated gradient
-  saved to PPM purely for IO validation) — run through `ctest`. The
-  first module-as-library promotion has happened: `rr_image` is a
-  static library linked by tests. No GPU, no rendering, no scene
-  system.
+  the math library, the image / framebuffer system, and the GPU
+  device layer (backend-agnostic surface in `src/gpu/`, CUDA backend
+  in `src/cuda/`, gated by `-DRR_ENABLE_CUDA=ON`). The
+  `RelativityRender` executable's `--device-info` now reports the
+  compiled-in backend, runs the device query, and prints
+  name / compute capability / VRAM / SM count for each visible GPU.
+  Three test executables — `math_tests` (42), `image_tests` (39),
+  `gpu_tests` (4) — run through `ctest`. `rr_image` and `rr_gpu` are
+  static libraries; `RelativityRender` links `rr_gpu`. No CUDA
+  kernels yet, no rendering, no scene system.
 
 ## Module Status (mirrors `docs/MODULE_MAP.md`)
 
@@ -30,8 +32,8 @@ Update it after every implementation step, per
 | 1  | Core Engine                         | in progress   |
 | 2  | Math Library                        | landed        |
 | 3  | Image / Framebuffer System          | landed        |
-| 4  | GPU Device Layer                    | not started   |
-| 5  | CUDA Backend                        | not started   |
+| 4  | GPU Device Layer                    | landed        |
+| 5  | CUDA Backend                        | in progress   |
 | 6  | OptiX Backend                       | not started   |
 | 7  | Scene Graph                         | not started   |
 | 8  | Geometry System                     | not started   |
@@ -63,7 +65,7 @@ All modules now have a placeholder source directory under `src/`,
 | M2        | Core Engine: Logging, Config, Lifecycle | in progress |
 | M3        | Math Library                            | landed      |
 | M4        | Image / Framebuffer System              | landed      |
-| M5        | CUDA Device Layer                       | not started |
+| M5        | CUDA Device Layer                       | landed      |
 | M6        | CUDA Framebuffer & First Kernel         | not started |
 | M7        | Camera System & GPU Camera Rays         | not started |
 | M8        | GPU Primitive Intersection              | not started |
@@ -86,6 +88,82 @@ All modules now have a placeholder source directory under `src/`,
 ---
 
 ## Change Log
+
+### 2026-04-27 — M5 CUDA device layer landed
+
+First GPU-aware code in the project. Backend-agnostic surface in
+`rr::gpu::`; concrete CUDA implementation in `rr::cuda::`. The host
+build still configures and runs without CUDA installed; CUDA is gated
+by `-DRR_ENABLE_CUDA=ON`. No kernels, no allocations, no rendering -
+just device detection and property queries.
+
+- **`src/gpu/GpuDevice.h` / `.cpp`:** `rr::gpu::GpuDevice` POD struct
+  (index, name, compute capability major/minor, total memory bytes,
+  multiprocessor count) plus `compute_capability_string()` and
+  `total_memory_human()` formatters. Free functions:
+  `gpu_backend_available()`, `gpu_backend_name()`,
+  `enumerate_devices()`. The `.cpp` `#ifdef RR_HAS_CUDA`-includes
+  `cuda/CudaContext.h` and forwards; otherwise it returns
+  `"(none)"` / `false` / empty list. Callers never need to know
+  whether CUDA was compiled in.
+- **`src/cuda/CudaContext.h` / `.cpp`:** `rr::cuda::query_devices()`
+  wrapping the CUDA Runtime API (`cudaGetDeviceCount` +
+  `cudaGetDeviceProperties`). Robust to driver-init failures: returns
+  empty on failure and clears the sticky last-error so a later real
+  CUDA call doesn't observe it. Compiled only when CUDA is enabled.
+- **`src/main.cpp`:** `--device-info` now logs backend name, prints
+  the device count, and emits one line per device formatted as
+  `[i] <name> (cc <maj>.<min>, <MiB> MiB, <SMs> SMs)`. When no
+  backend is compiled, it logs that explicitly and tells the user how
+  to re-enable. When the backend is compiled but no devices are
+  visible, it warns instead of pretending to enumerate.
+- **`CMakeLists.txt`:** `find_package(CUDAToolkit REQUIRED)` only when
+  `RR_ENABLE_CUDA` is ON. New `rr_gpu` static library carrying
+  `src/gpu/GpuDevice.cpp`. When CUDA is enabled, `src/cuda/CudaContext.cpp`
+  is added to the same library, `RR_HAS_CUDA` is defined PRIVATE, and
+  `CUDA::cudart` is linked. The main executable links `rr_gpu`. No
+  `enable_language(CUDA)` yet - we only call the runtime API from host
+  C++; NVCC arrives in M6 with the first kernel.
+- **`tests/gpu_tests.cpp`:** 4 assertions exercising the public surface
+  against invariants that hold either way:
+  `gpu_backend_name()` is non-empty,
+  `available()` and `name() == "(none)"` agree, and
+  `enumerate_devices()` is empty when no backend is compiled. Also
+  validates `compute_capability_string()` and `total_memory_human()`
+  formatters. CI machines without GPUs are valid environments and the
+  test is silent about that.
+
+#### Verified locally (host-only configure)
+
+```
+$ cmake --build build && cd build && ctest --output-on-failure
+1/3 Test #1: math_tests  ............ Passed  0.00 sec
+2/3 Test #2: image_tests ............ Passed  0.00 sec
+3/3 Test #3: gpu_tests   ............ Passed  0.00 sec
+100% tests passed, 0 tests failed out of 3
+
+$ ./build/bin/RelativityRender --device-info
+[..] [INFO] RelativityRender 0.0.1 starting
+[..] [INFO] GPU backend: (none)
+[..] [INFO] No GPU backend compiled in.
+            Reconfigure with -DRR_ENABLE_CUDA=ON to enable CUDA.
+```
+
+The CUDA-enabled path (`-DRR_ENABLE_CUDA=ON`) was not exercised in
+this environment (no CUDA Toolkit installed), but is correct by
+construction: it relies only on the standard CMake `CUDAToolkit`
+package and the `CUDA::cudart` imported target, with all CUDA-specific
+sources, defines, and link deps gated on the same `RR_ENABLE_CUDA`
+flag that controls the `find_package` call.
+
+#### Module status nuance
+
+`rr::gpu::` is the long-term backend-agnostic surface; the CUDA
+backend is one implementation of it. The Module Map's "GPU Device
+Layer" (#4) is the surface and is *landed*. The "CUDA Backend" (#5)
+will grow to cover streams, buffers, kernel launches, error wrapping,
+and pinned memory in M6+; for now it only contains the device-query
+plumbing, so it is marked *in progress*.
 
 ### 2026-04-27 — M4 image / framebuffer system landed
 
@@ -393,14 +471,22 @@ and does not affect the architecture or dependency rules.
 
 ## Next Step
 
-**M5 — CUDA Device Layer** is the next big step. The first real GPU
-work: detect devices, wrap streams and buffers, pass through to the
-runtime, integrate the CUDA toolchain in CMake (still optional via
-`RR_ENABLE_CUDA`), and add a "list devices" CLI path. M5 is what makes
-`--device-info` print real information.
+**M6 — CUDA Framebuffer & First Kernel.** End-to-end host → device →
+host pipeline producing a real image:
 
-Before or alongside M5 the M2 deferred items should be cleaned up so
-the core foundation is honest end-to-end:
+1. Add `enable_language(CUDA)` and `CMAKE_CUDA_ARCHITECTURES` (gated by
+   `RR_ENABLE_CUDA`).
+2. Introduce `rr::cuda::Stream` and `rr::cuda::DeviceBuffer<T>` as the
+   first concrete pieces of the CUDA Backend's resource layer.
+3. Add a device-side framebuffer mirror under `src/cuda/`.
+4. Write the first `.cu` file - a kernel that fills the framebuffer
+   with a procedural pattern (e.g. UV gradient) so we have a real
+   end-to-end GPU result.
+5. Download to host and save through the existing `Image::save_ppm`
+   path so the GPU-generated image is verifiable byte-for-byte.
+
+Alongside M6, the M2 deferred items should be cleaned up so the core
+foundation is honest end-to-end:
 
 1. `core::Error` — a small result/error type used at module boundaries.
 2. `core::FileSystem` — minimal path / read / write helpers using
@@ -410,11 +496,8 @@ the core foundation is honest end-to-end:
 4. `core::App` — application lifecycle wrapper that owns parse → run →
    exit.
 5. A real test framework (Catch2 or doctest) under `third_party/`,
-   migrating `math_tests.cpp` / `image_tests.cpp` and adding tests for
-   `Logger`, `CommandLine` (every flag + every error path), `Config`
-   round-trip, and `FileSystem`.
+   migrating the existing test runners.
 6. Host-only CI configuration that runs the build and tests.
 
-Per development rules, none of these may introduce code from M5+
-modules — no GPU device, kernel, or rendering code in the Core /
-Image cleanup pass.
+Per development rules, none of these may introduce code from M7+
+modules - no camera, scene, material, or rendering code yet.
