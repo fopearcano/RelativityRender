@@ -39,7 +39,7 @@ Update it after every implementation step, per
 | 4  | GPU Device Layer                    | landed        |
 | 5  | CUDA Backend                        | in progress   |
 | 6  | OptiX Backend                       | not started   |
-| 7  | Scene Graph                         | not started   |
+| 7  | Scene Graph                         | in progress   |
 | 8  | Geometry System                     | not started   |
 | 9  | Material / Shading System           | not started   |
 | 10 | Texture System                      | not started   |
@@ -92,6 +92,80 @@ All modules now have a placeholder source directory under `src/`,
 ---
 
 ## Change Log
+
+### 2026-04-27 — Host-side scene structures landed (Scene Graph in progress)
+
+Pure host data model. Camera + render settings + observer +
+RelativityParams + lists of spheres / meshes (placeholder) /
+materials (placeholder) / lights (placeholder). No renderer
+changes; no parser. Lays the foundation that M10 (GPU upload),
+M11 (materials), M12 (lights), and M13 (scene file format) will
+populate.
+
+- **`src/scene/Transform.h`:** `Transform { position,
+  euler_rotation_radians, scale }` plain data with an
+  `identity()` factory. The matrix conversion is intentionally
+  deferred to the consumer (GPU upload at M10, scene file at M13)
+  so the data model doesn't bake in a math choice (column- vs
+  row-major, Euler order, quaternion form) before we know who
+  reads it.
+- **`src/scene/SceneObject.h`:** `SceneObject { name, transform,
+  visible }` - the common metadata composed into every
+  transformable scene entity. Composition over inheritance, per
+  the development rules.
+- **`src/scene/Scene.h`:** the top-level container.
+  `RenderSettings { width, height, samples_per_pixel, max_depth }`
+  alongside scene-side wrappers:
+  - `SceneSphere { object, geometry, material_index }`
+    (geometry is `rr::geometry::Sphere`).
+  - `SceneMesh { object, source_path, material_index }` -
+    placeholder until M11.
+  - `SceneMaterial { name, albedo }` - placeholder until M11.
+  - `SceneLight { object, color, intensity }` - placeholder
+    until M12.
+  Materials are referenced by integer index so the data is
+  trivially serialisable for M13 and uploadable for M11.
+- **`src/scene/Scene.cpp`:** `Scene::clear()` empties every list
+  and resets camera / render settings / observer / relativity to
+  default-constructed state.
+- **`tests/scene_tests.cpp`:** 38 host assertions covering
+  defaults (Transform, SceneObject, RenderSettings), Scene
+  emptiness on construction, populating the four lists with
+  cross-referenced indices, and `clear()` resetting every field.
+- **`CMakeLists.txt`:** added `rr_scene` static library
+  (`src/scene/Scene.cpp`, PUBLIC link to `rr_camera`) and a
+  `scene_tests` test executable.
+
+#### Verified locally (host-only, no CUDA Toolkit on this box)
+
+```
+$ cmake --build build && cd build && ctest --output-on-failure
+1/7 Test #1: math_tests       ........... Passed  0.00 sec
+2/7 Test #2: image_tests      ........... Passed  0.00 sec
+3/7 Test #3: gpu_tests        ........... Passed  0.00 sec
+4/7 Test #4: camera_tests     ........... Passed  0.00 sec
+5/7 Test #5: geometry_tests   ........... Passed  0.00 sec
+6/7 Test #6: relativity_tests ........... Passed  0.00 sec
+7/7 Test #7: scene_tests      ........... Passed  0.00 sec
+100% tests passed, 0 tests failed out of 7
+
+$ ./build/bin/scene_tests
+scene_tests: 38/38 passed
+```
+
+#### Not in this slice
+
+- Scene Graph is "in progress", not "landed". The data model is
+  in; what's missing for "landed" is at least the upload path
+  to the GPU (M10) so a real consumer exercises every field.
+- No renderer changes: `--render` continues to use the M9
+  hard-coded sphere + relativity sweep. Nothing reads `Scene`
+  yet.
+- No scene file format: M13 will define the on-disk schema and
+  parser; today only the in-memory representation exists.
+- Mesh / material / light wrappers are deliberately minimal -
+  the matching modules (M11 / M12) replace the placeholders
+  with real data.
 
 ### 2026-04-27 — M9 relativity integrated into the CUDA sphere renderer
 
@@ -996,21 +1070,25 @@ and does not affect the architecture or dependency rules.
 
 ## Next Step
 
-**M10 — GPU Scene Upload & Triangle Mesh.** Move from a single
-hard-coded sphere to multiple primitives uploaded as buffers:
+**Finish M10 — GPU scene upload.** The host data model is in. To
+move Scene Graph from "in progress" to "landed" the next slice
+should:
 
-1. `rr::geometry::TriangleMesh` host representation (positions,
-   indices, attribute layouts) plus a GPU-uploadable form (SoA
-   buffers via `GpuBuffer<...>`).
-2. A scene-upload helper in `CudaRenderer` that reuses the buffer
-   abstraction to push mesh data and a small per-frame "scene"
-   POD (sphere list + mesh handle) to the device.
-3. A new kernel that loops over the scene primitives - still
-   brute-force; OptiX acceleration arrives at M15.
-4. Host-side tests for upload round-trip and the new
-   per-primitive intersection paths.
+1. Add a scene-upload path in `CudaRenderer` that takes a
+   `Scene` and produces a device-side scene POD (sphere list
+   first; mesh handle reserved). Reuse `GpuBuffer<...>` for the
+   array uploads.
+2. Replace the hard-coded sphere in the relativistic sphere
+   kernel with a loop over the uploaded sphere array (still
+   brute-force; OptiX acceleration arrives at M15).
+3. Wire `--render` to populate a `Scene` first and pass it to
+   the renderer, so `Scene` has a real consumer.
+4. Add a regression: round-trip a small scene through the upload
+   path, run a single primary ray through the loop on the
+   device, compare against the host-side replay used by
+   `geometry_tests`.
 
-Before or alongside M10, the M2 deferred items (`Error`,
+Before or alongside this, the M2 deferred items (`Error`,
 `FileSystem`, `App`, `Config::load`/`save`, real test framework,
 host-only CI) remain a backlog rather than a blocker.
 

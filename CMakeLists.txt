@@ -81,6 +81,22 @@ else()
     target_compile_options(rr_camera PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 
+# Scene module. Host-only authoring data model: Camera + render
+# settings + Observer + RelativityParams + lists of spheres /
+# meshes (placeholder) / materials (placeholder) / lights
+# (placeholder). No GPU upload, no parser - those land in M10 / M11
+# / M12 / M13 alongside the systems that consume the data.
+add_library(rr_scene STATIC
+    src/scene/Scene.cpp
+)
+target_link_libraries(rr_scene PUBLIC rr_camera)
+target_include_directories(rr_scene PUBLIC src)
+if(MSVC)
+    target_compile_options(rr_scene PRIVATE /W4 /permissive-)
+else()
+    target_compile_options(rr_scene PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+
 # GPU device layer. Backend-agnostic surface in src/gpu/. The CUDA
 # backend (src/cuda/CudaContext.cpp) is only added to the build when
 # RR_ENABLE_CUDA is ON; otherwise the gpu layer compiles with no
@@ -195,4 +211,16 @@ if(RR_BUILD_TESTS)
         target_compile_options(relativity_tests PRIVATE -Wall -Wextra -Wpedantic)
     endif()
     add_test(NAME relativity_tests COMMAND relativity_tests)
+
+    # Scene structure tests. Links rr_scene which transitively brings
+    # camera + math + relativity + geometry headers via PUBLIC src
+    # includes.
+    add_executable(scene_tests tests/scene_tests.cpp)
+    target_link_libraries(scene_tests PRIVATE rr_scene)
+    if(MSVC)
+        target_compile_options(scene_tests PRIVATE /W4 /permissive-)
+    else()
+        target_compile_options(scene_tests PRIVATE -Wall -Wextra -Wpedantic)
+    endif()
+    add_test(NAME scene_tests COMMAND scene_tests)
 endif()
