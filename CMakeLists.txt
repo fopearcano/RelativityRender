@@ -64,6 +64,7 @@ endif()
 # backend and reports the absence at runtime.
 add_library(rr_gpu STATIC
     src/gpu/GpuDevice.cpp
+    src/gpu/GpuBuffer.cpp
 )
 target_include_directories(rr_gpu PUBLIC src)
 if(MSVC)
@@ -73,7 +74,10 @@ else()
 endif()
 
 if(RR_ENABLE_CUDA)
-    target_sources(rr_gpu PRIVATE src/cuda/CudaContext.cpp)
+    target_sources(rr_gpu PRIVATE
+        src/cuda/CudaContext.cpp
+        src/cuda/CudaBuffer.cpp
+    )
     target_compile_definitions(rr_gpu PRIVATE RR_HAS_CUDA)
     target_link_libraries(rr_gpu PRIVATE CUDA::cudart)
 endif()

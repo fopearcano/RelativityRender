@@ -14,16 +14,22 @@ Update it after every implementation step, per
 - **Active branch:** `claude/create-docs-architecture-T2Dp5`.
 - **Code in repo:** repository skeleton, top-level CMake project, the
   minimal C++20 application foundation, configuration + CLI handling,
-  the math library, the image / framebuffer system, and the GPU
-  device layer (backend-agnostic surface in `src/gpu/`, CUDA backend
-  in `src/cuda/`, gated by `-DRR_ENABLE_CUDA=ON`). The
-  `RelativityRender` executable's `--device-info` now reports the
-  compiled-in backend, runs the device query, and prints
+  the math library, the image / framebuffer system, the GPU device
+  layer with device queries (`src/gpu/GpuDevice.{h,cpp}`,
+  `src/cuda/CudaContext.{h,cpp}`), and now the **GPU buffer
+  abstraction** (`src/gpu/GpuBuffer.{h,cpp}`,
+  `src/cuda/CudaBuffer.{h,cpp}` - move-only RAII typed handle with
+  allocate / upload / download / reset, gated by
+  `-DRR_ENABLE_CUDA=ON`). The `RelativityRender` executable's
+  `--device-info` reports the compiled-in backend and prints
   name / compute capability / VRAM / SM count for each visible GPU.
   Three test executables — `math_tests` (42), `image_tests` (39),
-  `gpu_tests` (4) — run through `ctest`. `rr_image` and `rr_gpu` are
-  static libraries; `RelativityRender` links `rr_gpu`. No CUDA
-  kernels yet, no rendering, no scene system.
+  `gpu_tests` (20: device-query invariants + buffer state and
+  upload-no-kernel-download round-trip when CUDA + a device are
+  available, otherwise an honest skip) — all green through `ctest`.
+  `rr_image` and `rr_gpu` are static libraries; `RelativityRender`
+  links `rr_gpu`. No CUDA kernels yet, no rendering, no scene
+  system.
 
 ## Module Status (mirrors `docs/MODULE_MAP.md`)
 
@@ -88,6 +94,78 @@ All modules now have a placeholder source directory under `src/`,
 ---
 
 ## Change Log
+
+### 2026-04-27 — M5/M6 GPU buffer abstraction landed
+
+Move-only typed device-memory handle with allocate / upload / download /
+reset, plus a CUDA byte-level implementation. Still no kernels - the
+upload-no-kernel-download round trip is enough to validate the
+plumbing.
+
+- **`src/gpu/GpuBuffer.h`:** templated `rr::gpu::GpuBuffer<T>`. RAII,
+  move-only (copy ctor / assignment deleted; move ctor / assignment
+  noexcept, transfers ownership and leaves the source empty).
+  `static_assert(std::is_trivially_copyable_v<T>)` because the
+  backend just shuffles bytes. Surface: `allocate(count)`,
+  `upload(host, count)` (resizes as needed), `download(host, count)
+  const`, `reset()`, `empty()`, `size()`, `size_in_bytes()`,
+  `device_ptr()` (mutable + const). Allocation is deferred -
+  default construction does not touch the GPU.
+- **`src/gpu/GpuBuffer.cpp`:** byte-level shim
+  (`detail::gpu_alloc/free/copy_h2d/copy_d2h`). `#ifdef RR_HAS_CUDA`
+  forwards to `rr::cuda::cuda_alloc/free/copy_h2d/copy_d2h`; without
+  CUDA, every call returns an honest failure (`nullptr` / `false`)
+  so consumers receive a predictable empty-buffer state instead of a
+  silent no-op.
+- **`src/cuda/CudaBuffer.h`:** CUDA-Runtime-free header exposing only
+  the byte-level free functions. Keeps `cuda_runtime.h` confined to
+  the `.cpp` so templated consumers in `rr::gpu::` don't drag the
+  CUDA toolchain onto every include path.
+- **`src/cuda/CudaBuffer.cpp`:** wraps `cudaMalloc`, `cudaFree`,
+  `cudaMemcpy(...HostToDevice)`, `cudaMemcpy(...DeviceToHost)`. On
+  every failure path the sticky CUDA last-error flag is cleared so a
+  later real CUDA call observes a clean state. `cuda_alloc(0)`
+  returns `nullptr` deliberately (no zero-byte allocations);
+  `cuda_free(nullptr)` is a no-op; zero-byte copies succeed.
+- **`tests/gpu_tests.cpp`:** added 16 buffer assertions on top of the
+  existing 4 device-query checks. Unconditional: default-state
+  invariants (empty, size 0, null device_ptr, idempotent `reset`),
+  move ctor + move-assign on default-constructed buffers. Host-only
+  contract: with no CUDA backend, `allocate` / `upload` /
+  `download(non-zero)` all fail predictably while the buffer stays
+  empty, and `download(0)` succeeds as a no-op. CUDA + device
+  present: upload a 256-element float array with a non-trivial
+  pattern, run no kernel, download into a fresh vector, compare
+  byte-for-byte; then move ownership and re-download from the new
+  owner. The round-trip path skips with a printed message when CUDA
+  isn't compiled or no devices are visible, so CI without GPUs
+  remains green.
+- **`CMakeLists.txt`:** `rr_gpu` now also lists
+  `src/gpu/GpuBuffer.cpp`, and adds `src/cuda/CudaBuffer.cpp` under
+  the existing `if(RR_ENABLE_CUDA)` block (same `RR_HAS_CUDA` define
+  + `CUDA::cudart` link). No new CMake plumbing - the buffer rides
+  through on the existing CUDA gate. No `enable_language(CUDA)` yet:
+  these are still host-side calls into the CUDA Runtime API, no
+  device code.
+
+#### Verified locally (host-only configure)
+
+```
+$ cmake --build build && cd build && ctest --output-on-failure
+1/3 Test #1: math_tests  ............ Passed  0.00 sec
+2/3 Test #2: image_tests ............ Passed  0.00 sec
+3/3 Test #3: gpu_tests   ............ Passed  0.00 sec
+100% tests passed, 0 tests failed out of 3
+
+$ ./build/bin/gpu_tests
+gpu_tests: skipping CUDA round-trip (no backend compiled)
+gpu_tests: 20/20 passed
+```
+
+The CUDA-enabled round-trip is correct by construction (uses only
+`cudaMalloc` / `cudaFree` / `cudaMemcpy` from the standard CUDA
+Runtime, all gated on the same flag as `find_package(CUDAToolkit)`)
+but is not end-to-end runnable in this environment.
 
 ### 2026-04-27 — M5 CUDA device layer landed
 
@@ -474,16 +552,17 @@ and does not affect the architecture or dependency rules.
 **M6 — CUDA Framebuffer & First Kernel.** End-to-end host → device →
 host pipeline producing a real image:
 
-1. Add `enable_language(CUDA)` and `CMAKE_CUDA_ARCHITECTURES` (gated by
-   `RR_ENABLE_CUDA`).
-2. Introduce `rr::cuda::Stream` and `rr::cuda::DeviceBuffer<T>` as the
-   first concrete pieces of the CUDA Backend's resource layer.
-3. Add a device-side framebuffer mirror under `src/cuda/`.
-4. Write the first `.cu` file - a kernel that fills the framebuffer
+1. Add `enable_language(CUDA)` and `CMAKE_CUDA_ARCHITECTURES` (gated
+   by `RR_ENABLE_CUDA`).
+2. Introduce `rr::cuda::Stream` so launches are scoped, and a
+   device-side framebuffer mirror that reuses `GpuBuffer<float>` for
+   the pixel storage.
+3. Write the first `.cu` file - a kernel that fills the framebuffer
    with a procedural pattern (e.g. UV gradient) so we have a real
    end-to-end GPU result.
-5. Download to host and save through the existing `Image::save_ppm`
-   path so the GPU-generated image is verifiable byte-for-byte.
+4. Download via `GpuBuffer::download` and save through the existing
+   `Image::save_ppm` path so the GPU-generated image is verifiable
+   byte-for-byte.
 
 Alongside M6, the M2 deferred items should be cleaned up so the core
 foundation is honest end-to-end:
