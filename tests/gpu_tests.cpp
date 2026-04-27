@@ -14,10 +14,15 @@
 // without GPUs are valid environments.
 
 #include "camera/Camera.h"
+#include "geometry/Mesh.h"
 #include "geometry/Sphere.h"
+#include "geometry/Triangle.h"
 #include "gpu/GpuBuffer.h"
 #include "gpu/GpuDevice.h"
+#include "gpu/GpuMesh.h"
 #include "gpu/GpuScene.h"
+#include "math/Transform.h"
+#include "math/Vec2.h"
 #include "math/Vec3.h"
 #include "relativity/RelativityParams.h"
 #include "scene/Scene.h"
@@ -250,6 +255,113 @@ void test_scene_upload_from_filters_invisible_spheres() {
     }
 }
 
+// --- GpuMesh ------------------------------------------------------------
+
+void test_mesh_default_state() {
+    rr::gpu::GpuMesh m;
+    RR_CHECK(m.vertex_count()     == 0u);
+    RR_CHECK(m.triangle_count()   == 0u);
+    RR_CHECK(!m.has_data());
+    RR_CHECK(m.material_id()      == -1);
+    RR_CHECK(m.transform().position == rr::math::Vec3{0, 0, 0});
+    RR_CHECK(m.transform().scale    == rr::math::Vec3{1, 1, 1});
+    RR_CHECK(m.device_vertices()  == nullptr);
+    RR_CHECK(m.device_triangles() == nullptr);
+}
+
+void test_mesh_metadata_setter_is_pure_host() {
+    // `set_metadata` writes only host fields and must succeed even
+    // on a host-only build with no GPU backend.
+    rr::gpu::GpuMesh m;
+    rr::math::Transform t;
+    t.position = rr::math::Vec3{1, 2, 3};
+    t.scale    = rr::math::Vec3{2, 2, 2};
+
+    m.set_metadata(/*material_id=*/7, t);
+    RR_CHECK(m.material_id()         == 7);
+    RR_CHECK(m.transform().position  == rr::math::Vec3{1, 2, 3});
+    RR_CHECK(m.transform().scale     == rr::math::Vec3{2, 2, 2});
+}
+
+void test_mesh_empty_upload_succeeds_everywhere() {
+    rr::gpu::GpuMesh m;
+    RR_CHECK(m.upload_vertices(nullptr, 0));
+    RR_CHECK(m.upload_triangles(nullptr, 0));
+    RR_CHECK(m.vertex_count()    == 0u);
+    RR_CHECK(m.triangle_count()  == 0u);
+    RR_CHECK(!m.has_data());
+}
+
+void test_mesh_non_empty_upload_without_backend_fails_predictably() {
+    if (rr::gpu::gpu_backend_available()) return;  // host-only path only
+
+    rr::gpu::GpuMesh m;
+
+    const rr::geometry::Vertex verts[] = {
+        {rr::math::Vec3{0, 0, 0}, rr::math::Vec3{0, 0, 1}, rr::math::Vec2{0, 0}},
+        {rr::math::Vec3{1, 0, 0}, rr::math::Vec3{0, 0, 1}, rr::math::Vec2{1, 0}},
+        {rr::math::Vec3{0, 1, 0}, rr::math::Vec3{0, 0, 1}, rr::math::Vec2{0, 1}},
+    };
+    const rr::geometry::Triangle tris[] = { {0, 1, 2} };
+
+    RR_CHECK(!m.upload_vertices(verts, 3));
+    RR_CHECK(m.vertex_count()   == 0u);
+    RR_CHECK(m.device_vertices() == nullptr);
+
+    RR_CHECK(!m.upload_triangles(tris, 1));
+    RR_CHECK(m.triangle_count()   == 0u);
+    RR_CHECK(m.device_triangles() == nullptr);
+}
+
+void test_mesh_upload_from_round_trip_or_skip() {
+    // Build a host quad (two triangles).
+    rr::geometry::Mesh host;
+    host.vertices.push_back({rr::math::Vec3{0, 0, 0}, rr::math::Vec3{0, 0, 1}, rr::math::Vec2{0, 0}});
+    host.vertices.push_back({rr::math::Vec3{1, 0, 0}, rr::math::Vec3{0, 0, 1}, rr::math::Vec2{1, 0}});
+    host.vertices.push_back({rr::math::Vec3{1, 1, 0}, rr::math::Vec3{0, 0, 1}, rr::math::Vec2{1, 1}});
+    host.vertices.push_back({rr::math::Vec3{0, 1, 0}, rr::math::Vec3{0, 0, 1}, rr::math::Vec2{0, 1}});
+    host.triangles.push_back({0, 1, 2});
+    host.triangles.push_back({0, 2, 3});
+    host.material_id          = 11;
+    host.transform.position   = rr::math::Vec3{0, 0, -3};
+
+    rr::gpu::GpuMesh gpu;
+    const bool ok = gpu.upload_from(host);
+
+    // Metadata is host-only and must always be set, regardless of
+    // whether the buffer uploads succeed.
+    RR_CHECK(gpu.material_id()        == 11);
+    RR_CHECK(gpu.transform().position == rr::math::Vec3{0, 0, -3});
+
+    if (rr::gpu::gpu_backend_available()
+        && !rr::gpu::enumerate_devices().empty()) {
+        RR_CHECK(ok);
+        RR_CHECK(gpu.vertex_count()   == 4u);
+        RR_CHECK(gpu.triangle_count() == 2u);
+        RR_CHECK(gpu.has_data());
+        RR_CHECK(gpu.device_vertices()  != nullptr);
+        RR_CHECK(gpu.device_triangles() != nullptr);
+    } else {
+        // Without a backend the buffer uploads fail and counts stay
+        // at zero; metadata is still readable.
+        RR_CHECK(!ok);
+        RR_CHECK(gpu.vertex_count()   == 0u);
+        RR_CHECK(gpu.triangle_count() == 0u);
+        RR_CHECK(!gpu.has_data());
+    }
+}
+
+void test_mesh_move_only_preserves_metadata() {
+    rr::gpu::GpuMesh a;
+    a.set_metadata(/*material_id=*/5, rr::math::Transform{});
+    rr::gpu::GpuMesh b(std::move(a));
+    RR_CHECK(b.material_id() == 5);
+
+    rr::gpu::GpuMesh c;
+    c = std::move(b);
+    RR_CHECK(c.material_id() == 5);
+}
+
 int main() {
     test_backend_name_consistency();
     test_enumerate_when_unavailable_is_empty();
@@ -263,6 +375,12 @@ int main() {
     test_scene_empty_sphere_upload_succeeds_everywhere();
     test_scene_sphere_upload_without_backend_fails_predictably();
     test_scene_upload_from_filters_invisible_spheres();
+    test_mesh_default_state();
+    test_mesh_metadata_setter_is_pure_host();
+    test_mesh_empty_upload_succeeds_everywhere();
+    test_mesh_non_empty_upload_without_backend_fails_predictably();
+    test_mesh_upload_from_round_trip_or_skip();
+    test_mesh_move_only_preserves_metadata();
 
     std::printf("gpu_tests: %d/%d passed\n", g_total - g_failed, g_total);
     return g_failed == 0 ? 0 : 1;

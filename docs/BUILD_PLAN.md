@@ -93,6 +93,89 @@ All modules now have a placeholder source directory under `src/`,
 
 ## Change Log
 
+### 2026-04-27 — GPU mesh upload landed (M10 - kernel side still open)
+
+Backend-agnostic owner for a single mesh's GPU resources.
+`rr::gpu::GpuMesh` carries two device-resident buffers (vertices +
+triangle indices) plus the per-mesh metadata (material id +
+world-space transform), and a thin `CudaMeshView` POD declares the
+launch-argument shape the eventual mesh kernel will consume. No
+kernel reads it yet (per the prompt: "no rendering yet, no BVH
+yet").
+
+- **`src/gpu/GpuMesh.h` / `.cpp`:** move-only RAII container.
+  `GpuBuffer<rr::geometry::Vertex>` for the vertex array,
+  `GpuBuffer<rr::geometry::Triangle>` for the index array, both
+  dynamic (no compile-time cap). Surface:
+  `upload_vertices(host, count)`, `upload_triangles(host, count)`,
+  `set_metadata(material_id, transform)`,
+  `upload_from(const Mesh&)` convenience, plus queries
+  (`vertex_count`, `triangle_count`, `material_id`, `transform`,
+  `has_data`, `device_vertices`, `device_triangles`). Empty
+  uploads always succeed; non-empty uploads fail predictably
+  without a backend (counts stay zero, device pointers stay
+  null). Metadata is host state and is set even on a failed
+  upload so callers can inspect partial state for debugging.
+- **`src/cuda/CudaMesh.cuh`:** `CudaMeshView` POD - device
+  pointers + counts + material id + transform, the launch-argument
+  shape the kernel will read by value. Defined now as a stable
+  contract so the next slice (closest-hit triangle loop) can land
+  without touching this header.
+- **`tests/gpu_tests.cpp`:** +30 GpuMesh assertions (71/71 total).
+  Default state; metadata setter is pure host (succeeds without
+  a backend); empty upload succeeds everywhere; non-empty upload
+  without a backend fails predictably with counts zero / device
+  pointers null; `upload_from` round-trip on a quad with full
+  metadata - succeeds with non-zero counts when CUDA + a device
+  are present, fails predictably otherwise; move-only preserves
+  metadata across move-ctor and move-assign.
+- **`CMakeLists.txt`:** `rr_gpu` lists `src/gpu/GpuMesh.cpp` and
+  PUBLIC-links `rr_geometry` (the renderer's GPU layer needs the
+  Mesh / Triangle / Vertex types). PUBLIC-link list for `rr_gpu`
+  is now `rr_scene rr_geometry`; image / camera flow in
+  transitively.
+
+#### Verified locally (host-only, no CUDA Toolkit on this box)
+
+```
+$ cmake --build build && cd build && ctest --output-on-failure
+1/8 Test #1: math_tests       ........... Passed  0.00 sec
+2/8 Test #2: image_tests      ........... Passed  0.00 sec
+3/8 Test #3: gpu_tests        ........... Passed  0.00 sec
+4/8 Test #4: camera_tests     ........... Passed  0.00 sec
+5/8 Test #5: geometry_tests   ........... Passed  0.00 sec
+6/8 Test #6: relativity_tests ........... Passed  0.00 sec
+7/8 Test #7: scene_tests      ........... Passed  0.00 sec
+8/8 Test #8: mesh_tests       ........... Passed  0.00 sec
+100% tests passed, 0 tests failed out of 8
+
+$ ./build/bin/gpu_tests
+gpu_tests: skipping CUDA round-trip (no backend compiled)
+gpu_tests: 71/71 passed
+```
+
+#### Hard-rule check
+
+- **CPU uploads only**: every `GpuMesh` operation either copies a
+  POD into host state (metadata setter) or pushes contiguous
+  arrays through `GpuBuffer<T>`. No per-vertex / per-triangle
+  CPU work; the kernel-side iteration arrives in the next slice.
+- **No rendering changes**: `--render` continues to use the M10
+  sphere-only scene; no kernel reads `GpuMesh` or
+  `CudaMeshView` yet.
+
+#### Not in this slice (M10 still "in progress")
+
+- No mesh kernel. The closest-hit loop over uploaded triangles,
+  the `intersect_triangle` routine, and a `CudaMeshView` slot
+  inside `CudaSceneView` are the next slice.
+- No BVH per the prompt; brute-force intersection is the M10
+  baseline. OptiX acceleration arrives at M15.
+- `SceneMesh` in `scene/Scene.h` remains the M9 placeholder
+  (name + source_path + material_index). It will be rewritten
+  to embed an `rr::geometry::Mesh` once the kernel actually
+  reads it.
+
 ### 2026-04-27 — Mesh geometry structures landed (Geometry System in progress)
 
 Host-side mesh data model. No renderer wiring; no GPU upload yet.
@@ -1247,24 +1330,25 @@ and does not affect the architecture or dependency rules.
 
 ## Next Step
 
-**Finish M10 — triangle mesh upload.** The host data model is
-now in place (`rr::geometry::Mesh` with vertices, triangles,
-material id, transform). To complete M10 and move on to M11:
+**Finish M10 — wire `GpuMesh` into the kernel.** The host
+upload path is now in place (`GpuMesh` owns vertices,
+triangles, material_id, transform; `CudaMeshView` is the
+agreed launch-argument shape). To complete M10:
 
 1. Extend `GpuScene` with `upload_meshes(const std::vector<Mesh>&)`
-   that pushes vertex / index buffers via
-   `GpuBuffer<Vertex>` / `GpuBuffer<Triangle>` and snapshots the
-   per-mesh transform + material_id.
-2. Add a `MeshDescriptor` POD to `CudaSceneView` (vertex pointer,
-   index pointer, counts, material id, world matrix) so the
-   kernel can iterate scene meshes.
+   so a scene can carry several meshes alongside the existing
+   sphere array.
+2. Add a `CudaMeshView*` array (or small fixed-size handle list)
+   to `CudaSceneView` so the kernel can iterate scene meshes.
 3. Add `RR_HD inline intersect_triangle` next to
    `intersect_sphere` in `cuda/CudaIntersection.cuh` and a
    closest-hit loop step in `k_render_scene` that walks each
-   mesh's index buffer.
-4. Host regressions on the upload round-trip and on intersection
-   geometry (centre-pixel hit / corner miss for a known
-   triangle, mirroring the sphere replay).
+   mesh's index buffer (still brute-force; OptiX acceleration
+   arrives at M15).
+4. Host regressions on the new intersection routine
+   (centre-pixel hit / corner miss for a known triangle,
+   mirroring the existing sphere replay) and on
+   `GpuScene::upload_meshes`.
 
 Before or alongside this, the M2 deferred items (`Error`,
 `FileSystem`, `App`, `Config::load`/`save`, real test framework,

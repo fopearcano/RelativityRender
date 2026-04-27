@@ -121,11 +121,13 @@ add_library(rr_gpu STATIC
     src/gpu/GpuDevice.cpp
     src/gpu/GpuBuffer.cpp
     src/gpu/GpuScene.cpp
+    src/gpu/GpuMesh.cpp
 )
 target_include_directories(rr_gpu PUBLIC src)
-# rr_scene is part of the public ABI of rr_gpu since `GpuScene` consumes
-# `rr::scene::Scene` and exposes camera / observer / relativity PODs.
-target_link_libraries(rr_gpu PUBLIC rr_scene)
+# rr_scene + rr_geometry are part of the public ABI of rr_gpu since
+# `GpuScene` consumes `rr::scene::Scene` and `GpuMesh` consumes
+# `rr::geometry::Mesh`.
+target_link_libraries(rr_gpu PUBLIC rr_scene rr_geometry)
 if(MSVC)
     target_compile_options(rr_gpu PRIVATE /W4 /permissive-)
 else()
