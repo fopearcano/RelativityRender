@@ -34,9 +34,23 @@ message(STATUS "  Build tests        : ${RR_BUILD_TESTS}")
 message(STATUS "  Build tools        : ${RR_BUILD_TOOLS}")
 message(STATUS "  Build integrations : ${RR_BUILD_INTEGRATIONS}")
 
-# Main executable. As modules land they will be promoted to their own
-# static libraries linked here; for now the foundation is small enough
-# that listing source files at the top level is the simplest honest setup.
+# Module libraries. As each module grows it gets promoted from "sources
+# listed directly in the executable" to its own static library so the
+# dependency direction stays visible in the link list. rr_image is the
+# first such module.
+add_library(rr_image STATIC
+    src/image/Image.cpp
+    src/image/Framebuffer.cpp
+)
+target_include_directories(rr_image PUBLIC src)
+if(MSVC)
+    target_compile_options(rr_image PRIVATE /W4 /permissive-)
+else()
+    target_compile_options(rr_image PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+
+# Main executable. As more modules land they will be promoted to their
+# own static libraries and linked here.
 add_executable(RelativityRender
     src/main.cpp
     src/core/Logger.cpp
@@ -63,4 +77,13 @@ if(RR_BUILD_TESTS)
         target_compile_options(math_tests PRIVATE -Wall -Wextra -Wpedantic)
     endif()
     add_test(NAME math_tests COMMAND math_tests)
+
+    add_executable(image_tests tests/image_tests.cpp)
+    target_link_libraries(image_tests PRIVATE rr_image)
+    if(MSVC)
+        target_compile_options(image_tests PRIVATE /W4 /permissive-)
+    else()
+        target_compile_options(image_tests PRIVATE -Wall -Wextra -Wpedantic)
+    endif()
+    add_test(NAME image_tests COMMAND image_tests)
 endif()

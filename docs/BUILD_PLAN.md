@@ -8,19 +8,20 @@ Update it after every implementation step, per
 
 ## Current State
 
-- **Active milestones:** M2 — Core Engine (in progress, doing in
-  parallel) and **M3 — Math Library (landed)**. Math is the leaf module
-  and depends on nothing in M2, so it can land before M2's remaining
-  items (Error / FileSystem / App / Config persistence / CI) without
-  violating the dependency rules.
+- **Active milestones:** M2 — Core Engine (in progress), **M3 — Math
+  Library (landed)**, **M4 — Image / Framebuffer System (landed)**.
 - **Active branch:** `claude/create-docs-architecture-T2Dp5`.
 - **Code in repo:** repository skeleton, top-level CMake project, the
   minimal C++20 application foundation, configuration + CLI handling,
-  and the math library (`src/math/Vec2.h`, `Vec3.h`, `Vec4.h`, `Mat4.h`,
-  `MathUtils.h`). The `RelativityRender` executable still parses
-  `--help`, `--version`, `--device-info`, `--render`, `--output`,
-  `--width`, `--height`. A `math_tests` executable runs 42 unit
-  assertions through `ctest`. No GPU, no rendering, no scene system.
+  the math library, and the image / framebuffer system (`src/image/`).
+  The `RelativityRender` executable still parses `--help`, `--version`,
+  `--device-info`, `--render`, `--output`, `--width`, `--height`.
+  Two test executables — `math_tests` (42 assertions) and
+  `image_tests` (39 assertions, including a CPU-generated gradient
+  saved to PPM purely for IO validation) — run through `ctest`. The
+  first module-as-library promotion has happened: `rr_image` is a
+  static library linked by tests. No GPU, no rendering, no scene
+  system.
 
 ## Module Status (mirrors `docs/MODULE_MAP.md`)
 
@@ -28,7 +29,7 @@ Update it after every implementation step, per
 |----|-------------------------------------|---------------|
 | 1  | Core Engine                         | in progress   |
 | 2  | Math Library                        | landed        |
-| 3  | Image / Framebuffer System          | not started   |
+| 3  | Image / Framebuffer System          | landed        |
 | 4  | GPU Device Layer                    | not started   |
 | 5  | CUDA Backend                        | not started   |
 | 6  | OptiX Backend                       | not started   |
@@ -61,7 +62,7 @@ All modules now have a placeholder source directory under `src/`,
 | M1        | Repository Skeleton & Build System      | landed      |
 | M2        | Core Engine: Logging, Config, Lifecycle | in progress |
 | M3        | Math Library                            | landed      |
-| M4        | Image / Framebuffer System              | not started |
+| M4        | Image / Framebuffer System              | landed      |
 | M5        | CUDA Device Layer                       | not started |
 | M6        | CUDA Framebuffer & First Kernel         | not started |
 | M7        | Camera System & GPU Camera Rays         | not started |
@@ -85,6 +86,70 @@ All modules now have a placeholder source directory under `src/`,
 ---
 
 ## Change Log
+
+### 2026-04-27 — M4 image / framebuffer system landed
+
+Host-side pixel storage, set/get/clear/resize, and PPM save (no
+third-party dep). PPM is intentionally minimal; OpenEXR/PNG IO arrives
+when the GPU paths need real HDR formats.
+
+- **`src/image/Color.h`:** `Rgb` and `Rgba` plain-data structs; both
+  `RR_HD constexpr`-friendly so they will be usable from device code
+  later. `Rgba` carries `a` defaulted to 1; `Rgba::rgb()` strips it. No
+  arithmetic operators yet — premature for image storage; they'll come
+  in with shading.
+- **`src/image/Image.h` / `.cpp`:** `PixelFormat { Rgb32F, Rgba32F }`
+  and an `Image` class with `width/height/format/channels/empty`,
+  `set_pixel(x,y,Rgba)`, `get_pixel(x,y)->Rgba` (alpha=1 for Rgb32F),
+  `clear(Rgba)`, `resize(w,h)` (zero-fills, format preserved),
+  raw `data()` / `size_in_floats()` for future GPU upload, and
+  `save_ppm(path)`. Storage is row-major, channel-interleaved,
+  contiguous floats (the layout we'll mirror on the device side
+  later). OOB pixel access is debug-asserted.
+- **`save_ppm`** writes 8-bit P6 binary. Floats are clamped to [0,1]
+  and quantized; HDR > 1 is lost; alpha is dropped (PPM has no alpha).
+  Empty images return `false`. Honest minimal IO, not a stub: it
+  produces files an EXR/PNG viewer can convert and a hex dump can
+  validate.
+- **`src/image/Framebuffer.h` / `.cpp`:** thin render-target wrapper
+  owning a single color `Image`. Provides `color()` (mutable + const),
+  `resize`, `clear`, `save_ppm`. AOVs, accumulation buffers, and tile
+  metadata join later (M14 / M17). The Image / Framebuffer split is
+  intentional: Image is generic 2D pixel storage; Framebuffer is what
+  the renderer writes into during a frame.
+- **`tests/image_tests.cpp`:** 39 assertions covering Rgba/Rgb format
+  set/get round-trip, Rgb32F alpha-on-read = 1, clear, resize zeroes,
+  Framebuffer clear + resize, and the **gradient-to-PPM IO
+  validation** (verifies header `P6 W H 255` + payload size = W*H*3
+  bytes). Empty-image save returns false. The gradient is the only
+  CPU-side pixel generation in this module, allowed exclusively as IO
+  validation.
+- **`CMakeLists.txt`:** first module promoted to a static library —
+  `rr_image` (`src/image/{Image,Framebuffer}.cpp` + `PUBLIC` include
+  on `src/`). `image_tests` links it; the main executable does not
+  yet use it. Same warning flags as elsewhere (`-Wall -Wextra
+  -Wpedantic` / `/W4 /permissive-`).
+
+#### Verified locally
+
+```
+$ cmake --build build && cd build && ctest --output-on-failure
+1/2 Test #1: math_tests  ............ Passed  0.00 sec
+2/2 Test #2: image_tests ............ Passed  0.00 sec
+100% tests passed, 0 tests failed out of 2
+```
+
+`image_tests` reports `39/39 passed`; the gradient is written to
+`<temp>/rr_image_test_gradient.ppm`, validated, and removed.
+
+#### Order note
+
+M4 lands before M2's remaining sub-items (`Error`, `FileSystem`,
+`App`, `Config::load`/`save`, real test framework, host CI) for the
+same reason M3 did: Image depends only on Math (already landed) and a
+trivial subset of Core that exists now (none of the deferred Core
+pieces are needed here). Per `docs/MODULE_MAP.md`, this respects the
+declared dependency direction.
 
 ### 2026-04-27 — M3 math library landed
 
@@ -328,13 +393,14 @@ and does not affect the architecture or dependency rules.
 
 ## Next Step
 
-**M4 — Image / Framebuffer System** is the next big step (host-side
-pixel formats, framebuffer / accumulation buffer, EXR/PNG IO under
-`src/io/`). Math is in; Image depends only on Math + Core, and the
-parts of Core it needs (Logger) are already landed.
+**M5 — CUDA Device Layer** is the next big step. The first real GPU
+work: detect devices, wrap streams and buffers, pass through to the
+runtime, integrate the CUDA toolchain in CMake (still optional via
+`RR_ENABLE_CUDA`), and add a "list devices" CLI path. M5 is what makes
+`--device-info` print real information.
 
-Before starting M4, the M2 deferred items should be cleaned up so the
-core foundation is honest end-to-end:
+Before or alongside M5 the M2 deferred items should be cleaned up so
+the core foundation is honest end-to-end:
 
 1. `core::Error` — a small result/error type used at module boundaries.
 2. `core::FileSystem` — minimal path / read / write helpers using
@@ -344,10 +410,11 @@ core foundation is honest end-to-end:
 4. `core::App` — application lifecycle wrapper that owns parse → run →
    exit.
 5. A real test framework (Catch2 or doctest) under `third_party/`,
-   migrating `math_tests.cpp` and adding tests for `Logger`,
-   `CommandLine` (every flag + every error path), `Config` round-trip,
-   and `FileSystem`.
+   migrating `math_tests.cpp` / `image_tests.cpp` and adding tests for
+   `Logger`, `CommandLine` (every flag + every error path), `Config`
+   round-trip, and `FileSystem`.
 6. Host-only CI configuration that runs the build and tests.
 
-Per development rules, none of these may introduce code from M4+
-modules — no image, framebuffer, or GPU code yet.
+Per development rules, none of these may introduce code from M5+
+modules — no GPU device, kernel, or rendering code in the Core /
+Image cleanup pass.
