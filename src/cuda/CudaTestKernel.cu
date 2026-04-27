@@ -254,14 +254,34 @@ __global__ void k_render_scene(float* pixels, int width, int height,
                                                           ray.direction);
     }
 
-    // 3. Closest-hit loop over the uploaded sphere array. `t_max`
-    //    tightens as we accept hits so each candidate only needs to
-    //    beat the running best.
+    // 3. Closest-hit loop over both primitive types. `t_max`
+    //    tightens as we accept hits so later candidates only need to
+    //    beat the running best - this lets sphere and triangle
+    //    primitives compete for the same nearest-hit slot.
     rr::renderer::Hit best;
     float             t_max = 1.0e30f;
+
     for (int i = 0; i < scene.sphere_count; ++i) {
         const auto h = rr::cuda::intersect_sphere(ray, scene.spheres[i],
                                                   /*t_min=*/0.0f, t_max);
+        if (h.hit) {
+            best  = h;
+            t_max = h.t;
+        }
+    }
+
+    // Naive triangle loop. Vertex transforms are not applied: vertex
+    // positions are taken as-is from the uploaded buffer (effectively
+    // world-space). Per-mesh transforms join the kernel alongside the
+    // material system in M11.
+    const auto& mesh = scene.mesh;
+    for (int i = 0; i < mesh.triangle_count; ++i) {
+        const auto tri = mesh.triangles[i];
+        const auto v0  = mesh.vertices[tri.v0].position;
+        const auto v1  = mesh.vertices[tri.v1].position;
+        const auto v2  = mesh.vertices[tri.v2].position;
+        const auto h   = rr::cuda::intersect_triangle(ray, v0, v1, v2,
+                                                      /*t_min=*/0.0f, t_max);
         if (h.hit) {
             best  = h;
             t_max = h.t;

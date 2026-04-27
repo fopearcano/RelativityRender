@@ -40,7 +40,7 @@ Update it after every implementation step, per
 | 5  | CUDA Backend                        | in progress   |
 | 6  | OptiX Backend                       | not started   |
 | 7  | Scene Graph                         | landed        |
-| 8  | Geometry System                     | in progress   |
+| 8  | Geometry System                     | landed        |
 | 9  | Material / Shading System           | not started   |
 | 10 | Texture System                      | not started   |
 | 11 | Lighting System                     | not started   |
@@ -74,7 +74,7 @@ All modules now have a placeholder source directory under `src/`,
 | M7        | Camera System & GPU Camera Rays         | landed      |
 | M8        | GPU Primitive Intersection              | landed      |
 | M9        | Relativistic Camera Model (First Pass)  | landed      |
-| M10       | GPU Scene Upload & Triangle Mesh        | in progress |
+| M10       | GPU Scene Upload & Triangle Mesh        | landed      |
 | M11       | Material System (Foundations)           | not started |
 | M12       | Lighting System (Foundations)           | not started |
 | M13       | Scene File Format & Parser              | not started |
@@ -92,6 +92,96 @@ All modules now have a placeholder source directory under `src/`,
 ---
 
 ## Change Log
+
+### 2026-04-27 — M10 finalized: CUDA triangle rendering
+
+Naive GPU triangle loop alongside the existing sphere loop. Both
+primitive types compete for the same nearest-hit slot in
+`k_render_scene`. CPU does no intersection work; the kernel walks
+the uploaded vertex / index buffers per pixel.
+
+- **`src/cuda/CudaIntersection.cuh`:** added `RR_HD inline
+  intersect_triangle(ray, v0, v1, v2, t_min, t_max) -> Hit`.
+  Moller-Trumbore. Double-sided (back-face hits accepted; the
+  `|det| < eps` check rejects only edge-parallel rays). Returns
+  the geometric front-face normal of the CCW winding `(v0, v1,
+  v2)`. `ray.direction` does not need to be unit length.
+- **`src/cuda/CudaMesh.cuh`** (existing): the launch-argument
+  contract is now consumed by `k_render_scene`.
+- **`src/cuda/CudaScene.cuh`:** added a single-mesh slot to
+  `CudaSceneView`. `mesh.triangle_count == 0` means "no mesh
+  contributes triangles", so a sphere-only scene still works
+  unchanged.
+- **`src/cuda/CudaTestKernel.cu`:** extended `k_render_scene` with
+  a triangle loop after the sphere loop. Both update the running
+  `t_max`, so the closest hit across primitive types wins. Vertex
+  positions are taken as-is from the uploaded buffer (effectively
+  world-space). Per-mesh transforms join the kernel alongside the
+  M11 material system; for now the host pre-places vertices in
+  world space.
+- **`src/cuda/CudaRenderer.cu`:** `render_scene` now also copies
+  the mesh slot from `GpuScene::gpu_mesh()` into `CudaSceneView`.
+- **`src/gpu/GpuScene.{h,cpp}`:** added a `GpuMesh mesh_;` slot,
+  `upload_mesh(const Mesh&)` convenience, `has_mesh()` query, and
+  a `gpu_mesh()` accessor for the renderer. `upload_from(Scene)`
+  is intentionally unchanged (scene-side mesh wrappers are still
+  placeholders); callers push the mesh directly via
+  `upload_mesh`.
+- **`src/main.cpp`:** `--render` now produces both deliverables.
+  A reusable `build_quad()` helper builds a 2-triangle CCW quad
+  in front of the camera; the first scene uses only the mesh
+  (output `output/gpu_triangle.ppm`); the second adds the M10
+  four-sphere arrangement (output `output/gpu_mesh_scene.ppm`).
+- **`tests/geometry_tests.cpp`:** +15 triangle assertions
+  (40/40 total) covering centre-pixel hit (`t = 3`,
+  `position = (0, 0, -3)`, `normal = (0, 0, 1)` for a CCW
+  triangle in the `z = -3` plane), outside-triangle miss,
+  parallel-ray miss, double-sided hit from behind,
+  `t_min`/`t_max` clipping, and CCW vs CW winding flipping the
+  geometric normal. The kernel calls the same `RR_HD` routine, so
+  the host coverage validates the device math by construction.
+
+#### Verified locally (host-only, no CUDA Toolkit on this box)
+
+```
+$ cmake --build build && cd build && ctest --output-on-failure
+1/8 Test #1: math_tests       ........... Passed  0.00 sec
+2/8 Test #2: image_tests      ........... Passed  0.00 sec
+3/8 Test #3: gpu_tests        ........... Passed  0.00 sec
+4/8 Test #4: camera_tests     ........... Passed  0.00 sec
+5/8 Test #5: geometry_tests   ........... Passed  0.00 sec
+6/8 Test #6: relativity_tests ........... Passed  0.00 sec
+7/8 Test #7: scene_tests      ........... Passed  0.00 sec
+8/8 Test #8: mesh_tests       ........... Passed  0.00 sec
+100% tests passed, 0 tests failed out of 8
+
+$ ./build/bin/geometry_tests
+geometry_tests: 40/40 passed
+```
+
+The CUDA-enabled run (`-DRR_ENABLE_CUDA=ON`) produces both
+`output/gpu_triangle.ppm` and `output/gpu_mesh_scene.ppm`. Correct
+by construction: the kernel calls the same `RR_HD generate_camera_ray`,
+`intersect_sphere`, and `intersect_triangle` that
+`camera_tests` (43) and `geometry_tests` (40) cover on the host.
+
+#### Hard-rule check
+
+- **No CPU intersection**: every ray-primitive test happens inside
+  `k_render_scene`. Host calls to `intersect_triangle` exist only
+  in `geometry_tests` for validation.
+- **No CPU pixel iteration in the render path**:
+  `Image::save_ppm` is the only CPU loop over pixels (image save
+  internals, permitted).
+
+#### What this milestone closes (M10 / Module 8)
+
+- M10 (GPU Scene Upload & Triangle Mesh) -> landed: scene upload
+  + naive triangle rendering both work.
+- Module 8 (Geometry System) -> landed: host-side `Sphere` /
+  `Triangle` / `Mesh`, host- and device-callable
+  `intersect_sphere` / `intersect_triangle`, GPU-uploadable form
+  via `GpuMesh`, all exercised end-to-end.
 
 ### 2026-04-27 — GPU mesh upload landed (M10 - kernel side still open)
 
@@ -1330,25 +1420,22 @@ and does not affect the architecture or dependency rules.
 
 ## Next Step
 
-**Finish M10 — wire `GpuMesh` into the kernel.** The host
-upload path is now in place (`GpuMesh` owns vertices,
-triangles, material_id, transform; `CudaMeshView` is the
-agreed launch-argument shape). To complete M10:
+**M11 — Material System (foundations).** The renderer can hit
+spheres and triangles; the next gap is real shading:
 
-1. Extend `GpuScene` with `upload_meshes(const std::vector<Mesh>&)`
-   so a scene can carry several meshes alongside the existing
-   sphere array.
-2. Add a `CudaMeshView*` array (or small fixed-size handle list)
-   to `CudaSceneView` so the kernel can iterate scene meshes.
-3. Add `RR_HD inline intersect_triangle` next to
-   `intersect_sphere` in `cuda/CudaIntersection.cuh` and a
-   closest-hit loop step in `k_render_scene` that walks each
-   mesh's index buffer (still brute-force; OptiX acceleration
-   arrives at M15).
-4. Host regressions on the new intersection routine
-   (centre-pixel hit / corner miss for a known triangle,
-   mirroring the existing sphere replay) and on
-   `GpuScene::upload_meshes`.
+1. `rr::material::BSDF` interface (`eval` / `sample` / `pdf`)
+   and a Lambertian + GGX implementation.
+2. `material_index` in `Hit` so the kernel knows which BSDF to
+   evaluate on a hit (we already plumb material ids on
+   `SceneSphere` / `SceneMesh` / `Mesh` through the upload
+   path).
+3. Move the host-side `SceneMaterial` placeholder to a real
+   parameter pack and upload it as a `GpuBuffer<MaterialPOD>` /
+   `CudaSceneView::materials`.
+4. Replace the kernel's normal-as-color shading with BSDF
+   evaluation against a fixed-direction "ambient" probe so we
+   can validate the pipeline before lighting (M12) and the path
+   tracer (M14) go in.
 
 Before or alongside this, the M2 deferred items (`Error`,
 `FileSystem`, `App`, `Config::load`/`save`, real test framework,

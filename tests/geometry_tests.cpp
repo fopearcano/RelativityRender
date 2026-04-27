@@ -168,6 +168,97 @@ void test_make_sphere_factory_matches_aggregate() {
     RR_CHECK(s.radius == 4.0f);
 }
 
+// --- Triangle (Moller-Trumbore) -----------------------------------------
+
+void test_triangle_centre_hit() {
+    using rr::cuda::intersect_triangle;
+    // CCW front-face winding; triangle in plane z = -3.
+    const Vec3 v0{-1.0f, -1.0f, -3.0f};
+    const Vec3 v1{ 1.0f, -1.0f, -3.0f};
+    const Vec3 v2{ 0.0f,  1.0f, -3.0f};
+
+    const auto r = make_ray(Vec3{0, 0, 0}, Vec3{0, 0, -1});
+    const auto h = intersect_triangle(r, v0, v1, v2, 0.0f, 1.0e30f);
+
+    RR_CHECK(h.hit);
+    RR_CHECK(nearly_equal(h.t, 3.0f));
+    RR_CHECK(nearly_equal(h.position, Vec3{0, 0, -3}));
+    // Front-face normal of CCW (v0 -> v1 -> v2) on a plane facing
+    // the camera should be +Z.
+    RR_CHECK(nearly_equal(h.normal, Vec3{0, 0, 1}));
+}
+
+void test_triangle_outside_misses() {
+    using rr::cuda::intersect_triangle;
+    const Vec3 v0{-1.0f, -1.0f, -3.0f};
+    const Vec3 v1{ 1.0f, -1.0f, -3.0f};
+    const Vec3 v2{ 0.0f,  1.0f, -3.0f};
+
+    // Aim well outside the triangle on the +X side.
+    const auto r = make_ray(Vec3{0, 0, 0}, Vec3{5, 0, -3});
+    const auto h = intersect_triangle(r, v0, v1, v2, 0.0f, 1.0e30f);
+    RR_CHECK(!h.hit);
+}
+
+void test_triangle_parallel_ray_misses() {
+    using rr::cuda::intersect_triangle;
+    const Vec3 v0{-1.0f, -1.0f, -3.0f};
+    const Vec3 v1{ 1.0f, -1.0f, -3.0f};
+    const Vec3 v2{ 0.0f,  1.0f, -3.0f};
+
+    // Ray parallel to the triangle plane (along +X).
+    const auto r = make_ray(Vec3{0, 0, -3}, Vec3{1, 0, 0});
+    const auto h = intersect_triangle(r, v0, v1, v2, 0.0f, 1.0e30f);
+    RR_CHECK(!h.hit);
+}
+
+void test_triangle_double_sided_hit_from_back() {
+    using rr::cuda::intersect_triangle;
+    const Vec3 v0{-1.0f, -1.0f, -3.0f};
+    const Vec3 v1{ 1.0f, -1.0f, -3.0f};
+    const Vec3 v2{ 0.0f,  1.0f, -3.0f};
+
+    // Ray approaches from behind the triangle (camera at -10 z,
+    // looking +Z). The MT routine is double-sided, so it still hits.
+    const auto r = make_ray(Vec3{0, 0, -10}, Vec3{0, 0, 1});
+    const auto h = intersect_triangle(r, v0, v1, v2, 0.0f, 1.0e30f);
+    RR_CHECK(h.hit);
+    RR_CHECK(nearly_equal(h.t, 7.0f));
+}
+
+void test_triangle_t_min_and_t_max_clip() {
+    using rr::cuda::intersect_triangle;
+    const Vec3 v0{-1.0f, -1.0f, -3.0f};
+    const Vec3 v1{ 1.0f, -1.0f, -3.0f};
+    const Vec3 v2{ 0.0f,  1.0f, -3.0f};
+
+    const auto r = make_ray(Vec3{0, 0, 0}, Vec3{0, 0, -1});
+    auto h = intersect_triangle(r, v0, v1, v2, 0.0f, 2.5f);
+    RR_CHECK(!h.hit);                         // t = 3, clipped by t_max
+    h = intersect_triangle(r, v0, v1, v2, 3.5f, 1.0e30f);
+    RR_CHECK(!h.hit);                         // t = 3, below t_min
+    h = intersect_triangle(r, v0, v1, v2, 0.0f, 1.0e30f);
+    RR_CHECK(h.hit);
+    RR_CHECK(nearly_equal(h.t, 3.0f));
+}
+
+void test_triangle_winding_flips_normal() {
+    using rr::cuda::intersect_triangle;
+    const Vec3 v0{-1.0f, -1.0f, -3.0f};
+    const Vec3 v1{ 1.0f, -1.0f, -3.0f};
+    const Vec3 v2{ 0.0f,  1.0f, -3.0f};
+
+    const auto r = make_ray(Vec3{0, 0, 0}, Vec3{0, 0, -1});
+
+    const auto ccw = intersect_triangle(r, v0, v1, v2, 0.0f, 1.0e30f);
+    const auto cw  = intersect_triangle(r, v0, v2, v1, 0.0f, 1.0e30f);
+
+    RR_CHECK(ccw.hit);
+    RR_CHECK(cw.hit);
+    // Reversing the winding must flip the geometric normal.
+    RR_CHECK(nearly_equal(ccw.normal, -cw.normal));
+}
+
 }
 
 int main() {
@@ -180,6 +271,13 @@ int main() {
     test_corner_pixel_misses_test_sphere();
     test_make_miss_is_default_state();
     test_make_sphere_factory_matches_aggregate();
+
+    test_triangle_centre_hit();
+    test_triangle_outside_misses();
+    test_triangle_parallel_ray_misses();
+    test_triangle_double_sided_hit_from_back();
+    test_triangle_t_min_and_t_max_clip();
+    test_triangle_winding_flips_normal();
 
     std::printf("geometry_tests: %d/%d passed\n", g_total - g_failed, g_total);
     return g_failed == 0 ? 0 : 1;

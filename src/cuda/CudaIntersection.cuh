@@ -16,7 +16,6 @@
 #include "renderer/Hit.h"
 
 #include <cmath>  // sqrtf is host- and device-callable on every supported toolchain
-
 namespace rr::cuda {
 
 // Ray-sphere intersection.
@@ -65,6 +64,57 @@ RR_HD inline rr::renderer::Hit intersect_sphere(const rr::camera::CameraRay& ray
     // Inverse-radius multiply rather than `normalize`: `radius > 0` is
     // a precondition, and this avoids a redundant `length` call.
     out.normal   = (out.position - sphere.center) * (1.0f / sphere.radius);
+    return out;
+}
+
+// Ray-triangle intersection (Moller-Trumbore).
+//
+// Treats the triangle as double-sided: both back- and front-face hits
+// are accepted (the |det| check rejects only edge-parallel rays).
+// `normal` is returned as the geometric face normal of the
+// counter-clockwise winding order `(v0, v1, v2)` - i.e. the front-face
+// outward normal. Callers that want a one-sided result can compare
+// `dot(normal, ray.direction)` and discard back-face hits.
+//
+// `ray.direction` does not need to be unit length; `t` is in the ray's
+// own parameter scale.
+RR_HD inline rr::renderer::Hit intersect_triangle(const rr::camera::CameraRay& ray,
+                                                  rr::math::Vec3 v0,
+                                                  rr::math::Vec3 v1,
+                                                  rr::math::Vec3 v2,
+                                                  float t_min, float t_max) {
+    using rr::math::Vec3;
+    using rr::math::cross;
+    using rr::math::dot;
+    using rr::math::normalize;
+
+    rr::renderer::Hit out{};
+
+    const Vec3  e1  = v1 - v0;
+    const Vec3  e2  = v2 - v0;
+    const Vec3  p   = cross(ray.direction, e2);
+    const float det = dot(e1, p);
+
+    // Ray parallel (or near-parallel) to the triangle plane.
+    constexpr float kEps = 1.0e-8f;
+    if (det > -kEps && det < kEps) return out;
+
+    const float inv_det = 1.0f / det;
+    const Vec3  s       = ray.origin - v0;
+    const float u       = dot(s, p) * inv_det;
+    if (u < 0.0f || u > 1.0f) return out;
+
+    const Vec3  q = cross(s, e1);
+    const float v = dot(ray.direction, q) * inv_det;
+    if (v < 0.0f || (u + v) > 1.0f) return out;
+
+    const float t = dot(e2, q) * inv_det;
+    if (t <= t_min || t >= t_max) return out;
+
+    out.hit      = true;
+    out.t        = t;
+    out.position = ray.origin + ray.direction * t;
+    out.normal   = normalize(cross(e1, e2));
     return out;
 }
 

@@ -147,6 +147,14 @@ CudaRenderer::Result CudaRenderer::render_scene(const rr::gpu::GpuScene& scene,
     view.spheres      = scene.device_spheres();
     view.sphere_count = static_cast<int>(scene.sphere_count());
 
+    const auto& gpu_mesh = scene.gpu_mesh();
+    view.mesh.vertices       = gpu_mesh.device_vertices();
+    view.mesh.triangles      = gpu_mesh.device_triangles();
+    view.mesh.vertex_count   = static_cast<int>(gpu_mesh.vertex_count());
+    view.mesh.triangle_count = static_cast<int>(gpu_mesh.triangle_count());
+    view.mesh.material_id    = gpu_mesh.material_id();
+    view.mesh.transform      = gpu_mesh.transform();
+
     return run_kernel_render(width, height,
         [view](float* device_pixels, int w, int h) {
             launch_render_scene(device_pixels, w, h, view, /*stream=*/nullptr);

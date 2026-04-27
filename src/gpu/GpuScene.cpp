@@ -1,5 +1,6 @@
 #include "gpu/GpuScene.h"
 
+#include "geometry/Mesh.h"
 #include "scene/Scene.h"
 
 #include <vector>
@@ -18,6 +19,10 @@ bool GpuScene::upload_relativity(const rr::relativity::Observer&         observe
     params_         = params;
     has_relativity_ = true;
     return true;
+}
+
+bool GpuScene::upload_mesh(const rr::geometry::Mesh& mesh) {
+    return mesh_.upload_from(mesh);
 }
 
 bool GpuScene::upload_spheres(const rr::geometry::Sphere* host, std::size_t count) {

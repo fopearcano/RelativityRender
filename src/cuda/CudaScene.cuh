@@ -13,6 +13,7 @@
 #include <cuda_runtime.h>
 
 #include "camera/CameraRay.h"
+#include "cuda/CudaMesh.cuh"
 #include "geometry/Sphere.h"
 #include "relativity/RelativityParams.h"
 
@@ -24,6 +25,13 @@ struct CudaSceneView {
     rr::relativity::RelativityParams  params;
     const rr::geometry::Sphere*       spheres       = nullptr;  // device pointer
     int                               sphere_count  = 0;
+
+    // Single-mesh slot. `mesh.triangle_count == 0` means "no mesh
+    // contributes triangles to this scene". Multi-mesh support
+    // promotes this to an array (or device-resident handle list)
+    // alongside the M11 material system; a single slot is enough to
+    // demonstrate the M10 closest-hit logic across primitive types.
+    CudaMeshView                      mesh;
 };
 
 // Host-callable launch wrapper for the scene-render kernel.

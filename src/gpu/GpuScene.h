@@ -4,11 +4,13 @@
 #include "camera/CameraRay.h"
 #include "geometry/Sphere.h"
 #include "gpu/GpuBuffer.h"
+#include "gpu/GpuMesh.h"
 #include "relativity/RelativityParams.h"
 
 #include <cstddef>
 
-namespace rr::scene { struct Scene; }
+namespace rr::geometry { struct Mesh; }
+namespace rr::scene    { struct Scene; }
 
 namespace rr::gpu {
 
@@ -55,10 +57,17 @@ public:
     // failed). On failure the sphere count is reset to zero.
     bool upload_spheres(const rr::geometry::Sphere* host, std::size_t count);
 
+    // Upload a single mesh's vertex / triangle / metadata into the
+    // scene's mesh slot. Calling this with an empty mesh clears the
+    // slot. Multi-mesh support is the next M11 slice.
+    bool upload_mesh(const rr::geometry::Mesh& mesh);
+
     // Convenience: pull camera + relativity + visible spheres from a
     // host `rr::scene::Scene`. Invisible spheres are filtered out on
     // the host before upload. Returns the AND of every individual
-    // upload step.
+    // upload step. Mesh upload is deliberately not part of
+    // `upload_from` until the scene-side mesh wrappers carry real
+    // data; today they are placeholders.
     bool upload_from(const rr::scene::Scene& scene);
 
     // --- Queries -----------------------------------------------------
@@ -66,6 +75,7 @@ public:
     bool        has_camera()      const noexcept { return has_camera_; }
     bool        has_relativity()  const noexcept { return has_relativity_; }
     std::size_t sphere_count()    const noexcept { return spheres_count_; }
+    bool        has_mesh()        const noexcept { return mesh_.has_data(); }
 
     // --- Backend accessors used by the CUDA renderer -----------------
 
@@ -79,6 +89,8 @@ public:
         return spheres_.device_ptr();
     }
 
+    const GpuMesh& gpu_mesh() const noexcept { return mesh_; }
+
 private:
     rr::camera::GpuCamera             camera_{};
     rr::relativity::Observer          observer_{};
@@ -88,6 +100,8 @@ private:
 
     rr::gpu::GpuBuffer<rr::geometry::Sphere> spheres_;
     std::size_t                              spheres_count_ = 0;
+
+    GpuMesh                                  mesh_;
 };
 
 }
