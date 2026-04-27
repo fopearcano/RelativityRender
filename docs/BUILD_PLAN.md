@@ -41,7 +41,7 @@ Update it after every implementation step, per
 | 6  | OptiX Backend                       | not started   |
 | 7  | Scene Graph                         | landed        |
 | 8  | Geometry System                     | landed        |
-| 9  | Material / Shading System           | not started   |
+| 9  | Material / Shading System           | in progress   |
 | 10 | Texture System                      | not started   |
 | 11 | Lighting System                     | not started   |
 | 12 | Camera System                       | landed        |
@@ -75,7 +75,7 @@ All modules now have a placeholder source directory under `src/`,
 | M8        | GPU Primitive Intersection              | landed      |
 | M9        | Relativistic Camera Model (First Pass)  | landed      |
 | M10       | GPU Scene Upload & Triangle Mesh        | landed      |
-| M11       | Material System (Foundations)           | not started |
+| M11       | Material System (Foundations)           | in progress |
 | M12       | Lighting System (Foundations)           | not started |
 | M13       | Scene File Format & Parser              | not started |
 | M14       | Path Tracing Foundation                 | not started |
@@ -92,6 +92,83 @@ All modules now have a placeholder source directory under `src/`,
 ---
 
 ## Change Log
+
+### 2026-04-27 — Material foundation landed (M11 in progress)
+
+PBR-style parameter pack + thin host wrapper + CUDA-side re-export.
+No BSDF, no node graph, no textures - those come in their own
+milestones. The data shape is the contract M13 (scene file
+format), M14 (path tracer), and M21 (node editor) populate.
+
+- **`src/material/MaterialTypes.h`:** `MaterialParams` POD with
+  `baseColor`, `emissionColor`, `emissionStrength`, `roughness`,
+  `metallic`, `specular`, plus a `transmission` placeholder slot
+  reserved for the dielectric / glass BSDF that joins later.
+  Defaults describe a neutral 80% grey diffuse surface
+  (roughness 0.5, metallic 0, specular 0.5, no emission, no
+  transmission). Field names use the DCC / PBR camelCase
+  convention so artists and scene-file authors recognise them
+  - the rest of the project uses snake_case; the material module
+  is the one exception, mirroring the relativity module's
+  physics-literature naming.
+- **`src/material/Material.h` / `.cpp`:** thin host wrapper.
+  `Material { name, params }` with const + mutable `params()`
+  accessors so authoring code can tweak fields in place. Three
+  presets: `make_diffuse(base_color)` (matte 1.0 roughness),
+  `make_emissive(emission_color, strength)` (black diffuse, full
+  emission), `make_metal(base_color, roughness)`
+  (metallic = 1, specular = 1).
+- **`src/cuda/CudaMaterial.cuh`:** thin re-export of
+  `MaterialTypes.h` so kernel TUs can include a `.cuh`. Future
+  `RR_HD inline` BSDF helpers (`eval` / `sample` / `pdf`) and
+  device-specific overrides land here without touching the host
+  surface.
+- **`tests/material_tests.cpp`:** 33 host assertions covering
+  `MaterialParams` defaults; default + params + named ctors;
+  setters; the mutable `params()` accessor (modify a field, other
+  fields unchanged); the three presets; and that the
+  `transmission` placeholder round-trips through the params
+  struct as a plain float (no shader behaviour wired yet, but the
+  slot is reachable).
+- **`CMakeLists.txt`:** added `rr_material` static library and
+  the `material_tests` test executable.
+
+#### Verified locally (host-only, no CUDA Toolkit on this box)
+
+```
+$ cmake --build build && cd build && ctest --output-on-failure
+1/9 Test #1: math_tests       ........... Passed  0.00 sec
+2/9 Test #2: image_tests      ........... Passed  0.00 sec
+3/9 Test #3: gpu_tests        ........... Passed  0.00 sec
+4/9 Test #4: camera_tests     ........... Passed  0.00 sec
+5/9 Test #5: geometry_tests   ........... Passed  0.00 sec
+6/9 Test #6: relativity_tests ........... Passed  0.00 sec
+7/9 Test #7: scene_tests      ........... Passed  0.00 sec
+8/9 Test #8: mesh_tests       ........... Passed  0.00 sec
+9/9 Test #9: material_tests   ........... Passed  0.00 sec
+100% tests passed, 0 tests failed out of 9
+
+$ ./build/bin/material_tests
+material_tests: 33/33 passed
+```
+
+#### Not in this slice (M11 / Module 9 still "in progress")
+
+- No BSDF interface (`eval` / `sample` / `pdf`). The kernel
+  still shades hits by normal-as-color, not by material.
+- No GPU upload of the material list; `GpuScene` does not yet
+  expose `upload_materials(...)` and `CudaSceneView` has no
+  material array.
+- No `material_index` plumbing in `Hit`. Spheres / triangles
+  carry an id today (via `SceneSphere` / `Mesh::material_id`)
+  but the kernel has no way to look up the corresponding
+  parameters.
+- No texture / node graph. The user explicitly excluded both
+  from this milestone; they land at M16 (textures) and M21
+  (node editor).
+- No update to `scene::SceneMaterial`, which remains the M9
+  placeholder. It will be rewritten to embed
+  `rr::material::Material` when a real consumer lands.
 
 ### 2026-04-27 — M10 finalized: CUDA triangle rendering
 
@@ -1420,22 +1497,24 @@ and does not affect the architecture or dependency rules.
 
 ## Next Step
 
-**M11 — Material System (foundations).** The renderer can hit
-spheres and triangles; the next gap is real shading:
+**Finish M11 — wire materials through the renderer.** The
+parameter pack + host wrapper are in. To move M11 / Module 9
+from "in progress" to "landed":
 
-1. `rr::material::BSDF` interface (`eval` / `sample` / `pdf`)
-   and a Lambertian + GGX implementation.
-2. `material_index` in `Hit` so the kernel knows which BSDF to
-   evaluate on a hit (we already plumb material ids on
-   `SceneSphere` / `SceneMesh` / `Mesh` through the upload
-   path).
-3. Move the host-side `SceneMaterial` placeholder to a real
-   parameter pack and upload it as a `GpuBuffer<MaterialPOD>` /
-   `CudaSceneView::materials`.
-4. Replace the kernel's normal-as-color shading with BSDF
-   evaluation against a fixed-direction "ambient" probe so we
-   can validate the pipeline before lighting (M12) and the path
-   tracer (M14) go in.
+1. Upload material list. Add `GpuBuffer<MaterialParams>` to
+   `GpuScene`, `upload_materials(...)`, and a
+   `CudaSceneView::materials` device pointer + count.
+2. Plumb `material_index` to the renderer. `SceneSphere` and
+   `Mesh` already carry an id; add it to `Hit` so the kernel
+   can look up the material once per hit.
+3. Add a small `RR_HD inline` shading helper in
+   `cuda/CudaMaterial.cuh` that evaluates a Lambert + simple
+   GGX response against a fixed-direction "ambient" probe.
+   Replace the kernel's normal-as-color shade with this so the
+   pipeline is exercised end-to-end before lighting (M12) and
+   the path tracer (M14) go in.
+4. A real BSDF interface (`eval` / `sample` / `pdf`) for true
+   light-transport joins with M14.
 
 Before or alongside this, the M2 deferred items (`Error`,
 `FileSystem`, `App`, `Config::load`/`save`, real test framework,

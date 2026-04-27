@@ -97,6 +97,20 @@ else()
     target_compile_options(rr_geometry PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 
+# Material module. Host-side parameter pack + thin authoring
+# wrapper. The BSDF interface, texture binding, and node-graph
+# integration land in their own milestones; this is the foundation
+# scene-format and the node editor will populate.
+add_library(rr_material STATIC
+    src/material/Material.cpp
+)
+target_include_directories(rr_material PUBLIC src)
+if(MSVC)
+    target_compile_options(rr_material PRIVATE /W4 /permissive-)
+else()
+    target_compile_options(rr_material PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+
 # Scene module. Host-only authoring data model: Camera + render
 # settings + Observer + RelativityParams + lists of spheres /
 # meshes (placeholder) / materials (placeholder) / lights
@@ -257,4 +271,16 @@ if(RR_BUILD_TESTS)
         target_compile_options(mesh_tests PRIVATE -Wall -Wextra -Wpedantic)
     endif()
     add_test(NAME mesh_tests COMMAND mesh_tests)
+
+    # Material foundation tests. Links rr_material for Material's
+    # methods + presets; MaterialParams + math headers come through
+    # the PUBLIC src include path.
+    add_executable(material_tests tests/material_tests.cpp)
+    target_link_libraries(material_tests PRIVATE rr_material)
+    if(MSVC)
+        target_compile_options(material_tests PRIVATE /W4 /permissive-)
+    else()
+        target_compile_options(material_tests PRIVATE -Wall -Wextra -Wpedantic)
+    endif()
+    add_test(NAME material_tests COMMAND material_tests)
 endif()
