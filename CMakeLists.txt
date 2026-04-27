@@ -54,4 +54,13 @@ endif()
 
 if(RR_BUILD_TESTS)
     enable_testing()
+
+    add_executable(math_tests tests/math_tests.cpp)
+    target_include_directories(math_tests PRIVATE src)
+    if(MSVC)
+        target_compile_options(math_tests PRIVATE /W4 /permissive-)
+    else()
+        target_compile_options(math_tests PRIVATE -Wall -Wextra -Wpedantic)
+    endif()
+    add_test(NAME math_tests COMMAND math_tests)
 endif()

@@ -8,24 +8,26 @@ Update it after every implementation step, per
 
 ## Current State
 
-- **Active milestone:** M2 — Core Engine (in progress).
+- **Active milestones:** M2 — Core Engine (in progress, doing in
+  parallel) and **M3 — Math Library (landed)**. Math is the leaf module
+  and depends on nothing in M2, so it can land before M2's remaining
+  items (Error / FileSystem / App / Config persistence / CI) without
+  violating the dependency rules.
 - **Active branch:** `claude/create-docs-architecture-T2Dp5`.
 - **Code in repo:** repository skeleton, top-level CMake project, the
-  minimal C++20 application foundation (`src/main.cpp`,
-  `src/core/Version.h`, `src/core/Logger.{h,cpp}`), and now basic
-  configuration + command-line handling (`src/core/Config.{h,cpp}`,
-  `src/core/CommandLine.{h,cpp}`). The `RelativityRender` executable
-  parses `--help`, `--version`, `--device-info`, `--render`, `--output`,
-  `--width`, `--height`, and reports honest "not implemented yet"
-  responses for the GPU- and rendering-dependent actions. No GPU, no
-  rendering, no scene system.
+  minimal C++20 application foundation, configuration + CLI handling,
+  and the math library (`src/math/Vec2.h`, `Vec3.h`, `Vec4.h`, `Mat4.h`,
+  `MathUtils.h`). The `RelativityRender` executable still parses
+  `--help`, `--version`, `--device-info`, `--render`, `--output`,
+  `--width`, `--height`. A `math_tests` executable runs 42 unit
+  assertions through `ctest`. No GPU, no rendering, no scene system.
 
 ## Module Status (mirrors `docs/MODULE_MAP.md`)
 
 | #  | Module                              | Status        |
 |----|-------------------------------------|---------------|
 | 1  | Core Engine                         | in progress   |
-| 2  | Math Library                        | not started   |
+| 2  | Math Library                        | landed        |
 | 3  | Image / Framebuffer System          | not started   |
 | 4  | GPU Device Layer                    | not started   |
 | 5  | CUDA Backend                        | not started   |
@@ -58,7 +60,7 @@ All modules now have a placeholder source directory under `src/`,
 | M0        | Architecture & Documentation            | landed      |
 | M1        | Repository Skeleton & Build System      | landed      |
 | M2        | Core Engine: Logging, Config, Lifecycle | in progress |
-| M3        | Math Library                            | not started |
+| M3        | Math Library                            | landed      |
 | M4        | Image / Framebuffer System              | not started |
 | M5        | CUDA Device Layer                       | not started |
 | M6        | CUDA Framebuffer & First Kernel         | not started |
@@ -83,6 +85,61 @@ All modules now have a placeholder source directory under `src/`,
 ---
 
 ## Change Log
+
+### 2026-04-27 — M3 math library landed
+
+The math leaf is in. Header-only, host/device portable, and exercised by a
+small test runner that hooks into `ctest`.
+
+- **`src/math/MathUtils.h`:** `RR_HD` host/device macro (expands to
+  `__host__ __device__` under NVCC, empty otherwise), constants
+  (`kPi`, `kTwoPi`, `kHalfPi`, `kInvPi`, `kEpsilon`), and templated
+  `min` / `max` / `clamp` / `lerp` plus `radians`, `degrees`,
+  `saturate`. All `constexpr RR_HD` where possible.
+- **`src/math/Vec2.h` / `Vec3.h` / `Vec4.h`:** plain structs with `float`
+  members. Constructors include a single-arg `explicit` broadcast to
+  prevent accidental scalar→vector conversions. Operator suite covers
+  `+`, `-`, unary `-`, scalar `*` and `/`, in-place compound assignments,
+  and `==` / `!=`. `Vec3` adds component-wise (Hadamard) `*`. Free
+  functions: `dot` (all three), `cross` (Vec3), `length`,
+  `length_squared`, `normalize` (returns zero on degenerate input
+  rather than NaN). Free overloads of `clamp` and `lerp` for `Vec3`
+  pick up the file's component-wise semantics without conflicting with
+  the scalar templates.
+- **`src/math/Mat4.h`:** row-major 4x4 (`m[row][col]`) with translation
+  in column 3. Static constructors `identity`, `translation(Vec3)`,
+  `scale(Vec3)`. `operator*` for matrix multiply. Free functions
+  `transform_point` (homogeneous w=1, applies translation) and
+  `transform_vector` (w=0, ignores translation). All `constexpr RR_HD`.
+- **`tests/math_tests.cpp`:** 42 assertions covering scalar utilities,
+  Vec3 add/sub/scalar/compound, dot/cross identities (right-handed
+  basis + anti-commutativity), length / normalize (including the
+  degenerate-input zero result), clamp/lerp, Mat4 identity / translation
+  / scale, matrix multiply with `T*S != S*T`. Hand-rolled assertion
+  macro is variadic so braced-init expressions like `Vec3{0,0,0}`
+  inside `RR_CHECK(...)` aren't split by the preprocessor. The macro
+  plumbing is throwaway — it gets replaced by Catch2/doctest on the
+  M2 deferred list — but the assertions stay.
+- **`CMakeLists.txt`:** added `math_tests` executable (header-only
+  consumer of `src/math/`), `target_include_directories(... src)`,
+  and `add_test(NAME math_tests COMMAND math_tests)` so `ctest`
+  picks it up. Same warning flags as the main executable.
+
+#### Verified locally
+
+```
+$ cmake --build build && cd build && ctest --output-on-failure
+1/1 Test #1: math_tests ..................... Passed   0.00 sec
+100% tests passed, 0 tests failed out of 1
+```
+
+#### Order note
+
+The master order has Math (step 4) following Core (step 3). Math has zero
+dependency on Core (it is the leaf), so per `docs/MODULE_MAP.md` it is
+safe to land while M2's remaining items (`Error`, `FileSystem`, `App`,
+`Config::load`/`save`, real test framework, host CI) are still pending.
+M2 stays "in progress" until those land.
 
 ### 2026-04-27 — M2 configuration + command-line handling landed
 
@@ -271,25 +328,26 @@ and does not affect the architecture or dependency rules.
 
 ## Next Step
 
-**Finish M2 — Core Engine.**
+**M4 — Image / Framebuffer System** is the next big step (host-side
+pixel formats, framebuffer / accumulation buffer, EXR/PNG IO under
+`src/io/`). Math is in; Image depends only on Math + Core, and the
+parts of Core it needs (Logger) are already landed.
 
-Logger, Config, and CommandLine are in place. To complete M2 and move on
-to M3 (Math Library), the next implementation prompts should add, in
-roughly this order:
+Before starting M4, the M2 deferred items should be cleaned up so the
+core foundation is honest end-to-end:
 
 1. `core::Error` — a small result/error type used at module boundaries.
 2. `core::FileSystem` — minimal path / read / write helpers using
    `std::filesystem` plus a thin error-aware wrapper.
 3. `Config::load` / `Config::save` — TOML or JSON persistence via a
-   vendored parser under `third_party/`. Keep the on-disk schema small;
-   it grows as later milestones add their own settings.
+   vendored parser under `third_party/`.
 4. `core::App` — application lifecycle wrapper that owns parse → run →
    exit.
-5. A test framework (Catch2 or doctest) under `third_party/`, plus tests
-   for `Logger`, `CommandLine` (every flag + every error path), `Config`
-   round-trip, and `FileSystem` read / write.
+5. A real test framework (Catch2 or doctest) under `third_party/`,
+   migrating `math_tests.cpp` and adding tests for `Logger`,
+   `CommandLine` (every flag + every error path), `Config` round-trip,
+   and `FileSystem`.
 6. Host-only CI configuration that runs the build and tests.
 
-Only after these land is M2 considered finished. Per development rules,
-M2 must not introduce code from M3+ modules — no math, image, or GPU
-code. Core Engine is host-only and renderer-free.
+Per development rules, none of these may introduce code from M4+
+modules — no image, framebuffer, or GPU code yet.
