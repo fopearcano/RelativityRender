@@ -40,7 +40,16 @@ message(STATUS "  Build integrations : ${RR_BUILD_INTEGRATIONS}")
 # list.
 if(RR_ENABLE_CUDA)
     find_package(CUDAToolkit REQUIRED)
+    enable_language(CUDA)
+    set(CMAKE_CUDA_STANDARD 17)
+    set(CMAKE_CUDA_STANDARD_REQUIRED ON)
+    if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
+        # Turing through Ada by default. Override with
+        # `-DCMAKE_CUDA_ARCHITECTURES=...` for other targets.
+        set(CMAKE_CUDA_ARCHITECTURES "75;80;86;89")
+    endif()
     message(STATUS "  CUDA Toolkit       : ${CUDAToolkit_VERSION}")
+    message(STATUS "  CUDA architectures : ${CMAKE_CUDA_ARCHITECTURES}")
 endif()
 
 # Module libraries. As each module grows it gets promoted from "sources
@@ -77,9 +86,17 @@ if(RR_ENABLE_CUDA)
     target_sources(rr_gpu PRIVATE
         src/cuda/CudaContext.cpp
         src/cuda/CudaBuffer.cpp
+        src/cuda/CudaTestKernel.cu
+        src/cuda/CudaRenderer.cu
     )
-    target_compile_definitions(rr_gpu PRIVATE RR_HAS_CUDA)
+    # PUBLIC: targets linking rr_gpu (RelativityRender, gpu_tests) gate
+    # CUDA-specific call sites on the same RR_HAS_CUDA macro.
+    target_compile_definitions(rr_gpu PUBLIC RR_HAS_CUDA)
+    # CudaRenderer downloads into rr::image::Image, so the image module
+    # is part of the public ABI of rr_gpu when CUDA is on.
+    target_link_libraries(rr_gpu PUBLIC  rr_image)
     target_link_libraries(rr_gpu PRIVATE CUDA::cudart)
+    set_target_properties(rr_gpu PROPERTIES POSITION_INDEPENDENT_CODE ON)
 endif()
 
 # Main executable. As more modules land they will be promoted to their

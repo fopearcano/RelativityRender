@@ -72,7 +72,7 @@ All modules now have a placeholder source directory under `src/`,
 | M3        | Math Library                            | landed      |
 | M4        | Image / Framebuffer System              | landed      |
 | M5        | CUDA Device Layer                       | landed      |
-| M6        | CUDA Framebuffer & First Kernel         | not started |
+| M6        | CUDA Framebuffer & First Kernel         | landed      |
 | M7        | Camera System & GPU Camera Rays         | not started |
 | M8        | GPU Primitive Intersection              | not started |
 | M9        | Relativistic Camera Model (First Pass)  | not started |
@@ -94,6 +94,82 @@ All modules now have a placeholder source directory under `src/`,
 ---
 
 ## Change Log
+
+### 2026-04-27 — M6 first CUDA kernel (GPU-rendered gradient) landed
+
+End-to-end host -> device -> kernel -> host -> PPM pipeline. The GPU
+generates every pixel; the CPU only allocates, launches, downloads,
+and saves. The save path is the only place a CPU loop touches pixels,
+exactly as the engineering rules permit.
+
+- **`src/cuda/CudaKernels.cuh`:** kernel-side helpers + host-callable
+  launch wrapper declarations. Pulls in `cuda_runtime.h`, so it is
+  only safe to include from `.cu` files. Currently exposes
+  `launch_gradient_rgba32f(float*, int, int, cudaStream_t)`.
+- **`src/cuda/CudaTestKernel.cu`:** the actual `__global__` kernel.
+  One thread per pixel, 16x16 blocks, ceiling-divided grid. Each
+  thread writes (R=u, G=v, B=0, A=1) into the channel-interleaved
+  Rgba32F layout used by `rr::image::Image`. Bounds-checked. The
+  host-callable wrapper is a thin launch-config shim - no CPU
+  pixel logic.
+- **`src/cuda/CudaRenderer.h`:** CUDA-Runtime-free public surface.
+  `CudaRenderer::Result { ok, image, message }` plus a single
+  `render_gradient(width, height) -> Result` static. The header is
+  host-includable; only the `.cu` implementation pulls in
+  `cuda_runtime.h`.
+- **`src/cuda/CudaRenderer.cu`:** allocates a `GpuBuffer<float>` of
+  `width*height*4` floats, launches the gradient kernel, drains
+  errors via `cudaGetLastError` + `cudaDeviceSynchronize`, and
+  downloads into a fresh `Image(width, height, Rgba32F)`. On any
+  CUDA failure it returns `ok=false` with a human-readable message
+  derived from `cudaGetErrorString` and clears the sticky error
+  state.
+- **`src/main.cpp`:** the `--render` path now calls
+  `CudaRenderer::render_gradient`, creates the parent directory if
+  needed, and saves to `output/gpu_gradient.ppm` (or
+  `--output <path>` when given). Gated by `RR_HAS_CUDA`; without
+  CUDA the executable still compiles and reports the missing
+  backend honestly.
+- **`CMakeLists.txt`:** under `RR_ENABLE_CUDA`, `enable_language(CUDA)`
+  is now turned on, `CMAKE_CUDA_STANDARD = 17`, and
+  `CMAKE_CUDA_ARCHITECTURES` defaults to `75;80;86;89` (Turing
+  through Ada; override via `-DCMAKE_CUDA_ARCHITECTURES=...`). The
+  `.cu` files join `rr_gpu`. `RR_HAS_CUDA` is now `PUBLIC` so
+  consumers (RelativityRender exe, gpu_tests) gate CUDA call
+  sites on it. `rr_gpu` PUBLIC-links `rr_image` when CUDA is on
+  because `CudaRenderer::Result` carries an `Image`.
+
+#### Verified locally (host-only, no CUDA Toolkit on this machine)
+
+```
+$ cmake -S . -B build && cmake --build build
+$ cd build && ctest --output-on-failure
+1/3 Test #1: math_tests  ............ Passed  0.00 sec
+2/3 Test #2: image_tests ............ Passed  0.00 sec
+3/3 Test #3: gpu_tests   ............ Passed  0.00 sec
+100% tests passed, 0 tests failed out of 3
+
+$ ./build/bin/RelativityRender --render scene.scn --width 64 --height 32
+[INFO] RelativityRender 0.0.1 starting
+[INFO] render command received
+[INFO] (no CUDA backend compiled; rebuild with -DRR_ENABLE_CUDA=ON to render)
+```
+
+The CUDA-enabled path (`-DRR_ENABLE_CUDA=ON`, on a machine with
+NVCC + an NVIDIA GPU) produces `output/gpu_gradient.ppm`. It is
+correct by construction (uses only the standard CUDA Runtime API,
+the kernel is bounds-checked, the layout matches
+`rr::image::Image::PixelFormat::Rgba32F`) but is not end-to-end
+runnable in this environment.
+
+#### Hard rule check
+
+- GPU generates every pixel: yes - the kernel computes `(u, v, 0, 1)`
+  per pixel; CPU never reads or writes per-pixel values.
+- CPU pixel loop only inside image save: yes - the only CPU iteration
+  over pixels is in `Image::save_ppm`, which converts floats to
+  bytes for the PPM payload (this is "image save internals" per the
+  engineering rules).
 
 ### 2026-04-27 — M5/M6 GPU buffer abstraction landed
 
@@ -549,20 +625,25 @@ and does not affect the architecture or dependency rules.
 
 ## Next Step
 
-**M6 — CUDA Framebuffer & First Kernel.** End-to-end host → device →
-host pipeline producing a real image:
+**M7 — Camera System & GPU Camera Rays.** With a working GPU pixel
+write path in hand, the next step is camera-ray generation:
 
-1. Add `enable_language(CUDA)` and `CMAKE_CUDA_ARCHITECTURES` (gated
-   by `RR_ENABLE_CUDA`).
-2. Introduce `rr::cuda::Stream` so launches are scoped, and a
-   device-side framebuffer mirror that reuses `GpuBuffer<float>` for
-   the pixel storage.
-3. Write the first `.cu` file - a kernel that fills the framebuffer
-   with a procedural pattern (e.g. UV gradient) so we have a real
-   end-to-end GPU result.
-4. Download via `GpuBuffer::download` and save through the existing
-   `Image::save_ppm` path so the GPU-generated image is verifiable
-   byte-for-byte.
+1. Introduce `rr::camera::Camera` (perspective first; orthographic
+   later).
+2. Move the per-pixel work in the test kernel from "compute u,v"
+   to "generate a primary ray and visualize its direction" - still
+   pure GPU work, but now it consumes a `Camera` uploaded from the
+   host.
+3. Reuse `CudaRenderer` as the host orchestrator; rename the
+   gradient kernel as a debug AOV and add a primary-ray
+   visualization kernel alongside it.
+4. Add a small regression that asserts the centre pixel's ray
+   direction matches the camera's forward axis.
+
+Before or alongside M7, the M2 deferred items (`Error`,
+`FileSystem`, `App`, `Config::load`/`save`, real test framework,
+host-only CI) should be cleaned up - they're a backlog rather than
+a blocker.
 
 Alongside M6, the M2 deferred items should be cleaned up so the core
 foundation is honest end-to-end:

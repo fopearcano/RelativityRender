@@ -4,6 +4,11 @@
 #include "core/Version.h"
 #include "gpu/GpuDevice.h"
 
+#ifdef RR_HAS_CUDA
+    #include "cuda/CudaRenderer.h"
+#endif
+
+#include <filesystem>
 #include <iostream>
 #include <sstream>
 #include <string>
@@ -71,9 +76,43 @@ int main(int argc, char** argv) {
     }
 
     if (cfg.wants_render()) {
-        // M2 scope: parse the request, do not render. Real rendering arrives
-        // once the GPU layers (M5+) and path tracer (M14) are in.
         Logger::info("render command received");
+
+#ifdef RR_HAS_CUDA
+        // M6 test path: the GPU writes a UV-gradient framebuffer; the CPU
+        // only allocates, launches, downloads, and saves. No CPU pixel
+        // loop runs in this code path (save_ppm internals are the one
+        // permitted exception per the engineering rules).
+        const std::filesystem::path out_path =
+            cfg.output_image_path.value_or("output/gpu_gradient.ppm");
+
+        Logger::info("rendering gradient on GPU: "
+                     + std::to_string(cfg.width) + "x"
+                     + std::to_string(cfg.height));
+
+        auto result = rr::cuda::CudaRenderer::render_gradient(cfg.width, cfg.height);
+        if (!result.ok) {
+            Logger::error("GPU render failed: " + result.message);
+            return 1;
+        }
+
+        std::error_code ec;
+        if (out_path.has_parent_path()) {
+            std::filesystem::create_directories(out_path.parent_path(), ec);
+            // ec from create_directories is non-fatal: save_ppm will fail
+            // with a clearer message if the parent is genuinely unwritable.
+        }
+
+        if (!result.image.save_ppm(out_path)) {
+            Logger::error("saving image failed: " + out_path.string());
+            return 1;
+        }
+
+        Logger::info("saved " + out_path.string());
+#else
+        Logger::info("(no CUDA backend compiled; rebuild with "
+                     "-DRR_ENABLE_CUDA=ON to render)");
+#endif
         return 0;
     }
 
