@@ -1,0 +1,135 @@
+# RELATIVITYRENDER — CLAUDE CODE MASTER INSTRUCTIONS
+
+Read this file at the beginning of EVERY Claude Code session/prompt before making changes.
+
+You are building RelativityRender, a serious GPU renderer platform.
+
+RelativityRender is NOT:
+- a toy renderer
+- a small demo
+- just a Cinema 4D plugin
+- an Octane clone
+
+RelativityRender IS:
+- a serious GPU renderer platform
+- CUDA/OptiX-first
+- designed around GPU path tracing and ray-level relativistic perception
+- eventually integrated with Cinema 4D
+- unique because of its relativistic camera/perception model
+
+Long-term goal:
+Build a production-style GPU renderer platform with:
+
+- CUDA backend
+- OptiX backend
+- path tracing
+- shader/material system
+- material node graph
+- texture system
+- lighting system
+- scene graph
+- progressive rendering
+- denoising
+- AOVs/render passes
+- renderer server
+- Cinema 4D bridge
+- future native Cinema 4D renderer integration
+- unique relativistic camera/perception model:
+  - relativistic aberration
+  - Doppler color shift
+  - searchlight/headlight effect
+  - Lorentz-style perception
+  - retarded-time approximation
+
+CORE ENGINEERING RULES
+
+1. Build incrementally.
+2. Keep every step compilable.
+3. Do not implement fake stubs pretending to be complete systems.
+4. Do not jump to UI, Cinema 4D bridge, native C4D renderer, or node editor too early.
+5. No CPU ray tracing as production path.
+6. CPU may only:
+   - orchestrate execution
+   - parse/load scenes
+   - manage IO
+   - upload data to GPU
+   - launch CUDA/OptiX kernels
+   - receive framebuffers
+   - save image files
+   - run server/IPC
+7. All per-pixel/per-ray rendering must happen on GPU.
+8. Update docs/BUILD_PLAN.md after every implementation.
+9. Keep module boundaries clean.
+10. Avoid monolithic files.
+11. Prefer explicit, testable interfaces.
+12. Do not overbuild a later system before the current layer works.
+
+DEPENDENCY RULES
+
+Core modules must never depend on:
+- Cinema 4D
+- UI
+- node editor
+- external DCC applications
+
+Renderer backend must not depend on:
+- Cinema 4D bridge
+- UI code
+- editor tools
+
+Cinema 4D bridge must depend on exported scene format/server protocol, not internal renderer implementation.
+
+DEVELOPMENT ORDER
+
+Do not start Cinema 4D integration until the standalone renderer has:
+
+- CUDA device detection
+- GPU framebuffer output
+- GPU camera rays
+- GPU primitive intersection
+- GPU relativistic camera model
+- GPU scene upload
+- GPU triangle mesh support
+- basic materials
+- basic lights
+- scene parser
+- renderer server
+
+Correct module order:
+
+1. Architecture/docs
+2. Repository skeleton
+3. Core app/logging/config
+4. Math library
+5. Image/framebuffer system
+6. CUDA device layer
+7. CUDA framebuffer/kernel infrastructure
+8. Camera system
+9. GPU primitive rendering
+10. Relativistic camera model
+11. GPU scene upload
+12. Mesh system
+13. Material system
+14. Lighting system
+15. Scene format/parser
+16. Path tracing foundation
+17. OptiX upgrade path
+18. Texture system
+19. AOV/render passes
+20. Renderer server
+21. Cinema 4D bridge
+22. Preview UI
+23. Material node graph
+24. Denoising
+25. Native Cinema 4D renderer integration
+
+CURRENT PROMPT RULE
+
+When given a prompt:
+- Read this file first.
+- Determine which module/stage the prompt belongs to.
+- Do only that scope.
+- Do not silently add future systems.
+- If a requested change violates the order above, document the issue and implement only the safe prerequisite work.
+- Keep the project buildable.
+- Update docs/BUILD_PLAN.md.
