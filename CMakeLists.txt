@@ -165,6 +165,26 @@ else()
     target_compile_options(rr_lighting PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 
+# Texture module. Host-side foundation only at this milestone:
+# constant-color textures and an image-backed `ImageTexture` that
+# wraps `rr::image::Image`. The device-side launch-argument POD
+# and `RR_HD inline` sampler live in `cuda/CudaTexture.cuh`. No
+# kernel currently consumes a textured material slot - hooking
+# textures into the shader path lands in a later M16 slice.
+add_library(rr_texture STATIC
+    src/texture/Texture.cpp
+    src/texture/ImageTexture.cpp
+)
+# rr_image is part of the public ABI of rr_texture since
+# `ImageTexture` carries an `rr::image::Image` by value.
+target_link_libraries(rr_texture PUBLIC rr_image)
+target_include_directories(rr_texture PUBLIC src)
+if(MSVC)
+    target_compile_options(rr_texture PRIVATE /W4 /permissive-)
+else()
+    target_compile_options(rr_texture PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+
 # IO module. Scene file parser (and eventually writer). Host-only.
 # The parser populates rr::scene::Scene, which the renderer's GPU
 # upload path already consumes; rr_io itself has no GPU dep.
@@ -426,4 +446,17 @@ if(RR_BUILD_TESTS)
         target_compile_options(sampling_tests PRIVATE -Wall -Wextra -Wpedantic)
     endif()
     add_test(NAME sampling_tests COMMAND sampling_tests)
+
+    # Texture foundation tests. Links rr_texture for ConstantTexture /
+    # ImageTexture symbols; includes `cuda/CudaTexture.cuh` directly to
+    # exercise the same `RR_HD inline` device sampler the kernels will
+    # call later.
+    add_executable(texture_tests tests/texture_tests.cpp)
+    target_link_libraries(texture_tests PRIVATE rr_texture)
+    if(MSVC)
+        target_compile_options(texture_tests PRIVATE /W4 /permissive-)
+    else()
+        target_compile_options(texture_tests PRIVATE -Wall -Wextra -Wpedantic)
+    endif()
+    add_test(NAME texture_tests COMMAND texture_tests)
 endif()

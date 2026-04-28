@@ -42,7 +42,7 @@ Update it after every implementation step, per
 | 7  | Scene Graph                         | landed        |
 | 8  | Geometry System                     | landed        |
 | 9  | Material / Shading System           | landed        |
-| 10 | Texture System                      | not started   |
+| 10 | Texture System                      | in progress   |
 | 11 | Lighting System                     | landed        |
 | 12 | Camera System                       | landed        |
 | 13 | Relativistic Camera Model           | landed        |
@@ -80,7 +80,7 @@ All modules now have a placeholder source directory under `src/`,
 | M13       | Scene File Format & Parser              | landed      |
 | M14       | Path Tracing Foundation                 | in progress |
 | M15       | OptiX Backend (Upgrade Path)            | in progress |
-| M16       | Texture System                          | not started |
+| M16       | Texture System                          | in progress |
 | M17       | Render Passes / AOVs                    | not started |
 | M18       | Renderer Server                         | not started |
 | M19       | Cinema 4D Bridge (Plugin)               | not started |
@@ -92,6 +92,92 @@ All modules now have a placeholder source directory under `src/`,
 ---
 
 ## Change Log
+
+### 2026-04-27 — M16 (foundation): texture system foundation
+
+Host-side foundation only. ConstantTexture + ImageTexture + a
+device-friendly `TextureView` POD with an `RR_HD inline` sampler.
+No filtering beyond nearest-neighbor; no kernel currently
+consumes a textured material slot. Shader / scene-format /
+material-binding slices follow.
+
+- **`src/texture/Texture.h` / `.cpp`:**
+  - `TextureType` discriminator (`Constant = 0`, `Image = 1`)
+    with stable ordinals so the upload contract stays
+    forward-compatible.
+  - `ConstantTexture` POD with a `Vec3 color` and an
+    `RR_HD inline sample(Vec2)` that ignores UV (the simplest
+    texture; the renderer's default for any unbound material
+    slot).
+  - Convenience factories: `make_white_texture`,
+    `make_black_texture`, `make_constant_texture(color)`.
+- **`src/texture/ImageTexture.h` / `.cpp`:** image-backed
+  texture wrapping `rr::image::Image`. Sampling parameters
+  surfaced now (`Wrap = Clamp / Repeat / Mirror`,
+  `Filter = Nearest / Bilinear`) so scene-format and GPU
+  upload paths can carry them; the host sampler only honors
+  `Clamp + Nearest` at this milestone, with the others
+  silently falling through to the implemented combination.
+  Out-of-`[0,1]` UVs are clamped; empty images return black so
+  callers don't have to special-case unbound slots.
+  V-axis flipped on read so UV `(0, 0)` maps to the texture's
+  bottom-left and UV `(0, 1)` maps to the top-left, matching
+  the conventional UV orientation while the underlying
+  `Image` keeps a top-left origin.
+- **`src/cuda/CudaTexture.cuh`:** device-side launch-argument
+  POD `TextureView` (tagged union of `Constant` /
+  `Image` fields) plus an `RR_HD inline sample_texture(view,
+  uv)` sampler. Despite the `.cuh` name the header pulls in
+  no CUDA-runtime types, so the host suite runs the exact
+  same code the kernel will. Null-image-data defensive
+  fallback returns the `constant_color` so a host-only build
+  produces predictable values without crashing on uninitialised
+  slots.
+- **`tests/texture_tests.cpp`:** 28 host assertions.
+  - ConstantTexture defaults / factories / `type_tag`.
+  - ImageTexture default-empty samples to black; `type_tag`.
+  - Deterministic 2x2 fixture exercising all four corners,
+    confirming the UV `v`-flip lands on the right pixels.
+  - Out-of-range UV clamps to the nearest in-range texel.
+  - Device-side `sample_texture` returns the constant colour
+    for `Constant` and for `Image` with null data, and
+    matches the host `ImageTexture::sample` value-for-value
+    on every uv in a sweep across the corners + clamp cases.
+- **`CMakeLists.txt`:** added `rr_texture` static library
+  (PUBLIC-links `rr_image` because `ImageTexture` carries an
+  `rr::image::Image` by value); added the `texture_tests`
+  test executable.
+
+#### Verified locally (host-only, no CUDA Toolkit on this box)
+
+```
+$ cmake --build build && cd build && ctest --output-on-failure
+ 1/13 ... 13/13 all Passed
+100% tests passed, 0 tests failed out of 13
+
+$ ./build/bin/texture_tests
+texture_tests: 28/28 passed
+```
+
+#### Per the prompt
+
+- Five requested files (`Texture.h` / `Texture.cpp` /
+  `ImageTexture.h` / `ImageTexture.cpp` / `CudaTexture.cuh`)
+  all present.
+- Constant-color texture + image texture placeholder + UV
+  coordinates as a `Vec2` parameter at every public surface.
+- No complex filtering: only nearest-neighbor + clamp wrap
+  honored. Bilinear / repeat / mirror documented in the
+  header / device POD for when the next slice lands.
+
+#### Module / milestone status
+
+- Module 10 (Texture System): `not started` -> `in progress`.
+- M16 (Texture System): `not started` -> `in progress`.
+
+The remaining texture work (kernel-side material binding,
+GPU image upload through GpuScene, scene-format texture
+references, full filtering modes) lands in subsequent slices.
 
 ### 2026-04-27 — M15.1 + M15.2: OptiX backend scaffold (steps 1+2 of the migration plan)
 
