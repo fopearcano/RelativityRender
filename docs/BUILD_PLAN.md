@@ -54,7 +54,7 @@ Update it after every implementation step, per
 | 19 | Renderer Server                     | in progress   |
 | 20 | Cinema 4D Bridge                    | in progress   |
 | 21 | Future Native Cinema 4D Renderer    | not started   |
-| 22 | Node Editor / Material Graph        | not started   |
+| 22 | Node Editor / Material Graph        | in progress   |
 
 All modules now have a placeholder source directory under `src/`,
 `integrations/`, or `tools/` and a README pointing back at
@@ -85,13 +85,153 @@ All modules now have a placeholder source directory under `src/`,
 | M18       | Renderer Server                         | in progress |
 | M19       | Cinema 4D Bridge (Plugin)               | in progress |
 | M20       | Preview UI                              | not started |
-| M21       | Material Node Graph (Editor)            | not started |
+| M21       | Material Node Graph (Editor)            | in progress |
 | M22       | Denoiser Integration                    | not started |
 | M23       | Native Cinema 4D Renderer Integration   | not started |
 
 ---
 
 ## Change Log
+
+### 2026-04-28 — M21 (impl, runtime): minimal material graph runtime
+
+First implementation slice of the material node graph. Lands
+the host-side data model + the v1 compile-to-`MaterialParams`
+bake described in `docs/MATERIAL_GRAPH_SPEC.md` sections 4 +
+8.4 + 9. Six v1 nodes wired through validation (duplicate ids,
+dangling refs, cycles, missing terminal, duplicate terminals)
++ topological evaluation + per-terminal write into the
+existing `MaterialParams` snapshot. No per-hit graph
+evaluation in the kernel yet (the spec's stage-2 path is a
+future slice); the renderer keeps reading `MaterialParams` and
+the bake gives it the same parameters the graph would produce
+for the default shading context.
+
+- **`src/material/MaterialGraph.h`** (new): host-side data
+  model and the public `compile_graph_to_material(graph,
+  sampler)` API.
+  - `NodeType` enum: `ConstantColor` (0), `TextureSample`
+    (1), `Add` (2), `Multiply` (3), `Diffuse` (4),
+    `Emission` (5). Stable ordinals match the spec's v1
+    catalogue.
+  - `node_type_name`, `parse_node_type` (case-sensitive;
+    accepts both `Diffuse` and `DiffuseBSDF` per the
+    user prompt's terminology + the spec's canonical
+    name), `is_terminal` (true for Diffuse / Emission).
+  - `GraphNode` POD: id + type + per-type immediates
+    (`color_value`, `strength_value`, `texture_id`,
+    `default_uv`) + per-type input slots (`input_a/b`,
+    `input_uv`, `input_albedo`, `input_color`,
+    `input_strength`); `-1` = unwired.
+  - `Graph` POD: `version` + nodes vector.
+  - `TextureSamplerFn = std::function<Vec3(int, Vec2)>`:
+    caller-supplied callback so `rr_material` does NOT
+    depend on `rr_texture`. The .rrscene loader / the C4D
+    bridge / the test harness each plug their own.
+    Existing module layering preserved.
+  - `CompileResult { bool ok; std::string message;
+    MaterialParams material; }`.
+- **`src/material/MaterialGraph.cpp`** (new): validation +
+  topo-sort + bake.
+  - `IdMap` builds an `id` -> array-index map and rejects
+    duplicates.
+  - `check_references` walks every node's wired inputs and
+    rejects dangling source-node ids.
+  - `topo_sort` is iterative DFS with 3-state colouring
+    (white / grey / black). Seeds traversal from every
+    terminal so unreachable subgraphs are dropped (per
+    spec 7.4 / 8.3); detects cycles (grey-on-grey) with a
+    descriptive error naming the offending node.
+  - `evaluate_node` runs each node's per-type math:
+    `ConstantColor` -> immediate, `Add` / `Multiply` ->
+    per-component on the cached source slots,
+    `TextureSample` -> calls the supplied
+    `TextureSamplerFn` (or falls back to white when the
+    sampler is null or the texture id is `< 0`).
+  - `apply_terminal` writes each terminal's resolved
+    inputs into `MaterialParams`: `Diffuse.albedo` ->
+    `baseColor`, `Emission.color` / `Emission.strength`
+    -> `emissionColor` / `emissionStrength`.
+    Non-negative-clamps `emissionStrength`. Tracks
+    `terminal_seen[type]` and rejects duplicates of the
+    same kind (per spec 7.5 v1 SHOULD-rule, enforced).
+  - `compile_graph_to_material(graph, sampler)` runs the
+    full pipeline and returns the `CompileResult`.
+- **`tests/material_graph_tests.cpp`** (new): 78 host
+  assertions.
+  - Naming + parsing: `node_type_name` round-trip for all
+    six types, canonical-name parse, `DiffuseBSDF` alias
+    resolves to `Diffuse`, case-insensitive variants
+    rejected, `is_terminal` predicate.
+  - Smallest valid graph: `ConstantColor -> Diffuse`;
+    unwired Diffuse uses node `color_value` default.
+  - Math nodes: Add, Multiply round-trip; unwired Add
+    falls back to zero (additive identity); unwired
+    Multiply falls back to one (multiplicative identity).
+  - Emission: basic terminal (color + strength); unwired
+    `color` input uses node `color_value`; negative
+    `strength` clamped to zero.
+  - Diffuse + Emission coexist independently.
+  - TextureSample: callback receives the right `(id, uv)`;
+    null sampler falls back to white; negative `id`
+    short-circuits the sampler call.
+  - Composition: `TextureSample -> Multiply (tint) ->
+    Diffuse` chain produces the per-component product.
+  - Validation rejects: empty graph, unsupported
+    `version`, duplicate ids, dangling references,
+    cycles, no-terminal graphs, duplicate terminals.
+  - Dead-code subgraph (a Multiply branch that doesn't
+    reach any terminal) does NOT affect the bake.
+- **`CMakeLists.txt`:**
+  - `rr_material` adds `MaterialGraph.cpp` to its source
+    list. No new public dependency: the texture access is
+    behind the `TextureSamplerFn` callback so the existing
+    layering stays intact.
+  - New `material_graph_tests` target registered with
+    `add_test`, linked PRIVATE against `rr_material`.
+
+#### Verified locally
+
+```
+$ cmake --build build && cd build && ctest --output-on-failure
+ 1/16 ... 16/16 all Passed
+100% tests passed, 0 tests failed out of 16
+
+$ ./build/bin/material_graph_tests
+material_graph_tests: 78/78 passed
+```
+
+#### Per the prompt
+
+- "Support nodes: ConstantColor, TextureSample, Add,
+  Multiply, DiffuseBSDF, Emission": all six implemented,
+  with the prompt's `DiffuseBSDF` accepted as an alias for
+  the spec's canonical `Diffuse`.
+- "TextureSample placeholder": the runtime calls the
+  caller-supplied `TextureSamplerFn` when one is provided
+  and a valid texture id is bound; otherwise it falls
+  back to white. The placeholder character is preserved -
+  no scene-level texture binding is wired in this slice.
+- "No UI / No node editor": the slice ships a host-side
+  C++ runtime only. `tools/node_editor/` is not touched.
+- "Compile graph to simple GPU material representation":
+  the runtime's output is the existing `MaterialParams`
+  POD (`src/material/MaterialTypes.h`), which is exactly
+  what the GPU upload path (`GpuScene::upload_materials`)
+  consumes today. Adding a graph entry to the renderer
+  reduces to: bake at scene-load, store the resulting
+  `MaterialParams`, upload as before. Per-hit graph
+  evaluation in the kernel is a future slice.
+
+#### Module / milestone status
+
+- Module 22 (Node Editor / Material Graph): `not started`
+  -> `in progress`. The runtime is the first
+  implementation surface; future slices add scene-format
+  integration, per-hit GPU evaluation, and the standalone
+  editor.
+- M21 (Material Node Graph (Editor)): `not started` ->
+  `in progress` (same rationale).
 
 ### 2026-04-28 — M21 (spec, integration): material node graph - integration strategy
 

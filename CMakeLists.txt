@@ -142,6 +142,7 @@ endif()
 # scene-format and the node editor will populate.
 add_library(rr_material STATIC
     src/material/Material.cpp
+    src/material/MaterialGraph.cpp
 )
 target_include_directories(rr_material PUBLIC src)
 if(MSVC)
@@ -447,6 +448,20 @@ if(RR_BUILD_TESTS)
         target_compile_options(material_tests PRIVATE -Wall -Wextra -Wpedantic)
     endif()
     add_test(NAME material_tests COMMAND material_tests)
+
+    # Material graph runtime tests. Exercises the v1 compile-to-
+    # MaterialParams path - validation (duplicate ids, dangling
+    # refs, cycles, missing terminal, duplicate terminals),
+    # per-node bake correctness for the six v1 node types, and
+    # the texture-sampler callback contract.
+    add_executable(material_graph_tests tests/material_graph_tests.cpp)
+    target_link_libraries(material_graph_tests PRIVATE rr_material)
+    if(MSVC)
+        target_compile_options(material_graph_tests PRIVATE /W4 /permissive-)
+    else()
+        target_compile_options(material_graph_tests PRIVATE -Wall -Wextra -Wpedantic)
+    endif()
+    add_test(NAME material_graph_tests COMMAND material_graph_tests)
 
     # Lighting foundation tests. Links rr_lighting for the factory
     # symbols; Light POD and math headers come through the PUBLIC
