@@ -22,8 +22,8 @@ in the file-name convention authoring tools may prefer.
 
 ## 2. Top-level shape
 
-A v1 file is a single JSON object with **exactly** these four
-optional sections plus a mandatory `version` field:
+A v1 file is a single JSON object with these optional sections plus
+a mandatory `version` field:
 
 ```jsonc
 {
@@ -31,12 +31,13 @@ optional sections plus a mandatory `version` field:
     "render_settings": { ... },
     "camera":          { ... },
     "relativity":      { ... },
-    "spheres":         [ ... ]
+    "spheres":         [ ... ],
+    "materials":       [ ... ]
 }
 ```
 
 - `version` is mandatory and MUST be `1` for this spec.
-- All four other sections are optional. Missing sections take their
+- All other sections are optional. Missing sections take their
   defaults (documented per section).
 - Unknown top-level keys MUST be ignored by the parser, but the
   validator SHOULD warn about them so typos surface.
@@ -188,15 +189,66 @@ Notes:
 
 - An empty `spheres` array is legal; the renderer produces a
   light-only / empty scene.
-- `material_id` is a forward-compatibility hint. v1 has **no
-  `materials` section**, so `material_id` does not actually look
-  anything up. The renderer treats unknown / `-1` ids as the
-  neutral default material it already uses.
-- A v2 spec adds the `materials` section; a v1 file's
-  `material_id` ints become valid indices into that array
-  unchanged.
+- `material_id` is the integer `id` of an entry in the
+  [`materials`](#9-section-materials) array. `-1` means "no
+  material assigned"; the renderer falls back to its neutral
+  default. Ids that do not match any material in the array also
+  fall back to the default (the parser MAY warn).
 
-## 9. Common types
+## 9. Section: `materials`
+
+Array of PBR-style material parameter packs. Each entry is a JSON
+object referenced by integer `id` from `spheres[i].material_id`.
+The schema is intentionally a small, GPU-uploadable subset of the
+host `rr::material::MaterialParams` POD; remaining fields
+(`metallic`, `specular`, `transmission`) take their host defaults
+in v1.
+
+```json
+[
+    {
+        "id":                0,
+        "name":              "matte_red",
+        "base_color":        [0.9, 0.15, 0.15],
+        "emission_color":    [0.0, 0.0, 0.0],
+        "emission_strength": 0.0,
+        "roughness":         0.5
+    }
+]
+```
+
+| Field               | Type   | Required | Default          | Notes                                                            |
+|---------------------|--------|----------|------------------|------------------------------------------------------------------|
+| `id`                | int    | yes      | -                | Non-negative. Must be unique within the array. Referenced by `spheres[i].material_id`. |
+| `name`              | string | no       | `""`             | Authoring / debug label. Not used by the renderer.               |
+| `base_color`        | Vec3   | no       | `[0.8, 0.8, 0.8]`| Linear RGB albedo / diffuse colour. Components clamped to `[0, ∞)`. |
+| `emission_color`    | Vec3   | no       | `[0, 0, 0]`      | Linear RGB emissive tint. Components clamped to `[0, ∞)`.        |
+| `emission_strength` | float  | no       | `0.0`            | Multiplier on `emission_color`. `>= 0`. `0` disables emission.   |
+| `roughness`         | float  | no       | `0.5`            | Microfacet roughness. Clamped to `[0, 1]`: `0` = mirror, `1` = fully rough. |
+
+Notes:
+
+- An empty `materials` array is legal. Every sphere whose
+  `material_id` is unmatched falls back to the renderer's neutral
+  default material (`base_color = [0.8, 0.8, 0.8]`, no emission,
+  `roughness = 0.5`).
+- `id` is the **lookup key**, not the array index. A v1 file is
+  free to list materials in any order or sparsely (e.g. ids
+  `0`, `2`, `5`); the parser builds a host array indexed by `id`
+  internally. Duplicate `id` values are an error.
+- v1 only exposes `base_color`, `emission_color`,
+  `emission_strength`, and `roughness`. The host
+  `MaterialParams` carries `metallic`, `specular`, and
+  `transmission` slots; in v1 these take their host defaults
+  (`metallic = 0`, `specular = 0.5`, `transmission = 0`). Future
+  schema versions surface them as additional optional fields
+  with the same names; absent fields keep host defaults.
+- Texture-driven parameters (image maps for `base_color`,
+  `roughness`, etc.) are explicitly not in v1; they land with
+  the texture system (M16). v1 files that want a uniform colour
+  per material are fully expressive.
+
+## 10. Common types
 
 ### Vec3
 
@@ -210,7 +262,7 @@ distinguish; the parser converts to `float`).
 Anything else (`[1, 2]`, `[1, 2, 3, 4]`, an object, a string) is a
 parse error.
 
-## 10. Defaults policy
+## 11. Defaults policy
 
 Every field has a documented default. A minimal valid v1 file is:
 
@@ -226,7 +278,7 @@ A parser MUST apply defaults only to **missing** fields. It MUST
 NOT silently substitute defaults for malformed inputs (e.g., a Vec3
 with two entries) — those are errors.
 
-## 11. Validation rules
+## 12. Validation rules
 
 A v1 parser MUST enforce, in addition to the per-section rules
 above:
@@ -239,13 +291,18 @@ above:
 5. `camera.fov` is strictly within `(0, 180)`.
 6. `camera.forward` is non-zero-length.
 7. Each sphere has `position` and `radius`; `radius` > 0.
-8. Unknown top-level keys SHOULD warn but MUST NOT fail.
+8. Each material has `id`; `id` is a non-negative integer and
+   unique within the `materials` array. Out-of-range numerical
+   colour or roughness values are clamped per the
+   [materials](#9-section-materials) table; missing fields take
+   their documented defaults.
+9. Unknown top-level keys SHOULD warn but MUST NOT fail.
 
 Files that violate any MUST clause are rejected with a descriptive
 diagnostic that names the offending field and (when the underlying
 parser supports it) line / column.
 
-## 12. Complete example
+## 13. Complete example
 
 A single sphere sitting 3 units in front of a camera that is
 boosted to 50% of light speed along its forward direction, with all
@@ -281,24 +338,37 @@ relativistic effects at full strength:
             "radius":      1.0,
             "material_id": 0
         }
+    ],
+
+    "materials": [
+        {
+            "id":                0,
+            "name":              "matte_red",
+            "base_color":        [0.9, 0.15, 0.15],
+            "emission_color":    [0.0, 0.0, 0.0],
+            "emission_strength": 0.0,
+            "roughness":         0.5
+        }
     ]
 }
 ```
 
-This file is parser-equivalent to the M9 hard-coded relativistic
-sphere case at `β = 0.5`.
+This file is parser-equivalent to the M9 relativistic-sphere case
+at `β = 0.5`, with the sphere now resolved to a matte-red material
+instead of the renderer's neutral default.
 
-## 13. Out of scope for v1
+## 14. Out of scope for v1
 
 These features are deferred to later schema versions and MUST NOT
 appear in v1 files. The eventual parser MAY warn-and-ignore them
 when present, to ease forward migration:
 
-- `materials` array (defines the entries `material_id` indexes
-  into).
 - `meshes` array (triangle meshes, vertex buffers, index buffers,
   external `.obj` references).
 - `lights` array (point / directional / area / environment).
+- Material fields beyond `base_color` / `emission_color` /
+  `emission_strength` / `roughness` (i.e. `metallic`, `specular`,
+  `transmission`).
 - `textures`, environment maps, IBL.
 - Per-frame motion (animation curves, per-object velocities,
   retarded-time controls).
@@ -310,12 +380,12 @@ when present, to ease forward migration:
 - Per-sphere transform / parent links / object names.
 
 The host data model already supports several of these
-(materials, meshes, lights have host structs and GPU upload paths);
+(meshes and lights have host structs and GPU upload paths);
 they're left out of v1 only because this slice is intentionally
-small. v2 adds them by mapping the existing C++ structs to JSON
-sections of the same names.
+small. Future schema versions add them by mapping the existing
+C++ structs to JSON sections of the same names.
 
-## 14. References
+## 15. References
 
 - `src/scene/Scene.h` — host data model the parser populates.
 - `src/scene/Transform.h` — `rr::math::Transform` carried by every
@@ -325,6 +395,10 @@ sections of the same names.
   `Observer { velocity }` and `RelativityParams { ... }` the
   parser populates from the v1 `relativity` section.
 - `src/geometry/Sphere.h` — POD `Sphere` consumed by `GpuScene`.
+- `src/material/MaterialTypes.h` — `MaterialParams` POD the parser
+  populates from each `materials[i]` entry. Fields not exposed in
+  v1 (`metallic`, `specular`, `transmission`) keep their host
+  defaults.
 - `docs/MASTER_ARCHITECTURE.md` — `Scene File Format` module
   contract (no GPU / UI / DCC dependencies).
 - `docs/MODULE_MAP.md` — module 18 (Scene File Format).

@@ -93,6 +93,70 @@ All modules now have a placeholder source directory under `src/`,
 
 ## Change Log
 
+### 2026-04-27 — RRSCENE v1: `materials` section added
+
+Doc-only extension to the v1 spec. No parser, no source changes.
+
+- **`docs/RRSCENE_FORMAT.md`:** added section 9 (`materials`).
+  - Fields: `id` (required, non-negative, unique within the
+    array, the lookup key referenced by
+    `spheres[i].material_id`), `name` (optional, debug label),
+    `base_color`, `emission_color`, `emission_strength`,
+    `roughness`. Roughness is clamped to `[0, 1]`; colours are
+    clamped to `[0, ∞)`.
+  - `id` is a lookup key, not an array index - sparse / out-of-
+    order ids are legal so authoring tools can manage stable
+    handles. Duplicate ids are an error.
+  - Unmatched `material_id` and explicit `-1` fall back to the
+    renderer's neutral default material
+    (`[0.8, 0.8, 0.8]`, no emission, roughness `0.5`).
+  - The host `MaterialParams` carries `metallic`, `specular`,
+    `transmission` slots; v1 does not expose them and the
+    parser keeps them at their host defaults. Future schema
+    versions add them as additional optional fields with the
+    same names.
+  - Texture-driven parameters explicitly excluded from v1;
+    they land with the texture system (M16).
+- Top-level shape (section 2) updated to list `materials` as an
+  optional section. Section numbers below it shifted by one
+  (Common types -> 10, Defaults -> 11, Validation -> 12,
+  Complete example -> 13, Out of scope -> 14, References -> 15).
+- Validation rules (section 12) gained a new clause: material
+  `id` must be a non-negative integer and unique within the
+  `materials` array; out-of-range numerical values are clamped
+  per the materials table.
+- Spheres section (section 8) note rewritten: `material_id` now
+  resolves to an entry in the `materials` array; `-1` /
+  unmatched ids fall back to the renderer's default. The earlier
+  "v1 has no materials section" caveat is gone.
+- "Out of scope for v1" (section 14) updated: removed the
+  bullet for "materials array"; added an explicit bullet for
+  "material fields beyond `base_color` / `emission_color` /
+  `emission_strength` / `roughness`" so the absent
+  `metallic` / `specular` / `transmission` fields are
+  documented as deferred. `meshes` and `lights` remain
+  out-of-scope per the user's narrower prompt.
+- Complete example (section 13) updated: the single sphere now
+  references a real `matte_red` material via `material_id: 0`,
+  exercising the new section end-to-end.
+- References (section 15) updated to add
+  `src/material/MaterialTypes.h` and document which
+  `MaterialParams` fields v1 keeps at host defaults.
+
+#### Verified
+
+No source changes; the existing build and tests remain green
+from the previous slice (`ctest -> 10/10`).
+
+#### Per the prompt
+
+- Only `materials` was added.
+- One small JSON example in the new section, plus the
+  end-to-end example file in section 13 was extended to
+  reference a material.
+- No meshes; no lights.
+- No parser code.
+
 ### 2026-04-27 — RRSCENE v1 format spec landed (doc only, M13 in progress)
 
 Documentation-only slice. Defines the minimal v1 contract the
