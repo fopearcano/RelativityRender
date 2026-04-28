@@ -140,6 +140,39 @@ int main(int argc, char** argv) {
             return 1;
         }
         Logger::info("saved " + out_path.string());
+
+        // M14 deliverables: two path-trace renders of the same
+        // scene at different sample counts. Same upload, same
+        // camera + relativity, just bouncing per pixel for spp
+        // independent paths. Output paths are fixed for the
+        // milestone deliverable so the two PPMs are easy to
+        // diff between commits.
+        struct PathTracePass { int spp; int max_depth; const char* path; };
+        const PathTracePass passes[] = {
+            { 1,  4, "output/pathtrace_spp_1.ppm"  },
+            { 16, 4, "output/pathtrace_spp_16.ppm" },
+        };
+        for (const auto& pass : passes) {
+            Logger::info("path tracing: spp=" + std::to_string(pass.spp)
+                         + " max_depth=" + std::to_string(pass.max_depth));
+            auto pt = rr::cuda::CudaRenderer::render_pathtrace(
+                gpu_scene, width, height, pass.spp, pass.max_depth,
+                /*seed_offset=*/0u);
+            if (!pt.ok) {
+                Logger::error("path-trace render failed: " + pt.message);
+                return 1;
+            }
+            const std::filesystem::path pt_path = pass.path;
+            std::error_code pt_ec;
+            if (pt_path.has_parent_path()) {
+                std::filesystem::create_directories(pt_path.parent_path(), pt_ec);
+            }
+            if (!pt.image.save_ppm(pt_path)) {
+                Logger::error("saving image failed: " + pt_path.string());
+                return 1;
+            }
+            Logger::info("saved " + pt_path.string());
+        }
 #else
         Logger::info("(no CUDA backend compiled; rebuild with "
                      "-DRR_ENABLE_CUDA=ON to render the loaded scene)");

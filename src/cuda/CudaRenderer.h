@@ -65,6 +65,23 @@ public:
     // individual upload methods) and call this function.
     static Result render_scene(const rr::gpu::GpuScene& scene,
                                int width, int height);
+
+    // M14: minimal CUDA path tracer. Per pixel: traces `spp`
+    // independent paths with cosine-weighted Lambertian bounces up
+    // to `max_depth`, accumulates emission + environment-fallback
+    // radiance, applies the existing relativistic pipeline (Doppler
+    // + searchlight) to the integrated value, and writes the
+    // average to the framebuffer. The CPU only configures + launches
+    // + saves; every per-ray step runs on the device.
+    //
+    // `seed_offset` is forwarded to the per-pixel RNG seed so a
+    // caller running multiple launches for true progressive
+    // accumulation can advance the RNG between invocations and
+    // blend the resulting framebuffers themselves.
+    static Result render_pathtrace(const rr::gpu::GpuScene& scene,
+                                   int width, int height,
+                                   int spp, int max_depth,
+                                   unsigned int seed_offset = 0u);
 };
 
 }

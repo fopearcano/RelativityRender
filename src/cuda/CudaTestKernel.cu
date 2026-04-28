@@ -6,6 +6,8 @@
 #include "lighting/Light.h"
 #include "material/MaterialTypes.h"
 #include "math/Vec3.h"
+#include "pathtracer/RNG.cuh"
+#include "pathtracer/Sampling.cuh"
 #include "relativity/RelativityMath.cuh"
 #include "renderer/Hit.h"
 
@@ -419,6 +421,222 @@ void launch_render_scene(float* device_pixels, int width, int height,
                     (height + block.y - 1) / block.y);
 
     k_render_scene<<<grid, block, 0, stream>>>(device_pixels, width, height, scene);
+}
+
+namespace {
+
+// Closest-hit search across spheres + the single mesh slot. The
+// path tracer uses this on every bounce, so we factor it out of
+// `k_render_scene`'s body. `t_min` is the per-bounce epsilon that
+// keeps a freshly-spawned bounce ray from hitting its own origin
+// surface again.
+__device__ rr::renderer::Hit
+trace_closest(const rr::cuda::CudaSceneView& scene,
+              const rr::camera::CameraRay&   ray,
+              float                          t_min) {
+    rr::renderer::Hit best;
+    float             t_max = 1.0e30f;
+
+    for (int i = 0; i < scene.sphere_count; ++i) {
+        const auto h = rr::cuda::intersect_sphere(ray, scene.spheres[i],
+                                                  t_min, t_max);
+        if (h.hit) { best = h; t_max = h.t; }
+    }
+    const auto& mesh = scene.mesh;
+    for (int i = 0; i < mesh.triangle_count; ++i) {
+        const auto tri = mesh.triangles[i];
+        const auto v0  = mesh.vertices[tri.v0].position;
+        const auto v1  = mesh.vertices[tri.v1].position;
+        const auto v2  = mesh.vertices[tri.v2].position;
+        auto h = rr::cuda::intersect_triangle(ray, v0, v1, v2, t_min, t_max);
+        if (h.hit) {
+            h.material_index = mesh.material_id;
+            best  = h;
+            t_max = h.t;
+        }
+    }
+    return best;
+}
+
+// Environment / sky-fallback colour. Mirrors the M12 kernel: an
+// uploaded `Environment` light wins; otherwise the existing
+// vertical sky gradient.
+__device__ rr::math::Vec3
+sky_color(const rr::cuda::CudaSceneView& scene,
+          rr::math::Vec3                  ray_dir) {
+    using rr::math::Vec3;
+    for (int i = 0; i < scene.light_count; ++i) {
+        const rr::lighting::Light L = scene.lights[i];
+        if (L.type == rr::lighting::LightType::Environment) {
+            return L.color * L.intensity;
+        }
+    }
+    const float t = 0.5f * (ray_dir.y + 1.0f);
+    return Vec3{(1.0f - t) * 1.0f + t * 0.5f,
+                (1.0f - t) * 1.0f + t * 0.7f,
+                (1.0f - t) * 1.0f + t * 1.0f};
+}
+
+// Look up the material for a hit; falls back to the renderer's
+// neutral default when the index is out of range.
+__device__ rr::material::MaterialParams
+lookup_material(const rr::cuda::CudaSceneView& scene, int material_index) {
+    rr::material::MaterialParams mat;
+    if (material_index >= 0
+        && material_index < scene.material_count
+        && scene.materials != nullptr) {
+        mat = scene.materials[material_index];
+    }
+    return mat;
+}
+
+// One full path. Generates a primary ray, applies aberration, and
+// bounces up to `max_depth` times accumulating emission +
+// environment radiance through cosine-weighted Lambertian
+// scattering. Returns the (relativistic-effects-applied) radiance
+// for this single sample.
+__device__ rr::math::Vec3
+trace_one_path(const rr::cuda::CudaSceneView& scene,
+               int x, int y, int width, int height,
+               int max_depth,
+               rr::pathtracer::RNG& rng) {
+    using rr::math::Vec3;
+
+    auto ray = rr::camera::generate_camera_ray(scene.camera, x, y, width, height);
+
+    if (scene.params.enable_aberration) {
+        ray.direction = rr::relativity::aberrateDirection(scene.observer.velocity,
+                                                          ray.direction);
+    }
+    const Vec3 primary_dir = ray.direction;
+
+    Vec3 throughput{1.0f, 1.0f, 1.0f};
+    Vec3 radiance  {0.0f, 0.0f, 0.0f};
+
+    for (int bounce = 0; bounce < max_depth; ++bounce) {
+        // 1e-3f is a generous self-intersection epsilon; tighter
+        // values land within Moller-Trumbore's noise floor on
+        // some triangles. The path tracer is not yet tuned for
+        // the long-range / large-scale-diff cases that need a
+        // smaller value.
+        const auto hit = trace_closest(scene, ray, /*t_min=*/1.0e-3f);
+
+        if (!hit.hit) {
+            // Environment fallback: light-only contribution, then
+            // path terminates.
+            radiance = radiance + throughput * sky_color(scene, ray.direction);
+            break;
+        }
+
+        const auto mat = lookup_material(scene, hit.material_index);
+
+        // Emission from the hit surface (allows the path tracer to
+        // pick up emissive geometry directly, including the M11
+        // emissive quad).
+        radiance = radiance + throughput
+                            * (mat.emissionColor * mat.emissionStrength);
+
+        // Lambertian diffuse bounce. Lambert: f_r = baseColor / pi;
+        // PDF for cosine-weighted hemisphere is cos(theta) / pi;
+        // throughput update simplifies to
+        //   throughput *= baseColor * cos(theta) / pi * pi / cos(theta)
+        //              =  baseColor.
+        Vec3 n = hit.normal;
+        if (rr::math::dot(n, ray.direction) > 0.0f) {
+            n = -n;  // shading normal faces the incoming ray
+        }
+        const Vec3 wi = rr::pathtracer::sample_hemisphere_cosine(n, rng);
+
+        throughput = throughput * mat.baseColor;
+
+        // Move the new ray's origin slightly off the surface so
+        // the next intersection's t_min epsilon doesn't reject it.
+        ray.origin    = hit.position + n * 1.0e-3f;
+        ray.direction = wi;
+
+        // Cheap early-out: once throughput is essentially black,
+        // no later bounce can contribute. (Russian roulette is the
+        // proper unbiased version; that's the next M14 slice.)
+        if (throughput.x <= 1.0e-6f
+            && throughput.y <= 1.0e-6f
+            && throughput.z <= 1.0e-6f) {
+            break;
+        }
+    }
+
+    // Apply relativistic effects to the integrated radiance, using
+    // the primary ray direction (the apparent direction the
+    // observer is looking in this frame).
+    const float D = rr::relativity::dopplerFactor(scene.observer.velocity,
+                                                  primary_dir);
+    if (scene.params.enable_doppler) {
+        radiance = rr::relativity::applyDopplerColor(
+            radiance, D, scene.params.doppler_color_strength);
+    }
+    if (scene.params.enable_searchlight) {
+        const float D4    = rr::relativity::searchlightFactor(D);
+        const float scale = 1.0f + (D4 - 1.0f) * scene.params.searchlight_strength;
+        radiance = radiance * scale;
+    }
+    return radiance;
+}
+
+// Path-tracing kernel. Per pixel: trace `spp` independent paths,
+// average them, write to the framebuffer. The "accumulation
+// buffer" is the per-thread `accum` Vec3 register; the framebuffer
+// stores the mean. Across multiple kernel launches a caller can
+// blend the framebuffer themselves for true progressive
+// refinement; the kernel itself is single-launch.
+__global__ void
+k_path_trace(float* pixels, int width, int height,
+             rr::cuda::CudaSceneView scene,
+             int spp, int max_depth, unsigned int seed_offset) {
+    const int x = blockIdx.x * blockDim.x + threadIdx.x;
+    const int y = blockIdx.y * blockDim.y + threadIdx.y;
+    if (x >= width || y >= height) return;
+
+    using rr::math::Vec3;
+    Vec3 accum{0.0f, 0.0f, 0.0f};
+
+    const int n = spp > 0 ? spp : 1;
+    for (int s = 0; s < n; ++s) {
+        rr::pathtracer::RNG rng = rr::pathtracer::make_rng(
+            static_cast<unsigned int>(x),
+            static_cast<unsigned int>(y),
+            seed_offset + static_cast<unsigned int>(s));
+
+        accum = accum + trace_one_path(scene,
+                                       x, y, width, height,
+                                       max_depth > 0 ? max_depth : 1,
+                                       rng);
+    }
+
+    const Vec3 mean = accum * (1.0f / static_cast<float>(n));
+
+    const int idx = (y * width + x) * 4;
+    pixels[idx + 0] = mean.x;
+    pixels[idx + 1] = mean.y;
+    pixels[idx + 2] = mean.z;
+    pixels[idx + 3] = 1.0f;
+}
+
+}
+
+void launch_path_trace(float* device_pixels, int width, int height,
+                       rr::cuda::CudaSceneView scene,
+                       int spp, int max_depth,
+                       unsigned int seed_offset,
+                       cudaStream_t stream) {
+    if (!device_pixels || width <= 0 || height <= 0) return;
+    if (spp       <= 0) spp       = 1;
+    if (max_depth <= 0) max_depth = 1;
+
+    const dim3 block(16, 16);
+    const dim3 grid((width  + block.x - 1) / block.x,
+                    (height + block.y - 1) / block.y);
+
+    k_path_trace<<<grid, block, 0, stream>>>(device_pixels, width, height, scene,
+                                             spp, max_depth, seed_offset);
 }
 
 }

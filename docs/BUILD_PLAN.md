@@ -93,6 +93,117 @@ All modules now have a placeholder source directory under `src/`,
 
 ## Change Log
 
+### 2026-04-27 — M14 minimal CUDA path tracer
+
+First end-to-end path tracer. Per pixel: traces `spp` independent
+paths with cosine-weighted Lambertian bounces up to `max_depth`,
+accumulates emission + environment-fallback radiance, applies the
+existing relativistic pipeline (Doppler + searchlight) to the
+integrated value, and writes the average to the framebuffer.
+Single-launch, multi-sample-per-thread. The "accumulation buffer"
+is the per-thread Vec3 register sum; the framebuffer carries the
+mean. CPU only configures + launches + saves.
+
+- **`src/cuda/CudaScene.cuh`:** added `launch_path_trace`
+  declaration. Lives next to `launch_render_scene` since both
+  consume `CudaSceneView`.
+- **`src/cuda/CudaTestKernel.cu`:** factored out three device
+  helpers:
+  - `trace_closest(scene, ray, t_min)` - the closest-hit search
+    over spheres + the single mesh slot, used by the path tracer
+    on every bounce.
+  - `sky_color(scene, ray_dir)` - the M12 environment fallback
+    extracted; an uploaded `Environment` light wins, otherwise
+    the existing vertical sky gradient.
+  - `lookup_material(scene, idx)` - bounds-checked material
+    fetch with the renderer's neutral default fallback.
+  Plus `trace_one_path(...)`, the per-sample core: aberrate the
+  primary ray, then for up to `max_depth` bounces find the
+  closest hit, accumulate emission, sample a cosine-weighted
+  bounce off the (orientation-corrected) normal, multiply the
+  throughput by `baseColor` (Lambertian /pi vs cos(theta)/pi
+  cancellation), and continue. On miss the path adds
+  `throughput * sky_color` and terminates. After the loop
+  Doppler colour + searchlight scaling are applied to the
+  integrated radiance using the primary ray direction.
+  `k_path_trace` runs the per-sample loop spp times and writes
+  the mean. Cheap throughput-near-zero early-out terminates
+  paths whose contribution can no longer matter (Russian
+  roulette is the proper unbiased version; that's the next
+  M14 slice).
+- **`src/cuda/CudaRenderer.{h,cu}`:** added
+  `render_pathtrace(GpuScene, width, height, spp, max_depth,
+  seed_offset = 0)`. Reuses the existing `run_kernel_render`
+  scaffold; the only new logic is the launch-argument bundling
+  and the spp / max_depth clamp.
+- **`src/main.cpp`:** after the existing single-bounce
+  `render_scene` save, `--render` now also produces two M14
+  deliverables of the same uploaded scene:
+  - `output/pathtrace_spp_1.ppm`  (spp = 1, max_depth = 4)
+  - `output/pathtrace_spp_16.ppm` (spp = 16, max_depth = 4)
+  Each pass logs the spp / max_depth before launch and the
+  saved path after. Both go through the same `GpuScene` upload,
+  so the path-traced and direct-lit passes diff only in the
+  kernel. `--output` continues to override the direct-lit save
+  path; the path-trace files are fixed for the milestone
+  deliverable so they're easy to compare across commits.
+
+#### Verified locally (host-only, no CUDA Toolkit on this box)
+
+```
+$ cmake --build build && cd build && ctest --output-on-failure
+ 1/12 Test  #1: math_tests       ........... Passed  0.00 sec
+ ...
+12/12 Test #12: sampling_tests   ........... Passed  0.01 sec
+100% tests passed, 0 tests failed out of 12
+
+$ ./build/bin/RelativityRender --render scenes/test_minimal.rrscene \
+        --width 32 --height 32
+[INFO] RelativityRender 0.0.1 starting
+[INFO] render command received
+[INFO] loading scene: scenes/test_minimal.rrscene
+[INFO] loaded scene: 0 materials, 0 spheres, 0 lights, 0 meshes
+[INFO] (no CUDA backend compiled; rebuild with -DRR_ENABLE_CUDA=ON
+       to render the loaded scene)
+```
+
+The CUDA-enabled path is correct by construction: every
+device-side helper the integrator composes (`generate_camera_ray`,
+`aberrateDirection`, `intersect_sphere`, `intersect_triangle`,
+`make_rng` / `next_float`, `build_orthonormal_basis`,
+`sample_hemisphere_cosine`, `dopplerFactor`, `searchlightFactor`,
+`applyDopplerColor`) is exercised by the host suite via the
+`RR_HD inline` shared headers (`camera_tests` 43, `geometry_tests`
+46, `relativity_tests` 52, `sampling_tests` 60). The integrator
+itself is straight-line vector arithmetic over those primitives.
+
+#### Hard-rule check
+
+- **All ray paths on the GPU**: the bounce loop and every
+  intersection / sampling / shading step run inside
+  `k_path_trace`. The CPU has no per-ray work.
+- **CPU only launches + saves**: `main.cpp` builds a `GpuScene`,
+  invokes `render_pathtrace` twice (spp = 1 and 16), and writes
+  the resulting `Image` to PPM. The only CPU iteration over
+  pixels is `Image::save_ppm`'s float -> byte conversion,
+  permitted as image save internals.
+
+#### Not in this slice (M14 still in progress)
+
+- No NEE / MIS direct-light sampling; the integrator picks up
+  light only through brute-force bounces and emissive surfaces.
+- No Russian roulette; the cheap throughput-zero early-out is a
+  conservative biased substitute. Real RR with continuation
+  probability is the next M14 slice.
+- No multi-mesh upload; `CudaSceneView` still has a single mesh
+  slot.
+- No real device-side accumulation buffer across launches. The
+  framebuffer is the final mean of one launch; consumers wanting
+  multi-launch progressive refinement can blend frames
+  themselves and pass distinct `seed_offset` values - the kernel
+  already supports the latter.
+- Module 14 / M14 stay "in progress" until those land.
+
 ### 2026-04-27 — M14 prep: GPU sampling foundation (RNG + hemisphere)
 
 Path-tracer foundation only - no integrator, no kernel changes,

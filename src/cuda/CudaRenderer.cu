@@ -167,6 +167,52 @@ CudaRenderer::Result CudaRenderer::render_scene(const rr::gpu::GpuScene& scene,
         });
 }
 
+CudaRenderer::Result CudaRenderer::render_pathtrace(const rr::gpu::GpuScene& scene,
+                                                    int width, int height,
+                                                    int spp, int max_depth,
+                                                    unsigned int seed_offset) {
+    if (!scene.has_camera()) {
+        Result r;
+        r.message = "scene has no camera (call GpuScene::upload_camera first)";
+        return r;
+    }
+    if (!scene.has_relativity()) {
+        Result r;
+        r.message = "scene has no relativity state "
+                    "(call GpuScene::upload_relativity first)";
+        return r;
+    }
+    if (spp       <= 0) spp       = 1;
+    if (max_depth <= 0) max_depth = 1;
+
+    CudaSceneView view;
+    view.camera       = scene.gpu_camera();
+    view.observer     = scene.observer();
+    view.params       = scene.relativity();
+    view.spheres      = scene.device_spheres();
+    view.sphere_count = static_cast<int>(scene.sphere_count());
+
+    const auto& gpu_mesh = scene.gpu_mesh();
+    view.mesh.vertices       = gpu_mesh.device_vertices();
+    view.mesh.triangles      = gpu_mesh.device_triangles();
+    view.mesh.vertex_count   = static_cast<int>(gpu_mesh.vertex_count());
+    view.mesh.triangle_count = static_cast<int>(gpu_mesh.triangle_count());
+    view.mesh.material_id    = gpu_mesh.material_id();
+    view.mesh.transform      = gpu_mesh.transform();
+
+    view.materials      = scene.device_materials();
+    view.material_count = static_cast<int>(scene.material_count());
+
+    view.lights         = scene.device_lights();
+    view.light_count    = static_cast<int>(scene.light_count());
+
+    return run_kernel_render(width, height,
+        [view, spp, max_depth, seed_offset](float* device_pixels, int w, int h) {
+            launch_path_trace(device_pixels, w, h, view,
+                              spp, max_depth, seed_offset, /*stream=*/nullptr);
+        });
+}
+
 }
 
 

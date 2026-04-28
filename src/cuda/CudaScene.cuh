@@ -68,4 +68,19 @@ void launch_render_scene(float* device_pixels, int width, int height,
                          CudaSceneView scene,
                          cudaStream_t stream = 0);
 
+// Host-callable launch wrapper for the path-tracer kernel. Defined
+// in CudaTestKernel.cu. Per pixel: traces `spp` independent paths
+// with cosine-weighted Lambertian bounces up to `max_depth`,
+// accumulates emission + environment-fallback radiance, applies
+// relativistic Doppler / searchlight to the integrated value, and
+// writes the average to the framebuffer. The accumulation buffer
+// is per-thread (a Vec3 register sum); the framebuffer holds the
+// final mean. `seed_offset` is added to the per-sample RNG seed so
+// callers can advance it between progressive launches.
+void launch_path_trace(float* device_pixels, int width, int height,
+                       CudaSceneView scene,
+                       int spp, int max_depth,
+                       unsigned int seed_offset,
+                       cudaStream_t stream = 0);
+
 }
