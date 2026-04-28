@@ -209,18 +209,258 @@ later slices. A choice that violates "minimal friction"
 or "reuse the GPU backend" is reconsidered before it
 lands in code.
 
-## 6. What this slice covers
+## 6. Cinema 4D plugin registration paths
 
-This slice introduces the native integration at the
-conceptual level: what it is, why the project should
-grow it, how it relates to the Python bridge that ships
-today, and the three goals it must satisfy.
+This section pins HOW a Cinema 4D plugin gets to be the
+thing the artist's **Render** click drives. It stays at
+the conceptual level - which API to register against,
+which lifecycle callbacks frame the rendering, where the
+plugin slots into C4D's pipeline. Per the prompt the
+framebuffer mechanics and scene-translation contract are
+NOT pinned here; they get their own slices once this
+mechanism is settled.
+
+### 6.1 Cinema 4D's plugin model
+
+A C++ plugin in Cinema 4D is a shared library (`.xdl64`
+on Windows / `.dylib` on macOS) that lives under the C4D
+plugins directory. Cinema 4D enumerates that directory at
+startup, loads each plugin, and calls a well-known entry
+point (`PluginStart()`) where the plugin registers itself
+with one or more of C4D's plugin registries.
+
+The SDK ships a small set of plugin "types", each with
+its own register call (`RegisterCommandPlugin`,
+`RegisterObjectPlugin`, `RegisterTagPlugin`,
+`RegisterMaterialPlugin`, `RegisterVideopostPlugin`, ...).
+Each registration carries:
+
+- a globally-unique 32-bit **plugin id** (allocated via
+  Maxon's PluginCafe registry; the project already uses
+  placeholder ids for the M19 bridge and will allocate
+  real ids before any public release);
+- a **display name** the artist sees in C4D's UI;
+- a **flags / info** word telling C4D what the plugin
+  can do;
+- an **allocator** function that returns an instance of
+  the plugin's class (Cinema 4D owns the lifetime;
+  the plugin yields heap-allocated objects to it).
+
+The renderer-replacement role is owned by the
+**`VideoPostData`** type (section 6.2). All other plugin
+types are about adding capabilities to C4D rather than
+taking over rendering, so they are not relevant here.
+
+### 6.2 The `VideoPostData` plugin type
+
+Cinema 4D's `VideoPostData` is the C++ base class for
+plugins that participate in the render pipeline. It is
+the API every renderer the C4D ecosystem ships against
+- the bundled Standard / Physical renderers, every
+third-party renderer, every post-effect like depth-of-
+field or vignette - hangs off. The base class has been
+in the SDK long enough that targetting it gives the
+plugin the broadest forward / backward compatibility
+across SDK releases (section 9 - SDK version
+constraints, separate slice).
+
+A `VideoPostData` plugin is registered with
+`RegisterVideopostPlugin(...)`, with arguments that
+include:
+
+- the unique plugin id;
+- the display name shown in C4D's UI;
+- an **info** flags word (declares what the plugin
+  produces - multi-pass output / depth output /
+  motion-vector output / etc.);
+- an **allocator** for the plugin's class;
+- a **priority** constant (section 6.4) that decides
+  WHERE in C4D's render pipeline the plugin runs.
+
+Once registered, C4D considers the plugin a candidate
+for the render pipeline. Whether it actually drives
+rendering depends on the priority constant and on the
+**Render Settings -> Renderer** dropdown (section 6.5).
+
+`VideoPostData` exposes a small lifecycle API: an
+`Init` / `Execute` / `Free` triple, plus a handful of
+capability-query callbacks Cinema 4D consults to learn
+what the plugin can produce. The Execute callback is
+where rendering actually runs (section 6.6); Init does
+per-render preparation; Free cleans up. None of those
+callbacks expose a CPU pixel loop the plugin has to fill
+- the plugin's job is to coordinate, and the rendering
+itself is whatever the plugin's implementation chooses
+(in our case, the existing RelativityRender public
+façade running on the GPU).
+
+### 6.3 Alternative: a "renderer plugin" API
+
+Maxon has explored more direct renderer-registration
+APIs across recent SDK generations - the names and
+shapes differ release to release, but the family
+includes:
+
+- A `Maxon::Renderer` interface (newer, registry-style)
+  exposed by some R20+ SDKs.
+- Direct registration via `c4d::renderer::*` functions
+  in some SDK releases.
+- The classic `VideoPostData` route this plan picks.
+
+The advantages of those direct routes are real - cleaner
+type contracts, fewer historical edge cases. The
+disadvantages are also real:
+
+- The shape changes between SDK releases more than the
+  `VideoPostData` API does.
+- Documentation and examples are thinner; community-
+  published plugins still overwhelmingly use
+  `VideoPostData`.
+- Forward compatibility is less proven; if Maxon
+  reshuffles the renderer-plugin surface, the plugin
+  needs to track the change, which costs maintenance
+  time.
+
+For v1, the plan picks **`VideoPostData`**. It is the
+most portable, most documented, most-vetted-by-real-
+plugins path. A future spec slice can re-examine the
+direct renderer-plugin API once the v1 plugin is
+stable on a chosen SDK version and once Maxon's
+renderer-API roadmap settles.
+
+### 6.4 Render-pipeline hooks: priority constants
+
+Cinema 4D's render pipeline is divided into stages. A
+`VideoPostData` plugin's **priority** declares which
+stage the plugin runs at. The SDK exposes a small set
+of priority constants whose names map to pipeline
+phases:
+
+| Priority class                  | When it fires                         | Typical plugin role                  |
+|---------------------------------|---------------------------------------|--------------------------------------|
+| Pre-render                      | Before geometry / shading work begins | Scene-prep effects.                  |
+| **Renderer-replacement**        | Takes over rendering entirely         | Third-party renderers (our slot).    |
+| Light-stage                     | During lighting calculation           | Custom lights / illumination passes. |
+| Post-effects                    | After the renderer produces a frame   | Glow / DoF / vignette / film grain.  |
+
+The exact constant names (`VPPRIORITY_*`-style symbols)
+are SDK-release dependent and pinned in the impl slice.
+What matters at the plan level is the **role**: a
+plugin that wants to BE the renderer registers at the
+**renderer-replacement** priority. C4D understands
+"this plugin is producing the entire output frame", and
+the artist's **Render** click dispatches to it. A
+plugin at any other priority is part of the pipeline
+but does not own it.
+
+RelativityRender is a renderer, not a post-effect. It
+registers at the renderer-replacement priority. Its
+`Execute` callback is where the GPU path tracer runs.
+
+### 6.5 How Cinema 4D invokes rendering
+
+With the plugin registered at the renderer-replacement
+priority, the user-facing flow is:
+
+```
+   1. Artist opens Render Settings.
+   2. Artist picks "RelativityRender" from the
+      Renderer dropdown.
+   3. Artist clicks Render (or Render-in-Picture-Viewer,
+      or Render-Region, or any other render command).
+   4. Cinema 4D's render manager:
+        a. consults Render Settings -> Renderer to find
+           the active renderer (our plugin id);
+        b. allocates the plugin instance via its
+           registered allocator;
+        c. calls Init(...) with the scene, the resolved
+           render settings, and the target framebuffer
+           parameters;
+        d. calls Execute(...) - rendering happens here;
+        e. calls Free(...) and releases the instance.
+   5. The frame the plugin filled lands in the
+      destination Cinema 4D chose (Picture Viewer,
+      Render Queue output slot, etc.).
+```
+
+The render manager calls the plugin's callbacks **in
+C4D's render thread context**. The plugin can spawn its
+own threads / GPU work freely; it just needs to obey
+Cinema 4D's progress-reporting and cancellation
+contract (a SHOULD-call-back-into-C4D-periodically
+rule pinned in the live-update slice). The
+RelativityRender renderer is already async-friendly -
+it returns from `render_scene` / `render_pathtrace`
+when the GPU launches complete - so plugging it in
+amounts to forwarding the Execute call to those
+functions.
+
+### 6.6 Intercept vs replace
+
+C4D's `VideoPostData` plugins divide cleanly into two
+families that do very different things:
+
+- **Post-effect plugins** *intercept* an already-
+  rendered frame and modify it. Glow, DoF, film grain,
+  vignette - all of these run AFTER a renderer has
+  produced pixels. The plugin's input is "here is a
+  buffer; modify it"; the plugin's job is per-pixel
+  filtering.
+- **Renderer-replacement plugins** *replace* rendering
+  entirely. The plugin's Execute is where rendering
+  begins; nothing produced the input buffer before it,
+  and the plugin's output is the entire frame.
+
+The difference is the priority constant (section 6.4)
+plus the shape of the Execute call. A renderer-
+replacement plugin receives an empty / about-to-be-
+filled buffer; a post-effect plugin receives a buffer
+with content.
+
+RelativityRender is a renderer-replacement plugin. Its
+Execute does NOT post-process Cinema 4D's render output;
+it runs the path tracer against the document and fills
+the framebuffer with what the path tracer produced.
+Cinema 4D's bundled renderers do not run when our
+plugin is the active renderer.
+
+### 6.7 Where RelativityRender connects, in one paragraph
+
+The plugin registers a `VideoPostData` subclass at the
+renderer-replacement priority. When the artist picks
+**RelativityRender** in the Render Settings dropdown
+and clicks **Render**, Cinema 4D allocates an instance,
+calls **Init** to hand over the scene + render settings,
+calls **Execute** to ask for the frame, and calls
+**Free** to clean up. The plugin's **Execute** is the
+single coordination point where C4D's request crosses
+into RelativityRender: it converts the live document
+state into our scene representation (separate slice),
+calls the existing public renderer façade (the same one
+the standalone executable uses), and hands the
+resulting framebuffer back to Cinema 4D (separate
+slice). Everything else - the path tracer, the
+relativistic camera model, the material graph, AOVs,
+denoising, OptiX path - is the renderer that already
+ships, unchanged.
+
+## 7. What this slice covers
+
+This and the previous slices together establish:
+
+- The native integration at the conceptual level:
+  what it is, why the project should grow it, how it
+  relates to the Python bridge that ships today, and
+  the three goals it must satisfy (sections 1-5).
+- The Cinema 4D plugin registration mechanism:
+  `VideoPostData` at the renderer-replacement
+  priority, the lifecycle the plugin honours, and
+  where its `Execute` slot is the single coordination
+  point with the RelativityRender renderer
+  (section 6).
 
 It deliberately does NOT pin:
 
-- The Cinema 4D registration mechanism (`VideoPostData`
-  vs renderer-plugin entry point vs scene-hook). That
-  is the next doc slice.
 - The framebuffer integration shape (per-pixel
   `BaseBitmap` writes vs bulk upload vs multi-pass
   output via Cinema 4D's `MultipassObject` API).
@@ -246,7 +486,7 @@ work begins only after the slices that constrain it have
 landed - the same incremental rule the rest of the
 project follows.
 
-## 7. Out of scope for v1 of the spec
+## 8. Out of scope for v1 of the spec
 
 Listed for clarity so the v1 implementation slice does
 not creep:

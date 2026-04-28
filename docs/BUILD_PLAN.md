@@ -93,6 +93,140 @@ All modules now have a placeholder source directory under `src/`,
 
 ## Change Log
 
+### 2026-04-28 — M23 (spec, registration): Cinema 4D plugin registration paths
+
+Second doc slice for M23 (Native Cinema 4D Renderer
+Integration). Adds section 6 ("Cinema 4D plugin
+registration paths") to
+`docs/C4D_NATIVE_RENDERER_PLAN.md`, pinning HOW a Cinema
+4D plugin gets to be the thing the artist's **Render**
+click drives. Stays at the conceptual level - which API
+to register against, which lifecycle callbacks frame
+rendering, where the plugin slots into C4D's pipeline.
+Per the prompt the framebuffer mechanics and scene-
+translation contract are NOT pinned here; they get their
+own slices.
+
+- **`docs/C4D_NATIVE_RENDERER_PLAN.md`:**
+  - Inserted section 6 "Cinema 4D plugin registration
+    paths":
+    - 6.1 Cinema 4D's plugin model: `.xdl64` / `.dylib`
+      shared libraries; `PluginStart()` entry point;
+      `RegisterXxxPlugin` registration; PluginCafe-
+      allocated 32-bit plugin ids. Renderer-replacement
+      role is owned by the `VideoPostData` plugin type.
+    - 6.2 The `VideoPostData` plugin type. Registered
+      via `RegisterVideopostPlugin(...)`; carries id +
+      display name + info flags + allocator + priority.
+      Lifecycle: Init / Execute / Free + capability
+      queries. Execute is where rendering runs - no CPU
+      pixel loop required of the plugin.
+    - 6.3 Alternative: `Maxon::Renderer` / direct
+      renderer-plugin APIs. Real but less stable across
+      SDK releases, less documented, less battle-tested
+      by community plugins. v1 picks `VideoPostData`
+      for portability + maturity; a future slice can
+      revisit once the v1 plugin is stable on a chosen
+      SDK and Maxon's renderer-API roadmap settles.
+    - 6.4 Render-pipeline hooks: priority constants.
+      Pre-render / renderer-replacement / light-stage /
+      post-effects roles documented in a table. Exact
+      `VPPRIORITY_*` symbol names are SDK-release
+      dependent; the plan pins the ROLE
+      (renderer-replacement) that v1 takes.
+    - 6.5 How Cinema 4D invokes rendering: 5-step flow
+      from "artist picks RelativityRender from the
+      Renderer dropdown" through allocate / Init /
+      Execute / Free / display-in-Picture-Viewer.
+      Render-thread context + cancellation contract
+      noted (cancellation pinned in the live-update
+      slice).
+    - 6.6 Intercept vs replace: post-effect plugins
+      run AFTER a renderer (per-pixel filtering on an
+      input buffer); renderer-replacement plugins run
+      INSTEAD OF a renderer (Execute starts with an
+      empty / about-to-be-filled buffer). Difference
+      is priority + Execute-call shape. RelativityRender
+      is renderer-replacement; C4D's bundled renderers
+      do not run when our plugin is active.
+    - 6.7 Where RelativityRender connects in one
+      paragraph: the plugin's `Execute` is the single
+      coordination point - it converts the live
+      document state into our scene representation
+      (separate slice), calls the existing public
+      renderer facade (the same one the standalone
+      executable uses), and hands the framebuffer back
+      (separate slice). Everything in between is the
+      renderer that already ships, unchanged.
+  - Renumbered the previous "What this slice covers"
+    section from 6 to 7 and "Out of scope" from 7 to
+    8. Updated the new section 7's deferred list to
+    drop the Cinema-4D-registration-mechanism entry
+    now that 6 has landed; the remaining deferred
+    items (framebuffer integration, scene
+    translation, live update, v1 limitations, SDK
+    version target, bridge-vs-native workflow split)
+    are unchanged.
+
+#### Verified locally
+
+```
+$ ls docs/C4D_NATIVE_RENDERER_PLAN.md
+$ wc -l docs/C4D_NATIVE_RENDERER_PLAN.md
+$ python3 -c "open('docs/C4D_NATIVE_RENDERER_PLAN.md').read()"
+$ grep '^## ' docs/C4D_NATIVE_RENDERER_PLAN.md
+## 1. Purpose
+## 2. What a native Cinema 4D renderer integration is
+## 3. Why RelativityRender needs one
+## 4. Python bridge vs native C++ integration
+## 5. Goals
+## 6. Cinema 4D plugin registration paths
+## 7. What this slice covers
+## 8. Out of scope for v1 of the spec
+```
+
+Spec-only slice; no source / build / test changes.
+
+#### Per the prompt
+
+- "VideoPostData plugin type": section 6.2 - the v1
+  target. Lifecycle (Init / Execute / Free), info
+  flags, priority, allocator all called out
+  conceptually.
+- "Alternative: custom renderer plugin": section 6.3.
+  `Maxon::Renderer` / direct renderer-plugin APIs
+  exist but are less stable across SDK releases; v1
+  goes with `VideoPostData` for portability + a
+  proven track record. Future slice can revisit.
+- "Render pipeline hooks in C4D": section 6.4.
+  Priority constants pin which pipeline phase the
+  plugin runs at. Pre-render / renderer-replacement
+  / light / post-effects roles documented; v1 uses
+  renderer-replacement.
+- "Where RelativityRender connects into C4D render
+  pipeline": section 6.7 - one-paragraph summary
+  pinning the `Execute`-as-coordination-point rule.
+- "How C4D invokes rendering": section 6.5 - 5-step
+  flow with the artist's click as the entry point.
+- "How plugin intercepts or replaces rendering":
+  section 6.6 - intercept-vs-replace dichotomy with
+  the difference (priority + Execute-call shape)
+  pinned.
+- "Do NOT cover framebuffer or scene translation
+  yet": section 7's deferred list explicitly defers
+  both. Section 6.7 calls out that they are
+  separate slices.
+
+#### Module / milestone status
+
+- Module 21 (Future Native Cinema 4D Renderer):
+  remains `not started`. Two doc slices in; the
+  registration mechanism is the natural prerequisite
+  for the framebuffer / scene-translation slices
+  that follow.
+- M23 (Native Cinema 4D Renderer Integration):
+  remains `not started` (same).
+
 ### 2026-04-28 — M23 (spec, intro): native Cinema 4D renderer plan
 
 First doc slice for M23 (Native Cinema 4D Renderer
