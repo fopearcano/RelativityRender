@@ -93,6 +93,164 @@ All modules now have a placeholder source directory under `src/`,
 
 ## Change Log
 
+### 2026-04-28 — M21 (impl, data-core): structured material graph data layer
+
+Second implementation slice of the material node graph.
+Lands the **data-only** core under
+`src/material/graph/`: a clean, modular Socket / Node /
+Graph trio with structural validation and no evaluation.
+Coexists with the previous slice's monolithic
+`src/material/MaterialGraph.{h,cpp}` (which carries both
+data + evaluator under `rr::material::*`); a future slice
+will migrate the evaluator to consume the new core and
+delete the monolith.
+
+The new layer mirrors the spec contract one-to-one:
+sockets per spec section 7.1 / 7.2, the implicit-conversion
+table from 7.3 in `can_connect`, the DAG / terminal /
+sink-uniqueness rules from 7.4 / 7.5 in `validate_graph`.
+No evaluation, no GPU, no UI.
+
+- **`src/material/graph/Socket.h`** (new): `SocketType`
+  enum (`Float` / `Vec2` / `Vec3` / `Color` / `Normal`
+  matching spec 7.2), `SocketDirection` (`Input` / `Output`),
+  the `Socket` POD (name + type + direction). Helpers:
+  `socket_type_name`, `parse_socket_type` (canonical
+  lowercase + PascalCase aliases),
+  `socket_direction_name`, `can_connect(source, sink)`
+  (the implicit-conversion table from spec 7.3 -
+  identity, `float -> any` broadcast, `vec3 <-> color`
+  reinterpret, `normal -> vec3` drop).
+- **`src/material/graph/Node.h`** (new): `NodeType` enum
+  with stable ordinals matching the v1 catalogue; the
+  prompt's `DiffuseBSDF` is the canonical name and the
+  spec's `Diffuse` is accepted as an alias by
+  `parse_node_type`. `is_terminal` predicate (true for
+  `DiffuseBSDF` and `Emission`). `Node` POD: id + type +
+  optional name + `inputs` / `outputs` socket vectors +
+  per-type immediates (`color_value`, `scalar_value`,
+  `uv_value`, `texture_id`). `make_node(type, id)`
+  populates the catalogue's canonical socket layout for
+  every v1 type. `find_socket(node, name, direction)`
+  by-name lookup with direction filter.
+- **`src/material/graph/Graph.h`** (new): `Connection`
+  POD (from_node + from_socket name + to_node + to_socket
+  name). `Graph` POD: version + nodes vector + connections
+  vector. `find_node(graph, id)` (const + non-const
+  overloads), `incoming_connections(graph, id)`.
+  `validate_graph(graph)` runs structural validation per
+  spec section 7: unique ids, every connection's nodes
+  resolve, source / sink sockets exist in the right
+  direction, sink not double-wired, types compatible per
+  `can_connect`, DAG (cycle detection by 3-state DFS),
+  at least one terminal. Returns `ValidationResult { ok,
+  message }` with a descriptive message on the first
+  detected violation; check order is fixed so error
+  messages are stable.
+- **`src/material/graph/Graph.cpp`** (new): impl for the
+  Socket / Node / Graph layers above. Cycle detection is
+  iterative DFS with 3-state colouring (white / grey /
+  black) seeded across every connected component so
+  cycles in unreachable subgraphs still surface. Sink
+  uniqueness uses an `unordered_set<(NodeId, string)>`.
+- **`tests/material_graph_core_tests.cpp`** (new): 141
+  host assertions covering the data layer end-to-end.
+  Coverage:
+  - Socket: enum naming round-trip, lowercase + PascalCase
+    parse, unknown / case-variant rejection, direction
+    naming. `can_connect`: identity for every type,
+    `float -> any` broadcast, `vec3 <-> color`
+    reinterpret both ways, `normal -> vec3` drop (and
+    not back), truncation / luminance reductions
+    rejected.
+  - Node: enum naming, `parse_node_type` canonical and
+    alias paths, case-variant rejection, `is_terminal`.
+    `make_node` socket layout for every v1 type
+    (ConstantColor / TextureSample / Add / Multiply /
+    DiffuseBSDF / Emission). Per-catalogue immediate
+    defaults. `find_socket` direction filter.
+  - Graph: `find_node` + const overload + miss case.
+    `incoming_connections` returns target edges, empty
+    for unknown ids. Validation happy paths
+    (DiffuseBSDF-only, ConstantColor -> Diffuse,
+    full v1 chain with Texture -> Multiply -> Diffuse +
+    Emission). Validation error paths: unsupported
+    version, invalid id (`kInvalidNodeId`), duplicate id,
+    dangling `from_node` / `to_node`, unknown
+    `from_socket` / `to_socket`, socket in wrong
+    direction (input wired as source), double-wired sink,
+    type-incompatible connection, cycle, no terminal.
+    Compatible implicit-conversion path
+    (color -> vec3) accepted.
+- **`CMakeLists.txt`:**
+  - `rr_material` adds `src/material/graph/Graph.cpp`.
+    No new public dependency.
+  - New `material_graph_core_tests` target registered
+    with `add_test`, linked PRIVATE against
+    `rr_material`. Coexists with the existing
+    `material_graph_tests` (which targets the
+    `rr::material::` runtime from the previous slice);
+    both pass.
+
+#### Verified locally
+
+```
+$ cmake --build build && cd build && ctest --output-on-failure
+ 1/17 ... 17/17 all Passed
+100% tests passed, 0 tests failed out of 17
+
+$ ./build/bin/material_graph_core_tests
+material_graph_core_tests: 141/141 passed
+
+$ ./build/bin/material_graph_tests
+material_graph_tests: 78/78 passed
+```
+
+#### Per the prompt
+
+- "Files: `src/material/graph/{Graph.h, Graph.cpp,
+  Node.h, Socket.h}`": all four created.
+- "Define Node (id, type, inputs, outputs)": the POD
+  `Node` carries exactly those - plus the per-type
+  immediates the v1 catalogue requires for it to
+  serialise round-trippably.
+- "Define Socket (type, name, connection)": `Socket`
+  carries name + type + direction. The "connection" is
+  modelled at the `Graph` layer (a separate
+  `Connection` list keyed by node id + socket name) so
+  the data shape mirrors what a future scene-format
+  slice will serialise.
+- "Define Graph (list of nodes, connections)": the
+  `Graph` POD has both vectors + a `version` field per
+  spec 10.3.
+- "Support node types enum": all six listed
+  (`ConstantColor`, `TextureSample`, `Add`, `Multiply`,
+  `DiffuseBSDF`, `Emission`).
+- "No evaluation yet": the data layer ships zero
+  evaluation code. The previous slice's
+  `compile_graph_to_material` continues to work against
+  its own data structs; nothing in the new core touches
+  shading.
+- "No GPU yet / No UI": the new files include zero CUDA /
+  OptiX / UI dependencies. `rr_material` continues to
+  link only itself + math headers.
+- "Keep structures simple and serializable": every
+  type is plain data - no virtuals, no smart pointers,
+  no shared ownership. `std::string` + `std::vector` are
+  the only non-trivial members. The shape (per-node
+  socket lists; flat connection list with named source /
+  sink) maps directly to a future JSON schema.
+
+#### Module / milestone status
+
+- Module 22 (Node Editor / Material Graph): remains
+  `in progress`. The data core is now structured and
+  separate from the previous slice's monolith;
+  evaluator migration to consume the new core is a
+  future slice.
+- M21 (Material Node Graph (Editor)): remains `in
+  progress` (same).
+
 ### 2026-04-28 — M21 (impl, runtime): minimal material graph runtime
 
 First implementation slice of the material node graph. Lands

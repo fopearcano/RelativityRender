@@ -143,6 +143,7 @@ endif()
 add_library(rr_material STATIC
     src/material/Material.cpp
     src/material/MaterialGraph.cpp
+    src/material/graph/Graph.cpp
 )
 target_include_directories(rr_material PUBLIC src)
 if(MSVC)
@@ -462,6 +463,20 @@ if(RR_BUILD_TESTS)
         target_compile_options(material_graph_tests PRIVATE -Wall -Wextra -Wpedantic)
     endif()
     add_test(NAME material_graph_tests COMMAND material_graph_tests)
+
+    # Material graph DATA-CORE tests.  Exercises the structured
+    # data layer under src/material/graph/ - Socket type system,
+    # Node construction with the v1 catalogue's socket layout,
+    # Graph + structural validation (no evaluation; that's the
+    # MaterialGraph runtime above and a future Compile.cpp slice).
+    add_executable(material_graph_core_tests tests/material_graph_core_tests.cpp)
+    target_link_libraries(material_graph_core_tests PRIVATE rr_material)
+    if(MSVC)
+        target_compile_options(material_graph_core_tests PRIVATE /W4 /permissive-)
+    else()
+        target_compile_options(material_graph_core_tests PRIVATE -Wall -Wextra -Wpedantic)
+    endif()
+    add_test(NAME material_graph_core_tests COMMAND material_graph_core_tests)
 
     # Lighting foundation tests. Links rr_lighting for the factory
     # symbols; Light POD and math headers come through the PUBLIC
