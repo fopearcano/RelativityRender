@@ -789,7 +789,332 @@ introducing a single "Output" node that aggregates them,
 because the renderer's existing shading model already
 processes the contributions independently.
 
-## 8. What this slice covers
+## 8. Evaluation model
+
+This section pins WHEN the graph fires, WHAT it consumes,
+and WHAT it produces. It deliberately stops short of byte
+layouts and kernel snippets - those are the GPU compilation
+strategy's job (section 9) and the eventual implementation's
+job. The contract here is conceptual: every implementation
+the project ships MUST honour it; the implementations are
+free to differ in mechanics.
+
+### 8.1 Per-hit evaluation contract
+
+A material graph evaluates **once per surface hit** during
+shading. Each evaluation:
+
+- **Reads** a *shading context* (the per-hit values the
+  renderer's path tracer already computes: surface
+  position, surface UV, surface normal, view direction,
+  the bound texture array, the per-hit material id, ...)
+  plus the material's compiled graph.
+- **Produces** a *snapshot* shaped exactly like the
+  existing `rr::material::MaterialParams` (a
+  `baseColor`, an `emissionColor`, an `emissionStrength`,
+  a `roughness`, a `metallic`, ...).
+- **Returns** that snapshot to the renderer's existing
+  shading code, which integrates it the same way it
+  integrates flat-struct materials today.
+
+Three properties follow:
+
+- **Determinism.** Same shading context + same compiled
+  graph -> same snapshot, bit-for-bit. No randomness
+  inside the graph (sampling is the integrator's
+  concern, see 5.3).
+- **Statelessness.** Each evaluation is independent of
+  every other - across pixels, samples, bounces,
+  threads, frames. The graph reads the context, writes
+  the snapshot, returns. No history buffers, no shared
+  scratch, no cross-thread synchronisation.
+- **Boundedness.** The cost of one evaluation is decided
+  at host-side compile time; the runtime does not
+  allocate, recurse unbounded, or branch on input values
+  in a way that changes the operation count. (See 9.4 -
+  the strategy enforces this by construction.)
+
+### 8.2 Two-stage model
+
+The renderer evaluates the graph through two distinct
+stages:
+
+| Stage | Where | Frequency | Inputs | Outputs |
+|-------|-------|-----------|--------|---------|
+| Compile | Host (CPU) | Per material, per author edit | A `Graph` host object (the section-6/7 contract) | A backend-agnostic IR (section 9) + an upload-ready device buffer |
+| Execute | Device (GPU) | Per surface hit, per bounce, per sample, per pixel | Compiled IR + shading context | A `MaterialParams` snapshot |
+
+Compile is **infrequent and host-side**. It runs once
+when the scene loads, or once when an author edits a
+node (in the standalone editor or the C4D bridge -
+those are the M19 / M21 surfaces, not the renderer's).
+The per-edit path is the constraint that motivates
+section 5.2: editing one node MUST NOT recompile the
+renderer or rebuild the whole scene.
+
+Execute is **frequent and device-side**. It is the only
+stage the path tracer's shading kernel cares about.
+Every per-hit work item runs the same Execute path with
+the per-material IR; warp divergence between materials
+is unavoidable but warp divergence INSIDE the
+evaluation of a single material is what 9.4 designs
+out.
+
+The split is the same one the rest of the renderer
+already uses: the host composes data, the kernel
+consumes it. The graph is one more piece of data the
+host composes.
+
+### 8.3 Evaluation order
+
+Compile traverses the graph in **topological order**:
+each node fires only after every node that feeds one of
+its connected inputs has fired. The ordering is fixed
+at compile time; the device-side Execute path traverses
+the same order linearly with no branching on graph
+structure.
+
+Three rules pin the order's exact behaviour:
+
+- **Terminal-driven reachability.** Only nodes
+  reachable backwards from at least one terminal (the
+  BSDFs from 6.5) are present in the IR. Dead-code
+  subgraphs (per 7.4) are dropped at compile time and
+  never reach the device.
+- **Default-value semantics.** An unwired input takes
+  the catalogue default for that input (e.g.
+  `Mix.factor` defaults to `0.5`). Defaults are folded
+  into the IR at compile time; the runtime does NOT
+  branch on "is this input wired?".
+- **Fan-out caching.** When a node's output drives
+  multiple consumers, the output is computed once per
+  evaluation and parked in a *slot* (see 9.2);
+  consumers read the slot. This keeps cost linear in
+  node count rather than exponential in fan-out depth.
+
+### 8.4 What the contract does NOT include
+
+The evaluation model's contract is the WHAT, not the HOW.
+v1 deliberately does not pin:
+
+- The Compile stage's exact algorithm. Any topological
+  traversal that respects 8.3 is admissible.
+- The Execute stage's exact instruction format. The
+  IR is the strategy's job (section 9); the contract
+  here only requires that the IR exists and is
+  device-evaluable.
+- Whether multiple materials share an IR layout (a
+  per-scene optimisation) or each gets its own (a
+  per-material clarity choice). Both are admissible
+  because both produce the same snapshot.
+
+## 9. GPU compilation strategy
+
+This section pins HOW the host turns a `Graph` into
+something the device can execute. It is conceptual but
+concrete: it commits to a pipeline shape, an IR shape,
+a per-node mapping, and a branching policy. The exact
+byte layouts, the maximum-op-count limits, and the
+choice between an interpreter and an NVRTC-emitted CUDA
+function are explicit non-decisions, deferred to a
+future implementation slice.
+
+### 9.1 Compilation pipeline
+
+The host turns a graph into device-resident state through
+a fixed sequence of steps:
+
+```
+                  +---------+
+   author edits   |  Graph  |  in-memory host object;
+                  +----+----+  the section-6/7 contract.
+                       |
+                       v
+                  +---------+   type + DAG + reachability
+                  |Validate |   per section 7. Reject on
+                  +----+----+   any rule break.
+                       |
+                       v
+                  +---------+   topological order; drop
+                  | Lower   |   nodes not reachable from
+                  +----+----+   any terminal; fold
+                       |        catalogue defaults into
+                       v        the IR.
+                  +---------+
+                  |   IR    |   flat per-material plan;
+                  +----+----+   plain old data.
+                       |
+                       v
+                  +---------+
+                  | Upload  |   IR -> GpuBuffer (CUDA) or
+                  +----+----+   per-material SBT record
+                       |        (OptiX). Section 9.5.
+                       v
+                +-------------+
+                | Device IR   |  device-resident; the
+                | + slot pool |  shading kernel iterates
+                +-------------+  this on every hit.
+```
+
+The pipeline is **strictly host-side** through the Upload
+step; nothing in the kernel code path runs the Validate
+or Lower steps. That is the same split the rest of the
+renderer follows (`GpuScene::upload_from(scene)`
+flattens host scene data; the kernel never sees the host
+objects).
+
+### 9.2 Intermediate representation
+
+The IR is a small, flat per-material plan:
+
+- An **operation list**: a sequence of records, each
+  describing one node's evaluation. Records are
+  fixed-shape and self-contained: an opcode (which
+  node type), references to input slots, a destination
+  slot, and any immediate values (the constants the
+  node carries on itself, like `ConstantColor.value`
+  or `TextureSample.texture_id`).
+- A **slot pool**: a flat array of typed scratch
+  values, one slot per output of every non-dead-code
+  node. Slots are addressed by integer index; each
+  slot's type (per 7.2) is decided at compile time.
+- A **terminal table**: the small mapping from each
+  terminal (Diffuse / Emission / Metallic / Glass) to
+  the slot or slots it consumes. The Execute stage
+  reads this table to assemble the `MaterialParams`
+  snapshot at the end of evaluation.
+
+Two properties make the IR cheap to upload and cheap to
+execute:
+
+- **Plain old data.** No pointers into the host scene
+  graph, no string keys, no dynamic dispatch tables.
+  Every reference is an integer index into the IR's
+  own arrays.
+- **Self-contained.** Beyond the shading context the
+  renderer already provides, the IR depends on
+  nothing. Editing one material's IR does not affect
+  another's; uploading one IR does not require
+  re-uploading another.
+
+### 9.3 Per-node mapping
+
+Each node from section 6 lowers to a small piece of
+device-side logic. The lowering reuses primitives the
+renderer already has - notably the texture sampler from
+M16 - so the IR's repertoire matches the renderer's
+existing capabilities.
+
+| Node             | Device-side lowering                                             |
+|------------------|------------------------------------------------------------------|
+| `ConstantFloat`  | A literal slot value baked at compile time; no runtime op.       |
+| `ConstantColor`  | Same - a literal slot value, no runtime op.                      |
+| `TextureSample`  | A call into `sample_texture(scene.textures[texture_id], uv)` from `src/cuda/CudaTexture.cuh`. |
+| `Add`            | Per-component float / float3 add.                                |
+| `Multiply`       | Per-component float / float3 multiply.                           |
+| `Mix`            | `a * (1 - factor) + b * factor` per component.                   |
+| `Normal`         | Read `Hit::normal` from the shading context; write the slot.     |
+| `UV`             | Read `Hit::uv` from the shading context; write the slot.         |
+| `UVTransform`    | Two fused multiply-adds per component (`uv * scale + offset`).   |
+| `Diffuse`        | The terminal table records this slot as `MaterialParams::baseColor`. |
+| `Emission`       | Terminal table records colour + strength slots into emission.    |
+| `Metallic`       | (Placeholder) Terminal table stages the slots; renderer's shading reduces to Lambertian until the GGX BSDF lands. |
+| `Glass`          | (Placeholder) Terminal table stages the slots; renderer's shading reduces to diffuse until the dielectric BSDF lands. |
+
+The constants (`ConstantFloat`, `ConstantColor`) are
+called out as having no runtime op because of the
+folding policy in 9.4 - they live in the slot pool's
+initial state and never produce a per-hit instruction.
+
+### 9.4 Avoiding dynamic branching
+
+Per the GPU-first constraint (5.1) and the path-tracing
+constraint (5.3), the Execute path MUST NOT diverge
+inside a single material's evaluation. The compiler
+enforces that with three policies:
+
+- **Constant folding at compile time.** Any subgraph
+  whose inputs are all constants collapses into a
+  single literal in the slot pool. A graph that wires
+  `ConstantColor + ConstantColor -> Diffuse.albedo`
+  emits ONE slot literal, not three operations + two
+  intermediate slots.
+- **Default folding at compile time.** Unwired inputs
+  resolve to their catalogue defaults at lowering. The
+  runtime does NOT have an "input wired?" branch.
+- **Linear opcode stream.** The operation list is a
+  flat sequence; the Execute path is `for each op:
+  dispatch(op)` with no early-exit, no skip, no
+  conditional jump. Every op fires every time the IR
+  runs. A node that contributes nothing to the chosen
+  terminals never appears in the list (dead-code drop,
+  per 8.3).
+
+A few things the strategy explicitly does NOT promise:
+
+- **Cross-material sharing.** Different materials may
+  have different IRs of different lengths; warp
+  threads that hit different materials diverge across
+  IRs. That divergence is the integrator's concern
+  (path-trace material sorting, M16 / M22 work), not
+  the graph's.
+- **Vector packing.** v1 does not commit to packing
+  multiple op records per cache line or coalescing
+  slot reads. Either is an implementation slice's
+  call.
+
+### 9.5 Backend mapping (CUDA / OptiX)
+
+The IR is backend-agnostic. The two GPU backends differ
+in WHERE the IR lives and HOW the kernel reaches it; the
+contents are identical.
+
+- **CUDA backend** (`src/cuda/`). The IR per material
+  becomes one entry in a per-scene array of compiled
+  graphs, uploaded as `GpuBuffer`s alongside the
+  existing material array (`GpuScene::upload_materials`).
+  The closest-hit kernel reads the IR for the hit's
+  material id and runs the linear opcode loop inline.
+  Visual diff against today's kernel: between "look up
+  `MaterialParams`" and "shade", a small "evaluate
+  graph IR -> overwrite `MaterialParams` snapshot" step
+  appears.
+- **OptiX backend** (`src/optix/`, M15 plan). The IR
+  becomes part of each material's Shader Binding Table
+  record. The closest-hit program runs the same linear
+  opcode loop, fed by the per-material SBT data. The
+  IR's bytewise contents are the same as in the CUDA
+  case; only the address it lives at differs.
+
+In either backend the per-hit evaluation cost is bounded
+by the operation count of that material's IR, the IR is
+read-only once uploaded, and the shading kernel never
+walks back into host memory.
+
+### 9.6 What this strategy does NOT pin
+
+The strategy is concrete enough to drive an
+implementation slice without committing to choices that
+deserve their own slice. v1 does NOT pin:
+
+- The exact byte layout of an operation record (opcode
+  width, slot-index width, immediate-value packing).
+- The maximum operations per material. The constraint
+  is "small enough to live alongside the existing
+  material data on every supported GPU"; the number is
+  set by the implementation.
+- Whether the device-side Execute is an interpreter or
+  emitted CUDA / OptiX source via NVRTC. The
+  interpreter is the simplest first target; an NVRTC
+  emitter is a clear later optimisation. Either honours
+  9.1-9.5 above.
+- The progressive update protocol: when one material's
+  graph is edited, what subset of the device buffers
+  is replaced. Section 5.2's "no full-scene churn for
+  one slider tick" rule is the constraint; the
+  granularity is the implementation slice's call.
+
+## 10. What this slice covers
 
 This and the previous slices together establish:
 
@@ -802,15 +1127,17 @@ This and the previous slices together establish:
   sockets are, the closed v1 type list, the legal
   implicit conversions, the DAG requirement, and the
   terminal-node contract (section 7).
+- The evaluation model: per-hit contract, two-stage
+  host-compile / device-execute split, evaluation
+  order, statelessness (section 8).
+- The GPU compilation strategy: pipeline, IR shape,
+  per-node mapping, branching policy, CUDA / OptiX
+  backend mapping (section 9).
 
 It deliberately does NOT pin:
 
-- The evaluation model (lazy / eager, caching strategy,
-  default-value semantics, traversal order).
-- The GPU compilation strategy (interpreted bytecode,
-  emitted CUDA source, lookup tables, ...).
 - The scene-file integration (the optional
-  `materials[].graph` block).
+  `materials[].graph` block in `.rrscene`).
 - The standalone editor's UX.
 - The Cinema 4D bridge's graph emission.
 
@@ -819,7 +1146,7 @@ work begins only after the slices that constrain it have
 landed - the same incremental rule the rest of the project
 follows.
 
-## 9. Out of scope for v1 of the spec
+## 11. Out of scope for v1 of the spec
 
 The graph contract documented across this and the upcoming
 slices is a v1 contract. The following are explicitly **not**

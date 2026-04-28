@@ -93,6 +93,158 @@ All modules now have a placeholder source directory under `src/`,
 
 ## Change Log
 
+### 2026-04-28 — M21 (spec, evaluation + GPU compilation): material node graph - eval + lowering
+
+Fourth doc slice of the material node graph specification.
+Adds two new sections to `docs/MATERIAL_GRAPH_SPEC.md`:
+section 8 ("Evaluation model") which pins WHEN the graph
+fires and WHAT it consumes / produces, and section 9
+("GPU compilation strategy") which pins HOW the host turns
+a graph into device-resident state. The contract is
+conceptual but concrete: it commits to a per-hit
+evaluation model, a two-stage host-compile / device-execute
+split, a flat per-material IR with a slot pool + terminal
+table, a per-node lowering table reusing the existing M16
+texture sampler, a no-runtime-branching policy, and a
+backend mapping for CUDA / OptiX. Byte layouts and the
+choice between interpreter vs NVRTC-emitted CUDA are
+explicit non-decisions - a future implementation slice's
+call.
+
+- **`docs/MATERIAL_GRAPH_SPEC.md`:**
+  - Inserted section 8 "Evaluation model":
+    - 8.1 Per-hit evaluation contract: graph evaluates
+      ONCE per surface hit; reads a shading context (the
+      per-hit values the path tracer already computes:
+      Hit::position / uv / normal, view direction,
+      texture array, material id); produces a
+      `MaterialParams`-shaped snapshot the existing
+      shading code consumes unchanged. Three properties:
+      determinism, statelessness, boundedness.
+    - 8.2 Two-stage model: Compile (host, infrequent,
+      per-material per author edit) -> backend-agnostic
+      IR + device buffer; Execute (device, per surface
+      hit per bounce per sample per pixel) -> reads IR +
+      shading context, produces snapshot. Pinned in a
+      Where/Frequency/Inputs/Outputs table.
+    - 8.3 Evaluation order: topological + terminal-driven
+      reachability + default-value semantics +
+      fan-out caching (each output computed once per
+      evaluation, parked in a slot, consumers read the
+      slot).
+    - 8.4 Explicit non-pin: Compile algorithm, Execute
+      instruction format, per-material vs per-scene IR
+      layout. The contract here is the WHAT, not the HOW.
+  - Inserted section 9 "GPU compilation strategy":
+    - 9.1 Compilation pipeline diagram: Graph -> Validate
+      -> Lower (topo-sort + dead-code drop + default
+      folding) -> IR -> Upload -> device-resident state.
+      Strictly host-side through Upload; the kernel never
+      sees the host objects.
+    - 9.2 IR shape: operation list (opcode + input slot
+      indices + dest slot + immediate values), slot pool
+      (typed scratch values, one per non-dead-code
+      output), terminal table (terminal -> slot mapping
+      so Execute can assemble the snapshot). Plain old
+      data; no pointers, no string keys, no dispatch
+      tables; self-contained per material.
+    - 9.3 Per-node mapping table: each catalogue node ->
+      its device-side lowering. ConstantFloat/Color: slot
+      literal, no runtime op. TextureSample: call into
+      the existing `sample_texture(view, uv)` from
+      `src/cuda/CudaTexture.cuh` (M16). Add/Multiply/Mix:
+      per-component arithmetic. Normal/UV: read from the
+      shading context. UVTransform: two fmadds.
+      Diffuse/Emission: terminal-table entries to
+      `MaterialParams::baseColor` /
+      `emissionColor` + `emissionStrength`.
+      Metallic/Glass: placeholder terminal-table entries
+      reduced to fallback shading.
+    - 9.4 Branching policy: constant folding at compile
+      time (constant-only subgraphs collapse to a slot
+      literal), default folding at compile time (no
+      "input wired?" runtime branch), linear opcode
+      stream (every op fires every time the IR runs;
+      dead-code drop is what removes inactive nodes).
+      Cross-material warp divergence is acknowledged as
+      the integrator's concern, not the graph's. Vector
+      packing / coalescing explicitly NOT pinned.
+    - 9.5 Backend mapping (CUDA / OptiX): IR is
+      backend-agnostic. CUDA: per-scene array of
+      compiled graphs uploaded as GpuBuffers alongside
+      the existing material array; closest-hit kernel
+      runs the opcode loop inline. OptiX: IR lives in
+      each material's SBT record; closest-hit program
+      runs the same opcode loop. Same bytewise IR; only
+      the address differs.
+    - 9.6 Explicit non-pins: byte layout of operation
+      records, max operations per material, interpreter
+      vs NVRTC-emitted CUDA, progressive-update
+      granularity (5.2's "no full-scene churn" rule is
+      the constraint; the granularity is the impl
+      slice's call).
+  - Renumbered the previous "What this slice covers" /
+    "Out of scope" sections from 8 / 9 to 10 / 11.
+    Updated section 10's deferred list to drop the
+    evaluation-model and GPU-compilation entries; the
+    remaining deferred items (scene-file integration,
+    editor UX, bridge emission) are unchanged.
+  - Section 11 (out of scope for v1) is unchanged.
+
+#### Verified locally
+
+```
+$ ls docs/MATERIAL_GRAPH_SPEC.md
+$ python3 -c "open('docs/MATERIAL_GRAPH_SPEC.md').read()"
+$ wc -l docs/MATERIAL_GRAPH_SPEC.md
+```
+
+Spec-only slice; no source / build / test changes.
+
+#### Per the prompt
+
+- "How the graph is evaluated at render time": 8.1 -
+  per-surface-hit evaluation; reads the shading context
+  the path tracer already computes; produces a
+  MaterialParams snapshot the existing shading code
+  consumes unchanged.
+- "Difference between CPU graph vs GPU execution": 8.2 -
+  the two-stage model with Where / Frequency / Inputs /
+  Outputs pinned in a table. Compile is host, infrequent,
+  per-author-edit. Execute is device, per-hit / per-bounce
+  / per-sample / per-pixel.
+- "Compile graph into GPU-friendly representation":
+  9.1 (pipeline) + 9.2 (IR shape).
+- "Flatten graph into instructions or structs": 9.2 calls
+  the IR a "flat per-material plan": operation list +
+  slot pool + terminal table. Plain old data, integer
+  indices, no pointers.
+- "Avoid dynamic branching when possible": 9.4 commits to
+  three policies (constant folding, default folding,
+  linear opcode stream) and explicitly punts on the
+  cross-material warp-divergence question (integrator's
+  concern, not the graph's).
+- "Graph -> intermediate representation -> GPU shading
+  code/data": 9.1's pipeline diagram + 9.2's IR shape +
+  9.5's backend mapping pin all three stages.
+- "Mapping nodes to CUDA/OptiX shading logic": 9.3 is
+  the per-node table; 9.5 is the per-backend address-
+  scheme table.
+- "Do NOT implement / Keep it conceptual but concrete":
+  9.6 is the explicit non-pin list (byte layouts,
+  op-count limits, interpreter vs NVRTC, progressive-
+  update granularity). Each is justified as
+  implementation-slice work, not spec work.
+
+#### Module / milestone status
+
+- Module 22 (Node Editor / Material Graph): remains
+  `not started`. The eval + lowering contract is a doc
+  contract; nothing is promoted until implementation
+  begins.
+- M21 (Material Node Graph (Editor)): remains `not
+  started` (same).
+
 ### 2026-04-28 — M21 (spec, sockets): material node graph - sockets and topology
 
 Third doc slice of the material node graph specification.
