@@ -93,6 +93,168 @@ All modules now have a placeholder source directory under `src/`,
 
 ## Change Log
 
+### 2026-04-28 — M21 (impl, evaluator): CPU reference evaluator (testing only)
+
+Fourth implementation slice of the material node graph.
+Lands a small, recursive **CPU-only reference evaluator**
+under `src/material/graph/`. Per the project's
+"no CPU ray tracing as production path" rule
+(`docs/DEVELOPMENT_RULES.md`), the renderer never calls
+into this code; it exists so the test harness and any
+future authoring tool can pull a deterministic colour
+summary out of a graph without spinning up the GPU.
+
+The evaluator is intentionally minimal: a recursive
+free function, no memoisation across calls, a
+hard-coded depth cap as a safety net against malformed
+input. It supports the five node types the prompt
+names (`ConstantColor`, `Add`, `Multiply`, `Emission`,
+`DiffuseBSDF`) plus `TextureSample`, which returns a
+configurable constant fallback colour. No other side
+effects.
+
+- **`src/material/graph/GraphEvaluator.h`** (new):
+  `EvaluationContext` (carries
+  `fallback_texture_color` defaulted to magenta -
+  the standard "missing texture" debug colour - and
+  `max_depth = 256` for the cycle-safety cap).
+  `evaluate(graph, node_id, ctx) -> Vec3` returns the
+  per-node colour summary documented in the file
+  header:
+  - `ConstantColor`  -> `node.color_value`.
+  - `TextureSample`  -> `ctx.fallback_texture_color`
+                        (no actual sampling).
+  - `Add`            -> `evaluate(a) + evaluate(b)`,
+                        per component; unwired inputs
+                        default to zero.
+  - `Multiply`       -> `evaluate(a) * evaluate(b)`,
+                        per component; unwired inputs
+                        default to one.
+  - `DiffuseBSDF`    -> the resolved `albedo` colour
+                        (its sole input); unwired
+                        falls back to the node's own
+                        `color_value`.
+  - `Emission`       -> resolved `color` * the
+                        immediate `scalar_value`. The
+                        `strength` input is Float-typed
+                        and v1 has no Float-producing
+                        node, so the strength always
+                        comes from the node itself.
+  Pre-conditions documented: graph SHOULD be validated
+  first; an unknown node id or recursion past
+  `max_depth` returns black.
+- **`src/material/graph/GraphEvaluator.cpp`** (new):
+  the recursive worker is a small `evaluate_at(graph,
+  node_id, ctx, depth)` private function. The walk
+  finds the source for each input by iterating
+  `graph.connections` (matching the Graph's flat
+  edge-list shape from the data-core slice). The
+  per-component math helpers (`cadd`, `cmul`,
+  `cscale`) are local utilities. Ten lines of switch
+  per node type; nothing surprising.
+- **`tests/material_graph_core_tests.cpp`**: 225 host
+  assertions (up from 186). New evaluator coverage:
+  - Per-node value semantics: `ConstantColor` returns
+    its immediate; unknown id returns black;
+    `TextureSample` returns the configured fallback
+    AND the default-magenta path is pinned by a
+    separate test; `Add` and `Multiply` round-trip
+    two-constant cases AND fall back to identity
+    when unwired; `DiffuseBSDF` returns wired
+    albedo or its own default; `Emission` returns
+    `color * scalar_value` with both wired-color
+    and unwired-color paths covered.
+  - Composition: `(a + b) * c -> Diffuse.albedo`
+    chain exercises three levels of recursion plus a
+    tinted multiplier; expected value is computed
+    analytically.
+  - Diamond fan-out: a single `ConstantColor` feeding
+    both `Add` inputs returns `2 * value` (the
+    deliberate no-memoisation behaviour).
+  - Depth cap: a > `max_depth` chain terminates
+    cleanly without infinite recursion.
+  - Smoke (printed): builds the prompt's small graph
+    (`ConstantColor(0.7, 0.4, 0.2) -> DiffuseBSDF`)
+    via the builder API, validates, evaluates the
+    terminal, and prints the resulting colour to the
+    test output. Live trace:
+    ```
+    [smoke] ConstantColor(0) -> DiffuseBSDF(1)
+    [smoke]   connect    -> true
+    [smoke]   validate() -> OK
+    [smoke] evaluate(DiffuseBSDF(1)) = (0.700, 0.400, 0.200)
+    ```
+- **`CMakeLists.txt`:** `rr_material` adds
+  `src/material/graph/GraphEvaluator.cpp` to its
+  source list. No new public dependency. The existing
+  `material_graph_core_tests` target picks up the new
+  TUs through the same `rr_material` link.
+
+#### Verified locally
+
+```
+$ cmake --build build && cd build && ctest --output-on-failure
+ 1/17 ... 17/17 all Passed
+100% tests passed, 0 tests failed out of 17
+
+$ ./build/bin/material_graph_core_tests
+[smoke] ConstantColor(0) -> DiffuseBSDF(1)
+[smoke]   connect    -> true
+[smoke]   validate() -> OK
+[smoke] evaluate(DiffuseBSDF(1)) = (0.700, 0.400, 0.200)
+material_graph_core_tests: 225/225 passed
+```
+
+#### Per the prompt
+
+- "Files: `src/material/graph/{GraphEvaluator.h,
+  GraphEvaluator.cpp}`": both created.
+- "Implement evaluate(node) recursively": one free
+  function that recursively resolves inputs by
+  walking the graph's connection list backward from
+  the requested node.
+- "Support nodes: ConstantColor, Add, Multiply,
+  Emission, DiffuseBSDF (returns color only)": all
+  five supported with the documented colour-summary
+  semantics.
+- "TextureSample: return constant fallback color":
+  `EvaluationContext::fallback_texture_color`,
+  defaulted to magenta. The sampler is NEVER called;
+  this is the reference path's deliberate
+  oversimplification.
+- "Reference / testing only / Do NOT use CPU for
+  final rendering": the file header repeats this in
+  the docs; the renderer's hot path imports the
+  data layer (`Graph`, `Node`, `Socket`) but does
+  not link the evaluator's symbols on its rendering
+  paths. The renderer's existing
+  `compile_graph_to_material` (a different,
+  texture-aware bake) remains the only sanctioned
+  way to feed graph data into rendering today.
+- "Keep it simple and deterministic": no
+  randomness; no memoisation; pure-function
+  per-node behaviour. Same graph + same context
+  always produces the same colour.
+- "Add a small test: evaluate small graph and print
+  resulting color":
+  `test_smoke_evaluator_prints_resulting_color`
+  builds `ConstantColor -> DiffuseBSDF` via the
+  builder, evaluates the terminal, prints the
+  resulting RGB triple, and asserts the value
+  matches the wired constant.
+
+#### Module / milestone status
+
+- Module 22 (Node Editor / Material Graph): remains
+  `in progress`. The reference evaluator is the
+  testing harness's primary verification tool; a
+  future slice will migrate the
+  `compile_graph_to_material` runtime to consume the
+  new core (replacing the previous slice's
+  monolithic data + eval).
+- M21 (Material Node Graph (Editor)): remains `in
+  progress` (same).
+
 ### 2026-04-28 — M21 (impl, builder): graph construction helpers + required-input rule
 
 Third implementation slice of the material node graph.

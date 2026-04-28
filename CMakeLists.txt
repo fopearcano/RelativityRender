@@ -144,6 +144,7 @@ add_library(rr_material STATIC
     src/material/Material.cpp
     src/material/MaterialGraph.cpp
     src/material/graph/Graph.cpp
+    src/material/graph/GraphEvaluator.cpp
 )
 target_include_directories(rr_material PUBLIC src)
 if(MSVC)
