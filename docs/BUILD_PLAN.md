@@ -93,6 +93,109 @@ All modules now have a placeholder source directory under `src/`,
 
 ## Change Log
 
+### 2026-04-27 — M13 parser slice 1: SceneLoader (camera + relativity + render settings)
+
+First real `.rrscene` parsing. Hand-rolled JSON parser (~250 lines)
+in the implementation TU; pulling in a 25k-line third-party
+header for six top-level keys is overkill at this milestone, and
+the same `load_rrscene` surface lets us swap to nlohmann/json
+without churn when the format grows. Per the prompt: only
+`render_settings`, `camera`, and `relativity` are parsed; the
+deferred sections (materials, spheres, lights, meshes) are
+warned-and-ignored per spec. No SceneWriter; no main.cpp wiring;
+rendering remains GPU-only.
+
+- **`src/io/SceneLoader.h`:** `rr::io::LoadResult { ok, scene,
+  message }` + `load_rrscene(path) -> LoadResult`. Host-only;
+  no GPU dependencies. The header only mentions the v1 sections
+  the parser actually populates and explicitly lists the
+  warn-and-ignore deferred sections so future slices have a
+  clear contract.
+- **`src/io/SceneLoader.cpp`:** in-house JSON parser
+  (`JsonParser` + `JsonValue` tagged-union; supports objects,
+  arrays, strings with basic escapes, numbers including
+  scientific notation, `true` / `false` / `null`; reports
+  line / column on every error). Section extractors map the
+  parsed tree onto host structs:
+  - `render_settings` -> `Scene::render_settings.{width,height}`,
+    rejects non-positive dimensions.
+  - `camera` -> `Scene::camera`. `position` + `forward` +
+    `up` populate the basis via `Camera::look_at`; `fov`
+    in `(0, 180)` becomes `vertical_fov_degrees`. After
+    loading, `Camera::set_aspect(width / height)` derives
+    aspect from the render settings.
+  - `relativity` -> `Scene::observer.velocity = beta_velocity *
+    normalize(velocity_direction)` (clamped to `|β| < 1`),
+    plus the three strengths mapped onto the host
+    `RelativityParams`. Aberration is binary on the host so
+    `aberration_strength > 0` toggles `enable_aberration`;
+    `doppler_strength` / `searchlight_strength` flow into the
+    matching continuous knobs and toggle their `enable_*`
+    booleans.
+  Validation rules (`version == 1`, vec3 length, fov range,
+  non-zero forward, etc.) all reported with file-relative
+  diagnostics.
+- **`scenes/test_minimal.rrscene`:** fixture covering the three
+  parsed sections at the same `β = 0.3` setup as the M12 light
+  scene.
+- **`tests/io_tests.cpp`:** loads the fixture via
+  `RR_TEST_FIXTURES_DIR` (compile-time absolute path baked in
+  by CMake so the test runs from any ctest working directory),
+  prints the parsed scene state for human inspection, and
+  asserts each loaded value. Plus a missing-file negative test.
+  `io_tests: 16/16 passed`.
+- **`CMakeLists.txt`:** added `rr_io` static library
+  (`src/io/SceneLoader.cpp`, PUBLIC link to `rr_scene`) and
+  the `io_tests` executable. The fixtures path is wired via
+  `target_compile_definitions(io_tests PRIVATE
+   RR_TEST_FIXTURES_DIR="${CMAKE_SOURCE_DIR}/scenes")`.
+
+#### Verified locally (host-only, no CUDA Toolkit on this box)
+
+```
+$ cmake --build build && cd build && ctest --output-on-failure
+ 1/11 ... 11/11 all Passed
+100% tests passed, 0 tests failed out of 11
+
+$ ./build/bin/io_tests
+--- loaded scene ---
+  render_settings:
+    width  = 640
+    height = 480
+  camera:
+    position = (0.000, 0.000, 0.000)
+    forward  = (0.000, 0.000, -1.000)
+    up       = (0.000, 1.000, 0.000)
+    fov      = 50.00 deg
+    aspect   = 1.3333
+  relativity:
+    velocity = (0.000, 0.000, -0.300)  |beta| = 0.3000
+    enable_aberration       = true
+    enable_doppler          = true
+    enable_searchlight      = true
+    doppler_color_strength  = 1.000
+    searchlight_strength    = 1.000
+---------------------
+io_tests: 16/16 passed
+```
+
+#### Per the prompt
+
+- Only `render_settings`, `camera`, and `relativity` are
+  parsed; `materials`, `spheres`, `lights`, `meshes` are
+  ignored (warn-and-continue per spec).
+- No `SceneWriter`; that's the next slice.
+- Rendering remains GPU-only - `--render` continues to use the
+  existing M12 hard-coded scene; the loader is exercised only
+  by `io_tests`.
+
+#### Next M13 slice
+
+Wire `--render <scene file>` to call `load_rrscene` once enough
+of the spec is parsed to make a useful renderable scene:
+materials + spheres + lights at minimum. Until then the loader
+is a library + a unit test, not yet a render entry point.
+
 ### 2026-04-27 — RRSCENE v1: `lights` section + final compact example
 
 Doc-only extension. The v1 spec is now feature-complete for the

@@ -126,6 +126,22 @@ else()
     target_compile_options(rr_lighting PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 
+# IO module. Scene file parser (and eventually writer). Host-only.
+# The parser populates rr::scene::Scene, which the renderer's GPU
+# upload path already consumes; rr_io itself has no GPU dep.
+# Initial slice loads only render_settings / camera / relativity
+# (the M13 partial parser).
+add_library(rr_io STATIC
+    src/io/SceneLoader.cpp
+)
+target_link_libraries(rr_io PUBLIC rr_scene)
+target_include_directories(rr_io PUBLIC src)
+if(MSVC)
+    target_compile_options(rr_io PRIVATE /W4 /permissive-)
+else()
+    target_compile_options(rr_io PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+
 # Scene module. Host-only authoring data model: Camera + render
 # settings + Observer + RelativityParams + lists of spheres /
 # meshes (placeholder) / materials (placeholder) / lights
@@ -310,4 +326,18 @@ if(RR_BUILD_TESTS)
         target_compile_options(lighting_tests PRIVATE -Wall -Wextra -Wpedantic)
     endif()
     add_test(NAME lighting_tests COMMAND lighting_tests)
+
+    # Scene loader (.rrscene) tests. Loads scenes/test_minimal.rrscene
+    # via an absolute path baked in at configure time, so the test
+    # works from any ctest working directory.
+    add_executable(io_tests tests/io_tests.cpp)
+    target_link_libraries(io_tests PRIVATE rr_io)
+    target_compile_definitions(io_tests PRIVATE
+        RR_TEST_FIXTURES_DIR="${CMAKE_SOURCE_DIR}/scenes")
+    if(MSVC)
+        target_compile_options(io_tests PRIVATE /W4 /permissive-)
+    else()
+        target_compile_options(io_tests PRIVATE -Wall -Wextra -Wpedantic)
+    endif()
+    add_test(NAME io_tests COMMAND io_tests)
 endif()
