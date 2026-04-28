@@ -741,7 +741,419 @@ implementation slice does not creep:
 - **Scene translation and live update.** Out of scope
   per the prompt; both have their own slices.
 
-## 8. What this slice covers
+## 8. Scene translation
+
+This section pins WHAT pieces of the live Cinema 4D
+document the plugin reads, and HOW each maps onto
+RelativityRender's scene representation. It stays at
+the conceptual level: which document elements are
+sources, which target types they land in, where the
+unsupported set boundaries sit. The byte-level field
+shapes are the bridge's M19 extension slices'
+contribution; this section pins that the native plugin
+**reuses the same mapping** rather than reinventing
+it.
+
+### 8.1 What translation does
+
+The plugin walks the active `BaseDocument`, finds the
+elements RelativityRender knows how to render, and
+populates an `rr::scene::Scene` host container. The
+container is the same struct `src/io/SceneLoader.cpp`
+produces today from `.rrscene` files; nothing about its
+shape changes. The plugin then calls the renderer's
+public façade with the scene - the existing
+`GpuScene::upload_from(scene)` path on the renderer
+side does the GPU work unchanged.
+
+Three structural decisions follow:
+
+- The plugin does NOT write to the internal
+  `rr::scene::Scene` directly across renderer-internal
+  layers - per the module map's forbidden imports rule
+  (`docs/MODULE_MAP.md` module 21), it touches only the
+  renderer's public types (the scene container is
+  public, the renderer entry points are public; the
+  GPU upload + kernel launch internals are not).
+- The plugin does NOT round-trip through `.rrscene`
+  (no JSON write, no JSON read). That round-trip is
+  the bridge's mechanism for the cross-process case;
+  the native plugin lives in-process and benefits
+  from skipping the serialisation cost (section 8.8).
+- The plugin's translator is a pure function of
+  document state. Same document -> same scene; no
+  hidden state, no caches that survive a render, no
+  cross-render state pollution.
+
+### 8.2 Camera
+
+Cinema 4D exposes the active rendering camera through
+its document API. The translator maps:
+
+| C4D source                                  | rrscene target                                  |
+|---------------------------------------------|--------------------------------------------------|
+| `CameraObject::GetMg()` (global matrix)     | `camera.position` + `camera.forward` + `camera.up` (after the C4D->renderer Z-flip the bridge already pins) |
+| `CAMERAOBJECT_FOV_VERTICAL`                 | `camera.fov` (degrees)                           |
+| `RDATA_XRES` / `RDATA_YRES` (render data)   | `render_settings.width` / `.height`              |
+
+These are the same mappings the bridge's M19 ext 1
+slice landed on the Python side. The native plugin
+reads the same fields through the C++ SDK and applies
+the same coordinate-flip rule
+(`integrations/c4d/RelativityRenderBridge/rrscene_writer.py`'s
+`convert_c4d_camera_basis` is the canonical reference;
+the plugin transcribes it to C++).
+
+### 8.3 Geometry (polygon meshes)
+
+Polygon objects map onto rrscene meshes. The native
+translator reads the same fields the bridge's M19 ext
+2 slice already pinned:
+
+| C4D source                                       | rrscene target                              |
+|--------------------------------------------------|----------------------------------------------|
+| `PolygonObject::GetAllPoints()`                  | `mesh.vertices[]` (after global-matrix bake + Z-flip) |
+| `PolygonObject::GetAllPolygons()` (`CPolygon`s)  | `mesh.triangles[]` (quads triangulated `a-c` diagonal) |
+| First `Ttexture` tag's bound material id         | `mesh.material_id` (integer index into `materials[]`) |
+
+Two notes the native path inherits from the bridge:
+
+- **Quads triangulate along the a-c diagonal.** A
+  Cinema 4D `CPolygon` with `c == d` is a triangle
+  (one output); otherwise a quad (two outputs:
+  `(a, b, c)` + `(a, c, d)`). Degenerate triangles
+  are pruned. Same `triangulate_cpolygon` rule the
+  bridge uses.
+- **The global matrix is baked into vertex
+  positions.** v1 does not write a separate per-mesh
+  transform; vertices are already in world space.
+  This matches the bridge's choice and keeps the
+  scene representation self-contained.
+
+### 8.4 Materials
+
+Materials are the most version / type sensitive part
+of the translation. v1 inherits the bridge's mapping
+table (M19 ext 3):
+
+| C4D source                                                            | rrscene target                                                        |
+|-----------------------------------------------------------------------|-----------------------------------------------------------------------|
+| Standard `Mmaterial`, color channel                                   | `material.base_color` from `MATERIAL_COLOR_COLOR * MATERIAL_COLOR_BRIGHTNESS` |
+| Standard `Mmaterial`, luminance channel (when on)                     | `material.emission_color` + `.emission_strength`                      |
+| Object's `ID_BASEOBJECT_USECOLOR` mode 2 / 3 (Always / Layer)         | "Viewport: r, g, b" stub material; `mesh.material_id` references it.  |
+| Standard `Mmaterial` with bitmap shader in color channel (future)     | A `TextureSample` graph node feeds `Diffuse.albedo` (M21 graph path). |
+
+Material-graph integration is where the native plugin
+gains over the bridge: in-process, it can construct a
+v1 graph (`material::graph::Graph`) directly and hand
+it to the renderer's compile path
+(`compile_graph_to_gpu_material`), so the kernel
+shades through the graph from the very first render.
+The bridge's path goes through the .rrscene's flat
+material section + the auto-synthesise step on
+upload; the native path reaches the same destination
+without that round trip.
+
+### 8.5 Lights
+
+Cinema 4D lights map onto the v1 rrscene types per the
+bridge's M19 ext 3 mapping:
+
+| C4D source                                  | rrscene target                                |
+|---------------------------------------------|------------------------------------------------|
+| `LIGHT_TYPE_OMNI`                           | `light.type = "point"`, position from `mg.off` |
+| `LIGHT_TYPE_DISTANT` / `LIGHT_TYPE_PARALLEL`| `light.type = "directional"`, direction from `mg.v3` |
+| `LIGHT_TYPE_AREA` / `LIGHT_TYPE_TUBE`       | Degraded to `"point"` at the area's origin (lossy; warn) |
+| `LIGHT_TYPE_SPOT` / `LIGHT_TYPE_PARSPOT`    | Skipped (no spot cone in v1; warn)             |
+
+`LIGHT_COLOR` -> `light.color`; `LIGHT_BRIGHTNESS` ->
+`light.intensity`. Same non-negative clamps as the
+bridge.
+
+### 8.6 Handling unsupported features
+
+Cinema 4D's scene model is large; RelativityRender's
+v1 covers a small subset. The translator's job on
+features outside that subset is to **degrade
+gracefully and warn**, not to fail.
+
+The bridge already pins the ignore-and-warn taxonomy
+(M19 ext 2 + ext 3); the native renderer inherits it
+and adds two cases unique to its in-process role:
+
+| C4D feature                            | v1 native handling                                              |
+|----------------------------------------|------------------------------------------------------------------|
+| Generators (`OBJECT_GENERATOR` flag)   | Skipped. (Future: bake via `GetCache()`, same as bridge.)        |
+| Deformers (`OBJECT_MODIFIER` flag)     | Skipped as standalone objects. Polygon objects whose subtrees contain deformers export the **undeformed** mesh and warn. (No `GetDeformCache`.) |
+| Volume objects (Ovolume*)              | Skipped + warn. v1 has no volume pipeline.                       |
+| Hair (`Ohair`)                         | Skipped + warn.                                                  |
+| Cinema 4D node-based materials         | Falls back to flat material; warn. Future slice translates the C4D node tree into a v1 `material::graph::Graph`. |
+| Tracer / Field / MoGraph procedurals   | Skipped + warn. Static geometry only in v1.                      |
+| Take system (multiple takes)           | Each take is a separate Execute call with the take's resolved scene; translator does not need take-specific code. |
+| Animation timeline (per-frame motion)  | Each frame is a separate Execute call. Motion blur not in v1.    |
+
+The "warn" channel is Cinema 4D's standard one - the
+plugin emits messages through C4D's logging facility
+so the artist sees them in the C4D console / render
+log. The exact API call is an SDK-version detail
+deferred to the SDK-constraints slice.
+
+### 8.7 Reuse of the bridge's mapping
+
+The bridge (`integrations/c4d/RelativityRenderBridge/`)
+has shipped six implementation slices that landed and
+verified the same translation rules listed above.
+Reusing them in C++ is a structural design choice the
+native plan commits to:
+
+- **Same mapping table.** Every entry in sections
+  8.2-8.6 is the bridge's table, transcribed. A
+  difference between the two is a bug, not a design
+  choice.
+- **Same warning taxonomy.** The bridge's dialog
+  surfaces `(generator)` / `(deformer)` / `(volume)`
+  / `(hair)` / `(unsupported)` reasons; the native
+  plugin emits the same labels through C4D's
+  logging.
+- **Same ignore-set.** The bridge's classification
+  in `_classify` is the contract; the native
+  plugin's C++ classifier produces identical
+  decisions.
+
+This reuse is a maintenance lever: when a feature is
+added to one path, it lands in the other through the
+same translation logic, not through divergent
+rewrites.
+
+### 8.8 In-memory vs file-based path
+
+The bridge writes a `.rrscene` JSON file and asks the
+renderer server to load it (M18 protocol). The native
+plugin **skips the file altogether**: it builds an
+`rr::scene::Scene` in memory and hands it to
+`GpuScene::upload_from(scene)` directly. Two
+consequences:
+
+- **No serialisation cost.** Building the host scene
+  in memory is one allocation per node + one vector
+  copy of vertex / index data. JSON encode + decode
+  + filesystem IO is several orders of magnitude
+  more work for the same logical data.
+- **Less robust on cross-machine deployment.** The
+  native plugin works only when the renderer is on
+  the same machine (no network required). The
+  bridge's file-based path is necessary for the
+  out-of-process case (separate machine, different
+  filesystem). The two paths are deliberately
+  different to play to their respective strengths
+  (section 4's "complementary, not exclusive" pin).
+
+The plugin's preference for the in-memory path is the
+default; an opt-in "write a `.rrscene` for inspection"
+diagnostic mode is a future slice for debugging.
+
+## 9. Live update strategy
+
+A native renderer earns its keep by reflecting scene
+edits in the rendered preview without forcing the
+artist to click Render twice. This section pins the
+detection mechanism (how the plugin learns the
+document changed) and the application strategy (what
+it does with the change).
+
+### 9.1 What changes between renders
+
+Three categories of edits the artist makes during a
+session:
+
+- **Camera moves.** Tumble / pan / zoom in the C4D
+  viewport. Camera matrix changes; everything else
+  is identical.
+- **Object moves.** Drag a sphere in the viewport.
+  Object's global matrix changes; vertex data and
+  topology unchanged.
+- **Topology / material edits.** Add / delete an
+  object, change a material colour, edit polygon
+  geometry. Vertex data, material parameters,
+  geometry topology change.
+
+Plus three implicit edits the plugin handles for free:
+
+- **Render Settings changes** (resolution, sample
+  count). Plugin's Init carries the new settings on
+  the next Render.
+- **Take switch.** New take = new resolved scene =
+  new Execute call.
+- **Animation frame change.** Per-frame Execute call
+  with the resolved scene at that frame.
+
+### 9.2 Detecting C4D scene changes
+
+Cinema 4D's plugin SDK exposes change-event hooks the
+plugin subscribes to. The exact hook the v1 native
+plugin picks depends on the SDK version, but the
+shape is consistent across releases. The candidates:
+
+- **Document-level change events.** Cinema 4D
+  dispatches a coarse-grained "document changed"
+  message; the plugin's hook receives it and
+  triggers a re-render. Coarse but reliable; the v1
+  default.
+- **Per-object change events** (`MSG_UPDATE`-family).
+  Object's `Message()` callback fires with the
+  details of what changed. Finer-grained; lets the
+  plugin distinguish camera-only changes from
+  topology changes. Useful for the partial-update
+  optimisation in 9.3.
+- **`SceneHook`-type plugin** (a separate plugin
+  type living alongside the VideoPostData renderer).
+  Receives every document execute / draw call.
+  Heavier but gives the plugin a guaranteed hook on
+  every change.
+
+For v1: the plugin subscribes to the **document-level
+change event** and re-renders on every signal. The
+finer hooks (per-object messages, scene hooks) are
+follow-up optimisations that buy partial-update
+performance once v1 measures show full re-upload is
+the bottleneck.
+
+The plugin's render loop, conceptually:
+
+```
+   on_document_changed:
+       cancel_in_flight_render()      // if any
+       reset_sample_accumulation()
+       schedule_render(immediately)
+```
+
+Cancellation is the same mechanism section 6.5
+flagged for the user-cancellation case; the plugin's
+Execute polls the cancellation flag between
+progressive batches.
+
+### 9.3 Application: full vs partial re-upload
+
+Once the plugin learns the document changed, it has
+to update the renderer's scene state. Two strategies:
+
+- **Full re-upload.** Re-translate the entire
+  document + call `GpuScene::upload_from(scene)`
+  again. Simple, robust, correct by construction.
+  Cost is proportional to scene size: cheap on
+  small scenes, expensive on heavy ones.
+- **Dirty-tracking partial re-upload.** Track which
+  document elements changed since the last render
+  and re-translate / re-upload only those. The GPU
+  scene supports per-section uploads
+  (`upload_camera`, `upload_materials`,
+  `upload_textures`, etc.) so partial updates are
+  reachable through the existing public façade.
+  Adds significant plugin-side bookkeeping;
+  payoff scales with scene size.
+
+For v1 the plugin picks **full re-upload**. The
+choice is justified two ways:
+
+- **Correctness first.** A full re-upload cannot get
+  out of sync with the document; a partial upload
+  can. Bugs in dirty-tracking surface as render
+  artefacts that look like real renderer bugs.
+  v1 ships the simple path so the plugin's
+  correctness is auditable from the document state
+  alone.
+- **Most edits are cheap to re-translate.** Cinema
+  4D scenes the v1 plugin targets fit in tens of
+  thousands of vertices and a handful of materials;
+  re-translating that in C++ is well under a
+  millisecond. The expensive part is the GPU
+  re-upload, which the partial path would also pay
+  on the changed pieces.
+
+The dirty-tracking path is a future slice once
+v1 measurements show the full-upload cost matters.
+Pieces of the upload pipeline most likely to benefit:
+mesh vertex / index buffers (cheaper to keep when
+unchanged), texture pixel buffers (very expensive on
+HD textures).
+
+### 9.4 Sample-accumulation invalidation
+
+The path tracer accumulates samples per pixel across
+launches (M14's `seed_offset` knob). When the document
+changes, the previously-accumulated samples are no
+longer valid for the new scene; they describe a
+different image.
+
+v1's policy: **reset accumulation on every document
+change**. The next render starts at sample 0 with the
+new scene. Combined with the M22 denoising plan's
+progressive workflow, the artist sees an immediately-
+denoised low-spp frame within a fraction of a second
+of the edit, with the frame quality climbing as
+samples accumulate against the new scene.
+
+A future enhancement is partial invalidation: if
+ONLY the camera changed, the path tracer's hit
+counts and accumulated radiance per surface point
+are still reusable through reprojection. That is
+temporal-denoiser territory and out of scope for
+v1 (per the M22 plan's section 9).
+
+### 9.5 Performance considerations
+
+Three pressure points the v1 design plays defensively
+against:
+
+- **Translator latency.** Every document change runs
+  the translator. C++ translation of the bridge's
+  Python mapping is roughly an order of magnitude
+  faster, so the v1 budget for translation alone is
+  comfortable. Heavy mesh translation
+  (`GetAllPoints` + `GetAllPolygons` reads) is
+  the dominant cost; static-mesh edits are rare in
+  an interactive session.
+- **GPU re-upload bandwidth.** PCIe upload bandwidth
+  caps how fast vertex / texture data can land on
+  the GPU. Full re-upload of a heavy scene every
+  edit can saturate it. The v1 plugin's mitigation:
+  re-upload only when the document actually changed
+  (the plugin owns its own dirty flag, set by the
+  change-event hook). The dirty-tracking partial
+  re-upload (9.3) is the fix once measurements
+  warrant.
+- **Render-loop responsiveness.** The plugin must
+  cancel an in-flight render fast when the document
+  changes again before the previous render
+  finishes. v1 polls the cancellation flag between
+  per-batch progressive launches; the maximum
+  responsiveness latency is one batch's render
+  time. For interactive previews at low-spp, that
+  is well under 100ms on the renderer's target
+  hardware.
+
+### 9.6 What this slice does NOT cover
+
+Listed for clarity so the v1 implementation slice
+does not creep:
+
+- **Cinema 4D SDK version constraints.** The exact
+  message ids, hook types, and message-dispatch
+  function names depend on the SDK version. The
+  v1 SDK target + the deprecation policy are pinned
+  in the SDK-constraints slice.
+- **Multi-pass / AOV channel mapping.** Out of scope
+  per section 7.7; the AOV mapping slice covers it.
+- **Per-pixel motion vectors / temporal denoising.**
+  Out of scope per the M22 denoising plan section 9.
+- **Network / Team Render integration.** Out of
+  scope per section 9 of the intro.
+- **Animation timeline integration beyond per-frame
+  Execute calls.** Per-frame state scrubbing works
+  at v1; motion blur and per-frame motion vectors
+  are future.
+
+## 10. What this slice covers
 
 This and the previous slices together establish:
 
@@ -760,16 +1172,19 @@ This and the previous slices together establish:
   progressive vs final rendering, and the IRR /
   Picture Viewer / Render Queue surfaces the same
   Execute path serves (section 7).
+- The scene-translation contract: camera / geometry /
+  materials / lights mappings reused from the bridge,
+  the unsupported-feature taxonomy, and the
+  in-memory `rr::scene::Scene` path the native plugin
+  takes instead of round-tripping through `.rrscene`
+  (section 8).
+- The live-update strategy: document-level change
+  events drive a full re-translate + re-upload in v1,
+  with cancellation-of-in-flight-render and sample-
+  accumulation reset on every change (section 9).
 
 It deliberately does NOT pin:
 
-- The scene-translation contract (which C4D types map
-  to which RelativityRender types, which features fall
-  back to defaults, which features are skipped).
-- The live-update mechanism (`MSG_UPDATE` /
-  `EVMSG_DOCUMENTRECALCULATED` / scene-hook
-  message-handling interplay with the renderer's
-  per-frame upload path).
 - The multi-pass / AOV channel mapping into Cinema 4D's
   `MultipassBitmap` slots.
 - The limitations the v1 native path will deliberately
@@ -787,7 +1202,7 @@ work begins only after the slices that constrain it have
 landed - the same incremental rule the rest of the
 project follows.
 
-## 9. Out of scope for v1 of the spec
+## 11. Out of scope for v1 of the spec
 
 Listed for clarity so the v1 implementation slice does
 not creep:

@@ -93,6 +93,177 @@ All modules now have a placeholder source directory under `src/`,
 
 ## Change Log
 
+### 2026-04-28 — M23 (spec, scene + live): scene translation + live update
+
+Fourth doc slice for M23. Adds two new sections to
+`docs/C4D_NATIVE_RENDERER_PLAN.md`: section 8 ("Scene
+translation") which pins WHAT pieces of the live Cinema
+4D document the plugin reads and HOW each maps onto
+RelativityRender's scene representation, and section 9
+("Live update strategy") which pins how the plugin
+detects scene changes and re-uploads to the GPU. Stays
+at the conceptual level; the byte-level field shapes
+inherit from the bridge's M19 extension slices.
+SDK constraints stay deferred per the prompt.
+
+- **`docs/C4D_NATIVE_RENDERER_PLAN.md`:**
+  - Inserted section 8 "Scene translation":
+    - 8.1 What translation does: the plugin walks
+      `BaseDocument`, populates an
+      `rr::scene::Scene` host container (the same
+      one the .rrscene loader produces), and calls
+      the renderer's public façade. Three structural
+      decisions: only public types, no .rrscene
+      round-trip, pure function of document state.
+    - 8.2 Camera mapping table: `CameraObject::GetMg()`
+      -> position / forward / up after the bridge's
+      Z-flip; `CAMERAOBJECT_FOV_VERTICAL` -> fov;
+      `RDATA_XRES`/`YRES` -> render_settings. Same
+      mappings the M19 ext 1 slice landed.
+    - 8.3 Geometry mapping table:
+      `PolygonObject::GetAllPoints()` ->
+      `mesh.vertices[]` (matrix-baked + Z-flipped),
+      `GetAllPolygons()` -> `mesh.triangles[]`
+      (quads triangulated `a-c` diagonal),
+      first `Ttexture` tag -> `mesh.material_id`.
+      Same `triangulate_cpolygon` rule the bridge
+      uses (M19 ext 2).
+    - 8.4 Materials mapping table: standard
+      `Mmaterial` color / luminance, viewport
+      "Display Color" fallback, future
+      bitmap-shader-color path. Native plugin gains
+      direct construction of a v1
+      `material::graph::Graph` (M21) before handing
+      to the renderer's compile path; bridge's path
+      goes through .rrscene + auto-synthesise.
+    - 8.5 Lights mapping table: omni / distant /
+      parallel / area / tube / spot / parspot, with
+      area degraded to point and spot skipped
+      (matching M19 ext 3).
+    - 8.6 Handling unsupported features: ignore-and-
+      warn taxonomy reused from the bridge, plus
+      two native-specific entries (Take system =
+      separate Execute call; animation timeline =
+      per-frame Execute call). The "warn" channel
+      is C4D's standard logging facility.
+    - 8.7 Reuse of the bridge's mapping pinned as a
+      structural design choice: same mapping table,
+      same warning labels, same ignore-set. A
+      difference between the two paths is a bug,
+      not a design choice. Maintenance lever: new
+      features land in both through the same
+      translation logic.
+    - 8.8 In-memory vs file-based: the native plugin
+      builds an `rr::scene::Scene` in memory and
+      hands it to `GpuScene::upload_from(scene)`
+      directly. Bridge's file-based path stays for
+      the cross-machine case (section 4's
+      "complementary, not exclusive" pin).
+  - Inserted section 9 "Live update strategy":
+    - 9.1 What changes between renders: camera moves,
+      object moves, topology / material edits + the
+      implicit edits (Render Settings, take switch,
+      animation frame).
+    - 9.2 Detecting C4D scene changes: candidates
+      tabled (document-level event, per-object
+      `MSG_UPDATE`, SceneHook plugin). v1 picks the
+      document-level event for simplicity. Render
+      loop pseudocode showing
+      cancel-in-flight + reset-accumulation +
+      reschedule.
+    - 9.3 Application: full vs partial re-upload.
+      v1 picks **full re-upload** for correctness
+      first - a partial path can desync from the
+      document; bugs there look like real renderer
+      bugs. Justified by translator latency
+      measurements: re-translating typical interactive
+      scenes is well under 1 ms in C++. Dirty-
+      tracking partial re-upload is a future slice
+      once measurements warrant.
+    - 9.4 Sample-accumulation invalidation: reset on
+      every change in v1; the next render starts at
+      sample 0 with the new scene. Combined with the
+      M22 denoising plan's progressive workflow, the
+      artist sees a denoised low-spp frame within a
+      fraction of a second of the edit. Partial
+      invalidation (camera-only reprojection) is
+      temporal-denoiser territory and out of v1.
+    - 9.5 Performance considerations: three pressure
+      points (translator latency, GPU re-upload
+      bandwidth, render-loop responsiveness) and
+      the v1 mitigations (defer to dirty-tracking
+      when measurements warrant; poll the
+      cancellation flag between progressive batches).
+    - 9.6 What this slice does NOT cover: SDK
+      version constraints (next slice), AOV channel
+      mapping, motion vectors / temporal denoising,
+      Team Render, motion blur.
+  - Renumbered the trailing meta sections from 8 / 9
+    to 10 / 11. Updated section 10's "what this slice
+    covers" to include the new entries; dropped scene-
+    translation and live-update from the deferred list.
+    Remaining deferred items: AOV channel mapping, v1
+    limitations, SDK version target, bridge-vs-native
+    workflow split.
+
+#### Verified locally
+
+```
+$ ls docs/C4D_NATIVE_RENDERER_PLAN.md
+$ grep '^## ' docs/C4D_NATIVE_RENDERER_PLAN.md
+## 1. Purpose
+## 2. What a native Cinema 4D renderer integration is
+## 3. Why RelativityRender needs one
+## 4. Python bridge vs native C++ integration
+## 5. Goals
+## 6. Cinema 4D plugin registration paths
+## 7. Framebuffer integration
+## 8. Scene translation
+## 9. Live update strategy
+## 10. What this slice covers
+## 11. Out of scope for v1 of the spec
+```
+
+Spec-only slice; no source / build / test changes.
+
+#### Per the prompt
+
+- "Mapping C4D scene -> RelativityRender scene":
+  section 8.1 (overall flow), 8.2-8.5 (per-element
+  mappings), 8.7 (reuse from the bridge).
+- "Camera, geometry, materials, lights": one
+  subsection each (8.2-8.5) with mapping tables
+  cross-referenced to the bridge's existing M19
+  slices.
+- "Handling unsupported features": section 8.6 -
+  ignore-and-warn taxonomy, native-specific entries
+  for the Take system + animation timeline.
+- "Detecting changes in C4D scene": section 9.2 -
+  three candidate hooks tabled, document-level
+  event picked for v1.
+- "Partial vs full scene re-upload": section 9.3 -
+  v1 picks full re-upload for correctness; partial
+  is a future slice once measurements warrant.
+- "Performance considerations": section 9.5 - three
+  pressure points (translator latency, GPU re-upload
+  bandwidth, render-loop responsiveness) with v1
+  mitigations.
+- "Do NOT cover SDK constraints yet": section 9.6
+  + section 10's deferred list both flag the SDK
+  version target as the next slice's job.
+
+#### Module / milestone status
+
+- Module 21 (Future Native Cinema 4D Renderer):
+  remains `not started`. Four doc slices in (intro,
+  registration, framebuffer, scene + live update).
+  The remaining slices are the v1 SDK target,
+  multi-pass / AOV channel mapping, the v1
+  limitations list, and the bridge-vs-native
+  workflow split.
+- M23 (Native Cinema 4D Renderer Integration):
+  remains `not started` (same).
+
 ### 2026-04-28 — M23 (spec, framebuffer): Cinema 4D framebuffer integration
 
 Third doc slice for M23. Adds section 7 ("Framebuffer
