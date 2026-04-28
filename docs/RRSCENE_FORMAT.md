@@ -32,7 +32,8 @@ a mandatory `version` field:
     "camera":          { ... },
     "relativity":      { ... },
     "spheres":         [ ... ],
-    "materials":       [ ... ]
+    "materials":       [ ... ],
+    "meshes":          [ ... ]
 }
 ```
 
@@ -248,7 +249,107 @@ Notes:
   the texture system (M16). v1 files that want a uniform colour
   per material are fully expressive.
 
-## 10. Common types
+## 10. Section: `meshes`
+
+Array of indexed triangle meshes. Each entry is a JSON object that
+maps directly onto the host `rr::geometry::Mesh` struct, so the
+parser does no reshaping; it copies positions and indices straight
+into `GpuBuffer<Vertex>` / `GpuBuffer<Triangle>` for upload.
+
+```json
+[
+    {
+        "name": "quad_emitter",
+
+        "vertices": [
+            [-0.7, 0.4, -3.0],
+            [ 0.7, 0.4, -3.0],
+            [ 0.7, 1.6, -3.0],
+            [-0.7, 1.6, -3.0]
+        ],
+
+        "triangles": [
+            [0, 1, 2],
+            [0, 2, 3]
+        ],
+
+        "material_id": 3,
+
+        "transform": {
+            "position": [0.0, 0.0, 0.0],
+            "rotation": [0.0, 0.0, 0.0],
+            "scale":    [1.0, 1.0, 1.0]
+        }
+    }
+]
+```
+
+| Field         | Type                  | Required | Default            | Notes                                                                              |
+|---------------|-----------------------|----------|--------------------|------------------------------------------------------------------------------------|
+| `name`        | string                | no       | `""`               | Authoring / debug label. Not used by the renderer.                                 |
+| `vertices`    | array<Vec3>           | yes      | -                  | Vertex positions in the mesh's local frame (world-space when the transform is identity). Normals are derived from the triangle winding by the renderer. |
+| `triangles`   | array<[int,int,int]>  | yes      | -                  | Index triplets `[v0, v1, v2]` in **CCW front-face winding**. Each index must be in `[0, vertices.size())`. |
+| `material_id` | int                   | no       | `-1`               | `id` of an entry in the [`materials`](#9-section-materials) array. `-1` / unmatched ids fall back to the renderer's neutral default. |
+| `transform`   | object                | no       | identity transform | Local-to-world transform; see [Transform](#transform).                             |
+
+Notes:
+
+- An empty mesh (no `vertices` or no `triangles`) is legal but
+  never contributes to the rendered image. The parser MAY warn.
+- Vertex attributes beyond position (normals, UVs, tangents,
+  vertex colours) are not exposed in v1; the renderer derives
+  geometric face normals from the triangle winding. Future
+  schema versions add per-vertex `normals` / `uvs` as parallel
+  optional arrays of the same length as `vertices`.
+- Index data is uint32 on the device side. Indices that exceed
+  the vertex count, or are negative, are an error.
+- Triangle winding is **counter-clockwise from the front face**,
+  matching `intersect_triangle` in
+  `cuda/CudaIntersection.cuh`. Reversing the winding flips the
+  geometric face normal.
+- External mesh references (e.g. `source_path` to a `.obj` /
+  `.gltf` / `.fbx` file) are not in v1; all geometry is inline.
+  The format is intentionally compatible: future versions accept
+  either inline arrays or a `source_path` field.
+
+### Transform
+
+Local-to-world transform applied to every vertex of a mesh before
+rendering. Stored in the canonical SRT decomposition the host
+`rr::math::Transform` already uses (see `src/math/Transform.h`).
+
+```json
+{
+    "position": [0.0, 0.0, 0.0],
+    "rotation": [0.0, 0.0, 0.0],
+    "scale":    [1.0, 1.0, 1.0]
+}
+```
+
+| Field      | Type | Required | Default     | Notes                                                          |
+|------------|------|----------|-------------|----------------------------------------------------------------|
+| `position` | Vec3 | no       | `[0, 0, 0]` | World-space translation in scene units.                         |
+| `rotation` | Vec3 | no       | `[0, 0, 0]` | Euler angles in **radians**, intrinsic X then Y then Z order.  |
+| `scale`    | Vec3 | no       | `[1, 1, 1]` | Per-axis scale. Negative values flip the corresponding axis.   |
+
+Notes:
+
+- The parser maps `rotation` onto the host
+  `rr::math::Transform::euler_rotation_radians` field; the
+  in-file name is shortened to `rotation` because the file
+  format always uses radians.
+- The renderer composes the world matrix as
+  `T(position) * R(rotation) * S(scale)` (the host's
+  documented convention) and applies it to mesh vertices during
+  GPU upload. The current M10 kernel still treats uploaded
+  vertices as world-space; the spec is forward-compatible -
+  v1 files that want true world-space positions set the
+  transform to identity.
+- Quaternion / axis-angle rotation forms are not in v1. Future
+  versions add an alternative `rotation_quaternion: [x, y, z, w]`
+  field; when both are present the quaternion takes precedence.
+
+## 11. Common types
 
 ### Vec3
 
@@ -262,7 +363,7 @@ distinguish; the parser converts to `float`).
 Anything else (`[1, 2]`, `[1, 2, 3, 4]`, an object, a string) is a
 parse error.
 
-## 11. Defaults policy
+## 12. Defaults policy
 
 Every field has a documented default. A minimal valid v1 file is:
 
@@ -278,7 +379,7 @@ A parser MUST apply defaults only to **missing** fields. It MUST
 NOT silently substitute defaults for malformed inputs (e.g., a Vec3
 with two entries) — those are errors.
 
-## 12. Validation rules
+## 13. Validation rules
 
 A v1 parser MUST enforce, in addition to the per-section rules
 above:
@@ -296,13 +397,18 @@ above:
    colour or roughness values are clamped per the
    [materials](#9-section-materials) table; missing fields take
    their documented defaults.
-9. Unknown top-level keys SHOULD warn but MUST NOT fail.
+9. Each mesh has `vertices` and `triangles`. Every triangle index
+   `[v0, v1, v2]` consists of three integers in
+   `[0, vertices.size())`; negative or out-of-range indices are
+   errors. Empty `vertices` or `triangles` arrays are legal but
+   the parser MAY warn.
+10. Unknown top-level keys SHOULD warn but MUST NOT fail.
 
 Files that violate any MUST clause are rejected with a descriptive
 diagnostic that names the offending field and (when the underlying
 parser supports it) line / column.
 
-## 13. Complete example
+## 14. Complete example
 
 A single sphere sitting 3 units in front of a camera that is
 boosted to 50% of light speed along its forward direction, with all
@@ -348,6 +454,36 @@ relativistic effects at full strength:
             "emission_color":    [0.0, 0.0, 0.0],
             "emission_strength": 0.0,
             "roughness":         0.5
+        },
+        {
+            "id":                1,
+            "name":              "warm_emitter",
+            "base_color":        [0.0, 0.0, 0.0],
+            "emission_color":    [1.0, 0.85, 0.4],
+            "emission_strength": 2.0,
+            "roughness":         1.0
+        }
+    ],
+
+    "meshes": [
+        {
+            "name": "quad_emitter",
+            "vertices": [
+                [-0.7, 0.4, -3.0],
+                [ 0.7, 0.4, -3.0],
+                [ 0.7, 1.6, -3.0],
+                [-0.7, 1.6, -3.0]
+            ],
+            "triangles": [
+                [0, 1, 2],
+                [0, 2, 3]
+            ],
+            "material_id": 1,
+            "transform": {
+                "position": [0.0, 0.0, 0.0],
+                "rotation": [0.0, 0.0, 0.0],
+                "scale":    [1.0, 1.0, 1.0]
+            }
         }
     ]
 }
@@ -355,20 +491,23 @@ relativistic effects at full strength:
 
 This file is parser-equivalent to the M9 relativistic-sphere case
 at `β = 0.5`, with the sphere now resolved to a matte-red material
-instead of the renderer's neutral default.
+and a small emissive quad sitting just above it - the same
+two-primitive setup the M11 material scene already exercises in
+`main.cpp`.
 
-## 14. Out of scope for v1
+## 15. Out of scope for v1
 
 These features are deferred to later schema versions and MUST NOT
 appear in v1 files. The eventual parser MAY warn-and-ignore them
 when present, to ease forward migration:
 
-- `meshes` array (triangle meshes, vertex buffers, index buffers,
-  external `.obj` references).
 - `lights` array (point / directional / area / environment).
 - Material fields beyond `base_color` / `emission_color` /
   `emission_strength` / `roughness` (i.e. `metallic`, `specular`,
   `transmission`).
+- Mesh fields beyond `vertices` / `triangles` / `material_id` /
+  `transform` (per-vertex normals / UVs / tangents / colours,
+  external `source_path` references, quaternion rotations).
 - `textures`, environment maps, IBL.
 - Per-frame motion (animation curves, per-object velocities,
   retarded-time controls).
@@ -379,13 +518,13 @@ when present, to ease forward migration:
 - Near / far clip planes.
 - Per-sphere transform / parent links / object names.
 
-The host data model already supports several of these
-(meshes and lights have host structs and GPU upload paths);
-they're left out of v1 only because this slice is intentionally
-small. Future schema versions add them by mapping the existing
-C++ structs to JSON sections of the same names.
+The host data model already supports several of these (lights
+have host structs and GPU upload paths); they're left out of v1
+only because this slice is intentionally small. Future schema
+versions add them by mapping the existing C++ structs to JSON
+sections of the same names.
 
-## 15. References
+## 16. References
 
 - `src/scene/Scene.h` — host data model the parser populates.
 - `src/scene/Transform.h` — `rr::math::Transform` carried by every
@@ -399,6 +538,13 @@ C++ structs to JSON sections of the same names.
   populates from each `materials[i]` entry. Fields not exposed in
   v1 (`metallic`, `specular`, `transmission`) keep their host
   defaults.
+- `src/geometry/Mesh.h` / `Triangle.h` — `Mesh`, `Vertex`, and
+  `Triangle` PODs the parser populates from each `meshes[i]`
+  entry. Vertex attributes beyond position keep their host
+  defaults (zero normal, zero UV) until v1 adds them.
+- `src/math/Transform.h` — `rr::math::Transform` carrying the
+  position / `euler_rotation_radians` / scale fields the
+  `transform` block maps onto.
 - `docs/MASTER_ARCHITECTURE.md` — `Scene File Format` module
   contract (no GPU / UI / DCC dependencies).
 - `docs/MODULE_MAP.md` — module 18 (Scene File Format).

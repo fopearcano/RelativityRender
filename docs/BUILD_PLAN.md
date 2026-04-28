@@ -93,6 +93,64 @@ All modules now have a placeholder source directory under `src/`,
 
 ## Change Log
 
+### 2026-04-27 — RRSCENE v1: `meshes` section added
+
+Doc-only extension. No parser, no source changes.
+
+- **`docs/RRSCENE_FORMAT.md`:** added section 10 (`meshes`).
+  - Fields: `name` (optional debug label), `vertices` (required
+    array of Vec3 positions), `triangles` (required array of
+    `[v0, v1, v2]` index triplets in CCW front-face winding),
+    `material_id` (optional, indexes into `materials`),
+    `transform` (optional, identity by default).
+  - `transform` is the canonical SRT decomposition mapped onto
+    the host `rr::math::Transform`: `position` (Vec3),
+    `rotation` (Vec3 of Euler angles in radians, intrinsic XYZ),
+    `scale` (Vec3, negative axes flip).
+  - Index validity is enforced (each index in
+    `[0, vertices.size())`; out-of-range / negative is an error).
+  - Vertex attributes beyond position (normals, UVs, tangents,
+    vertex colours) and external file references
+    (`source_path`) explicitly deferred. The renderer derives
+    geometric face normals from triangle winding.
+  - Quaternion / axis-angle rotations are out of scope; future
+    versions add an alternative `rotation_quaternion` field
+    that takes precedence when both are present.
+- Top-level shape (section 2) now lists `meshes` as an optional
+  section. Section numbers below shifted by one (Common types
+  -> 11, Defaults -> 12, Validation -> 13, Complete example ->
+  14, Out of scope -> 15, References -> 16).
+- Validation rules (section 13) gained a new clause: each mesh
+  has `vertices` and `triangles`; every triangle index is in
+  `[0, vertices.size())`; negative or out-of-range indices are
+  errors; empty arrays are legal but warn-eligible.
+- Out of scope (section 15) updated: removed the `meshes`
+  bullet; added one for "mesh fields beyond `vertices` /
+  `triangles` / `material_id` / `transform`" so the deferred
+  per-vertex normals / UVs / tangents / colours and the
+  external `source_path` reference are explicitly out of v1.
+  `lights` remains out-of-scope per the prompt.
+- Complete example (section 14) extended: a `warm_emitter`
+  material entry plus a 4-vertex / 2-triangle quad mesh that
+  references it. Mirrors the M11 material scene's quad +
+  emissive-material setup so the file is one-to-one with the
+  current `--render` output.
+- References updated with `src/geometry/Mesh.h`,
+  `src/geometry/Triangle.h`, and `src/math/Transform.h`.
+
+#### Verified
+
+No source changes; the existing build / tests remain green
+(`ctest -> 10/10`).
+
+#### Per the prompt
+
+- Only `meshes` was added.
+- One small JSON example sits inside the new section; the
+  end-to-end example was extended to exercise it alongside the
+  existing materials.
+- No lights, no parser code.
+
 ### 2026-04-27 — RRSCENE v1: `materials` section added
 
 Doc-only extension to the v1 spec. No parser, no source changes.
