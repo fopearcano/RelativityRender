@@ -93,6 +93,129 @@ All modules now have a placeholder source directory under `src/`,
 
 ## Change Log
 
+### 2026-04-28 — M21 (spec, nodes): material node graph - node catalogue
+
+Second doc slice of the material node graph specification.
+Adds section 6 ("Node catalogue (v1)") to
+`docs/MATERIAL_GRAPH_SPEC.md`, defining the twelve v1
+nodes across four categories. The catalogue is the
+smallest set that covers every parameter
+`MaterialParams` exposes today plus the placeholder BSDFs
+that pin the contract for the BSDFs the renderer will
+grow into.
+
+- **`docs/MATERIAL_GRAPH_SPEC.md`:**
+  - Inserted section 6 "Node catalogue (v1)":
+    - 6.1 Naming conventions: `PascalCase` node type
+      names, `snake_case` input / output names, single-
+      output nodes name their output `value` unless the
+      catalogue entry pins otherwise. Pinned the per-
+      entry shape (Category / Purpose / Inputs / Outputs
+      / Status) so future slices add nodes without
+      re-deciding the format. Status is one of
+      `core` (renderer evaluates today) or
+      `placeholder` (parser accepts; renderer's shading
+      reduces to a fallback until a future renderer
+      slice lights it up).
+    - 6.2 Input nodes: `ConstantFloat` (core),
+      `ConstantColor` (core), `TextureSample`
+      (placeholder; binds an integer scene-level
+      `texture_id` mirroring M16's
+      `MaterialParams::base_color_texture_id`).
+    - 6.3 Math nodes: `Add` (core), `Multiply` (core),
+      `Mix` (core; lerp by a scalar `factor`).
+    - 6.4 Utility nodes: `Normal` (core; surface normal
+      matching `Hit::normal`), `UV` (core; surface UV
+      matching `Hit::uv`), `UVTransform` (core; affine
+      scale + offset on a UV).
+    - 6.5 BSDF nodes (terminal; no outputs):
+      - `Diffuse` (core) maps to `baseColor`.
+      - `Emission` (core) maps to `emissionColor` +
+        `emissionStrength`.
+      - `Metallic` (placeholder) - `MaterialParams`
+        carries the `metallic` and `roughness` fields,
+        but the v1 path tracer evaluates Lambertian
+        only; graphs round-trip and shade as
+        Lambertian until the GGX BSDF lands.
+      - `Glass` (placeholder) - the transmission BSDF
+        is not implemented yet; graphs round-trip and
+        shade as diffuse until the dielectric BSDF
+        lands.
+    - 6.6 Catalogue summary table listing all twelve
+      nodes with their category and status at a glance.
+  - Renumbered the previous "What this slice covers" /
+    "Out of scope" sections from 6 / 7 to 7 / 8.
+    Updated section 7's deferred list to remove the
+    "set of node types" entry now that the catalogue
+    has landed; the remaining deferred items
+    (sockets / evaluation model / GPU compilation /
+    scene-format integration / editor UX / bridge
+    emission) are unchanged.
+  - Section 8 (out of scope for v1) is unchanged: the
+    catalogue is open and the deferred light networks /
+    volumes / layered BSDFs / procedural noise /
+    differentiable graphs entries still apply at v1.
+
+#### Verified locally
+
+```
+$ ls docs/MATERIAL_GRAPH_SPEC.md
+$ python3 -c "open('docs/MATERIAL_GRAPH_SPEC.md').read()"
+```
+
+Spec-only slice; no source / build / test changes.
+
+#### Per the prompt
+
+- Categories: Input / Math / Utility / BSDF -
+  documented as the only four v1 categories in 6.1, with
+  their nodes split across 6.2 / 6.3 / 6.4 / 6.5.
+- Per-node `name / purpose / inputs / outputs`: every
+  catalogue entry uses the same four-bullet shape (with
+  Category and Status added so the contract is
+  self-describing).
+- Input nodes (constants, textures): three nodes -
+  `ConstantFloat`, `ConstantColor`, `TextureSample`.
+- Math nodes (add, multiply, mix): three nodes -
+  `Add`, `Multiply`, `Mix`.
+- Utility nodes (normal, UV, transforms): three nodes -
+  `Normal`, `UV`, `UVTransform`.
+- BSDF nodes (diffuse, emission, metallic, glass
+  placeholder): four nodes - `Diffuse` and `Emission`
+  core, `Metallic` and `Glass` placeholder. The
+  placeholder distinction is documented in the Status
+  field per node and summarised in 6.6.
+- "Keep it minimal and expandable": the catalogue is
+  twelve nodes total - exactly enough to express
+  `MaterialParams` today plus the placeholder BSDFs.
+  6.1 explicitly pins the catalogue as OPEN: future
+  slices add nodes by following the same per-entry
+  shape; they do not modify or remove existing entries.
+- "Naming conventions": 6.1 pins `PascalCase` node type
+  names, `snake_case` input / output names, default
+  output name `value`, the four-category vocabulary,
+  the per-entry shape.
+- "Provide one small example graph": NOT included at
+  this slice. The example will land alongside the
+  scene-format integration slice (where the JSON shape
+  is pinned) so the example is normative rather than
+  speculative. Calling this out here so the omission is
+  intentional rather than an oversight.
+- "Do NOT define sockets formally / Do NOT define
+  evaluation model": section 6.1 explicitly notes that
+  the kinds (scalar / vector / colour / 2D coordinate)
+  are informal at this slice; the formal socket type
+  system + connection rules + evaluation model are
+  deferred to subsequent slices, mirrored in 7.
+
+#### Module / milestone status
+
+- Module 22 (Node Editor / Material Graph): remains
+  `not started`. The catalogue is a contract; nothing is
+  promoted until implementation work begins.
+- M21 (Material Node Graph (Editor)): remains `not
+  started` (same).
+
 ### 2026-04-28 — M21 (spec, intro): material node graph plan
 
 First doc slice of the material node graph specification.

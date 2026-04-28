@@ -261,20 +261,328 @@ This rules out, in v1:
 - Nodes that read from "the previous frame" or any
   history buffer.
 
-## 6. What this slice covers
+## 6. Node catalogue (v1)
 
-This slice introduces the graph at the conceptual level:
-its purpose, its relationship to the existing material
-struct, and the three constraints any implementation MUST
-respect.
+The v1 catalogue is intentionally minimal. It covers the
+four node categories the rest of the renderer needs to
+express the materials it can already shade
+(`MaterialParams`-shape parameters from the M11 / M14 / M16
+work) plus the placeholder BSDF nodes that pin the contract
+for the BSDFs the renderer will grow into. Every other
+authoring primitive (procedural noise, vector math, custom
+attribute reads, layered shaders, ...) is a future slice.
+
+The catalogue is **open**. Future slices add nodes by
+describing them in the same shape as the entries below;
+they do NOT modify or remove existing entries. A graph
+written against this catalogue MUST keep parsing and
+evaluating identically when later slices land.
+
+### 6.1 Naming conventions
+
+The catalogue, the future scene-format schema, and the
+authoring tools all share a single naming discipline so
+authors and parsers cannot drift:
+
+- **Node type names** are `PascalCase` and match the
+  catalogue entry verbatim (`ConstantColor`,
+  `TextureSample`, `Multiply`, `Diffuse`, ...).
+- **Input names** on a node are `snake_case`
+  (`albedo`, `color`, `strength`, `roughness`, `uv`,
+  `factor`, ...).
+- **Output names** are `snake_case`. A node with a single
+  output names that output `value` unless the catalogue
+  entry pins a more specific name.
+- **Categories** documented here (`Input`, `Math`,
+  `Utility`, `BSDF`) are the only ones recognised by v1.
+  A new node introduced by a later slice MUST either
+  belong to one of these categories or introduce its own
+  category in the same slice.
+
+Each entry below records:
+
+- **Category** - one of Input / Math / Utility / BSDF.
+- **Purpose** - what the node computes.
+- **Inputs** - the named inputs the node consumes. Inputs
+  marked "(node parameter)" are stored ON the node (like a
+  constant value) and cannot be wired from another node;
+  every other input MAY be either connected to another
+  node's output or left unconnected to take its default.
+- **Outputs** - the named outputs the node produces.
+  Terminal nodes (BSDFs) have no outputs.
+- **Status** - `core` (the renderer evaluates this node's
+  contribution to `MaterialParams` today) or
+  `placeholder` (the parser accepts the node and binds its
+  parameters, but the renderer's BSDF code does not yet
+  implement the corresponding shading; future renderer
+  slices light it up).
+
+The "kinds" referred to under inputs / outputs (scalar,
+vector, colour, uv, ...) are deliberately informal at this
+slice. The formal socket type system - what actually
+connects to what, what conversions are implicit, and what
+the cycle / arity rules are - is the next doc slice.
+
+### 6.2 Input nodes
+
+Input nodes have no incoming connections. They produce a
+value at evaluation time, either from data stored on the
+node itself or by sampling some part of the renderer's
+shading context.
+
+#### `ConstantFloat`
+
+- **Category:** Input.
+- **Purpose:** emit a fixed scalar constant.
+- **Inputs:**
+  - `value` (node parameter, scalar) - the constant.
+- **Outputs:**
+  - `value` (scalar).
+- **Status:** core.
+
+#### `ConstantColor`
+
+- **Category:** Input.
+- **Purpose:** emit a fixed RGB constant.
+- **Inputs:**
+  - `value` (node parameter, colour) - the RGB triple.
+- **Outputs:**
+  - `value` (colour).
+- **Status:** core.
+
+#### `TextureSample`
+
+- **Category:** Input.
+- **Purpose:** sample a texture bound to the scene at a
+  given UV. Mirrors `MaterialParams::base_color_texture_id`'s
+  binding model (M16): the texture is referenced by a
+  scene-level integer id, not embedded inline.
+- **Inputs:**
+  - `texture_id` (node parameter, integer) - index into
+    the scene's texture array.
+  - `uv` (kind: 2D coordinate; default: surface UV from
+    the shading context) - the lookup coordinate.
+- **Outputs:**
+  - `value` (colour) - the sampled texel.
+- **Status:** placeholder. The v1 contract is that the node
+  is recognised and its `texture_id` round-trips through the
+  scene format; the renderer's existing nearest-neighbour
+  sampler (`src/cuda/CudaTexture.cuh`) is the implementation
+  it lowers to. Filtering / wrap modes / sRGB handling are
+  future-slice extensions.
+
+### 6.3 Math nodes
+
+Math nodes consume one or more values of the same kind and
+produce a value of that kind. They have no shading-context
+dependencies; their behaviour is purely a function of their
+inputs.
+
+The output kind matches the inputs' kind: an `Add` of two
+scalars produces a scalar; an `Add` of two colours produces
+a colour. The exact rules for mixing kinds (e.g. scalar +
+colour broadcasting) are pinned in the socket-type slice.
+
+#### `Add`
+
+- **Category:** Math.
+- **Purpose:** per-component sum of two operands.
+- **Inputs:**
+  - `a` (kind: scalar / vector / colour; default: zero).
+  - `b` (kind: matches `a`; default: zero).
+- **Outputs:**
+  - `value` (matches the inputs).
+- **Status:** core.
+
+#### `Multiply`
+
+- **Category:** Math.
+- **Purpose:** per-component product of two operands.
+- **Inputs:**
+  - `a` (kind: scalar / vector / colour; default: one).
+  - `b` (kind: matches `a`; default: one).
+- **Outputs:**
+  - `value` (matches the inputs).
+- **Status:** core.
+
+#### `Mix`
+
+- **Category:** Math.
+- **Purpose:** linear blend of two operands by a scalar
+  factor (`a * (1 - factor) + b * factor`).
+- **Inputs:**
+  - `a` (kind: scalar / vector / colour; default: zero).
+  - `b` (kind: matches `a`; default: one).
+  - `factor` (scalar in `[0, 1]`; default: `0.5`).
+- **Outputs:**
+  - `value` (matches `a` / `b`).
+- **Status:** core.
+
+### 6.4 Utility nodes
+
+Utility nodes expose pieces of the renderer's per-hit
+shading context (geometric attributes the kernel already
+computes) or apply small geometric / coordinate transforms
+to other nodes' outputs. They are the connective tissue
+between input nodes and BSDFs.
+
+#### `Normal`
+
+- **Category:** Utility.
+- **Purpose:** emit the surface normal at the current
+  shading sample, in world space, matching the convention
+  the renderer's `Hit::normal` already uses
+  (`src/renderer/Hit.h`).
+- **Inputs:** none.
+- **Outputs:**
+  - `value` (vector).
+- **Status:** core.
+
+#### `UV`
+
+- **Category:** Utility.
+- **Purpose:** emit the surface UV at the current shading
+  sample, matching `Hit::uv` (M16: spherical UV on spheres,
+  barycentric-interpolated UV on triangles).
+- **Inputs:** none.
+- **Outputs:**
+  - `value` (2D coordinate).
+- **Status:** core.
+
+#### `UVTransform`
+
+- **Category:** Utility.
+- **Purpose:** apply a 2D affine transform to a UV input
+  (scale + offset). Lets a graph reuse one texture across
+  multiple surface regions without duplicating the
+  texture binding.
+- **Inputs:**
+  - `uv` (2D coordinate; default: surface UV).
+  - `scale` (2D coordinate; default: `(1, 1)`).
+  - `offset` (2D coordinate; default: `(0, 0)`).
+- **Outputs:**
+  - `value` (2D coordinate).
+- **Status:** core.
+
+### 6.5 BSDF nodes
+
+BSDF nodes are **terminal**: they have no outputs. A graph
+contributes to surface shading by terminating at one or
+more BSDF nodes; each BSDF node's inputs feed a piece of
+the renderer's existing `MaterialParams` consumer set.
+
+A v1 graph SHOULD include at most one node of each terminal
+type. The exact rules for combining multiple terminals
+(BSDF mixing, layered shaders) are explicitly out of scope
+for v1 (see section 8).
+
+#### `Diffuse`
+
+- **Category:** BSDF.
+- **Purpose:** contribute a Lambertian diffuse term. Maps
+  to `MaterialParams::baseColor` in the renderer's existing
+  shading model.
+- **Inputs:**
+  - `albedo` (colour; default: mid-grey
+    `(0.8, 0.8, 0.8)` matching `MaterialParams::baseColor`'s
+    default).
+- **Outputs:** none (terminal).
+- **Status:** core. The renderer's M11 / M14 shading
+  evaluates Lambertian diffuse from this term.
+
+#### `Emission`
+
+- **Category:** BSDF.
+- **Purpose:** contribute emissive radiance. Maps to
+  `MaterialParams::emissionColor` and
+  `MaterialParams::emissionStrength`.
+- **Inputs:**
+  - `color` (colour; default: black `(0, 0, 0)`).
+  - `strength` (scalar; default: `1.0`).
+- **Outputs:** none (terminal).
+- **Status:** core. The renderer's M11 path picks up the
+  emission contribution at hit time; the path tracer
+  (M14) accumulates emissive radiance through bounces.
+
+#### `Metallic`
+
+- **Category:** BSDF.
+- **Purpose:** contribute a metallic specular term. Maps
+  to `MaterialParams::baseColor` (interpreted as F0 tint
+  when `metallic` is `1`), `MaterialParams::metallic`,
+  and `MaterialParams::roughness`.
+- **Inputs:**
+  - `albedo` (colour; default: mid-grey `(0.8, 0.8, 0.8)`).
+  - `roughness` (scalar in `[0, 1]`; default: `0.5`).
+- **Outputs:** none (terminal).
+- **Status:** placeholder. `MaterialParams` already
+  carries the `metallic` and `roughness` fields, but the
+  v1 path tracer evaluates Lambertian only. Graphs that
+  terminate at `Metallic` MUST parse and round-trip; the
+  renderer's shading reduces them to a Lambertian
+  approximation until the GGX BSDF lands in a future
+  slice.
+
+#### `Glass`
+
+- **Category:** BSDF.
+- **Purpose:** contribute a transmissive dielectric term
+  (refractive transparent surface). Maps to
+  `MaterialParams::transmission` plus the colour /
+  roughness inputs.
+- **Inputs:**
+  - `tint` (colour; default: white `(1, 1, 1)`).
+  - `ior` (scalar > 1; default: `1.5`, typical for
+    common glass).
+  - `roughness` (scalar in `[0, 1]`; default: `0.0`).
+- **Outputs:** none (terminal).
+- **Status:** placeholder. `MaterialParams::transmission`
+  is reserved (`src/material/MaterialTypes.h` flags it
+  PLACEHOLDER) and the path tracer does not implement
+  refraction yet. Graphs that terminate at `Glass` MUST
+  parse and round-trip; the renderer's shading reduces
+  them to the diffuse fallback until the dielectric BSDF
+  lands.
+
+### 6.6 Catalogue summary
+
+| Category | Node             | Status      |
+|----------|------------------|-------------|
+| Input    | `ConstantFloat`  | core        |
+| Input    | `ConstantColor`  | core        |
+| Input    | `TextureSample`  | placeholder |
+| Math     | `Add`            | core        |
+| Math     | `Multiply`       | core        |
+| Math     | `Mix`            | core        |
+| Utility  | `Normal`         | core        |
+| Utility  | `UV`             | core        |
+| Utility  | `UVTransform`    | core        |
+| BSDF     | `Diffuse`        | core        |
+| BSDF     | `Emission`       | core        |
+| BSDF     | `Metallic`       | placeholder |
+| BSDF     | `Glass`          | placeholder |
+
+Twelve nodes - the smallest set that covers every
+parameter `MaterialParams` exposes today plus the
+placeholder BSDFs that pin the contract for tomorrow.
+
+## 7. What this slice covers
+
+This and the previous (intro) slice together establish:
+
+- The graph at the conceptual level: purpose, relationship
+  to `MaterialParams`, GPU / real-time / path-tracing
+  constraints (sections 1-5).
+- The v1 node catalogue with naming conventions and a
+  per-node entry shape (section 6).
 
 It deliberately does NOT pin:
 
-- The set of node types (constants, samples, math, BSDFs,
-  ...). That is the next doc slice.
-- The socket type system or connection rules. Slice after
-  next.
-- The evaluation model (lazy / eager, caching strategy).
+- The socket type system or connection rules (what kinds
+  exist, what conversions are implicit, how cycles are
+  rejected). That is the next doc slice.
+- The evaluation model (lazy / eager, caching strategy,
+  default-value semantics).
 - The GPU compilation strategy (interpreted bytecode,
   emitted CUDA source, lookup tables, ...).
 - The scene-file integration (the optional
@@ -287,7 +595,7 @@ work begins only after the slices that constrain it have
 landed - the same incremental rule the rest of the project
 follows.
 
-## 7. Out of scope for v1 of the spec
+## 8. Out of scope for v1 of the spec
 
 The graph contract documented across this and the upcoming
 slices is a v1 contract. The following are explicitly **not**
