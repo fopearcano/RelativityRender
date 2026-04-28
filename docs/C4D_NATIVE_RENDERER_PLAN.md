@@ -1153,7 +1153,467 @@ does not creep:
   at v1; motion blur and per-frame motion vectors
   are future.
 
-## 10. What this slice covers
+## 10. SDK and platform constraints
+
+This section pins the constraints the Cinema 4D SDK,
+the supported operating systems, and the renderer's
+GPU dependency impose on the native plugin. The exact
+SDK version and toolchain targets are an
+implementation-slice decision; this slice pins the
+shape of the constraints + the policy v1 takes.
+
+### 10.1 Cinema 4D SDK version compatibility
+
+Cinema 4D's C++ SDK has changed significantly across
+releases. The major boundaries the plugin author has
+to navigate (without naming exact version numbers,
+since they vary by Maxon's release cadence):
+
+- **Renderer-API generation.** Different SDK
+  generations expose different renderer-registration
+  surfaces. Older SDKs lean on `VideoPostData`
+  (section 6.2's v1 target); newer SDKs add direct
+  renderer-plugin APIs (section 6.3). The plugin
+  source compiled against one generation does NOT
+  compile cleanly against another; the renderer-API
+  helper namespace, the message ids, and the entry-
+  point macros all shift.
+- **Multi-pass / framebuffer surface generation.**
+  `BaseBitmap` is stable; `MultipassBitmap` and the
+  pass-naming conventions evolve. Plugin code
+  touching the framebuffer write path is the most
+  exposed to SDK drift.
+- **Scene API generation.** `BaseDocument`,
+  `BaseObject`, `BaseMaterial`, light-type
+  constants - the names are stable but the field
+  ids, the message constants, and the helper
+  functions are not. The translator (section 8) is
+  exposed at every per-element mapping.
+
+Maxon's deprecation cycle is approximate but
+predictable: APIs marked deprecated in one release
+are typically removed two releases later. A plugin
+that compiles cleanly against the current SDK can
+still break on an older SDK (missing API) or a newer
+SDK (deprecated API removed).
+
+**v1 picks ONE SDK version target.** That decision
+is the SDK-target slice's job, not this one. The
+constraint here is: every API the plugin touches MUST
+be available + stable on that target. Bumps to a
+newer SDK are explicit follow-up slices; they're
+expected to require code changes.
+
+### 10.2 Plugin compilation per SDK release
+
+Cinema 4D plugins are platform-specific shared
+libraries (`.xdl64` on Windows, `.dylib` on macOS).
+Building them ties three things together that an
+ordinary CMake project would not have to think
+about:
+
+- **The C4D SDK headers + framework.** Each SDK
+  release ships its own header tree under a
+  Maxon-supplied directory; the plugin's include
+  path points there. The headers reference internal
+  layout that the SDK's macros + helpers wire up.
+  Different SDKs cannot share an include tree.
+- **The C4D SDK's required compiler.** Maxon
+  certifies specific compiler versions per SDK
+  release (a Visual Studio version on Windows, an
+  Xcode / clang version on macOS). Building with an
+  uncertified compiler may work, may produce
+  binary-incompatible plugins, may fail to link.
+- **License terms.** Maxon's SDK license includes
+  redistribution / NDA clauses the plugin's
+  packaging must respect. v1's plugin distribution
+  starts as hand-installed (drop into the user's
+  plugins folder); marketplace / Plugin Cafe
+  distribution is a future slice with its own
+  packaging requirements.
+
+Continuous-integration consequences:
+
+- Running CI against multiple SDK versions = N
+  parallel build pipelines, one per
+  (SDK, compiler, platform) tuple. v1 starts with
+  one tuple; expanding the matrix is a
+  maintenance-cost decision.
+- The renderer's existing `host-only` test paths
+  (the standalone build that does NOT need CUDA or
+  C4D) keep working unchanged. The C4D plugin
+  builds are ADDITIONAL pipelines, not replacements.
+
+### 10.3 Platform constraints (Windows / macOS)
+
+Cinema 4D officially supports Windows and macOS.
+Linux support varies by SDK release and Maxon's
+official position; the v1 plugin does not target
+Linux.
+
+| Platform        | Architectures             | Toolchain expectation         | GPU compatibility         |
+|-----------------|---------------------------|-------------------------------|---------------------------|
+| **Windows**     | x86_64                    | Visual Studio (per SDK cert)  | NVIDIA + CUDA available   |
+| **macOS Intel** | x86_64                    | Xcode (per SDK cert)          | Older NVIDIA / unavailable|
+| **macOS ARM**   | arm64 (Apple Silicon)     | Xcode (per SDK cert)          | **No CUDA support**       |
+
+**Apple Silicon is the conspicuous gap.** The
+RelativityRender renderer is CUDA / OptiX-first
+(`docs/MASTER_ARCHITECTURE.md`); CUDA does not run on
+ARM Macs. The plugin's load-time check on Apple
+Silicon must:
+
+- detect that no compatible GPU is reachable,
+- log a clear, single-line message in C4D's render
+  log explaining the absence,
+- gracefully decline to render rather than crash or
+  produce a frame of garbage.
+
+A future slice can revisit the Apple Silicon path -
+either by gaining a non-CUDA GPU backend (Metal
+Performance Shaders, MPS-based path tracer) or by
+shipping the plugin with a clear "Intel macOS only"
+constraint until that backend exists. v1 ships
+Windows-only; the macOS Intel build is a follow-up;
+the Apple Silicon build needs the alternative
+backend the renderer does not have.
+
+### 10.4 GPU / driver dependencies
+
+The renderer's hard requirements at runtime:
+
+- **NVIDIA GPU.** OptiX 7.x (the M15 plan's target)
+  requires Pascal-generation hardware or newer
+  (compute capability 6.0+); CUDA-only paths run
+  further back but the GPU has to be NVIDIA.
+- **CUDA Toolkit at compile time.** The renderer's
+  CUDA-enabled build pulls headers and the Toolkit
+  runtime stubs; the plugin's build inherits this.
+  The Toolkit version is pinned per the project's
+  build settings; a mismatch with the runtime
+  driver version produces failures the plugin
+  surface needs to translate into something an
+  artist can act on.
+- **Matching NVIDIA driver at runtime.** The driver
+  on the artist's machine must be compatible with
+  the CUDA Toolkit version the plugin shipped
+  with. Mismatches produce CUDA load failures the
+  plugin reports through C4D's render log.
+- **OptiX SDK (when M15 lands).** OptiX requires
+  its own SDK at build time and a matching driver
+  at runtime. The plugin's load path needs to
+  validate both before declaring readiness.
+
+Plugin behaviour on unsupported hardware /
+mismatched drivers, in priority order:
+
+1. Detect the failure as early as possible
+   (preferably plugin load).
+2. Log a clear, single-line message identifying
+   the root cause (no GPU, driver too old,
+   incompatible CUDA Toolkit, missing OptiX
+   runtime).
+3. Decline to render. The renderer dropdown still
+   shows `RelativityRender`; choosing it produces
+   the error message rather than a hang or a
+   crash.
+
+The renderer's existing CUDA-detection helper
+(`rr::gpu::enumerate_devices`,
+`gpu_backend_available`) is the building block; the
+plugin's load-time check wraps it.
+
+## 11. Limitations
+
+This section is the v1 honest-limitations list:
+features Cinema 4D supports that the v1 native
+renderer plugin will deliberately NOT cover, the
+complexity cost of full coverage, and the
+performance trade-offs the v1 design accepts.
+
+### 11.1 Unsupported Cinema 4D features
+
+The bridge's M19 extension slices already pin most
+of these; the native plugin inherits the same
+ignore-set + adds two native-specific entries
+(section 8.6). The summary, for v1:
+
+- **Generators** (Cloner / Subdivision / Boole /
+  Sweep / Loft / ...). Skipped; future slice can
+  bake them through `GetCache()`.
+- **Deformers** (Bend / Twist / Bulge / ...).
+  Skipped as standalone objects. Polygons whose
+  subtree contains a deformer export the
+  **undeformed** mesh; the v1 plugin warns rather
+  than calling `GetDeformCache`.
+- **Spot lights and parallel-spot lights.**
+  Skipped + warn (rrscene v1 has no spot cone).
+- **Area / tube lights.** Degraded to a point
+  light at the area's origin + warn.
+- **Volume objects** (Volume / VolumeBuilder /
+  VolumeMesher). Skipped + warn; v1 has no
+  volume pipeline.
+- **Hair.** Skipped + warn.
+- **Cinema 4D node-based materials.** Falls back
+  to flat material reads + warns. Future slice
+  translates the C4D node tree into a v1
+  `material::graph::Graph`.
+- **Tracer / Field / MoGraph procedural systems.**
+  Skipped + warn. Static geometry only in v1.
+- **Subsurface scattering / participating media.**
+  Materials with SSS channels fall back to
+  diffuse (no SSS BSDF in the v1 catalogue per the
+  material-graph spec section 11).
+- **Custom procedural noise / shader networks
+  beyond the standard channels.** Falls back to
+  the channel's constant colour.
+
+Some Cinema 4D features the v1 plugin **does**
+honour without explicit work, because the plugin
+treats them as "rendering boundaries":
+
+- **Takes.** Each take is a separate Execute call
+  with the take's resolved scene (section 8.6).
+- **Animation timeline (per-frame state).** Each
+  frame is a separate Execute call (per-frame
+  motion blur is NOT covered; that needs motion
+  vectors).
+- **Render Region.** Section 7.4's "render full +
+  copy in-region" strategy.
+
+### 11.2 Complexity of full integration
+
+Integrating natively with Cinema 4D's render
+pipeline is structurally larger than the bridge.
+The plugin touches surfaces the bridge never
+needs to:
+
+- **C4D's threading model.** The plugin's
+  callbacks run in different threads at different
+  times - the UI thread for setup messages, the
+  render thread for Execute, plugin-internal
+  threads if the plugin spawns them. The plugin
+  must respect Cinema 4D's "what can be called on
+  which thread" contract; violating it produces
+  rare, hard-to-reproduce hangs.
+- **Cancellation contract.** Cinema 4D dispatches
+  cancellation requests asynchronously. The plugin
+  polls a cancellation flag between progressive
+  batches (section 7.5) and during long
+  operations. Failing to poll fast enough gives
+  the artist a "stuck render" experience that is
+  hard to distinguish from a real plugin bug.
+- **Picture Viewer / IRR / Render Queue surface
+  parity.** Each surface has its own SDK API quirks
+  (resolution dispatch, progress reporting,
+  multi-pass slot allocation). The plugin's Execute
+  must work for all of them, even though the
+  artist never directly invokes the
+  per-surface differences.
+- **Documentation gaps.** Cinema 4D's C++ SDK
+  documentation is uneven; some surfaces have
+  reference docs, others have only header files +
+  community-published examples. A plugin author
+  works partly from official docs, partly from
+  empirical testing, partly from reverse-
+  engineering existing renderers.
+- **Maintenance burden across SDK versions.**
+  Section 10.1's deprecation cycle means the
+  plugin's source needs touchups every 1-2
+  Cinema 4D releases. The bridge's Python source
+  has been more SDK-stable historically because
+  Maxon's Python API is a thinner layer; C++
+  inherits all of the deeper SDK churn.
+
+These costs are why M23 is at the END of the
+roadmap (section 12). Every step before it makes
+shipping the native plugin easier; reordering the
+sequence would mean paying the integration cost on
+an unstable foundation.
+
+### 11.3 Performance trade-offs
+
+The v1 design accepts several performance trade-offs
+deliberately, in exchange for correctness +
+simplicity. Each is reachable through a future
+optimisation slice once measurements warrant.
+
+- **Full re-upload on every change** (section 9.3).
+  Trade: bandwidth-bound on heavy scenes.
+  Mitigation: dirty-tracking partial re-upload,
+  future slice.
+- **Host round trip on framebuffer copy**
+  (section 7.3). Trade: a `cudaMemcpy`-to-host
+  + `BaseBitmap`-write pass per frame, on the
+  order of milliseconds at HD and tens of
+  milliseconds at 4K. Mitigation: device-direct
+  copy through the SDK's device-friendly bitmap
+  interface (when available + stable), future
+  slice.
+- **Sample-accumulation reset on every change**
+  (section 9.4). Trade: previously-rendered samples
+  are thrown away even when only the camera moved.
+  Mitigation: temporal denoiser + reprojection,
+  M22 plan section 9 future slice.
+- **Render-region renders the full frame +
+  crops** (section 7.4). Trade: pays full-frame
+  per-pixel cost even when the region is small.
+  Mitigation: region-aware kernel launches, future
+  slice.
+- **Per-Execute renderer-buffer reallocation**
+  (section 7.4). Trade: a few `cudaMalloc` /
+  `cudaFree` calls per Execute, on the order of
+  microseconds. Mitigation: persistent buffers
+  reset only on resolution change.
+
+The trade-offs are not unique to RelativityRender;
+every commercial GPU renderer hits the same
+optimisation ladder. v1 climbs the first rung
+(correctness); each subsequent rung is its own
+slice.
+
+## 12. Recommended development order
+
+The native plugin (this milestone, M23) is the
+**last** integration the project ships. Every step
+before it produces something the native plugin
+depends on; reordering the sequence would mean
+paying the C++ integration cost on an unstable
+foundation. The recommended order is:
+
+### 12.1 Step 1: Python bridge
+
+**Status:** shipped (M19, six implementation slices).
+**What it produces:** an end-to-end demonstration
+that a Cinema 4D scene CAN be translated into the
+RelativityRender scene format and rendered. The
+bridge's Python source is the canonical reference
+for the per-element mapping (camera / geometry /
+materials / lights) the native plugin then
+transcribes to C++.
+
+**Why first:** Python is fast to iterate on. The
+bridge stress-tests the translation rules without
+committing the project to a C++ build pipeline that
+would slow down any change. By the time the native
+plugin starts, the bridge has already proven that
+the translation rules are correct + complete enough
+for the v1 catalogue.
+
+**What it gates for the next steps:** the
+translation rules (section 8.7's reuse pin), the
+unsupported-feature taxonomy (section 11.1), the
+warning channel + dialog wording.
+
+### 12.2 Step 2: Renderer server
+
+**Status:** shipped foundation (M18 + M19 wiring
+slice).
+**What it produces:** a stable line protocol the
+bridge talks to. Stabilises the renderer's external
+contract (the public façade in protocol form). The
+bridge exercises it under real workloads, surfacing
+bugs that would otherwise hide until the native
+plugin tried to use the renderer.
+
+**Why second:** the protocol is the renderer's
+test harness for the OUT-of-process case. Even
+though the native plugin runs IN-process and skips
+the protocol entirely, the protocol's existence
+tightens the renderer's public façade. A renderer
+that talks cleanly over a socket has a public API
+that's already been disciplined.
+
+**What it gates for the next steps:** the
+renderer's external public-facade contract; the
+protocol's `render` / `set_beta` / etc. command
+shapes that the native plugin's coordination code
+takes inspiration from.
+
+### 12.3 Step 3: Stable standalone renderer
+
+**Status:** in progress (M14 + M15 + M21 paths;
+M22 denoiser plan landed). The "stable" criterion is
+that the renderer's path-traced output, with the
+relativistic camera + materials + AOVs + denoiser,
+matches its tested reference values across hardware
+the v1 plugin targets.
+
+**What it produces:** the renderer the native plugin
+will drive. CUDA path mature, OptiX path mature,
+material graph evaluator integrated (M21 done),
+denoiser integrated (M22 future), AOVs producing
+the channel set the multi-pass mapping needs.
+
+**Why third:** a native plugin's only value is the
+render quality it delivers. If the underlying
+renderer is unstable, the plugin INHERITS that
+instability and the artist blames the plugin. The
+renderer needs to be solid first.
+
+**What it gates for step 4:** the public façade
+the plugin uses; the GPU upload paths
+(`GpuScene::upload_from`); the AOV catalogue (the
+multi-pass mapping slice's input); the denoiser
+(progressive workflow's quality lever); the
+relativistic camera model.
+
+### 12.4 Step 4: Native C++ integration
+
+**Status:** planned (this document).
+**What it produces:** the deepest integration -
+the plugin this whole spec describes.
+
+**Why last:** by this point steps 1-3 have already
+produced the translation rules, the renderer
+contract, and a stable renderer. The native plugin
+is then "transcribe + glue", not "discover + design
+under uncertainty". Implementation slices for the
+plugin can land incrementally, each guarded by
+tests against the renderer that already works.
+
+**What it ships:** the user-facing experience the
+goals in section 5 pinned - live rendering inside
+C4D, minimal artist friction, full reuse of the
+existing renderer.
+
+### 12.5 Why this order is the cheapest path
+
+Each step amortises a cost across the plugin
+implementation that would otherwise land on the
+plugin's plate alone:
+
+- **Translation correctness** ends up in the
+  bridge (cheap to iterate); the plugin
+  transcribes.
+- **Public-facade hardening** ends up in the
+  server (cheap to test against); the plugin
+  drives a stable API.
+- **Renderer maturation** ends up in the
+  renderer's own development (cheap because it's
+  already happening); the plugin inherits a
+  stable backend.
+
+Reordering would mean:
+
+- Doing translation correctness AND C++
+  integration AND renderer hardening AT THE SAME
+  TIME, in a debug surface where the plugin's
+  failure modes are hardest to isolate (any of
+  the three can be the culprit).
+- Paying the C++ build pipeline cost while the
+  translation rules are still in flux.
+- Discovering bugs in the renderer's API surface
+  via the most expensive surface to debug
+  (a Cinema 4D plugin running in C4D's process).
+
+The 1 -> 4 order is the cheapest path. Sections
+8 + 9's reuse-from-the-bridge rule + step 3's
+maturation gate are how the plugin's
+implementation slice arrives at "transcribe + glue"
+rather than "build + discover".
+
+## 13. What this slice covers
 
 This and the previous slices together establish:
 
@@ -1182,27 +1642,45 @@ This and the previous slices together establish:
   events drive a full re-translate + re-upload in v1,
   with cancellation-of-in-flight-render and sample-
   accumulation reset on every change (section 9).
+- SDK and platform constraints: SDK-version
+  compatibility cycle, per-version compilation
+  requirements, Windows / macOS coverage (with the
+  Apple Silicon CUDA gap explicitly flagged), and
+  the GPU / driver / OptiX requirements with the
+  load-time validation policy (section 10).
+- v1 limitations: the unsupported-feature list
+  inherited from the bridge, the integration
+  complexity costs (threading model, cancellation
+  contract, surface-parity, documentation gaps,
+  cross-SDK maintenance burden), and the
+  performance trade-offs v1 deliberately accepts
+  in exchange for correctness + simplicity
+  (section 11).
+- Recommended development order: a 1 -> 4
+  staircase from the Python bridge (M19, shipped),
+  through the renderer server (M18, shipped),
+  through a stable standalone renderer (M14 +
+  M15 + M21 + M22), to the native plugin (M23).
+  Each step amortises a cost the next step would
+  otherwise pay; reordering means paying every
+  cost on a less-stable foundation (section 12).
 
 It deliberately does NOT pin:
 
 - The multi-pass / AOV channel mapping into Cinema 4D's
   `MultipassBitmap` slots.
-- The limitations the v1 native path will deliberately
-  ship with (procedural noise, hair, volumes, SSS,
-  takes / network rendering, ...).
-- The Cinema 4D SDK version this plugin targets.
-  Different SDK generations expose different renderer
-  APIs; the v1 target version + the deprecation
-  policy are pinned in their own slice.
 - The relationship to the existing bridge once both
-  ship in parallel (which workflows belong to which).
+  ship in parallel (which workflows belong to which
+  - section 12 sketches the development-order
+  rationale; the long-term workflow split is its
+  own slice).
 
 Each of those lands as its own doc slice. Implementation
 work begins only after the slices that constrain it have
 landed - the same incremental rule the rest of the
 project follows.
 
-## 11. Out of scope for v1 of the spec
+## 14. Out of scope for v1 of the spec
 
 Listed for clarity so the v1 implementation slice does
 not creep:

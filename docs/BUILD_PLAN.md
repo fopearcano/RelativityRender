@@ -93,6 +93,182 @@ All modules now have a placeholder source directory under `src/`,
 
 ## Change Log
 
+### 2026-04-28 — M23 (spec, constraints + dev-order): limitations and recommended order
+
+Fifth (and likely final) doc slice for M23. Adds three
+new sections to `docs/C4D_NATIVE_RENDERER_PLAN.md`:
+section 10 ("SDK and platform constraints") covers the
+Cinema 4D SDK compatibility cycle, per-version
+compilation requirements, Windows / macOS coverage
+including the Apple Silicon CUDA gap, and GPU / driver
+/ OptiX dependencies. Section 11 ("Limitations")
+inherits the bridge's unsupported-feature list, pins
+the integration complexity costs, and lists the v1
+performance trade-offs. Section 12 ("Recommended
+development order") sketches the 1 -> 4 staircase
+the project actually followed - Python bridge ->
+renderer server -> stable standalone renderer ->
+native C++ plugin - and explains why each step
+amortises a cost the next would otherwise pay.
+
+- **`docs/C4D_NATIVE_RENDERER_PLAN.md`:**
+  - Inserted section 10 "SDK and platform constraints":
+    - 10.1 Cinema 4D SDK version compatibility:
+      generation boundaries (renderer API, multi-pass /
+      framebuffer, scene API), Maxon's deprecation
+      cycle (deprecated in N, removed in N+2), v1
+      picks ONE SDK target with explicit-slice bumps.
+    - 10.2 Plugin compilation per SDK release: SDK
+      headers + framework, Maxon-certified compiler
+      versions per SDK, license / NDA terms,
+      continuous-integration consequences (N parallel
+      build pipelines per SDK x compiler x platform
+      tuple).
+    - 10.3 Platform constraints: Windows + macOS
+      Intel + macOS ARM in a table; Apple Silicon
+      CUDA gap explicitly flagged; v1 plugin's
+      load-time check requirements (detect, log,
+      decline gracefully). Future slice can add
+      Metal-based GPU backend for Apple Silicon.
+    - 10.4 GPU / driver dependencies: NVIDIA Pascal+
+      for OptiX 7.x; CUDA Toolkit at compile time
+      with matching runtime driver; OptiX SDK +
+      driver requirements (M15 plan); plugin's
+      load-time validation policy + clear-error
+      reporting through C4D's render log.
+  - Inserted section 11 "Limitations":
+    - 11.1 Unsupported C4D features inherited from
+      the bridge: generators, deformers (use
+      undeformed), spot lights (skip), area / tube
+      (degrade to point), volumes, hair, C4D node
+      materials, Tracer / Field / MoGraph
+      procedurals, SSS, custom shader networks
+      beyond standard channels. Plus features the
+      v1 plugin DOES honour as rendering boundaries:
+      Takes (per-take Execute), animation timeline
+      (per-frame Execute), Render Region (full +
+      crop).
+    - 11.2 Complexity of full integration: C4D's
+      threading model, cancellation contract,
+      Picture Viewer / IRR / Render Queue surface
+      parity, documentation gaps, maintenance burden
+      across SDK versions. Justifies M23 being LAST
+      in the roadmap.
+    - 11.3 Performance trade-offs: full re-upload
+      on every change (vs dirty-tracking partial),
+      host round trip on framebuffer copy (vs
+      device-direct), sample-accumulation reset
+      (vs camera-only reprojection), full-frame
+      render-region (vs region-aware launches),
+      per-Execute renderer-buffer reallocation (vs
+      persistent buffers). Each rung climbs in its
+      own future optimisation slice.
+  - Inserted section 12 "Recommended development
+    order":
+    - 12.1 Step 1: Python bridge (M19, shipped) -
+      stress-tests translation rules without
+      committing to a C++ build pipeline.
+    - 12.2 Step 2: Renderer server (M18, shipped) -
+      disciplines the renderer's external public-
+      facade contract under bridge use.
+    - 12.3 Step 3: Stable standalone renderer (M14 +
+      M15 + M21 in progress; M22 plan landed) - the
+      renderer the native plugin will drive.
+    - 12.4 Step 4: Native C++ integration (M23) -
+      "transcribe + glue", not "discover + design
+      under uncertainty".
+    - 12.5 Why this order is the cheapest path:
+      each step amortises a cost (translation
+      correctness in the bridge, public-facade
+      hardening in the server, renderer maturation
+      in the renderer) that would otherwise land on
+      the plugin's plate alone. Reordering means
+      paying every cost on the most expensive
+      surface to debug (a Cinema 4D plugin running
+      in C4D's process).
+  - Renumbered the trailing meta sections from 10 / 11
+    to 13 / 14. Updated section 13 to include the
+    new entries; dropped the v1-limitations and SDK-
+    version-target entries from the deferred list.
+    Remaining deferred: AOV channel mapping into
+    `MultipassBitmap` slots; the long-term
+    bridge-vs-native workflow split (section 12
+    covers the development-order rationale; the
+    workflow split once both ship in parallel is
+    its own slice).
+
+#### Verified locally
+
+```
+$ ls docs/C4D_NATIVE_RENDERER_PLAN.md
+$ grep '^## ' docs/C4D_NATIVE_RENDERER_PLAN.md
+## 1. Purpose
+## 2. What a native Cinema 4D renderer integration is
+## 3. Why RelativityRender needs one
+## 4. Python bridge vs native C++ integration
+## 5. Goals
+## 6. Cinema 4D plugin registration paths
+## 7. Framebuffer integration
+## 8. Scene translation
+## 9. Live update strategy
+## 10. SDK and platform constraints
+## 11. Limitations
+## 12. Recommended development order
+## 13. What this slice covers
+## 14. Out of scope for v1 of the spec
+```
+
+Spec-only slice; no source / build / test changes.
+
+#### Per the prompt
+
+- "Cinema 4D SDK version compatibility issues":
+  section 10.1 - generation boundaries, deprecation
+  cycle, v1 single-target policy.
+- "Plugin compilation per version": section 10.2 -
+  SDK headers + Maxon-certified compilers per SDK,
+  license terms, CI matrix consequences.
+- "Platform constraints (Windows / macOS)":
+  section 10.3 - 3-row platform table with the
+  Apple Silicon CUDA gap explicitly called out
+  + v1 load-time-detection policy.
+- "GPU / driver dependencies": section 10.4 - NVIDIA
+  Pascal+ / CUDA Toolkit + matching driver / OptiX
+  / load-time validation through C4D's log.
+- "Unsupported C4D features": section 11.1 -
+  inherited from the bridge's M19 ext slices,
+  plus the rendering-boundary features (Takes,
+  per-frame timeline, Render Region) that DO
+  work as side effects.
+- "Complexity of full integration": section 11.2 -
+  threading, cancellation, surface parity, doc
+  gaps, SDK maintenance burden. Justifies M23
+  being LAST.
+- "Performance trade-offs": section 11.3 - five
+  v1 trade-offs (full re-upload / host round
+  trip / accum reset / full-frame region /
+  per-Execute realloc) with future optimisation
+  paths.
+- "Recommended development order: 1 Python bridge
+  / 2 Renderer server / 3 Stable standalone
+  renderer / 4 Native C++ integration": section 12
+  - one subsection per step, plus the "why this
+  order is the cheapest path" rationale.
+- "Do NOT implement anything": no source / build
+  / test changes; spec-only slice.
+
+#### Module / milestone status
+
+- Module 21 (Future Native Cinema 4D Renderer):
+  remains `not started`. Five doc slices in:
+  intro / registration / framebuffer / scene +
+  live / constraints + dev-order. The remaining
+  doc slice is the AOV channel mapping into
+  `MultipassBitmap` slots and the long-term
+  bridge-vs-native workflow split.
+- M23 (Native Cinema 4D Renderer Integration):
+  remains `not started` (same).
+
 ### 2026-04-28 — M23 (spec, scene + live): scene translation + live update
 
 Fourth doc slice for M23. Adds two new sections to
