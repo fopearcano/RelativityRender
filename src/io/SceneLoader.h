@@ -7,20 +7,23 @@
 
 // `.rrscene` v1 loader.
 //
-// Populates an `rr::scene::Scene` from disk. Only the v1 sections
-// the M13 spec slice has stabilised so far are parsed:
+// Populates an `rr::scene::Scene` from disk. The v1 sections this
+// loader currently parses:
 //
 //   - `render_settings` (width, height)
 //   - `camera` (position, forward, up, fov)
 //   - `relativity` (beta_velocity, velocity_direction,
 //                   aberration_strength, doppler_strength,
 //                   searchlight_strength)
+//   - `materials` (id, name, base_color, emission_color,
+//                  emission_strength, roughness)
+//   - `spheres`   (position, radius, material_id)
 //
-// `materials`, `spheres`, `lights`, `meshes` are documented in the
-// spec but **deliberately ignored** by this slice; they will be
-// added in subsequent M13 parser sub-prompts. Unknown top-level
-// keys (including the deferred sections) are not errors - per the
-// spec the parser warns-and-ignores them.
+// `lights` and `meshes` are documented in the spec but
+// **deliberately ignored** by this slice; they will be added in
+// subsequent M13 parser sub-prompts. Unknown top-level keys
+// (including the deferred sections) are not errors - per the spec
+// the parser warns-and-ignores them.
 //
 // The header is host-only; no GPU dependencies. The CUDA renderer
 // continues to consume the populated `rr::scene::Scene` through

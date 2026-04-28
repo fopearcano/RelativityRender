@@ -2,6 +2,7 @@
 
 #include "camera/Camera.h"
 #include "geometry/Sphere.h"
+#include "material/MaterialTypes.h"
 #include "math/Vec3.h"
 #include "relativity/RelativityParams.h"
 #include "scene/SceneObject.h"
@@ -47,12 +48,22 @@ struct SceneMesh {
     int         material_index = -1;
 };
 
-// PLACEHOLDER (M11). The material system owns BSDFs and parameter
-// binding. Today it is a name + albedo so callers can reference a
-// material by index without committing to the eventual BSDF surface.
+// Authoring-side material entry.
+//
+// The placeholder shape (just name + albedo) was rewritten in
+// M13 parser slice 2 once a real consumer (the .rrscene loader)
+// arrived. `id` is the lookup key used by `material_id`
+// references on `SceneSphere` / `SceneMesh` and matches the
+// spec's stable handle. `params` carries the full host
+// `MaterialParams` POD so the GPU upload path can publish it
+// without reshaping.
+//
+// `id == -1` means "the renderer's neutral default" - the same
+// fallback that an unmatched lookup uses.
 struct SceneMaterial {
-    std::string    name;
-    rr::math::Vec3 albedo = rr::math::Vec3{0.8f, 0.8f, 0.8f};
+    int                          id   = -1;
+    std::string                  name;
+    rr::material::MaterialParams params;
 };
 
 // PLACEHOLDER (M12). The lighting system owns light types (point /

@@ -93,6 +93,98 @@ All modules now have a placeholder source directory under `src/`,
 
 ## Change Log
 
+### 2026-04-27 — M13 parser slice 2: SceneLoader gains materials + spheres
+
+Second `.rrscene` loader slice. Parses both new sections per the
+v1 spec, populates the host `Scene` lists, and lays the wiring
+needed for the eventual renderer-side integration (still to
+come). No `SceneWriter`; rendering remains GPU-only via the
+existing M12 hard-coded scene.
+
+- **`src/scene/Scene.h`:** rewrote `SceneMaterial` from the M9
+  placeholder (`name` + `albedo`) to the real shape: `id`
+  (lookup key matching the spec's stable handle), `name`,
+  `params` (full host `MaterialParams`). `id == -1` keeps the
+  "renderer's neutral default" semantics that unmatched lookups
+  use. Added `#include "material/MaterialTypes.h"`.
+- **`src/io/SceneLoader.{h,cpp}`:** added `load_materials` and
+  `load_spheres` extractors.
+  - `materials`: each entry requires `id` (non-negative,
+    unique within the array). `name` defaults to empty. The
+    rest (`base_color`, `emission_color`, `emission_strength`,
+    `roughness`) take their host `MaterialParams` defaults
+    when absent. Per-spec clamps: `roughness` to `[0, 1]`,
+    `emission_strength` to `>= 0`, colour components to
+    `[0, ∞)`. Duplicate `id` is a parse error with a clear
+    diagnostic that names the duplicating entry.
+  - `spheres`: `position` and `radius` are required;
+    `material_id` is optional and defaults to `-1`. `radius`
+    must be `> 0`. The spec stores `material_id` as the
+    lookup key (the entry's `id`, not its array index); the
+    parser preserves it on `Sphere::material_index` so the
+    eventual GpuScene::upload_from translation step has the
+    raw value to remap.
+  - The header docstring now lists `materials` and `spheres`
+    alongside the previously-supported sections; only `lights`
+    and `meshes` remain on the warn-and-ignore list.
+- **`scenes/test_geometry.rrscene`:** new fixture - 3 materials
+  (including a sparse `id = 3`), 4 spheres (one of them omits
+  `material_id` entirely so the `-1` default path is exercised),
+  default zero-velocity observer, default camera. Designed to
+  cover the corner cases for the next renderer slice.
+- **`tests/io_tests.cpp`:** added `test_load_test_geometry_scene`
+  (loads the new fixture, prints counts + per-entry summary,
+  asserts each loaded value including the sparse-id and
+  no-material-id cases) and
+  `test_minimal_scene_still_has_no_geometry` (the original
+  minimal fixture, which omits both new sections, still loads
+  with empty lists rather than failing). `io_tests: 36/36
+  passed`.
+- **`tests/scene_tests.cpp`:** updated to the new
+  `SceneMaterial` shape (`id` + `name` + `params`) so the
+  existing scene structure tests keep passing.
+
+#### Verified locally (host-only, no CUDA Toolkit on this box)
+
+```
+$ cmake --build build && cd build && ctest --output-on-failure
+ 1/11 ... 11/11 all Passed
+100% tests passed, 0 tests failed out of 11
+
+$ ./build/bin/io_tests
+... (minimal scene printout) ...
+--- loaded geometry scene ---
+  materials: 3 entries
+    [0] id=0 name=matte_red baseColor=(0.90, 0.15, 0.15) emission=(0.00, 0.00, 0.00) * 0.00 rough=0.50
+    [1] id=1 name=matte_green baseColor=(0.15, 0.85, 0.25) emission=(0.00, 0.00, 0.00) * 0.00 rough=0.50
+    [2] id=3 name=warm_emitter baseColor=(0.00, 0.00, 0.00) emission=(1.00, 0.85, 0.40) * 2.00 rough=1.00
+  spheres: 4 entries
+    [0] center=(0.00, 0.00, -3.00) r=1.00 material_id=0
+    [1] center=(-1.60, 0.00, -3.50) r=0.60 material_id=1
+    [2] center=(0.00, 1.60, -3.00) r=0.40 material_id=3
+    [3] center=(1.60, 0.00, -3.50) r=0.60 material_id=-1
+------------------------------
+io_tests: 36/36 passed
+```
+
+#### Per the prompt
+
+- Only `materials` and `spheres` were added.
+- `lights` and `meshes` are not parsed (still warn-and-ignore).
+- No `SceneWriter`.
+- Rendering remains GPU-only - the loader is exercised by
+  `io_tests` only; `--render` continues to use the M12
+  hard-coded scene.
+
+#### Naming note
+
+The on-disk `material_id` references the spec's lookup key
+(the material's `id`), not the array index. The parser stores
+this value verbatim on `Sphere::material_index`. The
+translation from spec id to device-side array index happens at
+GPU upload time and is the next M13 / renderer slice's
+responsibility.
+
 ### 2026-04-27 — M13 parser slice 1: SceneLoader (camera + relativity + render settings)
 
 First real `.rrscene` parsing. Hand-rolled JSON parser (~250 lines)

@@ -83,8 +83,9 @@ void test_population_round_trip() {
     Scene s;
 
     SceneMaterial mat;
-    mat.name   = "matte_white";
-    mat.albedo = Vec3{0.9f, 0.9f, 0.9f};
+    mat.id                = 7;
+    mat.name              = "matte_white";
+    mat.params.baseColor  = Vec3{0.9f, 0.9f, 0.9f};
     s.materials.push_back(mat);
     const int matte_index = static_cast<int>(s.materials.size()) - 1;
 
@@ -114,7 +115,9 @@ void test_population_round_trip() {
     RR_CHECK(s.lights.size()    == 1u);
 
     RR_CHECK(s.spheres[0].material_index == matte_index);
+    RR_CHECK(s.materials[matte_index].id   == 7);
     RR_CHECK(s.materials[matte_index].name == std::string("matte_white"));
+    RR_CHECK(s.materials[matte_index].params.baseColor == Vec3(0.9f, 0.9f, 0.9f));
     RR_CHECK(s.spheres[0].geometry.center == Vec3(0, 0, -3));
     RR_CHECK(s.spheres[0].geometry.radius == 1.0f);
     RR_CHECK(s.lights[0].object.transform.position == Vec3(5, 5, 5));

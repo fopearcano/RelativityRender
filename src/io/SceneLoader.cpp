@@ -1,5 +1,7 @@
 #include "io/SceneLoader.h"
 
+#include "geometry/Sphere.h"
+#include "material/MaterialTypes.h"
 #include "math/MathUtils.h"
 #include "math/Vec3.h"
 
@@ -9,6 +11,7 @@
 #include <cstdlib>
 #include <fstream>
 #include <map>
+#include <set>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -391,6 +394,155 @@ bool load_relativity(const JsonValue* node, rr::scene::Scene& scene,
     return true;
 }
 
+bool load_materials(const JsonValue* node, rr::scene::Scene& scene,
+                    std::string& error) {
+    if (!node) return true;
+    if (!node->is_array()) {
+        error = "'materials' must be a JSON array";
+        return false;
+    }
+
+    std::set<int> seen_ids;
+    scene.materials.clear();
+    scene.materials.reserve(node->arr.size());
+
+    for (std::size_t i = 0; i < node->arr.size(); ++i) {
+        const auto& entry = node->arr[i];
+        if (!entry.is_object()) {
+            std::ostringstream os;
+            os << "materials[" << i << "] must be a JSON object";
+            error = os.str();
+            return false;
+        }
+
+        const auto* id_node = entry.find("id");
+        if (!id_node || !id_node->is_number()) {
+            std::ostringstream os;
+            os << "materials[" << i << "].id is missing or non-numeric";
+            error = os.str();
+            return false;
+        }
+        const int id = static_cast<int>(id_node->n);
+        if (id < 0) {
+            std::ostringstream os;
+            os << "materials[" << i << "].id must be non-negative";
+            error = os.str();
+            return false;
+        }
+        if (!seen_ids.insert(id).second) {
+            std::ostringstream os;
+            os << "materials[" << i << "].id (" << id
+               << ") duplicates an earlier entry";
+            error = os.str();
+            return false;
+        }
+
+        rr::scene::SceneMaterial mat;
+        mat.id = id;
+
+        if (const auto* name_node = entry.find("name");
+            name_node && name_node->is_string()) {
+            mat.name = name_node->s;
+        }
+
+        // Per-field extract; per-spec defaults match the host
+        // MaterialParams defaults that mat.params already carries.
+        std::ostringstream context;
+        context << "materials[" << i << "]";
+        if (!maybe_extract(&entry, "base_color",
+                           mat.params.baseColor, extract_vec3,
+                           error, context.str().c_str())) return false;
+        if (!maybe_extract(&entry, "emission_color",
+                           mat.params.emissionColor, extract_vec3,
+                           error, context.str().c_str())) return false;
+        if (!maybe_extract(&entry, "emission_strength",
+                           mat.params.emissionStrength, extract_float,
+                           error, context.str().c_str())) return false;
+        if (!maybe_extract(&entry, "roughness",
+                           mat.params.roughness, extract_float,
+                           error, context.str().c_str())) return false;
+
+        // Per-spec clamps.
+        mat.params.roughness        = rr::math::clamp(mat.params.roughness, 0.0f, 1.0f);
+        if (mat.params.emissionStrength < 0.0f) mat.params.emissionStrength = 0.0f;
+        const auto clamp_pos = [](rr::math::Vec3& v) {
+            if (v.x < 0.0f) v.x = 0.0f;
+            if (v.y < 0.0f) v.y = 0.0f;
+            if (v.z < 0.0f) v.z = 0.0f;
+        };
+        clamp_pos(mat.params.baseColor);
+        clamp_pos(mat.params.emissionColor);
+
+        scene.materials.push_back(std::move(mat));
+    }
+    return true;
+}
+
+bool load_spheres(const JsonValue* node, rr::scene::Scene& scene,
+                  std::string& error) {
+    if (!node) return true;
+    if (!node->is_array()) {
+        error = "'spheres' must be a JSON array";
+        return false;
+    }
+
+    scene.spheres.clear();
+    scene.spheres.reserve(node->arr.size());
+
+    for (std::size_t i = 0; i < node->arr.size(); ++i) {
+        const auto& entry = node->arr[i];
+        if (!entry.is_object()) {
+            std::ostringstream os;
+            os << "spheres[" << i << "] must be a JSON object";
+            error = os.str();
+            return false;
+        }
+
+        rr::math::Vec3 position;
+        const auto* pos_node = entry.find("position");
+        if (!pos_node || !extract_vec3(*pos_node, position)) {
+            std::ostringstream os;
+            os << "spheres[" << i << "].position is missing or not a Vec3";
+            error = os.str();
+            return false;
+        }
+
+        float radius = 0.0f;
+        const auto* rad_node = entry.find("radius");
+        if (!rad_node || !extract_float(*rad_node, radius)) {
+            std::ostringstream os;
+            os << "spheres[" << i << "].radius is missing or non-numeric";
+            error = os.str();
+            return false;
+        }
+        if (!(radius > 0.0f)) {
+            std::ostringstream os;
+            os << "spheres[" << i << "].radius must be > 0";
+            error = os.str();
+            return false;
+        }
+
+        int material_id = -1;
+        std::ostringstream context;
+        context << "spheres[" << i << "]";
+        if (!maybe_extract(&entry, "material_id",
+                           material_id, extract_int,
+                           error, context.str().c_str())) return false;
+
+        rr::scene::SceneSphere s;
+        s.geometry.center         = position;
+        s.geometry.radius         = radius;
+        // The spec stores `material_id` as the lookup key (the entry's
+        // `id`, not the array index). The renderer's GpuScene::upload_from
+        // path translates this into the device-side material array index
+        // - that wiring lives in the next M13 slice.
+        s.geometry.material_index = material_id;
+        s.material_index          = material_id;
+        scene.spheres.push_back(s);
+    }
+    return true;
+}
+
 }  // anonymous namespace
 
 LoadResult load_rrscene(const std::filesystem::path& path) {
@@ -443,6 +595,14 @@ LoadResult load_rrscene(const std::filesystem::path& path) {
         return result;
     }
     if (!load_relativity(root.find("relativity"), result.scene, error)) {
+        result.message = error;
+        return result;
+    }
+    if (!load_materials(root.find("materials"), result.scene, error)) {
+        result.message = error;
+        return result;
+    }
+    if (!load_spheres(root.find("spheres"), result.scene, error)) {
         result.message = error;
         return result;
     }
