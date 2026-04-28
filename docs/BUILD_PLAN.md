@@ -46,7 +46,7 @@ Update it after every implementation step, per
 | 11 | Lighting System                     | landed        |
 | 12 | Camera System                       | landed        |
 | 13 | Relativistic Camera Model           | landed        |
-| 14 | Path Tracer                         | not started   |
+| 14 | Path Tracer                         | in progress   |
 | 15 | Progressive Renderer                | not started   |
 | 16 | Denoiser Integration                | not started   |
 | 17 | Render Passes / AOVs                | not started   |
@@ -78,7 +78,7 @@ All modules now have a placeholder source directory under `src/`,
 | M11       | Material System (Foundations)           | landed      |
 | M12       | Lighting System (Foundations)           | landed      |
 | M13       | Scene File Format & Parser              | landed      |
-| M14       | Path Tracing Foundation                 | not started |
+| M14       | Path Tracing Foundation                 | in progress |
 | M15       | OptiX Backend (Upgrade Path)            | not started |
 | M16       | Texture System                          | not started |
 | M17       | Render Passes / AOVs                    | not started |
@@ -92,6 +92,91 @@ All modules now have a placeholder source directory under `src/`,
 ---
 
 ## Change Log
+
+### 2026-04-27 — M14 prep: GPU sampling foundation (RNG + hemisphere)
+
+Path-tracer foundation only - no integrator, no kernel changes,
+no `--render` rewiring. The headers ship the primitives the M14
+integrator will compose with: a per-pixel RNG and uniform /
+cosine-weighted hemisphere samples, all `RR_HD inline` so the
+host suite covers the device math by construction.
+
+- **`src/pathtracer/RNG.h`:** PCG-XSH-RR (64-bit state, 32-bit
+  output). Surface: `RNG`, `wang_hash(uint32)`,
+  `make_rng(x, y, sample) -> RNG`, `next_uint(RNG&)`,
+  `next_float(RNG&) -> [0, 1)`. The seed mixer guarantees that
+  adjacent `(x, y, sample)` triples land on distinct streams;
+  the state is forced odd / non-zero. `next_float` uses 24
+  bits of the next integer so the value lands exactly inside a
+  single-precision mantissa with no rounding bias.
+- **`src/pathtracer/RNG.cuh`:** thin re-export of `RNG.h` so
+  kernel TUs can include a `.cuh`. Future device-specific
+  overrides (warp-coherent advancement, hardware-RNG hooks)
+  land here without touching the host surface.
+- **`src/pathtracer/Sampling.h`:** hemisphere sampling
+  primitives. Frisvad / Duff branchless ONB
+  (`build_orthonormal_basis(n, t, b)`); local-frame samples
+  `sample_hemisphere_uniform_local(u1, u2)` (PDF =
+  `1 / (2*pi)`) and `sample_hemisphere_cosine_local(u1, u2)`
+  (PDF = `cos(theta) / pi`); world-frame wrappers that
+  build a basis around `normal` and rotate the local sample;
+  matching `pdf_hemisphere_uniform()` and
+  `pdf_hemisphere_cosine(cos_theta)` helpers; RNG-driven
+  convenience wrappers that pull the two `u1`/`u2` floats
+  internally for kernel ergonomics.
+- **`src/pathtracer/Sampling.cuh`:** thin re-export of
+  `Sampling.h`.
+- **`tests/sampling_tests.cpp`:** 60 host assertions covering
+  the requested surface plus the corner cases the kernel needs
+  to be robust against.
+  - RNG: `next_float` always in `[0, 1)`; same seed reproduces
+    the same stream; adjacent `(x, y)` pixels diverge within
+    the first 16 floats; mean over 10000 samples is
+    `0.5 +/- 0.01`.
+  - ONB: tangent / bitangent / normal are unit length and
+    mutually orthogonal for the six axis normals (including
+    `(0, 0, -1)` where the naive Frisvad form breaks) plus
+    three arbitrary directions.
+  - Hemisphere: 1000-sample sweeps confirm every uniform /
+    cosine sample is unit length and lies in the hemisphere
+    (`dot(d, n) >= 0`); 10000-sample means confirm the
+    analytic statistics (uniform mean cos(theta) = 1/2,
+    cosine-weighted mean cos(theta) = 2/3); a tilted-normal
+    sweep verifies that the cosine-weighted mean direction
+    aligns with the normal.
+  - PDFs: `pdf_hemisphere_uniform` is `1 / (2 pi)`;
+    `pdf_hemisphere_cosine(1)` is `1/pi`,
+    `pdf_hemisphere_cosine(0)` is `0`,
+    `pdf_hemisphere_cosine(-x)` clamps to `0`.
+- **`CMakeLists.txt`:** added `sampling_tests` test executable.
+  Header-only module, no library; `rr_camera` link supplies
+  math + the `src/` include path transitively.
+
+#### Verified locally (host-only, no CUDA Toolkit on this box)
+
+```
+$ cmake --build build && cd build && ctest --output-on-failure
+ 1/12 Test  #1: math_tests       ........... Passed  0.00 sec
+ ...
+12/12 Test #12: sampling_tests   ........... Passed  0.01 sec
+100% tests passed, 0 tests failed out of 12
+
+$ ./build/bin/sampling_tests
+sampling_tests: 60/60 passed
+```
+
+#### Per the prompt
+
+- `Sampling.h` / `Sampling.cuh` / `RNG.h` / `RNG.cuh` are the
+  only new source files.
+- Per-pixel RNG, random float, hemisphere sampling, and
+  cosine-weighted sampling are all surfaced.
+- No path-tracing integration: the kernels in
+  `cuda/CudaTestKernel.cu` are unchanged; nothing reads
+  `Sampling.cuh` yet.
+- Module 14 (Path Tracer) and M14 (Path Tracing Foundation)
+  flip from "not started" to "in progress" - foundation in,
+  integrator still to come.
 
 ### 2026-04-27 — M13 finalized: full SceneLoader + SceneWriter + renderer wiring
 
@@ -2357,24 +2442,24 @@ and does not affect the architecture or dependency rules.
 
 ## Next Step
 
-**M14 — Path Tracing Foundation.** With the format and the
-direct-lighting renderer in place, the next big milestone is
-true light transport:
+**Finish M14 — wire sampling into a real integrator.** The
+RNG + hemisphere primitives are in. To move M14 / Module 14
+from "in progress" to "landed":
 
-1. Move the kernel from one-bounce direct lighting to a real
-   unidirectional path tracer (BSDF `sample` / `eval` / `pdf`
-   on materials, NEE + MIS for lights, Russian roulette for
-   path termination, shadow rays via the existing intersection
-   primitives).
-2. Promote `RenderSettings.samples_per_pixel` and
+1. BSDF `sample` / `eval` / `pdf` on `MaterialParams`. Lambert
+   first; later GGX, dielectric, conductor.
+2. A `__global__ k_path_trace` kernel that uses the existing
+   `intersect_sphere` / `intersect_triangle` primitives and
+   the new RNG/sampling helpers to bounce rays through the
+   scene with NEE + MIS for direct light.
+3. Promote `RenderSettings.samples_per_pixel` and
    `max_depth` from "stored but not consumed" to real kernel
-   arguments; persist them through `.rrscene`.
-3. Area lights (currently a v2-deferred placeholder) need
-   geometry sampling; once that lands the scene format gains
-   the `"area"` light type.
-4. Multi-mesh scene upload (currently `GpuScene` has a single
+   arguments; both persist through `.rrscene` already.
+4. Russian roulette path termination based on throughput.
+5. Multi-mesh scene upload (currently `GpuScene` has a single
    mesh slot) - either an array of `CudaMeshView` or a flat
-   global vertex/index buffer with per-mesh offsets.
+   global vertex/index buffer with per-mesh offsets - so a
+   path-traced scene isn't restricted to one quad.
 
 Before or alongside this, the M2 deferred items (`Error`,
 `FileSystem`, `App`, `Config::load`/`save`, real test framework,

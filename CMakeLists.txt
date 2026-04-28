@@ -345,4 +345,17 @@ if(RR_BUILD_TESTS)
         target_compile_options(io_tests PRIVATE -Wall -Wextra -Wpedantic)
     endif()
     add_test(NAME io_tests COMMAND io_tests)
+
+    # Path-tracer sampling foundation tests. RNG + hemisphere
+    # sampling primitives are header-only `RR_HD inline` helpers;
+    # linking rr_camera transitively exposes math + the src/
+    # include path the headers need.
+    add_executable(sampling_tests tests/sampling_tests.cpp)
+    target_link_libraries(sampling_tests PRIVATE rr_camera)
+    if(MSVC)
+        target_compile_options(sampling_tests PRIVATE /W4 /permissive-)
+    else()
+        target_compile_options(sampling_tests PRIVATE -Wall -Wextra -Wpedantic)
+    endif()
+    add_test(NAME sampling_tests COMMAND sampling_tests)
 endif()
