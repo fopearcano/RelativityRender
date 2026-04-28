@@ -93,6 +93,102 @@ All modules now have a placeholder source directory under `src/`,
 
 ## Change Log
 
+### 2026-04-28 — M23 (spec, intro): native Cinema 4D renderer plan
+
+First doc slice for M23 (Native Cinema 4D Renderer
+Integration). Introduces the native renderer at the
+conceptual level: what it is, why RelativityRender should
+eventually grow this path, how it differs from the Python
+bridge that ships today (M19), and the three goals it must
+satisfy. No technical details on registration mechanism /
+framebuffer integration / scene translation / live update
+- those are deliberately deferred to subsequent slices.
+
+- **`docs/C4D_NATIVE_RENDERER_PLAN.md`** (new):
+  - 1: Status banner (introduction slice; technical
+    surface deferred) + module reference (module 21,
+    M23).
+  - 2: What "native renderer integration" means in
+    Cinema 4D's plugin model - registers as a
+    Render-Settings-dropdown peer of Standard /
+    Physical, fills the C4D Picture Viewer, reads the
+    document directly. Lives inside C4D's process and
+    talks to RelativityRender through the renderer's
+    public C++ façade rather than the M18 server
+    protocol the bridge uses.
+  - 3: Why RelativityRender needs one. Three pressures:
+    no external server process for the median artist;
+    first-class participation in C4D's render pipeline
+    (queue, takes, region, multi-pass, Team Render);
+    in-viewport interactive preview (IRR / "render
+    region") matching what users expect from
+    Octane / Redshift / V-Ray.
+  - 4: Bridge vs native comparison table. Pinned: the
+    two paths are COMPLEMENTARY, not exclusive. A
+    mature project ships both - native plugin for
+    in-process interactive use, bridge for remote /
+    headless / multi-machine workflows. Both share the
+    same scene representation (Scene File Format) and
+    renderer (public C++ façade); the renderer does
+    not know which path drives it.
+  - 5: Three top-level goals - live rendering inside
+    C4D, minimal friction for artists, reuse the
+    existing RelativityRender GPU backend (the plugin
+    does NOT reimplement the path tracer, relativistic
+    camera, material graph, AOVs, denoiser, OptiX
+    path - it drives the SAME renderer the standalone
+    executable drives).
+  - 6: Explicit deferral list - registration mechanism
+    (VideoPost vs renderer plugin vs scene-hook),
+    framebuffer integration, scene-translation
+    contract, live-update mechanism, v1 limitations
+    list, SDK version target, bridge-vs-native
+    workflow split. Each lands as its own slice.
+  - 7: Out-of-scope-for-v1 footer (Plugin Cafe
+    distribution, cross-platform, C4D node materials,
+    Tracer / Field / MoGraph, Team Render, animation
+    timeline, interactive material editing, GPU vendor
+    compatibility matrix, bridge deprecation timeline).
+
+#### Verified locally
+
+```
+$ ls docs/C4D_NATIVE_RENDERER_PLAN.md
+$ wc -l docs/C4D_NATIVE_RENDERER_PLAN.md
+$ python3 -c "open('docs/C4D_NATIVE_RENDERER_PLAN.md').read()"
+```
+
+Spec-only slice; no source / build / test changes.
+
+#### Per the prompt
+
+- "What a native Cinema 4D renderer integration means":
+  section 2.
+- "Why RelativityRender should eventually integrate
+  natively": section 3 (three pressures).
+- "Difference between Python bridge and native C++
+  integration": section 4 (10-row comparison table +
+  the complementary-not-exclusive pin).
+- "Define goals: live rendering inside C4D / minimal
+  friction for artists / reuse RelativityRender GPU
+  backend": section 5 - all three pinned, with the
+  explicit "the plugin is a translator + invoker;
+  everything in between is the renderer that already
+  ships" rule.
+- "Do NOT cover technical implementation details yet":
+  section 6 explicitly defers the registration
+  mechanism / framebuffer / scene translation / live
+  update / SDK target / etc. Section 7's out-of-scope
+  list reinforces.
+
+#### Module / milestone status
+
+- Module 21 (Future Native Cinema 4D Renderer):
+  remains `not started`. The spec is the contract;
+  nothing is promoted until implementation begins.
+- M23 (Native Cinema 4D Renderer Integration):
+  remains `not started` (same).
+
 ### 2026-04-28 — M22 (spec): denoising research / design plan
 
 First doc slice for M22 (Denoiser Integration). Research
