@@ -329,6 +329,14 @@ __global__ void k_render_scene(float* pixels, int width, int height,
     if (have_material) {
         mat = scene.materials[best.material_index];
     }
+    // M21: override baseColor / emissionColor /
+    // emissionStrength with the material-graph evaluation.
+    // No-op when the graph upload has not run; otherwise
+    // the kernel ALWAYS shades through the graph from
+    // here on. Legacy fields (metallic / roughness /
+    // base_color_texture_id) stay where the existing
+    // kernel logic reads them.
+    override_material_with_graph(scene, best.material_index, mat);
 
     // M16: when a material binds a texture, sample it at the hit
     // UV and replace `mat.baseColor` for this hit. Out-of-range
@@ -519,6 +527,27 @@ lookup_material(const rr::cuda::CudaSceneView& scene, int material_index) {
     return mat;
 }
 
+// M21 hook: override the three graph-evaluable fields on
+// `mat` with the result of `evaluateMaterial` on the per-
+// material graph view. Leaves the rest of `mat` (legacy
+// fields like `metallic`, `roughness`, `base_color_texture_id`)
+// untouched so the existing kernel logic that reads those
+// continues to work. No-op when the graph upload has not
+// run for this material id.
+__device__ void
+override_material_with_graph(const rr::cuda::CudaSceneView& scene,
+                             int material_index,
+                             rr::material::MaterialParams& mat) {
+    if (material_index < 0)                                  return;
+    if (scene.material_graph_views == nullptr)               return;
+    if (material_index >= scene.material_graph_view_count)   return;
+    const auto eval = rr::cuda::evaluateMaterial(
+        scene.material_graph_views[material_index]);
+    mat.baseColor        = eval.baseColor;
+    mat.emissionColor    = eval.emissionColor;
+    mat.emissionStrength = eval.emissionStrength;
+}
+
 // One full path. Generates a primary ray, applies aberration, and
 // bounces up to `max_depth` times accumulating emission +
 // environment radiance through cosine-weighted Lambertian
@@ -557,7 +586,8 @@ trace_one_path(const rr::cuda::CudaSceneView& scene,
             break;
         }
 
-        const auto mat = lookup_material(scene, hit.material_index);
+        auto mat = lookup_material(scene, hit.material_index);
+        override_material_with_graph(scene, hit.material_index, mat);
 
         // Emission from the hit surface (allows the path tracer to
         // pick up emissive geometry directly, including the M11
@@ -750,6 +780,9 @@ __global__ void k_render_aovs(int width, int height,
     if (have_material) {
         mat = scene.materials[best.material_index];
     }
+    // M21: same graph override as k_render_scene so the
+    // AOV beauty output matches the beauty kernel bit-for-bit.
+    override_material_with_graph(scene, best.material_index, mat);
 
     Vec3 albedo = mat.baseColor;
     if (best.hit

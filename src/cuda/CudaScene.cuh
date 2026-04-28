@@ -16,6 +16,7 @@
 #include "cuda/CudaAOV.cuh"
 #include "cuda/CudaLight.cuh"
 #include "cuda/CudaMaterial.cuh"
+#include "cuda/CudaMaterialGraph.cuh"
 #include "cuda/CudaMesh.cuh"
 #include "cuda/CudaTexture.cuh"
 #include "geometry/Sphere.h"
@@ -61,6 +62,18 @@ struct CudaSceneView {
     // use their constant `baseColor`".
     const rr::cuda::TextureView*         textures       = nullptr;
     int                                  texture_count  = 0;
+
+    // M21 material graphs. One `CudaMaterialGraphView` per
+    // material id; the kernel reads
+    // `material_graph_views[material_index]` and runs
+    // `evaluateMaterial(view)` to produce the per-hit
+    // baseColor / emissionColor / emissionStrength. Valid
+    // ids are in `[0, material_graph_view_count)`. `nullptr`
+    // + `material_graph_view_count == 0` is allowed and
+    // means "no graph upload happened - the kernel falls
+    // back to the legacy MaterialParams reads".
+    const rr::cuda::CudaMaterialGraphView* material_graph_views = nullptr;
+    int                                    material_graph_view_count = 0;
 };
 
 // Host-callable launch wrapper for the scene-render kernel.

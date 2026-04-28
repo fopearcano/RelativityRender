@@ -50,6 +50,91 @@ bool GpuScene::upload_materials(const rr::material::MaterialParams* host,
     return true;
 }
 
+bool GpuScene::upload_material_graphs(const rr::material::MaterialParams* host,
+                                      std::size_t count) {
+    // Reset to a clean state so a partial failure below
+    // never leaves the kernel reading stale buffers.
+    graph_ops_.reset();
+    graph_terminals_.reset();
+    material_graph_views_.reset();
+    material_graph_view_count_ = 0;
+
+    if (count == 0) return true;
+    if (host == nullptr) return false;
+
+    // Build per-material IRs host-side, concatenate ops +
+    // terminals into single host arrays, and remember each
+    // material's offset so we can reconstruct the per-material
+    // device pointers after the buffers are uploaded.
+    std::vector<rr::material::GpuOp>       all_ops;
+    std::vector<rr::material::GpuTerminal> all_terminals;
+    std::vector<std::size_t>               op_offset(count + 1, 0);
+    std::vector<std::size_t>               term_offset(count + 1, 0);
+
+    for (std::size_t i = 0; i < count; ++i) {
+        const auto mat = rr::material::synthesise_gpu_material_from_params(
+            &host[i]);
+        op_offset[i + 1]   = op_offset[i]   + mat.ops.size();
+        term_offset[i + 1] = term_offset[i] + mat.terminals.size();
+        all_ops.insert(all_ops.end(),
+                       mat.ops.begin(),       mat.ops.end());
+        all_terminals.insert(all_terminals.end(),
+                             mat.terminals.begin(), mat.terminals.end());
+    }
+
+    // Upload the ops + terminals first; then build the
+    // per-material views with device pointers + counts and
+    // upload that array. Empty arrays - all materials with
+    // zero ops or zero terminals - skip the empty upload to
+    // avoid an empty-buffer rejection from the GPU layer.
+    const rr::material::GpuOp*       d_ops_base = nullptr;
+    const rr::material::GpuTerminal* d_term_base = nullptr;
+
+    if (!all_ops.empty()) {
+        if (!graph_ops_.upload(all_ops.data(), all_ops.size())) {
+            graph_ops_.reset();
+            return false;
+        }
+        d_ops_base = graph_ops_.device_ptr();
+    }
+    if (!all_terminals.empty()) {
+        if (!graph_terminals_.upload(all_terminals.data(),
+                                     all_terminals.size())) {
+            graph_ops_.reset();
+            graph_terminals_.reset();
+            return false;
+        }
+        d_term_base = graph_terminals_.device_ptr();
+    }
+
+    // Per-material views. Each view's `ops` / `terminals`
+    // pointer is `device_base + this_material's_offset`. The
+    // count is the difference between consecutive offsets.
+    std::vector<rr::cuda::CudaMaterialGraphView> views;
+    views.reserve(count);
+    for (std::size_t i = 0; i < count; ++i) {
+        rr::cuda::CudaMaterialGraphView v;
+        const std::size_t op_n   = op_offset[i + 1]   - op_offset[i];
+        const std::size_t term_n = term_offset[i + 1] - term_offset[i];
+        v.ops             = (d_ops_base != nullptr  && op_n   > 0)
+                            ? d_ops_base  + op_offset[i]  : nullptr;
+        v.op_count        = static_cast<std::int32_t>(op_n);
+        v.terminals       = (d_term_base != nullptr && term_n > 0)
+                            ? d_term_base + term_offset[i] : nullptr;
+        v.terminal_count  = static_cast<std::int32_t>(term_n);
+        views.push_back(v);
+    }
+
+    if (!material_graph_views_.upload(views.data(), views.size())) {
+        graph_ops_.reset();
+        graph_terminals_.reset();
+        material_graph_views_.reset();
+        return false;
+    }
+    material_graph_view_count_ = count;
+    return true;
+}
+
 bool GpuScene::upload_lights(const rr::lighting::Light* host, std::size_t count) {
     if (count == 0) {
         lights_.reset();
@@ -181,6 +266,13 @@ bool GpuScene::upload_from(const rr::scene::Scene& scene) {
         }
     }
     ok = upload_materials(material_pack.data(), material_pack.size()) && ok;
+    // Auto-synthesise + upload the per-material graph IRs
+    // alongside. The kernel reads either the flat material
+    // (legacy fields like `metallic` / `roughness`) or the
+    // graph view (baseColor / emission), depending on its
+    // shading needs. Same per-material indexing applies.
+    ok = upload_material_graphs(material_pack.data(),
+                                material_pack.size()) && ok;
 
     const auto remap_material = [&](int spec_id) -> int {
         if (spec_id < 0) return -1;

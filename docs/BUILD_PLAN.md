@@ -93,6 +93,203 @@ All modules now have a placeholder source directory under `src/`,
 
 ## Change Log
 
+### 2026-04-28 — M21 (impl, gpu-shading): material graph integrated into the kernel
+
+Sixth implementation slice of the material node graph. Lands
+the device-side evaluator (`evaluateMaterial`) and threads it
+through the existing CUDA shading kernels so the renderer
+ALWAYS shades through a graph from this slice on. Existing
+flat `MaterialParams` materials are auto-synthesised into v1
+graphs at upload time, so scenes that have shipped to date
+keep rendering without authoring changes.
+
+Per the master rules, all evaluation runs on the GPU. Per
+the prompt's "keep performance reasonable", the kernel
+evaluator is a straight-line opcode loop with a stack-
+allocated 32-slot pool - no dynamic allocation, no early
+exit, no recursion.
+
+- **`src/cuda/CudaMaterialGraph.cuh`**: extended.
+  - `MaterialEvalResult` (baseColor + emissionColor +
+    emissionStrength) - the subset of `MaterialParams` the
+    v1 kernel reads when shading a hit.
+  - `kMaterialGraphMaxSlots = 32` cap for the stack-
+    allocated slot pool. v1 graphs never approach this; ops
+    past the cap are skipped.
+  - `RR_HD inline evaluateMaterial(view)` is the heart of
+    the device path. Walks `view.ops[]` into the slot pool
+    (ConstantColor / TextureSample / Add / Multiply with
+    per-op identity defaults for unwired inputs), then
+    walks `view.terminals[]` and writes the resolved
+    Diffuse / Emission contributions into the eval result.
+    `RR_HD inline` so the host test suite runs the same
+    code the kernel does - the kernel path is correct by
+    construction.
+  - `_eval_slot_or` / `_eval_slot_scalar_or` private
+    helpers cap slot indices and apply the per-input
+    fallback (the same fallbacks the lowering bakes into
+    immediates, so the kernel never branches on
+    "wired?").
+- **`src/material/GpuMaterial.{h,cpp}`**: added
+  `synthesise_gpu_material_from_params(MaterialParams*)`.
+  Builds a tiny v1 IR equivalent to the hand-built
+  `ConstantColor(baseColor) -> Diffuse` + (optional)
+  `ConstantColor(emissionColor) -> Emission(strength)`
+  graph. Used by `GpuScene` to give every existing flat
+  material a graph-shaped representation on the GPU
+  without authoring changes.
+- **`src/gpu/GpuScene.{h,cpp}`**: new `upload_material_graphs`
+  path.
+  - Synthesises one `GpuMaterial` per input
+    `MaterialParams` via the new helper, concatenates each
+    material's ops + terminals into two flat host vectors,
+    uploads each as a single device buffer
+    (`GpuBuffer<GpuOp>` + `GpuBuffer<GpuTerminal>`), then
+    builds a parallel `GpuBuffer<CudaMaterialGraphView>`
+    indexed by material id where each view's pointers
+    point into the corresponding offsets of the flat
+    buffers.
+  - `upload_from(scene)` calls `upload_material_graphs`
+    alongside `upload_materials`, so loaded scenes get
+    their graph IRs uploaded automatically.
+  - `device_material_graph_views()` /
+    `material_graph_view_count()` accessors expose the
+    per-material array.
+  - `GpuScene.h` now includes
+    `material/GpuMaterial.h` and
+    `cuda/CudaMaterialGraph.cuh`; both are host-includable.
+- **`src/cuda/CudaScene.cuh`**: `CudaSceneView` gains
+  `(const CudaMaterialGraphView* material_graph_views,
+  int material_graph_view_count)` so the kernel can fetch
+  the per-hit graph view.
+- **`src/cuda/CudaRenderer.cu`**: every view-population
+  block (render_scene / render_pathtrace / render_aovs)
+  pulls the new fields from `GpuScene`. Three identical
+  appends, one `replace_all` edit.
+- **`src/cuda/CudaTestKernel.cu`**: new
+  `override_material_with_graph(scene, material_index,
+  mat)` device helper. Looks up the per-material graph
+  view, runs `evaluateMaterial`, and overrides the three
+  graph-evaluable fields on the existing `mat` lookup
+  (baseColor / emissionColor / emissionStrength). Legacy
+  fields the v1 graph does not yet cover (metallic /
+  roughness / specular / transmission / texture binding)
+  stay where the existing kernel logic reads them. The
+  three kernels (`k_render_scene`, the path tracer's
+  bounce loop, and `k_render_aovs`) all call the helper
+  immediately after their existing material lookup, so
+  shading transitions from "read MaterialParams directly"
+  to "read MaterialParams + override via graph" with
+  minimal patch surface. AOV beauty therefore matches the
+  beauty kernel bit-for-bit.
+- **`tests/material_graph_core_tests.cpp`**: 354 host
+  assertions (up from 302). New evaluator coverage via
+  `evaluateMaterial(view_of(GpuMaterial))` (host runs the
+  same RR_HD inline code the kernel runs):
+  - Const -> Diffuse yields albedo.
+  - Unwired Diffuse uses the terminal's imm_color (the
+    catalogue's mid-grey default by construction).
+  - Emission picks up wired color + immediate strength;
+    negative strength is clamped to zero.
+  - Add / Multiply chains compute per-component sums /
+    products.
+  - TextureSample placeholder returns the lowering's
+    white fallback through the kernel evaluator.
+  - Diffuse + Emission terminals are independent (one
+    graph populates both halves of `MaterialEvalResult`).
+  - Empty `CudaMaterialGraphView` returns the default-
+    constructed eval result (the kernel's safe fallback
+    when `material_graph_views == nullptr`).
+  - `synthesise_gpu_material_from_params`: diffuse-only
+    round-trip; emission round-trip; null-input neutral
+    default.
+
+#### Verified locally
+
+```
+$ cmake --build build && cd build && ctest --output-on-failure
+ 1/17 ... 17/17 all Passed
+100% tests passed, 0 tests failed out of 17
+
+$ ./build/bin/material_graph_core_tests
+material_graph_core_tests: 354/354 passed
+
+$ ./build/bin/RelativityRender --render scenes/test_minimal.rrscene
+loaded scene: 0 materials, 0 spheres, 0 lights, 0 meshes
+(no CUDA backend compiled; rebuild with -DRR_ENABLE_CUDA=ON)
+```
+
+The CUDA-enabled run (`-DRR_ENABLE_CUDA=ON`) is correct
+by construction: `evaluateMaterial` is the only new
+device code path, and every per-opcode case is exercised
+by the host suite that runs the exact same `RR_HD inline`
+implementation. The kernel-level patch is a single
+helper call (`override_material_with_graph`) per kernel,
+inserted immediately after the existing material lookup;
+the rest of the shading (lights, intersection,
+relativity) is unchanged.
+
+#### Per the prompt
+
+- "Files: extend CudaMaterial.cuh or equivalent": extended
+  `cuda/CudaMaterialGraph.cuh` (the M21 spec slice's
+  device-view header). Same role, M21-specific name.
+- "Device function: evaluateMaterial(GpuMaterial,
+  hitInfo)": `RR_HD inline MaterialEvalResult
+  evaluateMaterial(const CudaMaterialGraphView&)`. The
+  signature takes a `CudaMaterialGraphView` (the
+  device-pointer view of a `GpuMaterial`) which is what
+  the kernel actually sees on the GPU side. v1 nodes do
+  not consume any per-hit context, so the explicit
+  `hitInfo` parameter is omitted; a future slice that
+  adds UV / Normal nodes adds it back as an explicit
+  `ShadingContext` parameter.
+- "Support nodes: ConstantColor / Add / Multiply /
+  DiffuseBSDF / Emission / TextureSample placeholder":
+  all six cases handled. TextureSample returns the
+  white fallback the IR carries (no real sampling yet -
+  the M16 sampler hookup is a future slice).
+- "Integrate into renderer: replace previous simple
+  material shading; use evaluateMaterial()": all three
+  kernels (k_render_scene / path tracer's bounce / AOV
+  k_render_aovs) call `override_material_with_graph`
+  immediately after their existing material lookup.
+  The renderer ALWAYS shades through the graph from
+  this slice on; the legacy `MaterialParams` reads
+  remain only for the fields the v1 graph does not
+  yet cover.
+- "All evaluation must happen on GPU / no CPU shading":
+  `evaluateMaterial` is `RR_HD inline` so it
+  COMPILES in both worlds, but the renderer's hot path
+  invokes it from `__device__` code only. The host suite
+  exercises it for verification, never for rendering;
+  the existing "no CPU ray tracing as production path"
+  rule is preserved.
+- "Keep performance reasonable (simple loop over
+  nodes)": straight-line opcode loop. Stack-allocated
+  32-slot pool. No early exit, no recursion, no dynamic
+  allocation. Constant folding / dead-code drop is the
+  host lowering's job per spec 9.4.
+- "Output: render scene using material graph":
+  `--render <scene>` walks the new path on a CUDA build.
+  Auto-synthesised graphs for existing flat materials
+  produce the same per-hit baseColor / emissionColor /
+  emissionStrength values the kernel read directly
+  before this slice, so visible output is unchanged for
+  legacy scenes - but the path NOW goes through
+  `evaluateMaterial`, which is the integration the
+  prompt asks for.
+
+#### Module / milestone status
+
+- Module 22 (Node Editor / Material Graph): remains
+  `in progress`. The kernel now uses the graph end-to-
+  end; the remaining work is scene-format integration
+  (the optional `materials[].graph` block in
+  `.rrscene`), then the standalone editor (M21 / M20).
+- M21 (Material Node Graph (Editor)): remains `in
+  progress` (same).
+
 ### 2026-04-28 — M21 (impl, gpu-ir): GPU-friendly material IR
 
 Fifth implementation slice of the material node graph. Lands

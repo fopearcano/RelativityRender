@@ -2,11 +2,13 @@
 
 #include "camera/Camera.h"
 #include "camera/CameraRay.h"
-#include "cuda/CudaTexture.cuh"   // host-includable: no CUDA-runtime types
+#include "cuda/CudaMaterialGraph.cuh"  // host-includable: no CUDA-runtime types
+#include "cuda/CudaTexture.cuh"        // host-includable: no CUDA-runtime types
 #include "geometry/Sphere.h"
 #include "gpu/GpuBuffer.h"
 #include "gpu/GpuMesh.h"
 #include "lighting/Light.h"
+#include "material/GpuMaterial.h"
 #include "material/MaterialTypes.h"
 #include "relativity/RelativityParams.h"
 #include "texture/ImageTexture.h"
@@ -91,6 +93,29 @@ public:
     bool upload_textures(const rr::texture::ImageTexture* host,
                          std::size_t count);
 
+    // Compile + upload the per-material node graph IRs the
+    // M21 path uses. Each MaterialParams in the supplied
+    // array is run through
+    // `synthesise_gpu_material_from_params` so an existing
+    // flat material gets a graph-shaped representation
+    // automatically; explicit graphs (a future scene-format
+    // slice) override the synthesis. Lays out the result
+    // as three concatenated device buffers:
+    //   - one `GpuBuffer<GpuOp>` holding every material's
+    //     ops back-to-back;
+    //   - one `GpuBuffer<GpuTerminal>` for every material's
+    //     terminals;
+    //   - one `GpuBuffer<CudaMaterialGraphView>` indexed by
+    //     material id, with `ops` / `terminals` pointing
+    //     into the previous two buffers.
+    // The kernel reaches the IR for the hit's material via
+    // `device_material_graph_views()[material_index]`.
+    //
+    // `count == 0` clears the buffers; non-empty uploads
+    // require a working GPU backend.
+    bool upload_material_graphs(const rr::material::MaterialParams* host,
+                                std::size_t count);
+
     // Convenience: pull camera + relativity + visible spheres from a
     // host `rr::scene::Scene`. Invisible spheres are filtered out on
     // the host before upload. Returns the AND of every individual
@@ -125,6 +150,17 @@ public:
 
     // Device pointer to the material array. Returns nullptr when no
     // materials have been successfully uploaded.
+    // Per-material graph view array for the kernel. nullptr
+    // when no graph upload has run; the kernel-side
+    // `evaluateMaterial` should not be invoked in that case.
+    const rr::cuda::CudaMaterialGraphView*
+    device_material_graph_views() const noexcept {
+        return material_graph_views_.device_ptr();
+    }
+    std::size_t material_graph_view_count() const noexcept {
+        return material_graph_view_count_;
+    }
+
     const rr::material::MaterialParams* device_materials() const noexcept {
         return materials_.device_ptr();
     }
@@ -155,6 +191,17 @@ private:
 
     rr::gpu::GpuBuffer<rr::material::MaterialParams> materials_;
     std::size_t                                       materials_count_ = 0;
+
+    // M21 material-graph IRs. Three concatenated device
+    // buffers + a parallel array of CudaMaterialGraphView
+    // entries indexed by material id; populated by
+    // `upload_material_graphs`. Cleared when the material
+    // upload runs (so the graph IR can never reference stale
+    // material storage).
+    rr::gpu::GpuBuffer<rr::material::GpuOp>           graph_ops_;
+    rr::gpu::GpuBuffer<rr::material::GpuTerminal>     graph_terminals_;
+    rr::gpu::GpuBuffer<rr::cuda::CudaMaterialGraphView> material_graph_views_;
+    std::size_t                                       material_graph_view_count_ = 0;
 
     rr::gpu::GpuBuffer<rr::lighting::Light> lights_;
     std::size_t                              lights_count_ = 0;

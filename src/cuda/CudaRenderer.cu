@@ -167,6 +167,15 @@ CudaRenderer::Result CudaRenderer::render_scene(const rr::gpu::GpuScene& scene,
     view.textures       = scene.device_textures();
     view.texture_count  = static_cast<int>(scene.texture_count());
 
+    // M21: per-material graph views. The kernels' new
+    // `override_material_with_graph` reads
+    // `material_graph_views[material_index]`; an
+    // upload-from(scene) call already populates this via
+    // `upload_material_graphs`.
+    view.material_graph_views      = scene.device_material_graph_views();
+    view.material_graph_view_count =
+        static_cast<int>(scene.material_graph_view_count());
+
     return run_kernel_render(width, height,
         [view](float* device_pixels, int w, int h) {
             launch_render_scene(device_pixels, w, h, view, /*stream=*/nullptr);
@@ -215,6 +224,15 @@ CudaRenderer::Result CudaRenderer::render_pathtrace(const rr::gpu::GpuScene& sce
     view.textures       = scene.device_textures();
     view.texture_count  = static_cast<int>(scene.texture_count());
 
+    // M21: per-material graph views. The kernels' new
+    // `override_material_with_graph` reads
+    // `material_graph_views[material_index]`; an
+    // upload-from(scene) call already populates this via
+    // `upload_material_graphs`.
+    view.material_graph_views      = scene.device_material_graph_views();
+    view.material_graph_view_count =
+        static_cast<int>(scene.material_graph_view_count());
+
     return run_kernel_render(width, height,
         [view, spp, max_depth, seed_offset](float* device_pixels, int w, int h) {
             launch_path_trace(device_pixels, w, h, view,
@@ -261,6 +279,15 @@ CudaRenderer::AOVResult CudaRenderer::render_aovs(const rr::gpu::GpuScene& scene
     view.light_count    = static_cast<int>(scene.light_count());
     view.textures       = scene.device_textures();
     view.texture_count  = static_cast<int>(scene.texture_count());
+
+    // M21: per-material graph views. The kernels' new
+    // `override_material_with_graph` reads
+    // `material_graph_views[material_index]`; an
+    // upload-from(scene) call already populates this via
+    // `upload_material_graphs`.
+    view.material_graph_views      = scene.device_material_graph_views();
+    view.material_graph_view_count =
+        static_cast<int>(scene.material_graph_view_count());
 
     (void)cudaGetLastError();  // clear any sticky error
 

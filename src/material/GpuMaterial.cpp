@@ -272,6 +272,68 @@ GpuMaterialResult compile_graph_to_gpu_material(const graph::Graph& graph) {
 }
 
 
+GpuMaterial synthesise_gpu_material_from_params(const MaterialParams* params) {
+    GpuMaterial mat;
+
+    rr::math::Vec3 base_color    = rr::math::Vec3{0.8f, 0.8f, 0.8f};
+    rr::math::Vec3 emission_color = rr::math::Vec3{0.0f, 0.0f, 0.0f};
+    float          emission_strength = 0.0f;
+    if (params != nullptr) {
+        base_color        = params->baseColor;
+        emission_color    = params->emissionColor;
+        emission_strength = params->emissionStrength;
+        if (emission_strength < 0.0f) emission_strength = 0.0f;
+    }
+
+    // The synthesised IR mirrors what the lowering would
+    // produce for the equivalent hand-built graph:
+    //
+    //   slot 0: ConstantColor(base_color)
+    //   slot 1 (only when emission > 0): ConstantColor(emission_color)
+    //
+    //   terminal[0]: Diffuse  in_color=0 imm_color=base_color
+    //   terminal[1] (when emission > 0): Emission in_color=1
+    //                in_strength=-1
+    //                imm_color=emission_color
+    //                imm_strength=emission_strength
+    //
+    // Building it directly here avoids a graph::Graph round-
+    // trip at upload time; the result is bit-identical to
+    // `compile_graph_to_gpu_material` on the equivalent
+    // hand-built graph, which the test suite pins.
+    GpuOp diffuse_const;
+    diffuse_const.opcode    = GpuOpcode::ConstantColor;
+    diffuse_const.imm_color = base_color;
+    mat.ops.push_back(diffuse_const);
+
+    GpuTerminal diffuse_term;
+    diffuse_term.kind         = GpuOpcode::Diffuse;
+    diffuse_term.in_color     = 0;
+    diffuse_term.in_strength  = -1;
+    diffuse_term.imm_color    = base_color;
+    diffuse_term.imm_strength = 0.0f;
+    mat.terminals.push_back(diffuse_term);
+
+    if (emission_strength > 0.0f) {
+        GpuOp emission_const;
+        emission_const.opcode    = GpuOpcode::ConstantColor;
+        emission_const.imm_color = emission_color;
+        mat.ops.push_back(emission_const);
+
+        GpuTerminal emission_term;
+        emission_term.kind         = GpuOpcode::Emission;
+        emission_term.in_color     = 1;
+        emission_term.in_strength  = -1;
+        emission_term.imm_color    = emission_color;
+        emission_term.imm_strength = emission_strength;
+        mat.terminals.push_back(emission_term);
+    }
+
+    mat.slot_count = static_cast<int>(mat.ops.size());
+    return mat;
+}
+
+
 // ---------------------------------------------------------------------------
 // Debug print.
 // ---------------------------------------------------------------------------

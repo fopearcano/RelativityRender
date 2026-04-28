@@ -1,5 +1,6 @@
 #pragma once
 
+#include "material/MaterialTypes.h"
 #include "math/Vec3.h"
 
 #include <cstdint>
@@ -175,6 +176,28 @@ struct GpuMaterialResult {
 // any realistic v1 graph).
 [[nodiscard]] GpuMaterialResult compile_graph_to_gpu_material(
     const graph::Graph& graph);
+
+// Synthesise a v1 graph from an existing flat `MaterialParams`
+// + compile it to a `GpuMaterial` IR. The synthesised graph is
+// the smallest one that produces the same per-hit baseColor /
+// emissionColor / emissionStrength values the kernel reads
+// today:
+//
+//   ConstantColor(baseColor) -> DiffuseBSDF.albedo
+//
+// plus, when `emissionStrength > 0`:
+//
+//   ConstantColor(emissionColor) -> Emission.color
+//                                   (strength = emissionStrength)
+//
+// Used by `GpuScene::upload_material_graphs` so existing
+// scenes (whose materials are flat structs today) get a
+// graph-shaped representation on the GPU without authoring
+// changes. Returns a default-baked `GpuMaterial` (one
+// ConstantColor + one Diffuse terminal at mid-grey) when
+// `params == nullptr`.
+[[nodiscard]] GpuMaterial synthesise_gpu_material_from_params(
+    const MaterialParams* params);
 
 
 // Print a human-readable dump of `mat` to `out` (defaults

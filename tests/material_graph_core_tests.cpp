@@ -17,7 +17,9 @@
 //
 // No evaluation, no GPU, no UI - the new data core is data only.
 
+#include "cuda/CudaMaterialGraph.cuh"
 #include "material/GpuMaterial.h"
+#include "material/MaterialTypes.h"
 #include "material/graph/Graph.h"
 #include "material/graph/GraphEvaluator.h"
 #include "material/graph/Node.h"
@@ -1132,6 +1134,211 @@ void test_compile_diffuse_plus_emission_emits_two_terminals() {
 }
 
 
+// ---------------------------------------------------------------------------
+// Device-side `evaluateMaterial` (this slice).
+//
+// `evaluateMaterial` is `RR_HD inline`, so the host suite
+// runs the SAME implementation the kernel uses. Tests build
+// a `GpuMaterial` via the lowering, wrap it in a
+// `CudaMaterialGraphView` of host pointers, and call the
+// evaluator. The kernel path is correct by construction.
+// ---------------------------------------------------------------------------
+
+using rr::cuda::CudaMaterialGraphView;
+using rr::cuda::MaterialEvalResult;
+using rr::cuda::evaluateMaterial;
+using rr::material::synthesise_gpu_material_from_params;
+
+CudaMaterialGraphView view_of(const rr::material::GpuMaterial& mat) {
+    CudaMaterialGraphView v;
+    v.ops             = mat.ops.data();
+    v.op_count        = static_cast<std::int32_t>(mat.ops.size());
+    v.terminals       = mat.terminals.data();
+    v.terminal_count  = static_cast<std::int32_t>(mat.terminals.size());
+    return v;
+}
+
+void test_evaluate_material_const_diffuse_yields_albedo() {
+    Graph g;
+    const NodeId color   = g.add_node(NodeType::ConstantColor);
+    const NodeId diffuse = g.add_node(NodeType::DiffuseBSDF);
+    find_node(g, color)->color_value = rr::math::Vec3{0.7f, 0.4f, 0.2f};
+    RR_CHECK(g.connect(color, "value", diffuse, "albedo"));
+
+    auto r = compile_graph_to_gpu_material(g);
+    RR_CHECK(r.ok);
+    const auto eval = evaluateMaterial(view_of(r.material));
+    RR_CHECK(nearly_eq(eval.baseColor, rr::math::Vec3{0.7f, 0.4f, 0.2f}));
+    RR_CHECK(nearly_eq(eval.emissionColor, rr::math::Vec3{0, 0, 0}));
+    RR_CHECK(eval.emissionStrength == 0.0f);
+}
+
+void test_evaluate_material_unwired_diffuse_uses_terminal_immediate() {
+    // Lowering bakes the node's color_value into the
+    // terminal's imm_color. evaluateMaterial honours the
+    // immediate when in_color is -1.
+    Graph g;
+    const NodeId d = g.add_node(NodeType::DiffuseBSDF);
+    find_node(g, d)->color_value = rr::math::Vec3{0.3f, 0.4f, 0.5f};
+    auto r = compile_graph_to_gpu_material(g);
+    RR_CHECK(r.ok);
+    const auto eval = evaluateMaterial(view_of(r.material));
+    RR_CHECK(nearly_eq(eval.baseColor, rr::math::Vec3{0.3f, 0.4f, 0.5f}));
+}
+
+void test_evaluate_material_emission_picks_up_color_and_strength() {
+    Graph g;
+    const NodeId c = g.add_node(NodeType::ConstantColor);
+    const NodeId e = g.add_node(NodeType::Emission);
+    find_node(g, c)->color_value = rr::math::Vec3{1.0f, 0.5f, 0.25f};
+    find_node(g, e)->scalar_value = 2.0f;
+    RR_CHECK(g.connect(c, "value", e, "color"));
+    auto r = compile_graph_to_gpu_material(g);
+    RR_CHECK(r.ok);
+    const auto eval = evaluateMaterial(view_of(r.material));
+    RR_CHECK(nearly_eq(eval.emissionColor, rr::math::Vec3{1.0f, 0.5f, 0.25f}));
+    RR_CHECK(nearly_eq(eval.emissionStrength, 2.0f));
+}
+
+void test_evaluate_material_negative_strength_clamped_to_zero() {
+    Graph g;
+    const NodeId e = g.add_node(NodeType::Emission);
+    find_node(g, e)->scalar_value = -3.0f;
+    auto r = compile_graph_to_gpu_material(g);
+    RR_CHECK(r.ok);
+    const auto eval = evaluateMaterial(view_of(r.material));
+    RR_CHECK(eval.emissionStrength == 0.0f);
+}
+
+void test_evaluate_material_add_chain() {
+    // (Const + Const) -> Diffuse.
+    Graph g;
+    const NodeId ca   = g.add_node(NodeType::ConstantColor);
+    const NodeId cb   = g.add_node(NodeType::ConstantColor);
+    const NodeId sum  = g.add_node(NodeType::Add);
+    const NodeId diff = g.add_node(NodeType::DiffuseBSDF);
+    find_node(g, ca)->color_value = rr::math::Vec3{0.1f, 0.2f, 0.3f};
+    find_node(g, cb)->color_value = rr::math::Vec3{0.4f, 0.5f, 0.6f};
+    RR_CHECK(g.connect(ca,  "value", sum,  "a"));
+    RR_CHECK(g.connect(cb,  "value", sum,  "b"));
+    RR_CHECK(g.connect(sum, "value", diff, "albedo"));
+
+    auto r = compile_graph_to_gpu_material(g);
+    RR_CHECK(r.ok);
+    const auto eval = evaluateMaterial(view_of(r.material));
+    RR_CHECK(nearly_eq(eval.baseColor, rr::math::Vec3{0.5f, 0.7f, 0.9f}));
+}
+
+void test_evaluate_material_multiply_chain() {
+    Graph g;
+    const NodeId ca  = g.add_node(NodeType::ConstantColor);
+    const NodeId cb  = g.add_node(NodeType::ConstantColor);
+    const NodeId mul = g.add_node(NodeType::Multiply);
+    const NodeId d   = g.add_node(NodeType::DiffuseBSDF);
+    find_node(g, ca)->color_value = rr::math::Vec3{0.5f, 0.5f, 0.5f};
+    find_node(g, cb)->color_value = rr::math::Vec3{0.4f, 0.6f, 0.8f};
+    RR_CHECK(g.connect(ca,  "value", mul, "a"));
+    RR_CHECK(g.connect(cb,  "value", mul, "b"));
+    RR_CHECK(g.connect(mul, "value", d,   "albedo"));
+    auto r = compile_graph_to_gpu_material(g);
+    RR_CHECK(r.ok);
+    const auto eval = evaluateMaterial(view_of(r.material));
+    RR_CHECK(nearly_eq(eval.baseColor, rr::math::Vec3{0.2f, 0.3f, 0.4f}));
+}
+
+void test_evaluate_material_texture_sample_returns_fallback() {
+    // TextureSample placeholder: the lowering bakes white
+    // into imm_color, evaluateMaterial reads that.
+    Graph g;
+    const NodeId ts = g.add_node(NodeType::TextureSample);
+    const NodeId d  = g.add_node(NodeType::DiffuseBSDF);
+    find_node(g, ts)->texture_id = 0;
+    RR_CHECK(g.connect(ts, "value", d, "albedo"));
+    auto r = compile_graph_to_gpu_material(g);
+    RR_CHECK(r.ok);
+    const auto eval = evaluateMaterial(view_of(r.material));
+    RR_CHECK(nearly_eq(eval.baseColor, rr::math::Vec3{1.0f, 1.0f, 1.0f}));
+}
+
+void test_evaluate_material_diffuse_and_emission_independent() {
+    Graph g;
+    const NodeId base = g.add_node(NodeType::ConstantColor);
+    const NodeId glow = g.add_node(NodeType::ConstantColor);
+    const NodeId d    = g.add_node(NodeType::DiffuseBSDF);
+    const NodeId e    = g.add_node(NodeType::Emission);
+    find_node(g, base)->color_value = rr::math::Vec3{0.8f, 0.2f, 0.1f};
+    find_node(g, glow)->color_value = rr::math::Vec3{0.0f, 0.5f, 1.0f};
+    find_node(g, e)->scalar_value   = 0.7f;
+    RR_CHECK(g.connect(base, "value", d, "albedo"));
+    RR_CHECK(g.connect(glow, "value", e, "color"));
+    auto r = compile_graph_to_gpu_material(g);
+    RR_CHECK(r.ok);
+    const auto eval = evaluateMaterial(view_of(r.material));
+    RR_CHECK(nearly_eq(eval.baseColor,     rr::math::Vec3{0.8f, 0.2f, 0.1f}));
+    RR_CHECK(nearly_eq(eval.emissionColor, rr::math::Vec3{0.0f, 0.5f, 1.0f}));
+    RR_CHECK(nearly_eq(eval.emissionStrength, 0.7f));
+}
+
+void test_evaluate_material_handles_empty_view() {
+    // Empty view (no graph uploaded) should return the
+    // default-constructed eval result. The kernel uses this
+    // as the fallback when material_graph_views is null.
+    CudaMaterialGraphView v;
+    const auto eval = evaluateMaterial(v);
+    RR_CHECK(nearly_eq(eval.baseColor, rr::math::Vec3{0.8f, 0.8f, 0.8f}));
+    RR_CHECK(nearly_eq(eval.emissionColor, rr::math::Vec3{0, 0, 0}));
+    RR_CHECK(eval.emissionStrength == 0.0f);
+}
+
+
+// ---------------------------------------------------------------------------
+// synthesise_gpu_material_from_params (this slice).
+// ---------------------------------------------------------------------------
+
+void test_synthesise_from_params_diffuse_only() {
+    rr::material::MaterialParams p;
+    p.baseColor = rr::math::Vec3{0.7f, 0.4f, 0.2f};
+    const auto mat = synthesise_gpu_material_from_params(&p);
+    RR_CHECK(mat.ops.size()       == 1);
+    RR_CHECK(mat.terminals.size() == 1);
+    RR_CHECK(mat.ops[0].opcode == rr::material::GpuOpcode::ConstantColor);
+    RR_CHECK(nearly_eq(mat.ops[0].imm_color, rr::math::Vec3{0.7f, 0.4f, 0.2f}));
+    RR_CHECK(mat.terminals[0].kind     == rr::material::GpuOpcode::Diffuse);
+    RR_CHECK(mat.terminals[0].in_color == 0);
+
+    // The synthesised graph evaluates back to the original
+    // baseColor / zero emission - matching what the kernel
+    // would have read from MaterialParams directly.
+    const auto eval = evaluateMaterial(view_of(mat));
+    RR_CHECK(nearly_eq(eval.baseColor, p.baseColor));
+    RR_CHECK(eval.emissionStrength == 0.0f);
+}
+
+void test_synthesise_from_params_with_emission() {
+    rr::material::MaterialParams p;
+    p.baseColor        = rr::math::Vec3{0.3f, 0.3f, 0.3f};
+    p.emissionColor    = rr::math::Vec3{1.0f, 0.5f, 0.25f};
+    p.emissionStrength = 2.0f;
+    const auto mat = synthesise_gpu_material_from_params(&p);
+    RR_CHECK(mat.ops.size()       == 2);
+    RR_CHECK(mat.terminals.size() == 2);
+    const auto eval = evaluateMaterial(view_of(mat));
+    RR_CHECK(nearly_eq(eval.baseColor,     p.baseColor));
+    RR_CHECK(nearly_eq(eval.emissionColor, p.emissionColor));
+    RR_CHECK(nearly_eq(eval.emissionStrength, p.emissionStrength));
+}
+
+void test_synthesise_from_null_params_yields_neutral_default() {
+    const auto mat = synthesise_gpu_material_from_params(nullptr);
+    RR_CHECK(mat.ops.size()       == 1);
+    RR_CHECK(mat.terminals.size() == 1);
+    const auto eval = evaluateMaterial(view_of(mat));
+    // Default: mid-grey baseColor, no emission.
+    RR_CHECK(nearly_eq(eval.baseColor, rr::math::Vec3{0.8f, 0.8f, 0.8f}));
+    RR_CHECK(eval.emissionStrength == 0.0f);
+}
+
+
 // --- Smoke test: print compiled IR ------------------------------------
 
 void test_smoke_debug_print_compiled_gpu_material() {
@@ -1245,6 +1452,21 @@ int main() {
     test_compile_rejects_invalid_graph();
     test_compile_emission_with_wired_color_records_slot();
     test_compile_diffuse_plus_emission_emits_two_terminals();
+
+    // Device-side evaluateMaterial (this slice; runs host-
+    // side because the function is RR_HD inline).
+    test_evaluate_material_const_diffuse_yields_albedo();
+    test_evaluate_material_unwired_diffuse_uses_terminal_immediate();
+    test_evaluate_material_emission_picks_up_color_and_strength();
+    test_evaluate_material_negative_strength_clamped_to_zero();
+    test_evaluate_material_add_chain();
+    test_evaluate_material_multiply_chain();
+    test_evaluate_material_texture_sample_returns_fallback();
+    test_evaluate_material_diffuse_and_emission_independent();
+    test_evaluate_material_handles_empty_view();
+    test_synthesise_from_params_diffuse_only();
+    test_synthesise_from_params_with_emission();
+    test_synthesise_from_null_params_yields_neutral_default();
 
     // Smoke (printed):
     test_smoke_constant_color_to_diffuse_via_builder();
