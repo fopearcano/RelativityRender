@@ -68,10 +68,22 @@ enum class SocketDirection : std::uint8_t {
 // `Connection` references a (node_id, socket_name) pair. The
 // socket itself does not know whether it is wired - that question
 // is asked of the graph.
+//
+// `required` is honoured only for input sockets (output sockets
+// keep the default `false`, since "wiring" is a sink-side
+// concept). When `required == true` the validator rejects the
+// graph if no incoming connection terminates at this socket.
+// When `required == false` (the spec's default - per section
+// 7.1, inputs may be unwired and fall back to the catalogue's
+// per-input defaults), the validator accepts an unwired socket
+// silently. The v1 catalogue marks NO sockets required; the
+// flag exists so a future node type whose input has no sensible
+// default can opt in without re-shaping the validator.
 struct Socket {
     std::string     name;
     SocketType      type      = SocketType::Color;
     SocketDirection direction = SocketDirection::Input;
+    bool            required  = false;
 };
 
 }

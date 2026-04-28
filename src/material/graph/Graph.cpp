@@ -236,6 +236,62 @@ incoming_connections(const Graph& graph, NodeId id) {
 }
 
 
+// ---------------------------------------------------------------------------
+// Graph builder helpers (this slice).
+// ---------------------------------------------------------------------------
+
+NodeId Graph::add_node(NodeType type) {
+    NodeId next = 0;
+    for (const auto& n : nodes) {
+        if (n.id >= next) next = n.id + 1;
+    }
+    Node n = make_node(type, next);
+    nodes.push_back(std::move(n));
+    return next;
+}
+
+bool Graph::connect(NodeId           from_node_id,
+                    std::string_view from_socket,
+                    NodeId           to_node_id,
+                    std::string_view to_socket) {
+    // 1. Both nodes resolve.
+    const Node* from = find_node(*this, from_node_id);
+    if (from == nullptr) return false;
+    const Node* to   = find_node(*this, to_node_id);
+    if (to == nullptr)   return false;
+
+    // 2. Sockets resolve in the right direction.
+    const Socket* src = find_socket(*from, from_socket,
+                                    SocketDirection::Output);
+    if (src == nullptr) return false;
+    const Socket* dst = find_socket(*to, to_socket,
+                                    SocketDirection::Input);
+    if (dst == nullptr) return false;
+
+    // 3. Sink not already wired.
+    for (const auto& c : connections) {
+        if (c.to_node == to_node_id && c.to_socket == to_socket) {
+            return false;
+        }
+    }
+
+    // 4. Type compatibility (per spec 7.3 implicit conversion table).
+    if (!can_connect(src->type, dst->type)) return false;
+
+    Connection c;
+    c.from_node   = from_node_id;
+    c.from_socket = std::string(from_socket);
+    c.to_node     = to_node_id;
+    c.to_socket   = std::string(to_socket);
+    connections.push_back(std::move(c));
+    return true;
+}
+
+ValidationResult Graph::validate() const {
+    return validate_graph(*this);
+}
+
+
 namespace {
 
 // Connection-key for the "input has at most one incoming" rule.
@@ -430,6 +486,33 @@ ValidationResult validate_graph(const Graph& graph) {
                          "(at least one DiffuseBSDF or Emission "
                          "is required)";
         return result;
+    }
+
+    // 8. Every input socket marked `required` is wired by some
+    //    connection. v1 catalogue marks NO sockets required, so
+    //    this loop is a no-op for any v1 graph; the
+    //    infrastructure exists so a future node type with a
+    //    no-default input can opt in.
+    for (const auto& n : graph.nodes) {
+        for (const auto& s : n.inputs) {
+            if (!s.required) continue;
+            bool wired = false;
+            for (const auto& c : graph.connections) {
+                if (c.to_node == n.id && c.to_socket == s.name) {
+                    wired = true;
+                    break;
+                }
+            }
+            if (!wired) {
+                std::ostringstream os;
+                os << "required input socket '" << s.name
+                   << "' on node " << n.id
+                   << " (" << node_type_name(n.type)
+                   << ") is not wired";
+                result.message = os.str();
+                return result;
+            }
+        }
     }
 
     result.ok = true;

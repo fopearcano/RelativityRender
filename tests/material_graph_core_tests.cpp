@@ -475,6 +475,197 @@ void test_validate_rejects_graph_with_no_terminal() {
     RR_CHECK(contains(r.message, "terminal"));
 }
 
+
+// ---------------------------------------------------------------------------
+// Graph builder helpers: add_node / connect / validate (this slice).
+// ---------------------------------------------------------------------------
+
+void test_add_node_assigns_zero_then_increments() {
+    Graph g;
+    const NodeId a = g.add_node(NodeType::ConstantColor);
+    const NodeId b = g.add_node(NodeType::DiffuseBSDF);
+    const NodeId c = g.add_node(NodeType::Emission);
+    RR_CHECK(a == 0);
+    RR_CHECK(b == 1);
+    RR_CHECK(c == 2);
+    RR_CHECK(g.nodes.size() == 3);
+    RR_CHECK(g.nodes[0].type == NodeType::ConstantColor);
+    RR_CHECK(g.nodes[1].type == NodeType::DiffuseBSDF);
+    RR_CHECK(g.nodes[2].type == NodeType::Emission);
+    // Catalogue layout is applied by `make_node`.
+    RR_CHECK(g.nodes[0].outputs.size() == 1);
+    RR_CHECK(g.nodes[0].outputs[0].name == "value");
+}
+
+void test_add_node_skips_past_manually_assigned_ids() {
+    // Mixing the builder with direct vector pushes must not
+    // reuse an existing id.
+    Graph g;
+    g.nodes.push_back(make_node(NodeType::ConstantColor, 100));
+    const NodeId next = g.add_node(NodeType::DiffuseBSDF);
+    RR_CHECK(next == 101);
+}
+
+void test_connect_appends_on_success() {
+    Graph g;
+    const NodeId color   = g.add_node(NodeType::ConstantColor);
+    const NodeId diffuse = g.add_node(NodeType::DiffuseBSDF);
+    const bool wired = g.connect(color, "value", diffuse, "albedo");
+    RR_CHECK(wired);
+    RR_CHECK(g.connections.size() == 1);
+    RR_CHECK(g.connections[0].from_node   == color);
+    RR_CHECK(g.connections[0].from_socket == "value");
+    RR_CHECK(g.connections[0].to_node     == diffuse);
+    RR_CHECK(g.connections[0].to_socket   == "albedo");
+}
+
+void test_connect_rejects_unknown_node() {
+    Graph g;
+    const NodeId color = g.add_node(NodeType::ConstantColor);
+    RR_CHECK(!g.connect(color, "value", /*to=*/99, "albedo"));
+    RR_CHECK(g.connections.empty());
+}
+
+void test_connect_rejects_unknown_socket() {
+    Graph g;
+    const NodeId color   = g.add_node(NodeType::ConstantColor);
+    const NodeId diffuse = g.add_node(NodeType::DiffuseBSDF);
+    RR_CHECK(!g.connect(color,   "ghost", diffuse, "albedo"));
+    RR_CHECK(!g.connect(color,   "value", diffuse, "ghost"));
+    RR_CHECK(g.connections.empty());
+}
+
+void test_connect_rejects_wrong_direction() {
+    // Trying to use an Input socket as the source must fail.
+    Graph g;
+    const NodeId add     = g.add_node(NodeType::Add);
+    const NodeId diffuse = g.add_node(NodeType::DiffuseBSDF);
+    RR_CHECK(!g.connect(add, /*input!*/"a", diffuse, "albedo"));
+    RR_CHECK(g.connections.empty());
+}
+
+void test_connect_rejects_type_incompatible() {
+    // Color -> Float (Emission.strength) is not in the implicit-
+    // conversion table.
+    Graph g;
+    const NodeId color    = g.add_node(NodeType::ConstantColor);
+    const NodeId emission = g.add_node(NodeType::Emission);
+    RR_CHECK(!g.connect(color, "value", emission, "strength"));
+    RR_CHECK(g.connections.empty());
+}
+
+void test_connect_rejects_duplicate_sink() {
+    Graph g;
+    const NodeId a       = g.add_node(NodeType::ConstantColor);
+    const NodeId b       = g.add_node(NodeType::ConstantColor);
+    const NodeId diffuse = g.add_node(NodeType::DiffuseBSDF);
+    RR_CHECK( g.connect(a, "value", diffuse, "albedo"));
+    // Second wire to the same input must fail.
+    RR_CHECK(!g.connect(b, "value", diffuse, "albedo"));
+    RR_CHECK(g.connections.size() == 1);
+}
+
+void test_connect_appends_cycle_then_validate_rejects_it() {
+    // The connect-time check intentionally does NOT run cycle
+    // detection (that's the validator's job). A connection
+    // that closes a cycle still appends; validate() catches it.
+    Graph g;
+    const NodeId a       = g.add_node(NodeType::Add);
+    const NodeId b       = g.add_node(NodeType::Add);
+    const NodeId diffuse = g.add_node(NodeType::DiffuseBSDF);
+    RR_CHECK(g.connect(a, "value", b, "a"));
+    RR_CHECK(g.connect(b, "value", a, "a"));   // closes cycle
+    RR_CHECK(g.connect(b, "value", diffuse, "albedo"));
+    auto r = g.validate();
+    RR_CHECK(!r.ok);
+    RR_CHECK(contains(r.message, "cycle"));
+}
+
+void test_validate_method_matches_free_function() {
+    Graph g;
+    g.add_node(NodeType::DiffuseBSDF);
+    const auto a = g.validate();
+    const auto b = validate_graph(g);
+    RR_CHECK(a.ok == b.ok);
+    RR_CHECK(a.message == b.message);
+}
+
+
+// --- Required-input flag (infrastructure; v1 catalogue uses none) ------
+
+void test_validator_passes_when_no_inputs_marked_required() {
+    // v1 catalogue keeps every input optional. A graph whose
+    // inputs are unwired (relying on per-input defaults) must
+    // validate cleanly.
+    Graph g;
+    g.add_node(NodeType::DiffuseBSDF);   // unwired albedo -> default mid-grey
+    auto r = g.validate();
+    RR_CHECK(r.ok);
+}
+
+void test_validator_rejects_unwired_required_input() {
+    // Mark a Diffuse node's albedo as required (forward-looking
+    // infrastructure: the v1 catalogue does not do this).
+    // Validator must surface the unwired required input.
+    Graph g;
+    const NodeId diffuse = g.add_node(NodeType::DiffuseBSDF);
+    Node* n = find_node(g, diffuse);
+    RR_CHECK(n != nullptr);
+    if (n != nullptr) {
+        for (auto& s : n->inputs) {
+            if (s.name == "albedo") s.required = true;
+        }
+    }
+    auto r = g.validate();
+    RR_CHECK(!r.ok);
+    RR_CHECK(contains(r.message, "required input"));
+    RR_CHECK(contains(r.message, "albedo"));
+}
+
+void test_validator_passes_required_input_when_wired() {
+    Graph g;
+    const NodeId color   = g.add_node(NodeType::ConstantColor);
+    const NodeId diffuse = g.add_node(NodeType::DiffuseBSDF);
+    Node* n = find_node(g, diffuse);
+    if (n != nullptr) {
+        for (auto& s : n->inputs) {
+            if (s.name == "albedo") s.required = true;
+        }
+    }
+    RR_CHECK(g.connect(color, "value", diffuse, "albedo"));
+    auto r = g.validate();
+    RR_CHECK(r.ok);
+}
+
+
+// --- Smoke test: ConstantColor -> DiffuseBSDF, print result ------------
+
+void test_smoke_constant_color_to_diffuse_via_builder() {
+    // The exact graph the prompt asks for. Built through the
+    // new `add_node` / `connect` / `validate` builder helpers,
+    // and prints the validation result so the test output
+    // surfaces the API in action even on a fully-passing run.
+    Graph g;
+    const NodeId color   = g.add_node(NodeType::ConstantColor);
+    const NodeId diffuse = g.add_node(NodeType::DiffuseBSDF);
+
+    const bool wired = g.connect(color, "value", diffuse, "albedo");
+    const auto r     = g.validate();
+
+    std::printf("[smoke] ConstantColor(%d) -> DiffuseBSDF(%d)\n",
+                color, diffuse);
+    std::printf("[smoke]   connect    -> %s\n",
+                wired ? "true" : "false");
+    std::printf("[smoke]   validate() -> %s%s%s\n",
+                r.ok ? "OK" : "ERR",
+                r.message.empty() ? "" : ": ",
+                r.message.c_str());
+
+    RR_CHECK(wired);
+    RR_CHECK(r.ok);
+    RR_CHECK(r.message.empty());
+}
+
 }
 
 int main() {
@@ -523,6 +714,26 @@ int main() {
     test_validate_accepts_compatible_implicit_conversion();
     test_validate_rejects_cycle();
     test_validate_rejects_graph_with_no_terminal();
+
+    // Builder helpers (this slice).
+    test_add_node_assigns_zero_then_increments();
+    test_add_node_skips_past_manually_assigned_ids();
+    test_connect_appends_on_success();
+    test_connect_rejects_unknown_node();
+    test_connect_rejects_unknown_socket();
+    test_connect_rejects_wrong_direction();
+    test_connect_rejects_type_incompatible();
+    test_connect_rejects_duplicate_sink();
+    test_connect_appends_cycle_then_validate_rejects_it();
+    test_validate_method_matches_free_function();
+
+    // Required-input flag.
+    test_validator_passes_when_no_inputs_marked_required();
+    test_validator_rejects_unwired_required_input();
+    test_validator_passes_required_input_when_wired();
+
+    // Smoke (printed):
+    test_smoke_constant_color_to_diffuse_via_builder();
 
     std::printf("material_graph_core_tests: %d/%d passed\n",
                 g_total - g_failed, g_total);

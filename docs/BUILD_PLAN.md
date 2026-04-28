@@ -93,6 +93,149 @@ All modules now have a placeholder source directory under `src/`,
 
 ## Change Log
 
+### 2026-04-28 — M21 (impl, builder): graph construction helpers + required-input rule
+
+Third implementation slice of the material node graph.
+Extends the data core under `src/material/graph/` with a
+small builder API on `Graph` (`add_node`, `connect`,
+`validate`) plus a forward-looking `Socket::required` flag
+the validator now honours. No evaluation, no GPU, no UI.
+
+The prompt's camelCase signatures (`addNode`, `connect`,
+`validateGraph`) are translated to the project's `snake_case`
+convention (`add_node`, `connect`, `validate`); the names
+otherwise match. A small smoke test builds
+`ConstantColor -> DiffuseBSDF` through the builder and
+prints the validation result, as the prompt asked for.
+
+- **`src/material/graph/Socket.h`**: new `bool required =
+  false;` field on `Socket`. Honoured only for input
+  sockets (output sockets keep the default). The v1
+  catalogue marks NO sockets required - per spec section
+  7.1, inputs are unwired-by-default and fall back to the
+  catalogue's per-input defaults. The flag is the place a
+  future node type whose input has no sensible default
+  opts in.
+- **`src/material/graph/Graph.h`**: `Graph` gains three
+  member methods, manipulating the same public `nodes` /
+  `connections` vectors the existing code already uses:
+  - `NodeId add_node(NodeType type)`: appends a node with
+    the catalogue's canonical socket layout (`make_node`),
+    auto-allocates an id as `max(existing) + 1` (or `0`
+    on an empty graph), returns the new id.
+  - `bool connect(NodeId from, std::string_view from_socket,
+    NodeId to, std::string_view to_socket)`: appends a
+    connection with immediate sanity checks - both nodes
+    exist, sockets resolve in the right direction, types
+    are `can_connect`-compatible, sink not already wired.
+    Returns false (without appending) on any failure.
+    Cycle detection stays on `validate()` so an in-flight
+    builder can append connections that close cycles and
+    let `validate` report them with full context.
+  - `[[nodiscard]] ValidationResult validate() const`:
+    method form of `validate_graph(*this)`. Same
+    behaviour, friendlier on built-up graphs.
+  - `ValidationResult` was moved earlier in the header so
+    `Graph::validate()` can return it by value.
+- **`src/material/graph/Graph.cpp`**: implements the three
+  new methods, adds a new validation step (rule 8) at the
+  tail of `validate_graph`: every input socket marked
+  `required` must have at least one incoming connection.
+  Error message names the offending socket + node id +
+  node type so the author can find it. The check is a
+  no-op for any v1 graph (no v1 catalogue inputs are
+  required) but covered by tests for forward-looking
+  correctness.
+- **`tests/material_graph_core_tests.cpp`**: 186 host
+  assertions (up from 141). New coverage:
+  - `add_node`: id assignment starts at zero, increments
+    monotonically, skips past manually-assigned ids;
+    appended node carries the catalogue's socket layout.
+  - `connect`: appends on success; rejects unknown nodes,
+    unknown sockets, sockets in the wrong direction
+    (Input as source), type-incompatible types,
+    double-wired sinks. Cycle-closing connections still
+    append and are caught by `validate` (the design
+    contract - connect is a sanity check, not a
+    full validator).
+  - `Graph::validate()` returns identically to the free
+    `validate_graph(*this)`.
+  - Required-input flag: graphs with no required inputs
+    pass; a node with `albedo` flagged required and
+    unwired surfaces a clear error mentioning "required
+    input" + the socket name; wiring it makes the same
+    graph pass.
+  - Smoke: builds the prompt's `ConstantColor ->
+    DiffuseBSDF` graph through `add_node` / `connect`,
+    runs `validate()`, prints the validation result
+    (status + message) in the test output. Live trace:
+    ```
+    [smoke] ConstantColor(0) -> DiffuseBSDF(1)
+    [smoke]   connect    -> true
+    [smoke]   validate() -> OK
+    ```
+
+#### Verified locally
+
+```
+$ cmake --build build && cd build && ctest --output-on-failure
+ 1/17 ... 17/17 all Passed
+100% tests passed, 0 tests failed out of 17
+
+$ ./build/bin/material_graph_core_tests
+[smoke] ConstantColor(0) -> DiffuseBSDF(1)
+[smoke]   connect    -> true
+[smoke]   validate() -> OK
+material_graph_core_tests: 186/186 passed
+```
+
+#### Per the prompt
+
+- "Files: extend Graph.h/.cpp": both extended.
+- "Implement addNode(type)": `Graph::add_node(NodeType)`.
+- "Implement connect(outputSocket, inputSocket)":
+  `Graph::connect(NodeId, string_view, NodeId, string_view)`
+  - the (node-id, socket-name) pair is how the data layer
+  references a socket (sockets do not carry back-pointers
+  to their nodes), and the four-argument form is the
+  honest spelling of "two socket references".
+- "Implement validateGraph()": `Graph::validate()` (method
+  form) plus the existing `validate_graph(graph)` free
+  function (kept for backward compat; both are tested).
+- "Validation rules: no cycles (DAG)": already in the
+  validator (rule 6); unchanged. Connect-time cycle
+  detection is intentionally NOT done so an in-flight
+  builder can close-then-fix cycles.
+- "Type compatibility (float/vec3/color)": already in the
+  validator + now ALSO in `connect` itself (the immediate
+  sanity check rejects type-incompatible wires at
+  insertion time so authoring tools surface errors
+  faster).
+- "All required inputs connected": new validator rule
+  (8). v1 catalogue marks none required (spec 7.1 keeps
+  inputs optional); the test suite covers the
+  required-flag opt-in path so the infrastructure is
+  honest.
+- "Add a small test: build a graph ConstantColor ->
+  DiffuseBSDF -> Output, run validation and print
+  result": `test_smoke_constant_color_to_diffuse_via_builder`
+  builds via the builders, validates, prints the live
+  trace shown above, then asserts success. (DiffuseBSDF
+  IS the terminal in v1; no separate "Output" node
+  exists.)
+- "No evaluation yet / No GPU": this slice ships only
+  data-layer code. The previous `MaterialGraph` runtime
+  and the renderer are untouched.
+
+#### Module / milestone status
+
+- Module 22 (Node Editor / Material Graph): remains
+  `in progress`. Builder API is the natural authoring
+  surface for a future scene-format slice / standalone
+  editor.
+- M21 (Material Node Graph (Editor)): remains `in
+  progress` (same).
+
 ### 2026-04-28 — M21 (impl, data-core): structured material graph data layer
 
 Second implementation slice of the material node graph.

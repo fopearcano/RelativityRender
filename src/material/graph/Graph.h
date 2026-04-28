@@ -44,6 +44,15 @@ struct Connection {
 };
 
 
+// Result of a structural validation. Pure data: the validator
+// runs no IO and mutates nothing. Declared here (before `Graph`)
+// because `Graph::validate()` returns one by value.
+struct ValidationResult {
+    bool        ok = false;
+    std::string message;        // populated when `ok == false`.
+};
+
+
 // Plain-data graph. The data layer's complete public surface.
 // Owned by value; no shared / reference semantics. Trivially
 // copyable apart from its embedded `std::string`s and
@@ -53,10 +62,57 @@ struct Connection {
 // 10.3. v1 is the only supported value today; loaders that see
 // a future version reject the load (per the same spec section's
 // rule) before the data ever reaches this struct.
+//
+// The struct's `nodes` and `connections` vectors stay public so
+// callers (the .rrscene loader, the C4D bridge, the eventual
+// node editor) can populate them by direct vector ops when
+// that's more natural. The builder helpers below
+// (`add_node` / `connect` / `validate`) are convenience
+// alternatives - they manipulate the same fields with auto-id
+// allocation, immediate sanity-checks, and a `validate()`
+// shorthand for `validate_graph(*this)`.
 struct Graph {
     int                     version = 1;
     std::vector<Node>       nodes;
     std::vector<Connection> connections;
+
+    // Append a new node of `type` with the catalogue's
+    // canonical socket layout (see `make_node` in Node.h) and
+    // return its id. The id is auto-allocated as one greater
+    // than the largest existing id (so successive `add_node`
+    // calls never collide), or `0` when the graph is empty.
+    NodeId add_node(NodeType type);
+
+    // Append a connection from `from_node`'s output socket to
+    // `to_node`'s input socket. Performs immediate sanity
+    // checks at insertion time:
+    //
+    //   - both nodes exist in this graph;
+    //   - `from_socket` resolves to an Output socket on
+    //     `from_node`;
+    //   - `to_socket` resolves to an Input socket on
+    //     `to_node`;
+    //   - the source / sink socket types are
+    //     `can_connect`-compatible (per spec 7.3 implicit
+    //     conversions);
+    //   - `to_socket` is not already wired by an earlier
+    //     connection.
+    //
+    // Returns true on success and appends to `connections`;
+    // returns false (without appending) when any check fails.
+    // Cycle detection and the full structural validation are
+    // NOT run here (they belong to `validate()`); a connection
+    // that closes a cycle still appends successfully and is
+    // caught at validate time.
+    bool connect(NodeId           from_node,
+                 std::string_view from_socket,
+                 NodeId           to_node,
+                 std::string_view to_socket);
+
+    // Method form of the free `validate_graph(*this)` below.
+    // The two are functionally identical; the method form
+    // reads more naturally on built-up graphs.
+    [[nodiscard]] ValidationResult validate() const;
 };
 
 
@@ -66,13 +122,6 @@ struct Graph {
 [[nodiscard]] const Node* find_node(const Graph& graph, NodeId id);
 [[nodiscard]] Node*       find_node(Graph& graph, NodeId id);
 
-
-// Result of a structural validation. Pure data: the validator
-// runs no IO and mutates nothing.
-struct ValidationResult {
-    bool        ok = false;
-    std::string message;        // populated when `ok == false`.
-};
 
 // Structural validation per spec section 7. Checks:
 //
@@ -90,6 +139,12 @@ struct ValidationResult {
 //   6. The graph contains no cycles (per spec section 7.4: a
 //      DAG is required).
 //   7. The graph contains at least one terminal node.
+//   8. Every input socket marked `required` is wired by some
+//      connection. The v1 catalogue marks NO sockets required
+//      (spec 7.1 keeps inputs optional and falls back to
+//      catalogue defaults), so this check is a no-op for v1
+//      graphs; it is the place a future "required-input"
+//      node type would surface unfilled inputs.
 //
 // Returns `ok == true` and an empty `message` on success;
 // `ok == false` with a descriptive message on the FIRST
