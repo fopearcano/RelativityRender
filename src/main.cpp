@@ -4,21 +4,14 @@
 #include "core/Version.h"
 #include "gpu/GpuDevice.h"
 
-#ifdef RR_HAS_CUDA
-    #include "camera/Camera.h"
-    #include "cuda/CudaRenderer.h"
-    #include "geometry/Mesh.h"
-    #include "geometry/Sphere.h"
-    #include "geometry/Triangle.h"
-    #include "gpu/GpuScene.h"
-    #include "lighting/Light.h"
-    #include "material/MaterialTypes.h"
-    #include "math/Vec2.h"
-    #include "math/Vec3.h"
-    #include "relativity/RelativityParams.h"
-    #include "scene/Scene.h"
+// SceneLoader runs on the host even when CUDA is absent (the
+// loader is pure host code), so include it unconditionally.
+#include "io/SceneLoader.h"
+#include "scene/Scene.h"
 
-    #include <vector>
+#ifdef RR_HAS_CUDA
+    #include "cuda/CudaRenderer.h"
+    #include "gpu/GpuScene.h"
 #endif
 
 #include <filesystem>
@@ -91,151 +84,53 @@ int main(int argc, char** argv) {
     if (cfg.wants_render()) {
         Logger::info("render command received");
 
+        const std::filesystem::path scene_path = *cfg.render_scene_path;
+        Logger::info("loading scene: " + scene_path.string());
+        auto load = rr::io::load_rrscene(scene_path);
+        if (!load.ok) {
+            Logger::error("scene load failed: " + load.message);
+            return 1;
+        }
+        const auto& scene = load.scene;
+        Logger::info("loaded scene: "
+                     + std::to_string(scene.materials.size()) + " materials, "
+                     + std::to_string(scene.spheres.size())   + " spheres, "
+                     + std::to_string(scene.lights.size())    + " lights, "
+                     + std::to_string(scene.meshes.size())    + " meshes");
+
+        // The file's render_settings determine the output resolution.
+        // CLI --width / --height are ignored when a scene file is
+        // present; the file is the source of truth.
+        const int width  = scene.render_settings.width;
+        const int height = scene.render_settings.height;
+
 #ifdef RR_HAS_CUDA
-        // M12 deliverable: simple direct lighting on GPU.
-        //
-        //   For each hit:
-        //     - evaluate directional light(s)
-        //     - evaluate point light(s) with inverse-square falloff
-        //     - add emission
-        //     - add ambient/environment fallback
-        //
-        // No shadows, no path tracing - those arrive at M14.  The
-        // existing relativistic pipeline (aberration -> Doppler ->
-        // searchlight) still wraps the shaded colour.
-        //
-        // Output: output/gpu_direct_lighting.ppm
-        //
-        // CPU only constructs the scene + uploads it - every per-ray
-        // step (intersection, shading, lighting accumulation,
-        // relativistic effects, write) runs on the GPU.  The only
-        // CPU pixel iteration is in `Image::save_ppm`.
-        //
-        // `--output` is ignored at this milestone for reproducibility.
-
-        const float aspect = static_cast<float>(cfg.width)
-                             / static_cast<float>(cfg.height);
-
-        rr::scene::Scene scene;
-        scene.camera.set_aspect(aspect);
-
-        // Material palette. Indices are referenced from the geometry
-        // below.  At rest the relativistic pipeline collapses to
-        // identity, so the saved image is a classical multi-material
-        // render.
-        std::vector<rr::material::MaterialParams> materials;
-        materials.reserve(5);
-
-        rr::material::MaterialParams red;       // 0
-        red.baseColor = rr::math::Vec3{0.9f, 0.15f, 0.15f};
-        materials.push_back(red);
-
-        rr::material::MaterialParams green;     // 1
-        green.baseColor = rr::math::Vec3{0.15f, 0.85f, 0.25f};
-        materials.push_back(green);
-
-        rr::material::MaterialParams blue;      // 2
-        blue.baseColor = rr::math::Vec3{0.15f, 0.35f, 0.95f};
-        materials.push_back(blue);
-
-        rr::material::MaterialParams emissive;  // 3 - quad emits warm light
-        emissive.baseColor        = rr::math::Vec3{0.0f, 0.0f, 0.0f};
-        emissive.emissionColor    = rr::math::Vec3{1.0f, 0.85f, 0.4f};
-        emissive.emissionStrength = 2.0f;
-        materials.push_back(emissive);
-
-        rr::material::MaterialParams floor;     // 4
-        floor.baseColor = rr::math::Vec3{0.55f, 0.55f, 0.6f};
-        materials.push_back(floor);
-
-        // Spheres - same arrangement as M10, now per-sphere materials.
-        const auto add_sphere = [&](const rr::math::Vec3& center, float r,
-                                    int material_index) {
-            rr::scene::SceneSphere s;
-            s.geometry.center         = center;
-            s.geometry.radius         = r;
-            s.geometry.material_index = material_index;
-            scene.spheres.push_back(s);
-        };
-        add_sphere(rr::math::Vec3{ 0.0f,    0.0f, -3.0f}, 1.0f, /*red*/   0);
-        add_sphere(rr::math::Vec3{-1.6f,    0.0f, -3.5f}, 0.6f, /*green*/ 1);
-        add_sphere(rr::math::Vec3{ 1.6f,    0.0f, -3.5f}, 0.6f, /*blue*/  2);
-        add_sphere(rr::math::Vec3{ 0.0f, -101.0f, -3.0f}, 100.0f, /*floor*/4);
-
-        // Mesh - the M10 quad, now flagged as the emissive material.
-        rr::geometry::Mesh quad;
-        quad.vertices.reserve(4);
-        quad.triangles.reserve(2);
-        quad.vertices.push_back({rr::math::Vec3{-0.7f, 0.4f, -3.0f},
-                                 rr::math::Vec3{0.0f, 0.0f,  1.0f},
-                                 rr::math::Vec2{0.0f, 0.0f}});
-        quad.vertices.push_back({rr::math::Vec3{ 0.7f, 0.4f, -3.0f},
-                                 rr::math::Vec3{0.0f, 0.0f,  1.0f},
-                                 rr::math::Vec2{1.0f, 0.0f}});
-        quad.vertices.push_back({rr::math::Vec3{ 0.7f, 1.6f, -3.0f},
-                                 rr::math::Vec3{0.0f, 0.0f,  1.0f},
-                                 rr::math::Vec2{1.0f, 1.0f}});
-        quad.vertices.push_back({rr::math::Vec3{-0.7f, 1.6f, -3.0f},
-                                 rr::math::Vec3{0.0f, 0.0f,  1.0f},
-                                 rr::math::Vec2{0.0f, 1.0f}});
-        quad.triangles.push_back({0, 1, 2});
-        quad.triangles.push_back({0, 2, 3});
-        quad.material_id = 3;  // emissive
-
-        // Light rig: a warm key sun (directional), a cool point light
-        // sitting above and slightly to the right, and a pale-blue
-        // environment that doubles as the miss-fallback sky. Real
-        // light sampling (and shadows) lands at M14; until then this
-        // is direct N.L lighting only.
-        std::vector<rr::lighting::Light> lights;
-        lights.reserve(3);
-        lights.push_back(rr::lighting::make_directional_light(
-            /*direction=*/rr::math::Vec3{-0.4f, -1.0f, -0.3f},
-            /*color=*/   rr::math::Vec3{1.0f, 0.95f, 0.85f},
-            /*intensity=*/0.9f));
-        lights.push_back(rr::lighting::make_point_light(
-            /*position=*/ rr::math::Vec3{1.5f, 2.5f, -1.5f},
-            /*color=*/    rr::math::Vec3{0.7f, 0.8f, 1.0f},
-            /*intensity=*/8.0f));
-        lights.push_back(rr::lighting::make_environment_light(
-            /*color=*/    rr::math::Vec3{0.40f, 0.55f, 0.85f},
-            /*intensity=*/0.35f));
+        // M13 deliverable: load -> upload -> render -> save. The CPU
+        // only orchestrates; every per-ray step still runs on the
+        // GPU. The only CPU pixel iteration is `Image::save_ppm`.
 
         rr::gpu::GpuScene gpu_scene;
         if (!gpu_scene.upload_from(scene)) {
-            Logger::error("scene upload failed (camera/relativity/spheres)");
-            return 1;
-        }
-        if (!gpu_scene.upload_mesh(quad)) {
-            Logger::error("mesh upload failed (no GPU backend or "
+            Logger::error("GPU upload failed (no CUDA device or "
                           "device allocation refused)");
             return 1;
         }
-        if (!gpu_scene.upload_materials(materials.data(), materials.size())) {
-            Logger::error("material upload failed (no GPU backend or "
-                          "device allocation refused)");
-            return 1;
-        }
-        if (!gpu_scene.upload_lights(lights.data(), lights.size())) {
-            Logger::error("light upload failed (no GPU backend or "
-                          "device allocation refused)");
-            return 1;
-        }
-        Logger::info("uploaded direct-lighting scene: "
-                     + std::to_string(gpu_scene.sphere_count())  + " spheres, "
+        Logger::info("uploaded scene: "
+                     + std::to_string(gpu_scene.sphere_count())   + " spheres, "
                      + std::to_string(gpu_scene.gpu_mesh().triangle_count())
-                                                                 + " triangles, "
+                                                                  + " triangles, "
                      + std::to_string(gpu_scene.material_count()) + " materials, "
-                     + std::to_string(gpu_scene.light_count())   + " lights");
+                     + std::to_string(gpu_scene.light_count())    + " lights");
 
         auto result = rr::cuda::CudaRenderer::render_scene(
-            gpu_scene, cfg.width, cfg.height);
+            gpu_scene, width, height);
         if (!result.ok) {
             Logger::error("GPU render failed: " + result.message);
             return 1;
         }
 
-        const std::filesystem::path out_path = "output/gpu_direct_lighting.ppm";
+        const std::filesystem::path out_path =
+            cfg.output_image_path.value_or("output/from_scene.ppm");
         std::error_code ec;
         if (out_path.has_parent_path()) {
             std::filesystem::create_directories(out_path.parent_path(), ec);
@@ -247,7 +142,7 @@ int main(int argc, char** argv) {
         Logger::info("saved " + out_path.string());
 #else
         Logger::info("(no CUDA backend compiled; rebuild with "
-                     "-DRR_ENABLE_CUDA=ON to render)");
+                     "-DRR_ENABLE_CUDA=ON to render the loaded scene)");
 #endif
         return 0;
     }

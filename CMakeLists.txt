@@ -133,6 +133,7 @@ endif()
 # (the M13 partial parser).
 add_library(rr_io STATIC
     src/io/SceneLoader.cpp
+    src/io/SceneWriter.cpp
 )
 target_link_libraries(rr_io PUBLIC rr_scene)
 target_include_directories(rr_io PUBLIC src)
@@ -144,13 +145,17 @@ endif()
 
 # Scene module. Host-only authoring data model: Camera + render
 # settings + Observer + RelativityParams + lists of spheres /
-# meshes (placeholder) / materials (placeholder) / lights
-# (placeholder). No GPU upload, no parser - those land in M10 / M11
-# / M12 / M13 alongside the systems that consume the data.
+# meshes / materials / lights. Embeds the host PODs from each of
+# those modules, so the GPU upload path can publish without
+# reshaping.
 add_library(rr_scene STATIC
     src/scene/Scene.cpp
 )
-target_link_libraries(rr_scene PUBLIC rr_camera)
+target_link_libraries(rr_scene PUBLIC
+    rr_camera
+    rr_geometry
+    rr_lighting
+)
 target_include_directories(rr_scene PUBLIC src)
 if(MSVC)
     target_compile_options(rr_scene PRIVATE /W4 /permissive-)
@@ -205,7 +210,7 @@ add_executable(RelativityRender
     src/core/Config.cpp
     src/core/CommandLine.cpp
 )
-target_link_libraries(RelativityRender PRIVATE rr_gpu)
+target_link_libraries(RelativityRender PRIVATE rr_gpu rr_io)
 
 target_include_directories(RelativityRender PRIVATE src)
 

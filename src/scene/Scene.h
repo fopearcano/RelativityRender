@@ -1,7 +1,9 @@
 #pragma once
 
 #include "camera/Camera.h"
+#include "geometry/Mesh.h"
 #include "geometry/Sphere.h"
+#include "lighting/Light.h"
 #include "material/MaterialTypes.h"
 #include "math/Vec3.h"
 #include "relativity/RelativityParams.h"
@@ -39,13 +41,18 @@ struct SceneSphere {
     int                  material_index = -1;
 };
 
-// PLACEHOLDER (M11). The mesh module that owns triangle data lands
-// alongside GPU scene upload; today this is just a slot that lets
-// authoring code reserve a mesh entry and a material binding.
+// Authoring-side mesh entry.
+//
+// Embeds the host `rr::geometry::Mesh` (vertices, triangles,
+// `material_id` lookup key, local-to-world `transform`) for real
+// scene data. `object.name` / `object.visible` carry the
+// authoring metadata; the geometry inside `data` is what the GPU
+// upload path consumes. `source_path` is reserved for future
+// external-asset references; it is unused in v1.
 struct SceneMesh {
-    SceneObject object;
-    std::string source_path;     // file or asset id (resolved later)
-    int         material_index = -1;
+    SceneObject        object;
+    rr::geometry::Mesh data;
+    std::string        source_path;
 };
 
 // Authoring-side material entry.
@@ -66,13 +73,17 @@ struct SceneMaterial {
     rr::material::MaterialParams params;
 };
 
-// PLACEHOLDER (M12). The lighting system owns light types (point /
-// directional / area / environment) and importance-sampling helpers.
-// Today this is a colour + intensity slot.
+// Authoring-side light entry.
+//
+// Embeds the host `rr::lighting::Light` POD (type-discriminated
+// fields - position / direction / color / intensity / area
+// extents) so the GPU upload path can publish it without
+// reshaping. `object.name` / `object.visible` carry authoring
+// metadata; toggling visibility on a `SceneLight` is the host-
+// side equivalent of dropping it from the array at upload time.
 struct SceneLight {
-    SceneObject    object;
-    rr::math::Vec3 color     = rr::math::Vec3{1.0f, 1.0f, 1.0f};
-    float          intensity = 1.0f;
+    SceneObject         object;
+    rr::lighting::Light data;
 };
 
 // Authoring-side scene container. Owns the camera, render settings,

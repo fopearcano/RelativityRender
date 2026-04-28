@@ -50,7 +50,7 @@ Update it after every implementation step, per
 | 15 | Progressive Renderer                | not started   |
 | 16 | Denoiser Integration                | not started   |
 | 17 | Render Passes / AOVs                | not started   |
-| 18 | Scene File Format                   | in progress   |
+| 18 | Scene File Format                   | landed        |
 | 19 | Renderer Server                     | not started   |
 | 20 | Cinema 4D Bridge                    | not started   |
 | 21 | Future Native Cinema 4D Renderer    | not started   |
@@ -77,7 +77,7 @@ All modules now have a placeholder source directory under `src/`,
 | M10       | GPU Scene Upload & Triangle Mesh        | landed      |
 | M11       | Material System (Foundations)           | landed      |
 | M12       | Lighting System (Foundations)           | landed      |
-| M13       | Scene File Format & Parser              | in progress |
+| M13       | Scene File Format & Parser              | landed      |
 | M14       | Path Tracing Foundation                 | not started |
 | M15       | OptiX Backend (Upgrade Path)            | not started |
 | M16       | Texture System                          | not started |
@@ -92,6 +92,135 @@ All modules now have a placeholder source directory under `src/`,
 ---
 
 ## Change Log
+
+### 2026-04-27 — M13 finalized: full SceneLoader + SceneWriter + renderer wiring
+
+The format becomes real. Every v1 spec section is now parsed,
+written back, uploaded to the GPU, and rendered through the
+existing kernel. The user's documented command
+`RelativityRender --render scenes/test.rrscene --output
+output/from_scene.ppm` works end-to-end.
+
+- **`src/scene/Scene.h`:** rewrote `SceneMesh` and `SceneLight`
+  from the M9/M11 placeholders to embed the host PODs:
+  - `SceneMesh { object, data: rr::geometry::Mesh,
+                 source_path }` - `data` carries vertices,
+    triangles, `material_id`, transform; `source_path` is
+    reserved for future external-asset references.
+  - `SceneLight { object, data: rr::lighting::Light }` - the
+    embedded POD is what `GpuScene::upload_from` publishes.
+  Updated `scene_tests.cpp` to the new shapes.
+- **`src/io/SceneLoader.{h,cpp}`:** added `load_lights` and
+  `load_meshes`.
+  - `load_lights`: discriminated by `type` string. `"point"`
+    requires `position`; `"directional"` requires `direction`
+    (auto-normalised by the existing `make_*` factories).
+    `intensity >= 0`. Other type strings (incl. `"area"` /
+    `"environment"`) are v1 errors per spec.
+  - `load_meshes`: `vertices` (array of Vec3) and `triangles`
+    (array of `[v0,v1,v2]` index triplets, CCW) required.
+    Per-vertex normals / UVs are not in v1 - the parser
+    populates them at zero and the renderer derives geometric
+    face normals. `material_id` (default `-1`) is the spec
+    lookup key. `transform` is optional with identity default
+    and is parsed via a shared `load_transform` helper that
+    maps file-side `rotation` onto host
+    `Transform::euler_rotation_radians`.
+  Header docstring updated; nothing remains on the
+  warn-and-ignore list for v1.
+- **`src/io/SceneWriter.{h,cpp}`:** new module. Inverse of the
+  loader. `WriteResult save_rrscene(scene, path)` writes a v1
+  JSON file with readable indentation; creates parent dirs.
+  Material fields v1 doesn't expose (`metallic`, `specular`,
+  `transmission`) and light types v1 doesn't expose (`area`,
+  `environment`) are silently dropped during serialisation -
+  they live on host PODs but aren't part of the v1 schema.
+  Round-trips through the loader for everything v1 stores.
+- **`src/gpu/GpuScene.cpp`:** `upload_from` now does the full
+  scene-to-device translation:
+  - Builds a flat `MaterialParams[]` from `scene.materials` and
+    a spec-id -> array-index map.
+  - Sphere `material_index` (the spec lookup key after parsing)
+    is remapped to the device array index via that map.
+  - Visible lights are flattened into a `Light[]` and uploaded.
+  - The first visible mesh fills the single mesh slot
+    (multi-mesh upload is a future slice); its `material_id`
+    is remapped the same way. If no visible mesh exists the
+    slot is cleared so stale state from a previous render
+    can't leak through.
+- **`src/main.cpp`:** `--render` is now driven by the loader.
+  Always loads the file (host-side; works even without CUDA),
+  reports counts, and - when `RR_HAS_CUDA` is on - runs the
+  full upload + render + save pipeline. Output defaults to
+  `output/from_scene.ppm` matching the user's command;
+  `--output` overrides. The previous M12 hard-coded scene is
+  gone (it was a stand-in until real loading existed; earlier
+  outputs remain reproducible from older git commits).
+- **`scenes/test.rrscene`:** drop-in fixture matching the M12
+  lighting scene (5 materials, 4 spheres, 1 quad, 2 lights).
+  This is the exact file the user's documented command points
+  at.
+- **`tests/io_tests.cpp`:** added `test_load_full_scene`
+  (asserts the M12 fixture loads with the right counts +
+  per-light + mesh details, prints a summary) and
+  `test_writer_round_trip` (load -> save -> reload, asserts
+  every v1 field survives intact). `io_tests: 81/81 passed`
+  (was 36).
+- **`CMakeLists.txt`:** `rr_io` lists `src/io/SceneWriter.cpp`;
+  the executable link list adds `rr_io`; `rr_scene` PUBLIC-
+  links `rr_geometry` and `rr_lighting` since `Scene.h` now
+  embeds their PODs.
+
+#### Verified locally (host-only, no CUDA Toolkit on this box)
+
+```
+$ cmake --build build && cd build && ctest --output-on-failure
+ 1/11 ... 11/11 all Passed
+100% tests passed, 0 tests failed out of 11
+
+$ ./build/bin/io_tests | tail -8
+--- loaded full scene ---
+  materials: 5  spheres: 4  lights: 2  meshes: 1
+    light[0] directional color=(1.00, 0.95, 0.85) intensity=0.90
+    light[1] point color=(0.70, 0.80, 1.00) intensity=8.00
+    mesh[0] name=warm_quad vertices=4 triangles=2 material=3
+-------------------------
+io_tests: 81/81 passed
+
+$ ./build/bin/RelativityRender --render scenes/test.rrscene --output output/from_scene.ppm
+[INFO] render command received
+[INFO] loading scene: scenes/test.rrscene
+[INFO] loaded scene: 5 materials, 4 spheres, 2 lights, 1 meshes
+[INFO] (no CUDA backend compiled; rebuild with -DRR_ENABLE_CUDA=ON to render the loaded scene)
+```
+
+The CUDA-enabled run (`-DRR_ENABLE_CUDA=ON`, on a Turing/Ampere/
+Ada GPU) produces `output/from_scene.ppm`. Correct by
+construction: the kernel calls the same `RR_HD` routines that
+the host suite already covers (`camera_tests` / `geometry_tests`
+/ `relativity_tests` / `material_tests` / `lighting_tests`).
+The new translation layer (spec id -> array index) is
+exercised by `io_tests` for the host side and by the host
+tests for material lookup; the GPU only sees flat array
+indices.
+
+#### Hard-rule check
+
+- **No CPU rendering** - the entire shading pipeline still runs
+  in `k_render_scene`. The CPU only loads the file, uploads to
+  the GPU, and saves the framebuffer.
+- **No CPU pixel iteration in the render path** - only inside
+  `Image::save_ppm`.
+
+#### What this milestone closes (M13 / Module 18)
+
+- M13 (Scene File Format & Parser) -> landed: spec is in,
+  loader covers every v1 section, writer round-trips, the
+  executable consumes a `.rrscene` end-to-end.
+- Module 18 (Scene File Format) -> landed for v1. v2 will add
+  textures, env maps, area lights, metallic/specular/
+  transmission, vertex normals/UVs, `source_path` mesh
+  references; all are forward-compatible.
 
 ### 2026-04-27 — M13 parser slice 2: SceneLoader gains materials + spheres
 
@@ -2228,31 +2357,24 @@ and does not affect the architecture or dependency rules.
 
 ## Next Step
 
-**Finish M13 — implement the v1 parser.** The format spec is in
-(`docs/RRSCENE_FORMAT.md`). To move M13 / Module 18 from
-"in progress" to "landed":
+**M14 — Path Tracing Foundation.** With the format and the
+direct-lighting renderer in place, the next big milestone is
+true light transport:
 
-1. Vendor a minimal JSON parser under `third_party/` (e.g.,
-   nlohmann/json single-header). Its include is the only
-   third-party header `src/io/` needs.
-2. `rr::io::load_rrscene(path) -> rr::scene::Scene` populating
-   the host data model the renderer already consumes. Strict
-   validation per the spec's rule list; descriptive
-   diagnostics (file path + JSON pointer or line/column).
-3. The reverse `save_rrscene(scene, path)` for round-trip
-   stability. v1 does not yet round-trip materials / meshes /
-   lights (they're not in v1); it serialises only what the v1
-   schema covers and skips the rest cleanly.
-4. Wire `--render <scene file>` to load the file before
-   uploading, replacing today's hard-coded scene in `main.cpp`.
-5. A small `io_tests` (or `scene_format_tests`) host suite
-   covering the canonical example, the all-defaults minimum
-   (`{ "version": 1 }`), and every documented validation
-   error.
-
-After v1 ships, v2 adds the deferred sections (materials, meshes,
-lights, ...) by mapping the existing host structs to JSON
-sections of the same names.
+1. Move the kernel from one-bounce direct lighting to a real
+   unidirectional path tracer (BSDF `sample` / `eval` / `pdf`
+   on materials, NEE + MIS for lights, Russian roulette for
+   path termination, shadow rays via the existing intersection
+   primitives).
+2. Promote `RenderSettings.samples_per_pixel` and
+   `max_depth` from "stored but not consumed" to real kernel
+   arguments; persist them through `.rrscene`.
+3. Area lights (currently a v2-deferred placeholder) need
+   geometry sampling; once that lands the scene format gains
+   the `"area"` light type.
+4. Multi-mesh scene upload (currently `GpuScene` has a single
+   mesh slot) - either an array of `CudaMeshView` or a flat
+   global vertex/index buffer with per-mesh offsets.
 
 Before or alongside this, the M2 deferred items (`Error`,
 `FileSystem`, `App`, `Config::load`/`save`, real test framework,

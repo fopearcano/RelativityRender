@@ -7,11 +7,14 @@
 // the test runs from any working directory `ctest` chooses.
 
 #include "io/SceneLoader.h"
+#include "io/SceneWriter.h"
+#include "lighting/Light.h"
 #include "math/MathUtils.h"
 #include "math/Vec3.h"
 
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <string>
 
@@ -186,6 +189,142 @@ void test_minimal_scene_still_has_no_geometry() {
     RR_CHECK(result.ok);
     RR_CHECK(result.scene.materials.empty());
     RR_CHECK(result.scene.spheres.empty());
+    RR_CHECK(result.scene.lights.empty());
+    RR_CHECK(result.scene.meshes.empty());
+}
+
+void test_load_full_scene() {
+    // The user-facing test scene exercises every v1 section.
+    auto result = rr::io::load_rrscene(
+        std::filesystem::path(RR_TEST_FIXTURES_DIR) / "test.rrscene");
+    if (!result.ok) {
+        std::fprintf(stderr, "load_rrscene failed: %s\n", result.message.c_str());
+    }
+    RR_CHECK(result.ok);
+    if (!result.ok) return;
+
+    const auto& s = result.scene;
+    std::printf("--- loaded full scene ---\n");
+    std::printf("  materials: %zu  spheres: %zu  lights: %zu  meshes: %zu\n",
+                s.materials.size(), s.spheres.size(),
+                s.lights.size(), s.meshes.size());
+    for (std::size_t i = 0; i < s.lights.size(); ++i) {
+        const auto& L = s.lights[i].data;
+        const char* type = L.type == rr::lighting::LightType::Point ? "point"
+                         : L.type == rr::lighting::LightType::Directional ? "directional"
+                         : "other";
+        std::printf("    light[%zu] %s color=(%.2f, %.2f, %.2f) intensity=%.2f\n",
+                    i, type, L.color.x, L.color.y, L.color.z, L.intensity);
+    }
+    for (std::size_t i = 0; i < s.meshes.size(); ++i) {
+        const auto& m = s.meshes[i];
+        std::printf("    mesh[%zu] name=%s vertices=%zu triangles=%zu material=%d\n",
+                    i, m.object.name.c_str(),
+                    m.data.vertex_count(), m.data.triangle_count(),
+                    m.data.material_id);
+    }
+    std::printf("-------------------------\n");
+
+    RR_CHECK(s.materials.size() == 5u);
+    RR_CHECK(s.spheres.size()   == 4u);
+    RR_CHECK(s.lights.size()    == 2u);
+    RR_CHECK(s.meshes.size()    == 1u);
+
+    // Lights: a directional + a point, in that order.
+    RR_CHECK(s.lights[0].data.type == rr::lighting::LightType::Directional);
+    RR_CHECK(nearly_equal(s.lights[0].data.intensity, 0.9f));
+    // Direction should be normalised (factory does this).
+    RR_CHECK(nearly_equal(rr::math::length(s.lights[0].data.direction), 1.0f));
+    RR_CHECK(s.lights[1].data.type == rr::lighting::LightType::Point);
+    RR_CHECK(s.lights[1].data.position == rr::math::Vec3(1.5f, 2.5f, -1.5f));
+    RR_CHECK(nearly_equal(s.lights[1].data.intensity, 8.0f));
+
+    // Mesh: 4 vertices, 2 triangles, material id 3, identity transform.
+    const auto& m = s.meshes[0];
+    RR_CHECK(m.data.vertex_count()   == 4u);
+    RR_CHECK(m.data.triangle_count() == 2u);
+    RR_CHECK(m.data.material_id      == 3);
+    RR_CHECK(m.data.transform.position == rr::math::Vec3(0, 0, 0));
+    RR_CHECK(m.data.transform.scale    == rr::math::Vec3(1, 1, 1));
+    // CCW front-facing triangle indices.
+    RR_CHECK(m.data.triangles[0].v0 == 0u);
+    RR_CHECK(m.data.triangles[0].v1 == 1u);
+    RR_CHECK(m.data.triangles[0].v2 == 2u);
+}
+
+void test_writer_round_trip() {
+    // Load test.rrscene, save it back to a temp file, reload, and
+    // verify the round-trip preserves the v1 fields.
+    const std::filesystem::path src =
+        std::filesystem::path(RR_TEST_FIXTURES_DIR) / "test.rrscene";
+    const std::filesystem::path dst =
+        std::filesystem::temp_directory_path() / "rrscene_round_trip.rrscene";
+
+    auto loaded = rr::io::load_rrscene(src);
+    RR_CHECK(loaded.ok);
+    if (!loaded.ok) return;
+
+    auto write = rr::io::save_rrscene(loaded.scene, dst);
+    if (!write.ok) {
+        std::fprintf(stderr, "save_rrscene failed: %s\n", write.message.c_str());
+    }
+    RR_CHECK(write.ok);
+    if (!write.ok) return;
+
+    auto reloaded = rr::io::load_rrscene(dst);
+    if (!reloaded.ok) {
+        std::fprintf(stderr, "reload after write failed: %s\n",
+                     reloaded.message.c_str());
+    }
+    RR_CHECK(reloaded.ok);
+    if (!reloaded.ok) return;
+
+    const auto& a = loaded.scene;
+    const auto& b = reloaded.scene;
+
+    RR_CHECK(a.render_settings.width  == b.render_settings.width);
+    RR_CHECK(a.render_settings.height == b.render_settings.height);
+
+    RR_CHECK(nearly_equal(a.camera.vertical_fov_degrees(),
+                          b.camera.vertical_fov_degrees()));
+    RR_CHECK(nearly_equal(a.camera.position(), b.camera.position()));
+    RR_CHECK(nearly_equal(a.camera.forward(),  b.camera.forward()));
+
+    RR_CHECK(nearly_equal(a.observer.velocity, b.observer.velocity));
+    RR_CHECK(a.relativity.enable_aberration       == b.relativity.enable_aberration);
+    RR_CHECK(nearly_equal(a.relativity.doppler_color_strength,
+                          b.relativity.doppler_color_strength));
+
+    RR_CHECK(a.materials.size() == b.materials.size());
+    RR_CHECK(a.spheres.size()   == b.spheres.size());
+    RR_CHECK(a.lights.size()    == b.lights.size());
+    RR_CHECK(a.meshes.size()    == b.meshes.size());
+
+    if (a.materials.size() == b.materials.size() && !a.materials.empty()) {
+        RR_CHECK(a.materials.front().id == b.materials.front().id);
+        RR_CHECK(a.materials.front().name == b.materials.front().name);
+        RR_CHECK(nearly_equal(a.materials.front().params.baseColor,
+                              b.materials.front().params.baseColor));
+    }
+    if (a.spheres.size() == b.spheres.size() && !a.spheres.empty()) {
+        RR_CHECK(nearly_equal(a.spheres.front().geometry.center,
+                              b.spheres.front().geometry.center));
+        RR_CHECK(nearly_equal(a.spheres.front().geometry.radius,
+                              b.spheres.front().geometry.radius));
+        RR_CHECK(a.spheres.front().geometry.material_index
+                 == b.spheres.front().geometry.material_index);
+    }
+    if (a.meshes.size() == b.meshes.size() && !a.meshes.empty()) {
+        RR_CHECK(a.meshes.front().data.vertex_count()
+                 == b.meshes.front().data.vertex_count());
+        RR_CHECK(a.meshes.front().data.triangle_count()
+                 == b.meshes.front().data.triangle_count());
+        RR_CHECK(a.meshes.front().data.material_id
+                 == b.meshes.front().data.material_id);
+    }
+
+    std::error_code ec;
+    std::filesystem::remove(dst, ec);
 }
 
 }
@@ -195,6 +334,8 @@ int main() {
     test_missing_file_fails_predictably();
     test_load_test_geometry_scene();
     test_minimal_scene_still_has_no_geometry();
+    test_load_full_scene();
+    test_writer_round_trip();
 
     std::printf("io_tests: %d/%d passed\n", g_total - g_failed, g_total);
     return g_failed == 0 ? 0 : 1;

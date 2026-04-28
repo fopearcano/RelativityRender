@@ -7,8 +7,8 @@
 
 // `.rrscene` v1 loader.
 //
-// Populates an `rr::scene::Scene` from disk. The v1 sections this
-// loader currently parses:
+// Populates an `rr::scene::Scene` from disk. All v1 sections in
+// the format spec are now parsed:
 //
 //   - `render_settings` (width, height)
 //   - `camera` (position, forward, up, fov)
@@ -18,15 +18,21 @@
 //   - `materials` (id, name, base_color, emission_color,
 //                  emission_strength, roughness)
 //   - `spheres`   (position, radius, material_id)
+//   - `lights`    (type = "point" | "directional",
+//                  position | direction, color, intensity)
+//   - `meshes`    (vertices, triangles, material_id, transform)
 //
-// `lights` and `meshes` are documented in the spec but
-// **deliberately ignored** by this slice; they will be added in
-// subsequent M13 parser sub-prompts. Unknown top-level keys
-// (including the deferred sections) are not errors - per the spec
-// the parser warns-and-ignores them.
+// `material_id` references on spheres and meshes are stored
+// verbatim as the spec lookup key (the entry's `id`); the
+// renderer's `GpuScene::upload_from` translates lookup keys
+// into device-side array indices at upload time.
 //
-// The header is host-only; no GPU dependencies. The CUDA renderer
-// continues to consume the populated `rr::scene::Scene` through
+// Unknown top-level keys are not errors - per the spec the
+// parser warns-and-ignores them so future versions can extend
+// the schema without breaking v1 files.
+//
+// The header is host-only; no GPU dependencies. The CUDA
+// renderer consumes the populated `rr::scene::Scene` through
 // the existing upload path.
 
 namespace rr::io {

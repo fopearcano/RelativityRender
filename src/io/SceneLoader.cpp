@@ -1,13 +1,19 @@
 #include "io/SceneLoader.h"
 
+#include "geometry/Mesh.h"
 #include "geometry/Sphere.h"
+#include "geometry/Triangle.h"
+#include "lighting/Light.h"
 #include "material/MaterialTypes.h"
 #include "math/MathUtils.h"
+#include "math/Transform.h"
+#include "math/Vec2.h"
 #include "math/Vec3.h"
 
 #include <cctype>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <cstdlib>
 #include <fstream>
 #include <map>
@@ -543,6 +549,198 @@ bool load_spheres(const JsonValue* node, rr::scene::Scene& scene,
     return true;
 }
 
+// Per-spec light parser. Type discriminator is a string;
+// `"point"` and `"directional"` are the two v1 forms.
+bool load_lights(const JsonValue* node, rr::scene::Scene& scene,
+                 std::string& error) {
+    if (!node) return true;
+    if (!node->is_array()) {
+        error = "'lights' must be a JSON array";
+        return false;
+    }
+
+    scene.lights.clear();
+    scene.lights.reserve(node->arr.size());
+
+    for (std::size_t i = 0; i < node->arr.size(); ++i) {
+        const auto& entry = node->arr[i];
+        if (!entry.is_object()) {
+            std::ostringstream os;
+            os << "lights[" << i << "] must be a JSON object";
+            error = os.str();
+            return false;
+        }
+
+        const auto* type_node = entry.find("type");
+        if (!type_node || !type_node->is_string()) {
+            std::ostringstream os;
+            os << "lights[" << i << "].type is missing or not a string";
+            error = os.str();
+            return false;
+        }
+        const std::string& type = type_node->s;
+
+        rr::math::Vec3 color    {1.0f, 1.0f, 1.0f};
+        float          intensity = 1.0f;
+
+        std::ostringstream context;
+        context << "lights[" << i << "]";
+        if (!maybe_extract(&entry, "color",     color,     extract_vec3,  error, context.str().c_str())) return false;
+        if (!maybe_extract(&entry, "intensity", intensity, extract_float, error, context.str().c_str())) return false;
+        if (intensity < 0.0f) {
+            std::ostringstream os;
+            os << "lights[" << i << "].intensity must be >= 0";
+            error = os.str();
+            return false;
+        }
+
+        rr::scene::SceneLight light;
+
+        if (type == "point") {
+            rr::math::Vec3 position{0.0f, 0.0f, 0.0f};
+            if (!maybe_extract(&entry, "position", position, extract_vec3, error, context.str().c_str())) return false;
+            light.data = rr::lighting::make_point_light(position, color, intensity);
+        } else if (type == "directional") {
+            rr::math::Vec3 direction{0.0f, -1.0f, 0.0f};
+            if (!maybe_extract(&entry, "direction", direction, extract_vec3, error, context.str().c_str())) return false;
+            light.data = rr::lighting::make_directional_light(direction, color, intensity);
+        } else {
+            std::ostringstream os;
+            os << "lights[" << i << "].type must be \"point\" or \"directional\""
+               << " (got \"" << type << "\")";
+            error = os.str();
+            return false;
+        }
+
+        scene.lights.push_back(std::move(light));
+    }
+    return true;
+}
+
+bool load_transform(const JsonValue* node, rr::math::Transform& out,
+                    std::string& error, const std::string& context) {
+    if (!node) return true;
+    if (!node->is_object()) {
+        error = "'" + context + "' must be a JSON object";
+        return false;
+    }
+    if (!maybe_extract(node, "position", out.position,
+                       extract_vec3, error, context.c_str())) return false;
+    if (!maybe_extract(node, "rotation", out.euler_rotation_radians,
+                       extract_vec3, error, context.c_str())) return false;
+    if (!maybe_extract(node, "scale",    out.scale,
+                       extract_vec3, error, context.c_str())) return false;
+    return true;
+}
+
+bool load_meshes(const JsonValue* node, rr::scene::Scene& scene,
+                 std::string& error) {
+    if (!node) return true;
+    if (!node->is_array()) {
+        error = "'meshes' must be a JSON array";
+        return false;
+    }
+
+    scene.meshes.clear();
+    scene.meshes.reserve(node->arr.size());
+
+    for (std::size_t i = 0; i < node->arr.size(); ++i) {
+        const auto& entry = node->arr[i];
+        if (!entry.is_object()) {
+            std::ostringstream os;
+            os << "meshes[" << i << "] must be a JSON object";
+            error = os.str();
+            return false;
+        }
+
+        rr::scene::SceneMesh mesh;
+
+        if (const auto* name_node = entry.find("name");
+            name_node && name_node->is_string()) {
+            mesh.object.name = name_node->s;
+        }
+
+        // vertices: array of Vec3.
+        const auto* verts_node = entry.find("vertices");
+        if (!verts_node || !verts_node->is_array()) {
+            std::ostringstream os;
+            os << "meshes[" << i << "].vertices is missing or not an array";
+            error = os.str();
+            return false;
+        }
+        mesh.data.vertices.reserve(verts_node->arr.size());
+        for (std::size_t v = 0; v < verts_node->arr.size(); ++v) {
+            rr::math::Vec3 p;
+            if (!extract_vec3(verts_node->arr[v], p)) {
+                std::ostringstream os;
+                os << "meshes[" << i << "].vertices[" << v << "] is not a Vec3";
+                error = os.str();
+                return false;
+            }
+            // v1 only stores positions; normal / uv take their host
+            // defaults (zero) and are derived geometrically by the
+            // renderer.
+            mesh.data.vertices.push_back({p, rr::math::Vec3{0, 0, 0}, rr::math::Vec2{0, 0}});
+        }
+
+        // triangles: array of [int, int, int] index triplets.
+        const auto* tris_node = entry.find("triangles");
+        if (!tris_node || !tris_node->is_array()) {
+            std::ostringstream os;
+            os << "meshes[" << i << "].triangles is missing or not an array";
+            error = os.str();
+            return false;
+        }
+        mesh.data.triangles.reserve(tris_node->arr.size());
+        const std::uint32_t vcount = static_cast<std::uint32_t>(mesh.data.vertices.size());
+        for (std::size_t t = 0; t < tris_node->arr.size(); ++t) {
+            const auto& tri = tris_node->arr[t];
+            if (!tri.is_array() || tri.arr.size() != 3) {
+                std::ostringstream os;
+                os << "meshes[" << i << "].triangles[" << t
+                   << "] must be an array of 3 indices";
+                error = os.str();
+                return false;
+            }
+            std::uint32_t idx[3];
+            for (int k = 0; k < 3; ++k) {
+                if (!tri.arr[k].is_number()) {
+                    std::ostringstream os;
+                    os << "meshes[" << i << "].triangles[" << t << "][" << k
+                       << "] is not a number";
+                    error = os.str();
+                    return false;
+                }
+                const double n = tri.arr[k].n;
+                if (n < 0.0 || n >= static_cast<double>(vcount)) {
+                    std::ostringstream os;
+                    os << "meshes[" << i << "].triangles[" << t << "][" << k
+                       << "] index out of range [0, " << vcount << ")";
+                    error = os.str();
+                    return false;
+                }
+                idx[k] = static_cast<std::uint32_t>(n);
+            }
+            mesh.data.triangles.push_back({idx[0], idx[1], idx[2]});
+        }
+
+        if (!maybe_extract(&entry, "material_id", mesh.data.material_id,
+                           extract_int, error,
+                           ("meshes[" + std::to_string(i) + "]").c_str())) return false;
+
+        if (const auto* tnode = entry.find("transform")) {
+            std::ostringstream tcontext;
+            tcontext << "meshes[" << i << "].transform";
+            if (!load_transform(tnode, mesh.data.transform, error, tcontext.str())) {
+                return false;
+            }
+        }
+
+        scene.meshes.push_back(std::move(mesh));
+    }
+    return true;
+}
+
 }  // anonymous namespace
 
 LoadResult load_rrscene(const std::filesystem::path& path) {
@@ -603,6 +801,14 @@ LoadResult load_rrscene(const std::filesystem::path& path) {
         return result;
     }
     if (!load_spheres(root.find("spheres"), result.scene, error)) {
+        result.message = error;
+        return result;
+    }
+    if (!load_lights(root.find("lights"), result.scene, error)) {
+        result.message = error;
+        return result;
+    }
+    if (!load_meshes(root.find("meshes"), result.scene, error)) {
         result.message = error;
         return result;
     }

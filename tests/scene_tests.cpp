@@ -97,16 +97,19 @@ void test_population_round_trip() {
     s.spheres.push_back(sph);
 
     SceneMesh mesh;
-    mesh.object.name     = "placeholder_mesh";
-    mesh.source_path     = "assets/teapot.obj";
-    mesh.material_index  = matte_index;
+    mesh.object.name = "test_mesh";
+    mesh.source_path = "assets/teapot.obj";
+    mesh.data.vertices.push_back({Vec3{0, 0, 0}, Vec3{0, 0, 1}, rr::math::Vec2{0, 0}});
+    mesh.data.vertices.push_back({Vec3{1, 0, 0}, Vec3{0, 0, 1}, rr::math::Vec2{1, 0}});
+    mesh.data.vertices.push_back({Vec3{0, 1, 0}, Vec3{0, 0, 1}, rr::math::Vec2{0, 1}});
+    mesh.data.triangles.push_back({0, 1, 2});
+    mesh.data.material_id = matte_index;
     s.meshes.push_back(mesh);
 
     SceneLight light;
-    light.object.name        = "key_light";
-    light.object.transform.position = Vec3{5, 5, 5};
-    light.color              = Vec3{1.0f, 0.95f, 0.9f};
-    light.intensity          = 8.0f;
+    light.object.name = "key_light";
+    light.data        = rr::lighting::make_point_light(
+        Vec3{5, 5, 5}, Vec3{1.0f, 0.95f, 0.9f}, 8.0f);
     s.lights.push_back(light);
 
     RR_CHECK(s.materials.size() == 1u);
@@ -120,8 +123,12 @@ void test_population_round_trip() {
     RR_CHECK(s.materials[matte_index].params.baseColor == Vec3(0.9f, 0.9f, 0.9f));
     RR_CHECK(s.spheres[0].geometry.center == Vec3(0, 0, -3));
     RR_CHECK(s.spheres[0].geometry.radius == 1.0f);
-    RR_CHECK(s.lights[0].object.transform.position == Vec3(5, 5, 5));
-    RR_CHECK(s.lights[0].intensity == 8.0f);
+    RR_CHECK(s.meshes[0].data.vertex_count()   == 3u);
+    RR_CHECK(s.meshes[0].data.triangle_count() == 1u);
+    RR_CHECK(s.meshes[0].data.material_id      == matte_index);
+    RR_CHECK(s.lights[0].data.type     == rr::lighting::LightType::Point);
+    RR_CHECK(s.lights[0].data.position == Vec3(5, 5, 5));
+    RR_CHECK(s.lights[0].data.intensity == 8.0f);
 }
 
 void test_clear_resets_lists_and_state() {
