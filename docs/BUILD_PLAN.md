@@ -93,6 +93,73 @@ All modules now have a placeholder source directory under `src/`,
 
 ## Change Log
 
+### 2026-04-27 — OptiX backend plan: introduction slice
+
+Documentation-only. First slice of `docs/OPTIX_BACKEND_PLAN.md`.
+No code, no CMake change, no parser / kernel / module
+changes.
+
+- **`docs/OPTIX_BACKEND_PLAN.md`:** introduction slice.
+  - Status callout: spec only; subsequent slices add the
+    deferred sections (AS, SBT, materials, camera, relativity,
+    build / SDK integration) before any implementation.
+  - **§2 Where we are today**: snapshot of the current naive
+    intersection path, the two scene kernels that share
+    `trace_closest`, and the brute-force loop over
+    `scene.spheres` + `scene.mesh.triangles` per ray.
+  - **§3 Why naive intersection does not scale**: per-pixel cost
+    is `spp * max_depth * (sphere_count + triangle_count)`;
+    the M12 test scene at 1280x720 / spp = 16 / depth = 4 is
+    ~880 M intersections - tractable. Adding one 100 k-tri
+    mesh balloons it to ~14 trillion. Three structural
+    problems enumerated: no early rejection, no instancing, no
+    RT-core hardware help.
+  - **§4 Why OptiX**: hardware-accelerated BVH traversal,
+    built-in instancing, pluggable program model. OptiX runs
+    on top of CUDA, so it slots in next to the existing
+    backend rather than replacing it.
+  - **§5 Pipeline overview**: three programs in v1
+    (`raygen` / `miss` / `closest-hit`); custom intersection
+    and any-hit are out of scope. The CPU's job (configure
+    scene, launch, save) does not change; the GPU's structure
+    does.
+  - **§6 raygen**: owns the work at the top of `k_path_trace` -
+    pixel index, RNG, primary ray, aberration, bounce loop
+    driving `optixTrace`, post-loop Doppler / searchlight,
+    framebuffer write. All ray paths still on the GPU; the
+    `RR_HD inline` helpers carry over unchanged.
+  - **§7 miss**: the existing `sky_color` lives here verbatim;
+    Doppler / searchlight intentionally do **not** run inside
+    the miss program because they wrap the integrated radiance
+    after the whole path is done.
+  - **§8 closest-hit**: owns the bounce-step branch of
+    `trace_one_path` - material lookup, surface reconstruction,
+    emission accumulation, cosine-weighted bounce sample,
+    throughput update. The bounce *loop* stays in raygen.
+  - **§9 Out of scope for this slice**: acceleration structures,
+    shader binding table, material data, camera data,
+    relativity integration, build / SDK integration. Each gets
+    its own slice in the same incremental style as the
+    RRSCENE format spec.
+  - **§10 References**: the CUDA backend files the migration
+    replaces, the master architecture / module map / milestone
+    roadmap entries that govern the work.
+
+#### Verified
+
+No source changes; the existing build / tests remain green
+(`ctest -> 12/12`).
+
+#### Per the prompt
+
+- Only the introduction + high-level overview slice was added.
+- The three pipeline programs (raygen, miss, closest-hit) are
+  described with their RelativityRender role.
+- Acceleration structures, SBT, materials, camera, relativity
+  intentionally not covered yet; documented as out-of-scope
+  with a placeholder list at §9.
+- No code.
+
 ### 2026-04-27 — M14 minimal CUDA path tracer
 
 First end-to-end path tracer. Per pixel: traces `spp` independent
