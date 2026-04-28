@@ -15,6 +15,7 @@
     #include "gpu/GpuScene.h"
     #include "image/Color.h"
     #include "image/Image.h"
+    #include "renderer/AOV.h"
     #include "texture/ImageTexture.h"
 #endif
 
@@ -249,6 +250,50 @@ int main(int argc, char** argv) {
                 return 1;
             }
             Logger::info("saved " + tex_out.string());
+        }
+
+        // M17 deliverable: render the same scene one more time and
+        // capture every AOV slot. The AOV launch reuses the M16
+        // shading pipeline, so the beauty AOV matches
+        // `output/from_scene.ppm` bit-for-bit; the other slots
+        // expose the intermediate quantities (normal, depth,
+        // albedo, Doppler factor, searchlight factor). Output paths
+        // are fixed for the milestone deliverable so the six PPMs
+        // are easy to diff between commits.
+        {
+            auto aov_result = rr::cuda::CudaRenderer::render_aovs(
+                gpu_scene, width, height);
+            if (!aov_result.ok) {
+                Logger::error("AOV render failed: " + aov_result.message);
+                return 1;
+            }
+
+            struct AOVOutput { rr::renderer::AOVKind kind; const char* path; };
+            const AOVOutput aov_outputs[] = {
+                { rr::renderer::AOVKind::Beauty,            "output/aov_beauty.ppm"      },
+                { rr::renderer::AOVKind::Normal,            "output/aov_normal.ppm"      },
+                { rr::renderer::AOVKind::Depth,             "output/aov_depth.ppm"       },
+                { rr::renderer::AOVKind::Albedo,            "output/aov_albedo.ppm"      },
+                { rr::renderer::AOVKind::DopplerFactor,     "output/aov_doppler.ppm"     },
+                { rr::renderer::AOVKind::SearchlightFactor, "output/aov_searchlight.ppm" },
+            };
+            for (const auto& out : aov_outputs) {
+                const auto& aov = aov_result.aovs[static_cast<int>(out.kind)];
+                const std::filesystem::path aov_path = out.path;
+                std::error_code aov_ec;
+                if (aov_path.has_parent_path()) {
+                    std::filesystem::create_directories(aov_path.parent_path(), aov_ec);
+                }
+                if (!aov.save_ppm(aov_path)) {
+                    Logger::error(std::string("saving AOV failed: ")
+                                  + rr::renderer::aov_kind_name(out.kind)
+                                  + " -> " + aov_path.string());
+                    return 1;
+                }
+                Logger::info(std::string("saved AOV ")
+                             + rr::renderer::aov_kind_name(out.kind)
+                             + ": " + aov_path.string());
+            }
         }
 #else
         Logger::info("(no CUDA backend compiled; rebuild with "

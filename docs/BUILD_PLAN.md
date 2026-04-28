@@ -49,7 +49,7 @@ Update it after every implementation step, per
 | 14 | Path Tracer                         | in progress   |
 | 15 | Progressive Renderer                | not started   |
 | 16 | Denoiser Integration                | not started   |
-| 17 | Render Passes / AOVs                | not started   |
+| 17 | Render Passes / AOVs                | landed        |
 | 18 | Scene File Format                   | landed        |
 | 19 | Renderer Server                     | not started   |
 | 20 | Cinema 4D Bridge                    | not started   |
@@ -81,7 +81,7 @@ All modules now have a placeholder source directory under `src/`,
 | M14       | Path Tracing Foundation                 | in progress |
 | M15       | OptiX Backend (Upgrade Path)            | in progress |
 | M16       | Texture System                          | landed      |
-| M17       | Render Passes / AOVs                    | not started |
+| M17       | Render Passes / AOVs                    | landed      |
 | M18       | Renderer Server                         | not started |
 | M19       | Cinema 4D Bridge (Plugin)               | not started |
 | M20       | Preview UI                              | not started |
@@ -92,6 +92,149 @@ All modules now have a placeholder source directory under `src/`,
 ---
 
 ## Change Log
+
+### 2026-04-28 — M17: render-pass / AOV foundation
+
+Adds the v1 AOV (Arbitrary Output Variable) foundation. Six render
+passes — Beauty, Normal, Depth, Albedo, DopplerFactor,
+SearchlightFactor — populate from a single GPU launch that reuses
+the M16 shading pipeline; the host downloads each into a separate
+`rr::renderer::AOV` and saves it as a per-pass PPM. No format
+changes to existing renders; the beauty AOV matches
+`output/from_scene.ppm` bit-for-bit.
+
+- **`src/renderer/AOV.h`:** new module. `AOVKind` tagged-union
+  enum (`Beauty = 0`, `Normal = 1`, `Depth = 2`, `Albedo = 3`,
+  `DopplerFactor = 4`, `SearchlightFactor = 5`) with stable
+  ordinals so the device-side write pack keeps the same slot
+  layout. `kAOVCount = 6`. `aov_kind_name()` -> human-readable
+  string used in log lines and the host save path. `aov_is_color()`
+  -> true for Beauty / Normal / Albedo (Vec3 per pixel) and false
+  for the scalar trio. `class AOV` wraps an `AOVKind` plus an
+  `rr::image::Image` (uniformly `Rgba32F`, so the upload /
+  download path is the same for every kind), plus a `save_ppm`
+  that branches on colour vs scalar.
+- **`src/renderer/AOV.cpp`:**
+  - Colour AOVs go through `Image::save_ppm` directly (the
+    existing 8-bit P6 path).
+  - Scalar AOVs (`Depth` / `DopplerFactor` /
+    `SearchlightFactor`) pack their value in the R channel.
+    `save_ppm` finds the brightest pixel, normalises so it maps
+    to 1.0, and emits a grayscale triple. Keeps the saved PPMs
+    human-readable without committing the renderer to a tone-
+    mapping policy. All-zero input is special-cased so the
+    normaliser doesn't divide by zero.
+- **`src/cuda/CudaAOV.cuh`:** new device-side launch-arg pack.
+  `CudaAOVPack` carries six `float*` slots (one per AOV);
+  pointers left null instruct the kernel to skip that AOV's
+  write. `aov_write_rgba(buffer, x, y, w, vec)` and
+  `aov_write_scalar(buffer, x, y, w, v)` are `RR_HD inline`
+  helpers that pack the value into the same `Rgba32F` row-major
+  layout `rr::image::Image` already uses (R holds the scalar,
+  G/B = 0, A = 1). No CUDA-runtime types beyond the `cudaStream_t`
+  forward-decl through `cuda_runtime.h`, so the host suite runs
+  the same code paths the kernel uses.
+- **`src/cuda/CudaScene.cuh`:** added `launch_render_aovs(width,
+  height, scene, aov_pack, stream)` declaration. Includes
+  `cuda/CudaAOV.cuh` so the launch-arg pack is in scope at the
+  same level as `CudaSceneView`.
+- **`src/cuda/CudaTestKernel.cu`:** added `k_render_aovs` and
+  its `launch_render_aovs` host-launcher. The kernel is the
+  M16 single-bounce shading pipeline (camera ray ->
+  aberration -> closest-hit over spheres + the mesh slot ->
+  texture-sampled albedo -> direct lighting -> Doppler colour
+  -> searchlight) but taps the intermediate quantities into
+  the AOV pack at the appropriate stages:
+  - Albedo            : raw base colour (post-texture sample,
+                        before lighting + relativity).
+  - Normal            : `0.5*N + 0.5` for the closest hit; sky
+                        direction encoding on miss so the AOV
+                        is non-empty on background pixels too.
+  - Depth             : ray `t` for the closest hit (0 on miss).
+  - Beauty            : final shaded + relativity-applied colour.
+  - DopplerFactor     : raw `D` from the primary photon
+                        direction (always written; it's a
+                        property of the ray + observer, not
+                        of geometry).
+  - SearchlightFactor : `D^4` from the same `D`.
+- **`src/cuda/CudaRenderer.{h,cu}`:** added `AOVResult` (six
+  populated `AOV`s + `ok`/`message`) and `render_aovs(scene,
+  w, h)`. Allocates six parallel `GpuBuffer<float>` framebuffers
+  (one per AOV, each `w*h*4` floats), packs the device pointers
+  into a `CudaAOVPack`, runs `launch_render_aovs`, drains CUDA
+  errors, then downloads each device buffer into the
+  pre-allocated `rr::image::Image` of the corresponding host
+  `AOV`. Same has-camera / has-relativity / dim guards as
+  `render_scene`.
+- **`src/main.cpp`:** the `--render` block runs `render_aovs`
+  after the textured-material render and saves six PPMs to
+  fixed deliverable paths: `output/aov_beauty.ppm`,
+  `output/aov_normal.ppm`, `output/aov_depth.ppm`,
+  `output/aov_albedo.ppm`, `output/aov_doppler.ppm`,
+  `output/aov_searchlight.ppm`. Logs each save with the
+  human-readable AOV name.
+- **`tests/aov_tests.cpp`:** 87 host assertions covering the
+  full host surface.
+  - `aov_kind_name` returns the v1 names for all six kinds.
+  - `kAOVCount == 6`.
+  - `aov_is_color` predicate splits Beauty / Normal / Albedo
+    from Depth / DopplerFactor / SearchlightFactor.
+  - Default-constructed `AOV` is empty; constructed `AOV`
+    sizes the underlying `Image` uniformly to `Rgba32F` for
+    every kind.
+  - `save_ppm` fails on an empty AOV (no file written).
+  - `save_ppm` for a colour AOV writes the expected 8-bit
+    triples (constructed PPM body parsed and verified
+    byte-for-byte against a 2x1 red+green fixture).
+  - `save_ppm` for a scalar AOV normalises to grayscale: a
+    3x1 fixture with R values `{0.0, 0.5, 2.0}` produces
+    body bytes `{0, 0, 0,  64, 64, 64,  255, 255, 255}` — the
+    brightest pixel maps to white and the others scale
+    linearly.
+  - All-zero scalar input saves as black (no divide-by-zero).
+- **`CMakeLists.txt`:** new `rr_renderer` static library
+  (PUBLIC-links `rr_image`) so the host AOV surface is
+  available without pulling in CUDA. `rr_gpu` PUBLIC-links
+  `rr_renderer` because `CudaRenderer::AOVResult` exposes
+  `rr::renderer::AOV` by value. New `aov_tests` executable
+  registered with `add_test`.
+
+#### Verified locally (host-only, no CUDA Toolkit on this box)
+
+```
+$ cmake --build build && cd build && ctest --output-on-failure
+ 1/14 ... 14/14 all Passed
+100% tests passed, 0 tests failed out of 14
+
+$ ./build/bin/aov_tests
+aov_tests: 87/87 passed
+```
+
+The CUDA-enabled run (`-DRR_ENABLE_CUDA=ON` on a Turing/Ampere/Ada
+GPU) is correct by construction: the AOV kernel reuses the same
+`RR_HD inline` helpers (`intersect_*`, `sample_texture`, the
+relativistic stack) that the existing host suites cover. The
+device-side AOV write helpers (`aov_write_rgba`,
+`aov_write_scalar`) are simple buffer pokes and exercised by the
+host save-path tests against the same `Rgba32F` layout the kernel
+produces.
+
+#### Per the prompt
+
+- Three requested files (`src/renderer/AOV.h`, `src/renderer/AOV.cpp`,
+  `src/cuda/CudaAOV.cuh`) all present.
+- Six passes (beauty, normal, depth, albedo, dopplerFactor,
+  searchlightFactor) all populated by a single GPU launch.
+- Output: separate PPM files for each pass under `output/`.
+- "GPU writes selected AOV buffers": `CudaAOVPack` slots that
+  are null are skipped by the writer helpers, so the same
+  kernel can drive a subset of AOVs without a recompile when a
+  future render config asks for less than the v1 six.
+
+#### Module / milestone status
+
+- Module 17 (Render Passes / AOVs): `not started` -> `landed`.
+- M17 (Render Passes / AOVs): `not started` -> `landed`.
 
 ### 2026-04-27 — M16 finalized: GPU texture sampling end-to-end
 

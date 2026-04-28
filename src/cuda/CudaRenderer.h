@@ -4,7 +4,9 @@
 #include "geometry/Sphere.h"
 #include "image/Image.h"
 #include "relativity/RelativityParams.h"
+#include "renderer/AOV.h"
 
+#include <array>
 #include <string>
 
 namespace rr::gpu { class GpuScene; }
@@ -82,6 +84,19 @@ public:
                                    int width, int height,
                                    int spp, int max_depth,
                                    unsigned int seed_offset = 0u);
+
+    // M17: render the same scene as `render_scene` but capture every
+    // intermediate quantity into a per-AOV buffer in a single GPU
+    // launch. Returns a `kAOVCount`-sized array of populated host
+    // `AOV`s (indexed by `static_cast<int>(AOVKind)`); when `ok` is
+    // false the array is empty and `message` describes the failure.
+    struct AOVResult {
+        bool                                                            ok = false;
+        std::array<rr::renderer::AOV, rr::renderer::kAOVCount>          aovs{};
+        std::string                                                     message;
+    };
+    static AOVResult render_aovs(const rr::gpu::GpuScene& scene,
+                                 int width, int height);
 };
 
 }

@@ -223,6 +223,23 @@ else()
     target_compile_options(rr_scene PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 
+# Renderer module. Host-side render-pass / AOV foundation. The
+# `AOV` class wraps an `rr::image::Image` and adds a per-AOV
+# save_ppm that normalises scalar AOVs to grayscale so the v1
+# viewer hook stays human-readable. The device-side AOV pack +
+# write helpers live in `cuda/CudaAOV.cuh` (header-only) and are
+# consumed by the CUDA renderer + tests.
+add_library(rr_renderer STATIC
+    src/renderer/AOV.cpp
+)
+target_include_directories(rr_renderer PUBLIC src)
+target_link_libraries(rr_renderer PUBLIC rr_image)
+if(MSVC)
+    target_compile_options(rr_renderer PRIVATE /W4 /permissive-)
+else()
+    target_compile_options(rr_renderer PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+
 # GPU device layer. Backend-agnostic surface in src/gpu/. The CUDA
 # backend (src/cuda/CudaContext.cpp) is only added to the build when
 # RR_ENABLE_CUDA is ON; otherwise the gpu layer compiles with no
@@ -236,8 +253,10 @@ add_library(rr_gpu STATIC
 target_include_directories(rr_gpu PUBLIC src)
 # rr_scene + rr_geometry + rr_material + rr_lighting are part of the
 # public ABI of rr_gpu since `GpuScene` consumes scene structures,
-# meshes, materials, and lights.
-target_link_libraries(rr_gpu PUBLIC rr_scene rr_geometry rr_material rr_lighting)
+# meshes, materials, and lights. rr_renderer is part of the public
+# ABI when CUDA is on (CudaRenderer::AOVResult exposes AOV by value),
+# but is cheap enough to PUBLIC-link unconditionally.
+target_link_libraries(rr_gpu PUBLIC rr_scene rr_geometry rr_material rr_lighting rr_renderer)
 if(MSVC)
     target_compile_options(rr_gpu PRIVATE /W4 /permissive-)
 else()
@@ -460,4 +479,18 @@ if(RR_BUILD_TESTS)
         target_compile_options(texture_tests PRIVATE -Wall -Wextra -Wpedantic)
     endif()
     add_test(NAME texture_tests COMMAND texture_tests)
+
+    # Render-pass / AOV foundation tests. Verifies the AOVKind ->
+    # name + colour-vs-scalar predicates, AOV constructor sizing,
+    # and that `AOV::save_ppm` normalises scalar AOVs to grayscale
+    # at save time without committing the renderer to a tone-mapping
+    # policy. Saves test PPMs into the build dir.
+    add_executable(aov_tests tests/aov_tests.cpp)
+    target_link_libraries(aov_tests PRIVATE rr_renderer)
+    if(MSVC)
+        target_compile_options(aov_tests PRIVATE /W4 /permissive-)
+    else()
+        target_compile_options(aov_tests PRIVATE -Wall -Wextra -Wpedantic)
+    endif()
+    add_test(NAME aov_tests COMMAND aov_tests)
 endif()

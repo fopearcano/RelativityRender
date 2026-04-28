@@ -13,6 +13,7 @@
 #include <cuda_runtime.h>
 
 #include "camera/CameraRay.h"
+#include "cuda/CudaAOV.cuh"
 #include "cuda/CudaLight.cuh"
 #include "cuda/CudaMaterial.cuh"
 #include "cuda/CudaMesh.cuh"
@@ -91,5 +92,23 @@ void launch_path_trace(float* device_pixels, int width, int height,
                        int spp, int max_depth,
                        unsigned int seed_offset,
                        cudaStream_t stream = 0);
+
+// M17 AOV launcher. Same shading pipeline as `launch_render_scene`,
+// but instead of writing only the beauty buffer the kernel pokes
+// each requested AOV slot in `aov_pack` at the appropriate stage:
+//   - Albedo            : raw base colour (post-texture sample,
+//                         before lighting + relativity).
+//   - Normal            : `0.5*N + 0.5` for the closest hit (sky on
+//                         miss).
+//   - Depth             : ray `t` for the closest hit (0 on miss).
+//   - DopplerFactor     : raw `D` from the primary photon direction.
+//   - SearchlightFactor : `D^4` from the same `D`.
+//   - Beauty            : final shaded + relativity-applied colour.
+// Pointers left null in `aov_pack` cause the corresponding AOV
+// slot to be skipped.
+void launch_render_aovs(int width, int height,
+                        CudaSceneView scene,
+                        CudaAOVPack   aov_pack,
+                        cudaStream_t  stream = 0);
 
 }

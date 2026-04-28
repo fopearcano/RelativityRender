@@ -1,3 +1,4 @@
+#include "cuda/CudaAOV.cuh"
 #include "cuda/CudaIntersection.cuh"
 #include "cuda/CudaKernels.cuh"
 #include "cuda/CudaLight.cuh"
@@ -678,6 +679,206 @@ void launch_path_trace(float* device_pixels, int width, int height,
                                              spp, max_depth, seed_offset);
 }
 
+namespace {
+
+// M17 AOV kernel. Re-runs the M16 single-bounce shading pipeline but
+// taps the intermediate quantities into per-AOV buffers in addition
+// to (or instead of) writing a beauty framebuffer. The pipeline is
+// identical to `k_render_scene` so the beauty AOV always matches the
+// existing renderer output bit-for-bit; the other slots are the
+// quantities that already exist inside that pipeline, just exported.
+__global__ void k_render_aovs(int width, int height,
+                              rr::cuda::CudaSceneView scene,
+                              rr::cuda::CudaAOVPack   aov) {
+    const int x = blockIdx.x * blockDim.x + threadIdx.x;
+    const int y = blockIdx.y * blockDim.y + threadIdx.y;
+    if (x >= width || y >= height) return;
+
+    using rr::math::Vec3;
+
+    // 1. Camera ray.
+    auto ray = rr::camera::generate_camera_ray(scene.camera, x, y, width, height);
+
+    // 2. Aberration.
+    if (scene.params.enable_aberration) {
+        ray.direction = rr::relativity::aberrateDirection(scene.observer.velocity,
+                                                          ray.direction);
+    }
+
+    // 3. Closest-hit loop (spheres + the single mesh slot).
+    rr::renderer::Hit best;
+    float             t_max = 1.0e30f;
+
+    for (int i = 0; i < scene.sphere_count; ++i) {
+        const auto h = rr::cuda::intersect_sphere(ray, scene.spheres[i],
+                                                  /*t_min=*/0.0f, t_max);
+        if (h.hit) { best = h; t_max = h.t; }
+    }
+    const auto& mesh = scene.mesh;
+    for (int i = 0; i < mesh.triangle_count; ++i) {
+        const auto tri = mesh.triangles[i];
+        const auto v0  = mesh.vertices[tri.v0].position;
+        const auto v1  = mesh.vertices[tri.v1].position;
+        const auto v2  = mesh.vertices[tri.v2].position;
+        auto h = rr::cuda::intersect_triangle(ray, v0, v1, v2,
+                                              /*t_min=*/0.0f, t_max);
+        if (h.hit) {
+            h.material_index = mesh.material_id;
+            const auto uv0 = mesh.vertices[tri.v0].uv;
+            const auto uv1 = mesh.vertices[tri.v1].uv;
+            const auto uv2 = mesh.vertices[tri.v2].uv;
+            const float w0 = 1.0f - h.bary_u - h.bary_v;
+            h.uv = uv0 * w0 + uv1 * h.bary_u + uv2 * h.bary_v;
+            best  = h;
+            t_max = h.t;
+        }
+    }
+
+    // 4. Direct lighting (single-pass over the uploaded lights),
+    //    matching k_render_scene exactly so the AOV beauty output
+    //    is identical to the standard render.
+    Vec3 lighting  = Vec3{0.0f, 0.0f, 0.0f};
+    Vec3 env_color = Vec3{0.5f, 0.65f, 0.85f};
+    bool has_env   = false;
+
+    rr::material::MaterialParams mat;
+    const bool have_material =
+        best.hit
+        && best.material_index >= 0
+        && best.material_index < scene.material_count
+        && scene.materials != nullptr;
+    if (have_material) {
+        mat = scene.materials[best.material_index];
+    }
+
+    Vec3 albedo = mat.baseColor;
+    if (best.hit
+        && mat.base_color_texture_id >= 0
+        && mat.base_color_texture_id < scene.texture_count
+        && scene.textures != nullptr) {
+        albedo = rr::cuda::sample_texture(scene.textures[mat.base_color_texture_id],
+                                          best.uv);
+    }
+
+    for (int i = 0; i < scene.light_count; ++i) {
+        const rr::lighting::Light L = scene.lights[i];
+
+        if (L.type == rr::lighting::LightType::Environment) {
+            env_color = L.color * L.intensity;
+            has_env   = true;
+            continue;
+        }
+        if (!best.hit)                                 continue;
+        if (L.type == rr::lighting::LightType::Area)   continue;
+
+        Vec3  wi;
+        float E_lum;
+        bool  use_light = false;
+
+        if (L.type == rr::lighting::LightType::Directional) {
+            wi        = -L.direction;
+            E_lum     = 1.0f;
+            use_light = true;
+        } else if (L.type == rr::lighting::LightType::Point) {
+            const Vec3  to_light = L.position - best.position;
+            const float d2       = rr::math::dot(to_light, to_light);
+            if (d2 > 1.0e-12f) {
+                const float inv_d = 1.0f / sqrtf(d2);
+                wi        = to_light * inv_d;
+                E_lum     = 1.0f / d2;
+                use_light = true;
+            }
+        }
+        if (!use_light) continue;
+
+        float ndotl = rr::math::dot(best.normal, wi);
+        if (ndotl <= 0.0f) continue;
+
+        const Vec3 Li = L.color * (L.intensity * E_lum);
+        lighting = lighting + Li * ndotl;
+    }
+
+    Vec3 color;
+    if (best.hit) {
+        const Vec3 diffuse  = albedo * (lighting + env_color);
+        const Vec3 emission = mat.emissionColor * mat.emissionStrength;
+        color = diffuse + emission;
+    } else if (has_env) {
+        color = env_color;
+    } else {
+        const float t = 0.5f * (ray.direction.y + 1.0f);
+        color = Vec3{(1.0f - t) * 1.0f + t * 0.5f,
+                     (1.0f - t) * 1.0f + t * 0.7f,
+                     (1.0f - t) * 1.0f + t * 1.0f};
+    }
+
+    // Doppler factor for the (possibly aberrated) photon direction.
+    const float D  = rr::relativity::dopplerFactor(scene.observer.velocity,
+                                                   ray.direction);
+    const float D4 = rr::relativity::searchlightFactor(D);
+
+    // 5. Doppler colour shift.
+    if (scene.params.enable_doppler) {
+        color = rr::relativity::applyDopplerColor(color, D,
+                                                  scene.params.doppler_color_strength);
+    }
+    // 6. Searchlight beaming.
+    if (scene.params.enable_searchlight) {
+        const float scale = 1.0f + (D4 - 1.0f) * scene.params.searchlight_strength;
+        color = color * scale;
+    }
+
+    // --- AOV writes ---
+    //
+    // Beauty: final, relativity-applied shaded result.
+    rr::cuda::aov_write_rgba(aov.beauty, x, y, width, color);
+
+    // Normal: encoded `0.5*N + 0.5` on hit; sky-direction encoding
+    // on miss, matching the look of the existing diagnostic kernels.
+    Vec3 normal_rgb;
+    if (best.hit) {
+        normal_rgb = Vec3{0.5f * best.normal.x + 0.5f,
+                          0.5f * best.normal.y + 0.5f,
+                          0.5f * best.normal.z + 0.5f};
+    } else {
+        normal_rgb = Vec3{0.5f * ray.direction.x + 0.5f,
+                          0.5f * ray.direction.y + 0.5f,
+                          0.5f * ray.direction.z + 0.5f};
+    }
+    rr::cuda::aov_write_rgba(aov.normal, x, y, width, normal_rgb);
+
+    // Depth: ray distance to the closest hit. Misses get 0 so the
+    // PPM normaliser ignores them when picking the brightest pixel.
+    const float depth_value = best.hit ? best.t : 0.0f;
+    rr::cuda::aov_write_scalar(aov.depth, x, y, width, depth_value);
+
+    // Albedo: pre-lighting base colour (post-texture sample). Misses
+    // get the resolved env / sky colour so the AOV is non-empty
+    // even for fully-empty scenes.
+    Vec3 albedo_rgb = best.hit ? albedo
+                               : (has_env ? env_color : color);
+    rr::cuda::aov_write_rgba(aov.albedo, x, y, width, albedo_rgb);
+
+    // Doppler / searchlight: scalar factors from the primary photon
+    // direction. Both are written unconditionally - they're a
+    // property of the observer + ray direction, not of geometry.
+    rr::cuda::aov_write_scalar(aov.doppler_factor,     x, y, width, D);
+    rr::cuda::aov_write_scalar(aov.searchlight_factor, x, y, width, D4);
 }
 
+}
 
+void launch_render_aovs(int width, int height,
+                        rr::cuda::CudaSceneView scene,
+                        rr::cuda::CudaAOVPack   aov_pack,
+                        cudaStream_t stream) {
+    if (width <= 0 || height <= 0) return;
+
+    const dim3 block(16, 16);
+    const dim3 grid((width  + block.x - 1) / block.x,
+                    (height + block.y - 1) / block.y);
+
+    k_render_aovs<<<grid, block, 0, stream>>>(width, height, scene, aov_pack);
+}
+
+}
