@@ -93,6 +93,169 @@ All modules now have a placeholder source directory under `src/`,
 
 ## Change Log
 
+### 2026-04-28 — M19 (extension 2): polygon mesh export
+
+Third slice of the Cinema 4D bridge. The Export Scene command
+now walks the active document and writes every native polygon
+mesh into the `.rrscene` `meshes[]` array, with quads
+triangulated, global transforms baked into world-space
+vertices, and material references gathered into a stub
+`materials[]`. Generators / deformers / volumes / hair are
+skipped explicitly and surfaced in the confirmation dialog so
+the user always knows which scene objects did NOT make it into
+the file.
+
+- **`integrations/c4d/RelativityRenderBridge/rrscene_writer.py`:**
+  - New pure helpers callable from the .pyp + the standalone
+    test harness: `triangulate_cpolygon(a, b, c, d)`
+    converts a Cinema 4D `CPolygon` into one or two triangles
+    along the `a-c` diagonal and prunes degenerates;
+    `transform_point(point, v1, v2, v3, off)` applies a
+    Cinema 4D-style global matrix to a local point.
+  - New section builders: `make_mesh_section(vertices,
+    triangles, material_id)` and
+    `make_material_section(id, name=None, base_color=None)`.
+    Each follows the host parser's required-vs-optional
+    field shape (`materials[i].id` is the only mandatory
+    material field; everything else falls back to
+    `MaterialParams` defaults).
+  - `build_rrscene` learnt optional `meshes=` and
+    `materials=` kwargs. Empty / omitted iterables produce
+    output identical to the previous slice (the keys are
+    elided), so existing callers continue to round-trip
+    byte-for-byte.
+  - Module remains free of any `c4d` import.
+- **`integrations/c4d/RelativityRenderBridge/RelativityRenderBridge.pyp`:**
+  - New `_classify(obj)` helper returns one of `('polygon',
+    None)` / `('skip', <reason>)` / `('ignore', None)` based
+    on `obj.IsInstanceOf(c4d.Opolygon)`,
+    `OBJECT_GENERATOR`, `OBJECT_MODIFIER`, and a small set
+    of unsupported type ids (`Ovolume` /
+    `Ovolumebuilder` / `Ovolumemesher` / `Ohair`,
+    when those constants are present on the running C4D
+    build). Reasons surface in the dialog as
+    `(generator)` / `(deformer)` / `(volume)` / `(hair)` /
+    `(unsupported)`.
+  - `_polygon_to_mesh_entry(obj, ...)` reads
+    `obj.GetAllPoints()` (NOT `GetDeformCache()` - deformers
+    are intentionally ignored), pulls the global matrix
+    columns from `obj.GetMg()`, applies them via
+    `rrscene_writer.transform_point`, Z-flips through
+    `convert_c4d_position`, then iterates
+    `obj.GetAllPolygons()` calling `triangulate_cpolygon`
+    on each `CPolygon`. Polygons with no points or no
+    triangles are dropped quietly.
+  - `_primary_material_name(obj)` returns the name of the
+    first `Ttexture` tag's bound material, or `None`. The
+    walker maps unique material names to small integer ids
+    (0, 1, 2, ...) and emits one stub
+    `make_material_section(id, name)` per unique material.
+    Meshes without a Texture tag store `material_id = -1`.
+  - `_walk_document_meshes(doc)` does a depth-first walk
+    over `GetFirstObject()` -> `GetDown()` /
+    `GetNext()`, returning four lists: mesh entries,
+    materials, skipped (name, reason), and the names of
+    polygon meshes that had deformer descendants (so the
+    dialog can flag the "deformation ignored" cases).
+  - `_format_skip_summary(...)` formats those lists into
+    the dialog text, capping each list at 8 entries with
+    a "... and N more" line so a busy document doesn't
+    produce an unscrollable dialog.
+  - `ExportSceneCommand.Execute` is rewritten around the
+    walker. The dialog now reports `Polygon meshes: N
+    (T triangles, M materials)` and a warning block listing
+    skipped objects + deformer-affected polygons. The
+    `_note` field on the saved scene includes the mesh +
+    skipped counts for diff-time debugging.
+- **`integrations/c4d/RelativityRenderBridge/tests/test_rrscene_writer.py`:**
+  88 standalone Python assertions (up from 61). New
+  coverage:
+  - `triangulate_cpolygon`: triangle (`c == d`), quad,
+    quad with high-magnitude indices, degenerate triangle
+    (a == c), degenerate quad (a == d).
+  - `transform_point`: identity matrix, pure translation,
+    uniform 2x scale, 90 deg yaw around Y.
+  - `make_mesh_section` shape + default `material_id = -1`.
+  - `make_material_section` minimal-vs-full output.
+  - `build_rrscene` with explicit meshes + materials, and
+    the omit-on-empty invariant
+    (`meshes=[]` produces a scene without a `meshes` key,
+    matching the prior-slice byte-for-byte output).
+  - Full mesh-scene round-trip through
+    `serialize_rrscene` -> `json.loads` (a quad expands
+    into 2 triangles on disk).
+- **`integrations/c4d/RelativityRenderBridge/README.md`:**
+  Documents the new polygon export, the unsupported-objects
+  table, and the deformer-ignored caveat. Updates the
+  standalone-tests pass count.
+
+#### Verified locally
+
+```
+$ python3 integrations/c4d/RelativityRenderBridge/tests/test_rrscene_writer.py
+test_rrscene_writer: 88/88 passed
+
+$ python3 -c 'import ast; ast.parse(open(
+    "integrations/c4d/RelativityRenderBridge/RelativityRenderBridge.pyp"
+).read())'
+# (no output -> .pyp is syntactically valid Python)
+```
+
+End-to-end round-trip through the host's renderer server with
+a synthetic 8-vertex / 6-quad cube assembled via the new
+helpers (`transform_point` + `convert_c4d_position` for the
+global-transform bake; `triangulate_cpolygon` for the quad ->
+12-triangle expansion):
+
+```
+$ ./build/bin/RelativityRender --serve &
+$ printf 'load_scene /tmp/cube.rrscene\nshutdown\n' | nc -q1 127.0.0.1 7777
+< OK loaded 1 materials, 0 spheres, 0 lights, 1 meshes
+< END
+< OK goodbye
+< END
+```
+
+The bridge's mesh export parses cleanly through the production
+C++ scene loader (`src/io/SceneLoader.cpp`) - the materials
+section, mesh vertices, and triangle indices all round-trip
+without warnings.
+
+#### Per the prompt
+
+- "Global transform": `obj.GetMg()` columns applied to each
+  local point via `transform_point`; the world position is
+  written into `vertices[]` after the C4D-to-renderer Z-flip.
+  Per-mesh `transform` JSON field is intentionally omitted -
+  vertices are already in world space, so a transform on top
+  would double-apply.
+- "Vertices": `obj.GetAllPoints()` after the bake described
+  above.
+- "Triangle indices": `triangulate_cpolygon(a, b, c, d)` per
+  Cinema 4D `CPolygon`. Triangles emit one entry; quads
+  emit two; degenerate input is pruned.
+- "Material id": stable integer per unique Cinema 4D material
+  name, written into both the mesh's `material_id` and the
+  scene's `materials[]` array.
+- "Convert quads to triangles": handled by
+  `triangulate_cpolygon`. Verified by the dedicated tests +
+  the cube smoke test (6 quads -> 12 triangles end-to-end).
+- "Ignore unsupported (generators, deformers, volumes, hair).
+  Warn clearly.": `_classify` skips each kind with a labelled
+  reason; `_format_skip_summary` lists them in the dialog.
+  Polygons with deformer descendants are still exported but
+  flagged separately as "deformation ignored".
+
+#### Module / milestone status
+
+- Module 20 (Cinema 4D Bridge): remains `in progress`.
+  Polygon-mesh export landed; lights translation,
+  generator-bake-via-cache support, server-protocol client,
+  and preview frame display in the C4D viewport are the
+  remaining slices before the module flips to `landed`.
+- M19 (Cinema 4D Bridge (Plugin)): remains `in progress`
+  (same).
+
 ### 2026-04-28 — M19 (extension 1): live document export + relativity controller
 
 Second slice of the Cinema 4D bridge. Replaces the foundation's

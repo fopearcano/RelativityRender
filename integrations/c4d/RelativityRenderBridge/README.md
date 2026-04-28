@@ -27,16 +27,57 @@ Writes a v1 `.rrscene` containing:
   controller's user data when one is present in the document
   (see *Create Controller* below). Without a controller the
   command writes the v1 defaults.
+- Every native polygon object in the document. For each:
+  - **Vertices** baked to world space (the polygon's global
+    matrix `mg` is applied to each local point) and
+    Z-flipped into the renderer's coordinate system.
+  - **Triangle indices** - quads are split along the `a-c`
+    diagonal into two triangles; degenerate triangles are
+    pruned. Native triangles (Cinema 4D's `c == d` quad
+    encoding) emit a single triangle.
+  - **Material id** - an integer lookup key into the scene's
+    `materials[]`. The bridge allocates a fresh id the first
+    time it sees a Cinema 4D material name and reuses the
+    same id for every later mesh that references it. Meshes
+    without a Texture tag get `material_id = -1` (renderer's
+    neutral default). Real material parameter translation
+    (RGB albedo, roughness, emission) is a follow-up slice;
+    today the bridge only writes a stub `{ id, name }` per
+    unique material so the mesh ↔ material relationship is
+    visible.
 
-Output path:
+#### Unsupported objects
+
+The bridge skips and warns about any object kind it cannot
+faithfully translate yet:
+
+| Object kind | Detected via                      | Note                              |
+|-------------|-----------------------------------|-----------------------------------|
+| Generators  | `GetInfo() & OBJECT_GENERATOR`    | Cloner / Subdivision / Boole / ...|
+| Deformers   | `GetInfo() & OBJECT_MODIFIER`     | as standalone objects             |
+| Volumes     | `Ovolume`/`Ovolumebuilder`/etc.   | when those constants exist        |
+| Hair        | `Ohair`                           | when that constant exists         |
+
+The "make editable" / `GetCache()` workflow needed to bake
+generators into polygons is a deliberate follow-up slice.
+
+A polygon mesh whose subtree contains a deformer is still
+exported, but the deformation is **not** applied: the bridge
+reads the raw `GetAllPoints()`, not `GetDeformCache()`. The
+dialog calls out which polygons that affects so the user
+knows their on-disk geometry is the pre-deform mesh.
+
+#### Output path
+
 - If the document has been saved, the file lands next to it
   with the same stem and a `.rrscene` extension.
 - Otherwise it lands at
   `<C4D_startup_write>/RelativityRender/untitled.rrscene`.
 
-A confirmation dialog shows the saved path, the resolution, the
-camera's vertical FOV in degrees, and whether a controller was
-picked up.
+The confirmation dialog summarises the export: saved path,
+resolution, camera FOV, controller status, exported mesh /
+triangle / material counts, and a list of skipped objects
+with reasons.
 
 ### Plugins → RelativityRender: Create Controller
 
@@ -131,5 +172,5 @@ so the test harness runs under stock `python3`:
 
 ```
 $ python3 integrations/c4d/RelativityRenderBridge/tests/test_rrscene_writer.py
-test_rrscene_writer: 61/61 passed
+test_rrscene_writer: 88/88 passed
 ```

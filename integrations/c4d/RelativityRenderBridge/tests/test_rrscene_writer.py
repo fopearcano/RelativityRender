@@ -268,6 +268,187 @@ def test_write_overwrites_existing_file():
         check(parsed["render_settings"]["height"] == 200, "overwrite height")
 
 
+# ---------------------------------------------------------------------------
+# Mesh helpers: triangulation + matrix-times-point.
+# ---------------------------------------------------------------------------
+
+def test_triangulate_cpolygon_triangle():
+    # Cinema 4D encodes triangles as quads with c == d.
+    tris = rrscene_writer.triangulate_cpolygon(0, 1, 2, 2)
+    check(tris == [(0, 1, 2)], "triangle -> single triangle")
+
+
+def test_triangulate_cpolygon_quad():
+    # Quads split along the a-c diagonal, fan from a.
+    tris = rrscene_writer.triangulate_cpolygon(0, 1, 2, 3)
+    check(tris == [(0, 1, 2), (0, 2, 3)], "quad -> two triangles")
+
+
+def test_triangulate_cpolygon_quad_high_indices():
+    # Indices in the thousands round-trip without coercion bugs.
+    tris = rrscene_writer.triangulate_cpolygon(1000, 1001, 1002, 1003)
+    check(tris == [(1000, 1001, 1002), (1000, 1002, 1003)],
+          "quad with large indices")
+
+
+def test_triangulate_cpolygon_degenerate_triangle():
+    # Triangle (a, b, a) is degenerate; output is empty.
+    tris = rrscene_writer.triangulate_cpolygon(7, 9, 7, 7)
+    check(tris == [], "degenerate triangle pruned")
+    # Triangle with a == b is also degenerate.
+    tris = rrscene_writer.triangulate_cpolygon(5, 5, 6, 6)
+    check(tris == [], "a == b degenerate triangle pruned")
+
+
+def test_triangulate_cpolygon_degenerate_quad():
+    # Quad with a == d collapses one half-triangle.
+    tris = rrscene_writer.triangulate_cpolygon(1, 2, 3, 1)
+    # First half: (1, 2, 3) is fine. Second half: (1, 3, 1) has
+    # a == d, so it's pruned. Final: just the first triangle.
+    check(tris == [(1, 2, 3)], "quad with a == d -> one triangle")
+
+
+def test_transform_point_identity():
+    # Identity matrix: v1=+X, v2=+Y, v3=+Z, off=0.
+    out = rrscene_writer.transform_point(
+        point=(1.0, 2.0, 3.0),
+        v1=(1.0, 0.0, 0.0), v2=(0.0, 1.0, 0.0), v3=(0.0, 0.0, 1.0),
+        off=(0.0, 0.0, 0.0))
+    check(out == (1.0, 2.0, 3.0), "identity matrix returns the input")
+
+
+def test_transform_point_translation():
+    out = rrscene_writer.transform_point(
+        point=(1.0, 0.0, 0.0),
+        v1=(1.0, 0.0, 0.0), v2=(0.0, 1.0, 0.0), v3=(0.0, 0.0, 1.0),
+        off=(10.0, 20.0, 30.0))
+    check(out == (11.0, 20.0, 30.0), "translation lands at off + p")
+
+
+def test_transform_point_uniform_scale():
+    out = rrscene_writer.transform_point(
+        point=(1.0, 1.0, 1.0),
+        v1=(2.0, 0.0, 0.0), v2=(0.0, 2.0, 0.0), v3=(0.0, 0.0, 2.0),
+        off=(0.0, 0.0, 0.0))
+    check(out == (2.0, 2.0, 2.0), "2x scale doubles every component")
+
+
+def test_transform_point_y_axis_rotation():
+    # 90deg yaw around Y: local +X maps to world -Z (in C4D's
+    # left-handed system; we don't care about handedness here,
+    # only that the basis vectors are applied correctly).
+    out = rrscene_writer.transform_point(
+        point=(1.0, 0.0, 0.0),
+        v1=(0.0, 0.0, -1.0), v2=(0.0, 1.0, 0.0), v3=(1.0, 0.0, 0.0),
+        off=(0.0, 0.0, 0.0))
+    check(almost_equal(out[0], 0.0), "rotated x")
+    check(almost_equal(out[1], 0.0), "rotated y")
+    check(almost_equal(out[2], -1.0), "rotated z")
+
+
+# ---------------------------------------------------------------------------
+# Mesh + material section builders.
+# ---------------------------------------------------------------------------
+
+def test_make_mesh_section_shape():
+    m = rrscene_writer.make_mesh_section(
+        vertices=[(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0)],
+        triangles=[(0, 1, 2)],
+        material_id=3,
+    )
+    check(m["vertices"] == [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0],
+                            [0.0, 1.0, 0.0]],
+          "vertices serialised as list-of-lists")
+    check(m["triangles"]   == [[0, 1, 2]], "triangles serialised")
+    check(m["material_id"] == 3,            "material_id round-trip")
+
+
+def test_make_mesh_section_default_material_id():
+    m = rrscene_writer.make_mesh_section(
+        vertices=[(0.0, 0.0, 0.0)], triangles=[])
+    check(m["material_id"] == -1, "default material_id is -1")
+
+
+def test_make_material_section_minimal():
+    mat = rrscene_writer.make_material_section(id=5)
+    check(mat == {"id": 5}, "minimal material entry has id only")
+
+
+def test_make_material_section_with_name_and_color():
+    mat = rrscene_writer.make_material_section(
+        id=2, name="MyRed", base_color=(0.9, 0.1, 0.1))
+    check(mat["id"]         == 2,                      "id")
+    check(mat["name"]       == "MyRed",                "name")
+    check(mat["base_color"] == [0.9, 0.1, 0.1],        "base_color")
+
+
+def test_build_rrscene_with_meshes_and_materials():
+    cam = rrscene_writer.make_camera_section()
+    rs  = rrscene_writer.make_render_settings()
+    rel = rrscene_writer.make_relativity_section()
+    meshes = [
+        rrscene_writer.make_mesh_section(
+            vertices=[(0, 0, 0), (1, 0, 0), (0, 1, 0)],
+            triangles=[(0, 1, 2)],
+            material_id=0),
+    ]
+    materials = [rrscene_writer.make_material_section(id=0, name="Default")]
+    scene = rrscene_writer.build_rrscene(
+        camera=cam, render_settings=rs, relativity=rel,
+        meshes=meshes, materials=materials)
+    check(scene["meshes"]    == meshes,    "meshes preserved")
+    check(scene["materials"] == materials, "materials preserved")
+
+
+def test_build_rrscene_omits_empty_meshes_and_materials():
+    # Older callers that pass no meshes/materials, or empty
+    # iterables, must produce identical output to the
+    # camera+render+relativity-only slice.
+    scene_a = rrscene_writer.build_rrscene(
+        camera=rrscene_writer.make_camera_section(),
+        render_settings=rrscene_writer.make_render_settings(),
+        relativity=rrscene_writer.make_relativity_section(),
+    )
+    scene_b = rrscene_writer.build_rrscene(
+        camera=rrscene_writer.make_camera_section(),
+        render_settings=rrscene_writer.make_render_settings(),
+        relativity=rrscene_writer.make_relativity_section(),
+        meshes=[], materials=[],
+    )
+    check("meshes"    not in scene_a, "no meshes key when omitted")
+    check("materials" not in scene_a, "no materials key when omitted")
+    check(scene_a == scene_b,
+          "empty iterables match the omit-by-default shape")
+
+
+def test_full_mesh_scene_round_trips_through_json():
+    # End-to-end: build a small scene with a quad-mesh
+    # equivalent (two triangles) + a single material, write to
+    # a tempfile, parse it back, confirm the round trip is
+    # byte-stable through json.
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "mesh.rrscene")
+        m = rrscene_writer.make_mesh_section(
+            vertices=[(0, 0, 0), (1, 0, 0), (1, 1, 0), (0, 1, 0)],
+            triangles=rrscene_writer.triangulate_cpolygon(0, 1, 2, 3),
+            material_id=0)
+        scene = rrscene_writer.build_rrscene(
+            camera=rrscene_writer.make_camera_section(),
+            render_settings=rrscene_writer.make_render_settings(),
+            relativity=rrscene_writer.make_relativity_section(),
+            meshes=[m],
+            materials=[rrscene_writer.make_material_section(
+                id=0, name="quad-mat")],
+            note="quad",
+        )
+        rrscene_writer.write_rrscene(scene, path)
+        with open(path, "r", encoding="utf-8") as f:
+            parsed = json.loads(f.read())
+        check(parsed == scene, "round-trip with meshes+materials")
+        check(len(parsed["meshes"][0]["triangles"]) == 2,
+              "quad expanded into two triangles on disk")
+
+
 def test_module_does_not_import_c4d():
     check("c4d" not in sys.modules,
           "rrscene_writer pulled the c4d module into sys.modules")
@@ -285,6 +466,22 @@ def main():
     test_serialize_round_trips_through_json()
     test_write_rrscene_creates_parents_and_returns_abs_path()
     test_write_overwrites_existing_file()
+    test_triangulate_cpolygon_triangle()
+    test_triangulate_cpolygon_quad()
+    test_triangulate_cpolygon_quad_high_indices()
+    test_triangulate_cpolygon_degenerate_triangle()
+    test_triangulate_cpolygon_degenerate_quad()
+    test_transform_point_identity()
+    test_transform_point_translation()
+    test_transform_point_uniform_scale()
+    test_transform_point_y_axis_rotation()
+    test_make_mesh_section_shape()
+    test_make_mesh_section_default_material_id()
+    test_make_material_section_minimal()
+    test_make_material_section_with_name_and_color()
+    test_build_rrscene_with_meshes_and_materials()
+    test_build_rrscene_omits_empty_meshes_and_materials()
+    test_full_mesh_scene_round_trips_through_json()
     test_module_does_not_import_c4d()
     print("test_rrscene_writer: %d/%d passed" % (g_total - g_failed, g_total))
     return 0 if g_failed == 0 else 1

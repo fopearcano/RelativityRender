@@ -4,8 +4,11 @@ Registers two commands under the Plugins menu:
 
   - **RelativityRender: Export Scene** - reads the active
     document's camera / render settings / (optional)
-    relativity-controller user data, and writes a v1 .rrscene
-    file. Shows a confirmation dialog with the saved path.
+    relativity-controller user data + every native polygon
+    object (with quads triangulated and global transforms
+    baked into world-space vertices), and writes a v1
+    .rrscene file. Shows a confirmation dialog summarising
+    what was exported and which objects were skipped.
   - **RelativityRender: Create Controller** - creates a Null
     object named "RelativityRender Controller" with five
     user-data fields the Export Scene command will pick up:
@@ -13,6 +16,13 @@ Registers two commands under the Plugins menu:
     `aberration_strength`, `doppler_strength`,
     `searchlight_strength`. Selects the new object so the
     user lands on it ready to scrub the values.
+
+Unsupported object kinds (generators, deformers, volumes,
+hair) are skipped with a clear warning in the export dialog.
+A polygon object whose subtree contains a deformer is still
+exported, but the deformation is NOT applied (the bridge
+reads the raw `GetAllPoints()`, not `GetDeformCache()`); the
+dialog calls out which polygons that affects.
 
 The bridge is the only place in the repository allowed to
 depend on Cinema 4D. Per `docs/MODULE_MAP.md` and
@@ -62,10 +72,12 @@ PLUGIN_NAME_CREATE_CONTROLLER = "RelativityRender: Create Controller"
 
 PLUGIN_HELP_EXPORT_SCENE = (
     "Export the current Cinema 4D document as a RelativityRender "
-    "(.rrscene) file. Camera transform, FOV, render resolution, "
-    "and (if a Relativity Controller is in the scene) its user "
-    "data are written. Geometry / materials / lights translation "
-    "lands in subsequent slices."
+    "(.rrscene) file. Writes camera transform, FOV, render "
+    "resolution, the relativity controller user data (if a "
+    "RelativityRender Controller is in the scene), and every "
+    "native polygon object (quads triangulated; global transforms "
+    "baked into world-space vertices). Generators, deformers, "
+    "volumes, and hair are skipped with a warning."
 )
 PLUGIN_HELP_CREATE_CONTROLLER = (
     "Create a Null object that carries the relativity controls "
@@ -302,6 +314,240 @@ def _build_camera_section(doc):
         position=pos, forward=fwd, up=up, fov_degrees=fov_deg)
 
 
+# ---------------------------------------------------------------------------
+# Polygon-mesh export.
+# ---------------------------------------------------------------------------
+#
+# Walks the active document, classifies each object, and produces:
+#   - a list of `(name, mesh_dict)` pairs for the exported polygon
+#     meshes (vertices baked to world space; quads triangulated);
+#   - a list of `(name, reason)` pairs for objects we deliberately
+#     skipped so the dialog can warn about them.
+#
+# Objects in this slice's "ignore" set:
+#   - generators  (OBJECT_GENERATOR flag)
+#   - deformers   (OBJECT_MODIFIER  flag)
+#   - volumes     (Ovolume / Ovolumebuilder / Ovolumemesher)
+#   - hair        (Ohair, where the constant exists)
+# Everything else that is not a polygon (Null, Camera, Light,
+# spline, ...) is silently skipped: those are not "geometry the
+# bridge could have exported".
+
+# Cinema 4D type ids we consider unsupported in this slice. Some
+# constants may not exist on every C4D Python build; the lookups
+# below tolerate that gracefully.
+_UNSUPPORTED_TYPE_IDS = set()
+for _name in ("Ovolume", "Ovolumebuilder", "Ovolumemesher", "Ohair"):
+    _val = getattr(c4d, _name, None)
+    if _val is not None:
+        _UNSUPPORTED_TYPE_IDS.add(_val)
+
+
+def _classify(obj):
+    """Return one of:
+      - ('polygon', None)       - native polygon mesh; export it.
+      - ('skip',    reason)     - explicitly unsupported; warn.
+      - ('ignore',  None)       - not a mesh kind we care about.
+    """
+    if obj is None:
+        return ("ignore", None)
+
+    if obj.IsInstanceOf(c4d.Opolygon):
+        return ("polygon", None)
+
+    info = obj.GetInfo()
+    if info & c4d.OBJECT_GENERATOR:
+        return ("skip", "generator")
+    if info & c4d.OBJECT_MODIFIER:
+        return ("skip", "deformer")
+
+    if obj.GetType() in _UNSUPPORTED_TYPE_IDS:
+        # Best-effort label: hair / volume builds often surface
+        # under multiple type ids; reuse the constant name when
+        # available, fall back to "unsupported".
+        for nm in ("Ovolume", "Ovolumebuilder", "Ovolumemesher"):
+            if getattr(c4d, nm, None) == obj.GetType():
+                return ("skip", "volume")
+        if getattr(c4d, "Ohair", None) == obj.GetType():
+            return ("skip", "hair")
+        return ("skip", "unsupported")
+
+    return ("ignore", None)
+
+
+def _has_deformer_descendant(obj):
+    """Return True if any descendant of `obj` is a deformer.
+
+    Deformers attached to a polygon would normally modify its
+    cached points; the bridge intentionally ignores deformation
+    by reading raw `GetAllPoints()`. Surfacing this in the
+    dialog warns the user that the exported geometry is the
+    pre-deform mesh.
+    """
+    child = obj.GetDown()
+    while child is not None:
+        if child.GetInfo() & c4d.OBJECT_MODIFIER:
+            return True
+        if _has_deformer_descendant(child):
+            return True
+        child = child.GetNext()
+    return False
+
+
+def _primary_material_name(obj):
+    """Return the name of the first Texture tag's material on
+    `obj`, or `None` when no Texture tag is present. We do NOT
+    follow material inheritance up the hierarchy in this slice;
+    a future slice can add the proper Cinema 4D material
+    inheritance walk.
+    """
+    tag = obj.GetFirstTag()
+    while tag is not None:
+        if tag.GetType() == c4d.Ttexture:
+            mat = tag[c4d.TEXTURETAG_MATERIAL]
+            if mat is not None:
+                name = mat.GetName()
+                if name:
+                    return name
+        tag = tag.GetNext()
+    return None
+
+
+def _polygon_to_mesh_entry(obj, material_name_to_id):
+    """Convert a Cinema 4D `PolygonObject` into one
+    `meshes[]` entry. Bakes the global matrix into world-space
+    vertex positions, then Z-flips into the renderer's
+    right-handed coordinate system. Triangulates quads.
+    Returns `None` when the polygon has no points or no faces
+    (caller filters those out so the .rrscene stays clean).
+    """
+    points = obj.GetAllPoints()
+    if not points:
+        return None
+
+    mg = obj.GetMg()
+    # Cinema 4D matrix columns as plain tuples - keeps the math
+    # entirely inside the writer's pure helpers.
+    v1  = (mg.v1.x,  mg.v1.y,  mg.v1.z)
+    v2  = (mg.v2.x,  mg.v2.y,  mg.v2.z)
+    v3  = (mg.v3.x,  mg.v3.y,  mg.v3.z)
+    off = (mg.off.x, mg.off.y, mg.off.z)
+
+    world_vertices = []
+    for p in points:
+        wx, wy, wz = rrscene_writer.transform_point(
+            (p.x, p.y, p.z), v1, v2, v3, off)
+        world_vertices.append(rrscene_writer.convert_c4d_position(
+            (wx, wy, wz)))
+
+    polys = obj.GetAllPolygons() or []
+    triangles = []
+    for poly in polys:
+        triangles.extend(rrscene_writer.triangulate_cpolygon(
+            poly.a, poly.b, poly.c, poly.d))
+    if not triangles:
+        return None
+
+    mat_name = _primary_material_name(obj)
+    if mat_name is None:
+        material_id = -1
+    else:
+        # Allocate a fresh integer id the first time we see the
+        # material, reuse otherwise. Stable across the export so
+        # multiple meshes that share a Cinema 4D material end up
+        # referencing the same materials[] entry.
+        if mat_name not in material_name_to_id:
+            material_name_to_id[mat_name] = len(material_name_to_id)
+        material_id = material_name_to_id[mat_name]
+
+    return rrscene_writer.make_mesh_section(
+        vertices=world_vertices,
+        triangles=triangles,
+        material_id=material_id,
+    )
+
+
+def _walk_document_meshes(doc):
+    """Walk the document collecting polygon meshes + skipped
+    objects. Returns a tuple
+      (mesh_entries, materials_list, skipped, deformer_warnings)
+    where:
+      - `mesh_entries`        : list of dicts ready for `meshes[]`.
+      - `materials_list`      : list of stub material dicts referenced
+                                by the meshes (id + name only).
+      - `skipped`             : list of `(name, reason)` for
+                                generators / deformers / volumes /
+                                hair we declined to export.
+      - `deformer_warnings`   : list of polygon-mesh names whose
+                                subtrees contain deformers (the
+                                deformation was ignored).
+    """
+    mesh_entries = []
+    skipped = []
+    deformer_warnings = []
+    material_name_to_id = {}
+
+    def visit(op):
+        while op is not None:
+            kind, reason = _classify(op)
+            if kind == "polygon":
+                if _has_deformer_descendant(op):
+                    deformer_warnings.append(op.GetName())
+                entry = _polygon_to_mesh_entry(op, material_name_to_id)
+                if entry is not None:
+                    mesh_entries.append((op.GetName(), entry))
+            elif kind == "skip":
+                skipped.append((op.GetName(), reason))
+            # In all cases recurse into children: a Null parent
+            # might hold polygon meshes; a generator's polygon
+            # children are not exported (the generator owns
+            # them) but a deformer's polygon siblings are.
+            child = op.GetDown()
+            if child is not None:
+                visit(child)
+            op = op.GetNext()
+
+    if doc is not None:
+        visit(doc.GetFirstObject())
+
+    materials_list = []
+    for name, idx in sorted(material_name_to_id.items(), key=lambda kv: kv[1]):
+        materials_list.append(rrscene_writer.make_material_section(
+            id=idx, name=name))
+
+    return (
+        [entry for (_n, entry) in mesh_entries],
+        materials_list,
+        skipped,
+        deformer_warnings,
+    )
+
+
+def _format_skip_summary(skipped, deformer_warnings, max_lines=8):
+    """Format the warning section of the export dialog. Caps
+    the number of lines so a document with hundreds of skipped
+    generators doesn't produce an unscrollable dialog.
+    """
+    lines = []
+    if skipped:
+        lines.append("Skipped {0} unsupported object(s):".format(len(skipped)))
+        for (name, reason) in skipped[:max_lines]:
+            lines.append("  - {0} ({1})".format(name, reason))
+        if len(skipped) > max_lines:
+            lines.append("  ... and {0} more".format(len(skipped) - max_lines))
+    if deformer_warnings:
+        lines.append("")
+        lines.append("Deformers ignored on {0} polygon mesh(es) "
+                     "(undeformed geometry exported):"
+                     .format(len(deformer_warnings)))
+        for name in deformer_warnings[:max_lines]:
+            lines.append("  - " + name)
+        if len(deformer_warnings) > max_lines:
+            lines.append("  ... and {0} more"
+                         .format(len(deformer_warnings) - max_lines))
+    return "\n".join(lines) if lines else "No unsupported objects."
+
+
 def _add_user_data_real(obj, name, default, *,
                         unit=None, lo=None, hi=None, step=None):
     """Add a single REAL user-data slot. Cinema 4D copies the
@@ -385,8 +631,8 @@ class ExportSceneCommand(plugins.CommandData):
             target = _resolve_export_path(doc)
 
             width, height = _render_resolution(doc)
-            camera_section   = _build_camera_section(doc)
-            render_settings  = rrscene_writer.make_render_settings(
+            camera_section  = _build_camera_section(doc)
+            render_settings = rrscene_writer.make_render_settings(
                 width=width, height=height)
 
             controller = _find_controller(doc)
@@ -398,17 +644,31 @@ class ExportSceneCommand(plugins.CommandData):
                 relativity_section = rrscene_writer.make_relativity_section()
                 controller_note    = "no controller found (using defaults)"
 
-            note  = ("Exported by RelativityRenderBridge; "
-                     + controller_note + ".")
+            (meshes,
+             materials,
+             skipped,
+             deformer_warnings) = _walk_document_meshes(doc)
+
+            note = ("Exported by RelativityRenderBridge; "
+                    + controller_note + "; "
+                    + "meshes=" + str(len(meshes)) + "; "
+                    + "skipped=" + str(len(skipped)) + ".")
             scene = rrscene_writer.build_rrscene(
                 camera=camera_section,
                 render_settings=render_settings,
                 relativity=relativity_section,
+                meshes=meshes,
+                materials=materials,
                 note=note,
             )
 
             saved_path = rrscene_writer.write_rrscene(scene, target)
 
+            tri_count = 0
+            for m in meshes:
+                tri_count += len(m["triangles"])
+
+            warn_block = _format_skip_summary(skipped, deformer_warnings)
             gui.MessageDialog(
                 "RelativityRender: Export Scene\n"
                 "\n"
@@ -417,9 +677,14 @@ class ExportSceneCommand(plugins.CommandData):
                 "Camera FOV (vert): "
                 + ("%.2f" % camera_section["fov"]) + " deg\n"
                 "Relativity: " + controller_note + "\n"
+                "Polygon meshes: " + str(len(meshes))
+                + " (" + str(tri_count) + " triangles, "
+                + str(len(materials)) + " materials)\n"
                 "\n"
-                "(Geometry / materials / lights translation "
-                "comes in a later slice.)"
+                + warn_block + "\n"
+                "\n"
+                "(Lights translation + scene-camera animation "
+                "come in later slices.)"
             )
             return True
         except Exception as exc:  # noqa: BLE001

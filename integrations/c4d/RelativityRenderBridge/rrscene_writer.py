@@ -194,6 +194,135 @@ def convert_c4d_camera_basis(position: Sequence[float],
 
 
 # ---------------------------------------------------------------------------
+# Mesh helpers: triangulation + matrix-times-point.
+# ---------------------------------------------------------------------------
+#
+# These are plain-arithmetic helpers callable from the .pyp plugin
+# AND from the test harness. They take primitive types (tuples /
+# floats / ints) and return primitive types so the harness can
+# exercise them without a Cinema 4D environment.
+
+def triangulate_cpolygon(a: int, b: int, c: int,
+                         d: int) -> List[Tuple[int, int, int]]:
+    """Convert a single Cinema 4D `CPolygon` (a, b, c, d) into one
+    or two triangles.
+
+    Cinema 4D's polygon convention: when `c == d` the polygon is a
+    triangle (`a, b, c`); otherwise it is a quad. Quads triangulate
+    along the `a-c` diagonal: `[a, b, c]` + `[a, c, d]`. That matches
+    the standard "fan from first vertex" rule the host expects,
+    and keeps a consistent winding order with the source quad.
+
+    Degenerate input (any two of the three triangle indices equal,
+    or all four equal) is skipped: returns an empty list. The
+    renderer's intersection routine would treat such triangles as
+    zero-area anyway; pruning them here keeps the file clean.
+    """
+    a, b, c, d = int(a), int(b), int(c), int(d)
+    if c == d:
+        # Triangle case (canonical C4D triangle encoding).
+        if a == b or b == c or a == c:
+            return []
+        return [(a, b, c)]
+
+    # Quad case: split into two triangles along the a-c diagonal.
+    out: List[Tuple[int, int, int]] = []
+    if a != b and b != c and a != c:
+        out.append((a, b, c))
+    if a != c and c != d and a != d:
+        out.append((a, c, d))
+    return out
+
+
+def transform_point(point: Sequence[float],
+                    v1:    Sequence[float],
+                    v2:    Sequence[float],
+                    v3:    Sequence[float],
+                    off:   Sequence[float]
+                    ) -> Tuple[float, float, float]:
+    """Apply a Cinema 4D-style global matrix to a local point.
+
+    A C4D matrix is `(v1, v2, v3, off)` where `v1`, `v2`, `v3` are
+    the local +X, +Y, +Z axes expressed in world space and `off`
+    is the local origin. The world position of a local point `p`
+    is `off + p.x * v1 + p.y * v2 + p.z * v3`.
+
+    Returns a 3-tuple in C4D world space; callers that want
+    renderer-space coordinates pass the result through
+    `convert_c4d_position`.
+    """
+    px, py, pz = float(point[0]), float(point[1]), float(point[2])
+    wx = float(off[0]) + px * float(v1[0]) + py * float(v2[0]) + pz * float(v3[0])
+    wy = float(off[1]) + px * float(v1[1]) + py * float(v2[1]) + pz * float(v3[1])
+    wz = float(off[2]) + px * float(v1[2]) + py * float(v2[2]) + pz * float(v3[2])
+    return (wx, wy, wz)
+
+
+# ---------------------------------------------------------------------------
+# Mesh + material section builders.
+# ---------------------------------------------------------------------------
+
+def make_mesh_section(vertices:    Iterable[Sequence[float]],
+                      triangles:   Iterable[Sequence[int]],
+                      material_id: int = -1,
+                      ) -> Dict[str, Any]:
+    """Build one `meshes[]` entry.
+
+    `vertices` is an iterable of `(x, y, z)` triples; `triangles`
+    is an iterable of `(i, j, k)` index triples into that vertex
+    array. `material_id` is the integer lookup key into the
+    scene's `materials` array - `-1` means "no material assigned;
+    the renderer's neutral default applies".
+
+    No transform is written: the bridge bakes the polygon
+    object's global matrix into the world-space vertex positions
+    on the C4D side, so every mesh entry is self-contained at
+    the world frame. A future slice can split out a per-mesh
+    transform field.
+
+    Triangle indices are NOT range-checked here. The host
+    parser rejects out-of-range entries with a clear error, so a
+    bridge bug surfaces at parse time rather than corrupting a
+    later kernel launch.
+    """
+    verts: List[List[float]] = []
+    for v in vertices:
+        verts.append(_vec3_list(v))
+
+    tris: List[List[int]] = []
+    for t in triangles:
+        tris.append([int(t[0]), int(t[1]), int(t[2])])
+
+    return {
+        "vertices":    verts,
+        "triangles":   tris,
+        "material_id": int(material_id),
+    }
+
+
+def make_material_section(id: int,
+                          name: Optional[str] = None,
+                          base_color: Optional[Sequence[float]] = None,
+                          ) -> Dict[str, Any]:
+    """Build one `materials[]` entry.
+
+    Only `id` is required by the host parser; everything else
+    falls back to the renderer's `MaterialParams` defaults
+    (mid-grey base colour, no emission, neutral roughness). The
+    bridge writes a stub entry per unique Cinema 4D material it
+    sees, so meshes can reference materials by id even though
+    real material parameter translation (RGB albedo, roughness,
+    emission) is a follow-up slice.
+    """
+    out: Dict[str, Any] = {"id": int(id)}
+    if name:
+        out["name"] = str(name)
+    if base_color is not None:
+        out["base_color"] = _vec3_list(base_color)
+    return out
+
+
+# ---------------------------------------------------------------------------
 # Top-level scene builders.
 # ---------------------------------------------------------------------------
 
@@ -219,12 +348,20 @@ def build_empty_rrscene(width: int = DEFAULT_RENDER_WIDTH,
 def build_rrscene(camera: Dict[str, Any],
                   render_settings: Dict[str, Any],
                   relativity: Dict[str, Any],
-                  note: Optional[str] = None) -> Dict[str, Any]:
+                  note: Optional[str] = None,
+                  meshes:    Optional[Iterable[Dict[str, Any]]] = None,
+                  materials: Optional[Iterable[Dict[str, Any]]] = None,
+                  ) -> Dict[str, Any]:
     """Assemble the top-level v1 .rrscene dict from per-section
     inputs. The optional `note` is written to a top-level
     `_note` key; the host parser warns-and-ignores unknown
     top-level keys (per the .rrscene v1 spec) so it round-trips
     through a real load without breaking the parse.
+
+    `meshes` and `materials` are emitted only when a non-empty
+    iterable is supplied, so older callers that just want the
+    camera + render + relativity sections produce identical
+    output to the previous slice.
     """
     scene: Dict[str, Any] = {
         "version": RRSCENE_VERSION,
@@ -232,6 +369,14 @@ def build_rrscene(camera: Dict[str, Any],
         "camera": camera,
         "relativity": relativity,
     }
+    if materials is not None:
+        mats = list(materials)
+        if mats:
+            scene["materials"] = mats
+    if meshes is not None:
+        ms = list(meshes)
+        if ms:
+            scene["meshes"] = ms
     if note:
         scene["_note"] = str(note)
     return scene
