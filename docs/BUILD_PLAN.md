@@ -93,6 +93,162 @@ All modules now have a placeholder source directory under `src/`,
 
 ## Change Log
 
+### 2026-04-28 — M19 (extension 5): C4D preview dialog (text-only)
+
+Sixth slice of the Cinema 4D bridge. A floating
+`c4d.gui.GeDialog` panel groups every server-talking action
+plus the four relativity sliders into a single window, with
+a multi-line read-only text area that surfaces the most
+recent server reply. No image preview yet - per the prompt,
+this slice ships the dialog scaffolding and the response
+text only.
+
+- **`integrations/c4d/RelativityRenderBridge/preview_state.py`:**
+  New plain-Python module (no `c4d` import). Captures the
+  pieces of `PreviewDialog`'s behaviour that don't need a
+  GeDialog so the standalone test harness can exercise them:
+  - `clamp_unit(v)` clamps to `[0, 1]` (the four sliders'
+    natural range); tolerates non-numeric input by returning
+    `0.0`.
+  - `clamp_beta(v)` clamps to `[0, 0.999]` so the host's
+    `clampBeta(...)` invariant ("`|beta| < 1`") cannot be
+    violated by a slider rounded to the wall.
+  - `make_relativity_from_dialog(beta, aberration, doppler,
+    searchlight)` clamps each input then delegates to
+    `rrscene_writer.make_relativity_section(...)`. The
+    default-input path produces a section bit-for-bit equal
+    to `make_relativity_section()`'s default output (pinned
+    by a test).
+  - `validate_host(host)` rejects empty / whitespace-only
+    inputs and embedded whitespace (which would smash into
+    the protocol's line-framing).
+  - `validate_port(port)` accepts integers and integer-shaped
+    strings; rejects bool, float, non-numeric strings, and
+    out-of-range values. `int(3.5)` would silently truncate,
+    so the validator special-cases `float` rejection (caught
+    by the test suite).
+  - `format_server_reply(response, label)` renders a
+    `server_client.ServerResponse` into a single line with
+    `[label] OK ...` / `[label] ERR ...` framing for the
+    response text area.
+  - `format_connection_error(exc, label, host, port)`
+    renders a `ServerClientError` into a single line with
+    the host / port and a `--serve` reminder.
+  - Module-level defaults (`DEFAULT_HOST`, `DEFAULT_PORT`,
+    `DEFAULT_BETA`, `DEFAULT_ABERRATION`, `DEFAULT_DOPPLER`,
+    `DEFAULT_SEARCHLIGHT`, `MIN_PORT`, `MAX_PORT`) pinned to
+    the v1 contract.
+- **`integrations/c4d/RelativityRenderBridge/RelativityRenderBridge.pyp`:**
+  - `_export_to_disk(doc, relativity_override=None)` learnt
+    an optional override hook. When supplied, the
+    `relativity` section in the saved scene is the override
+    dict; otherwise the existing controller / fallback
+    behaviour is unchanged.
+  - New `PreviewDialog(c4d.gui.GeDialog)` class. `CreateLayout`
+    builds four labelled groups (Server / Actions /
+    Relativity / Server Response). The four sliders use
+    `AddEditSlider` with min=0, max=1 (max=0.999 for beta),
+    step=0.001. The response area is a
+    `DR_MULTILINE_READONLY` `AddMultiLineEditText`.
+    Per-button handlers (`_on_ping` / `_on_export` /
+    `_on_send` / `_on_render`) read the dialog state, build
+    a `RenderServerClient`, send the appropriate line, and
+    drop the formatted reply into the response area.
+    `_validate_server_target` runs the host / port
+    validators before any socket call so a bad input
+    surfaces as a single descriptive line in the response
+    area rather than as a Python traceback.
+  - New `OpenPreviewDialogCommand(plugins.CommandData)`
+    opens the dialog as `DLG_TYPE_ASYNC` (so it stays open
+    while the user keeps working) at id `1058605`. A
+    module-level `_preview_dialog_singleton` holds the
+    instance across re-opens so the response history
+    survives.
+  - `_register` now registers all six command plugins.
+- **`integrations/c4d/RelativityRenderBridge/tests/test_preview_state.py`:**
+  89 standalone Python assertions. Coverage:
+  - Pinned defaults (host, port, beta, sliders, port
+    range).
+  - `clamp_unit` in-range / out-of-range / garbage input.
+  - `clamp_beta` clamps `1.0 -> 0.999` (the strict invariant
+    pin) and negative -> 0.
+  - `make_relativity_from_dialog`: default inputs equal
+    `rrscene_writer.make_relativity_section()`; non-default
+    inputs round-trip; out-of-range inputs are clamped
+    before reaching the writer.
+  - `validate_host`: typical inputs accepted; empty /
+    whitespace / embedded whitespace / `None` rejected with
+    a clear message.
+  - `validate_port`: in-range values accepted; string
+    integers accepted; out-of-range / non-integer / `bool` /
+    `float` rejected. Float rejection caught a real bug in
+    the first draft (`int(3.5)` silently truncated to `3`).
+  - `format_server_reply` for OK / ERR / `None` cases.
+  - `format_connection_error` includes host / port / the
+    underlying error / a `--serve` remedy hint.
+  - Pin: `preview_state` does not import `c4d`.
+- **`integrations/c4d/RelativityRenderBridge/README.md`:**
+  Documents the new dialog, its layout (Server row /
+  Actions row / Relativity sliders / Response text area),
+  the per-command timeouts, that the dialog state is
+  independent of the document controller, and that image
+  preview is intentionally not in this slice. Updates the
+  layout block to include `preview_state.py`, the
+  plugin-id table to include the dialog (id `1058605`),
+  and the standalone-tests output to include the new
+  suite.
+
+#### Verified locally
+
+```
+$ python3 integrations/c4d/RelativityRenderBridge/tests/test_preview_state.py
+test_preview_state: 89/89 passed
+
+$ python3 integrations/c4d/RelativityRenderBridge/tests/test_server_client.py
+test_server_client: 33/33 passed
+
+$ python3 integrations/c4d/RelativityRenderBridge/tests/test_rrscene_writer.py
+test_rrscene_writer: 118/118 passed
+
+$ python3 -c 'import ast; ast.parse(open(
+    "integrations/c4d/RelativityRenderBridge/RelativityRenderBridge.pyp"
+).read()); ast.parse(open(
+    "integrations/c4d/RelativityRenderBridge/preview_state.py").read())'
+# (no output -> both files are syntactically valid Python)
+```
+
+The `PreviewDialog` itself requires a Cinema 4D environment
+to run (it subclasses `c4d.gui.GeDialog`), but the AST parse
+above proves the file is syntactically valid Python and the
+runtime behaviour reduces to calls into helpers covered by
+the 89-assertion preview-state suite plus the 33-assertion
+server-client suite.
+
+#### Per the prompt
+
+- "Controls: host / port / Ping / Export Scene / Send
+  Scene / Render / beta slider / doppler slider /
+  aberration slider / searchlight slider": all ten present
+  in `PreviewDialog.CreateLayout` (host + port +
+  Ping in the Server row, three buttons in the Actions row,
+  four `AddEditSlider`s in the Relativity group).
+- "Display: server response text": the dialog's bottom
+  group is a `DR_MULTILINE_READONLY` `AddMultiLineEditText`;
+  every button handler appends one formatted line to it
+  (newest at the bottom).
+- "No image display yet": no `BitmapShaderHelper`, no
+  `c4d.bitmaps.BaseBitmap`, no preview area. The dialog's
+  only output surface is the text response area.
+
+#### Module / milestone status
+
+- Module 20 (Cinema 4D Bridge): remains `in progress`.
+  The text-only preview dialog is the natural prerequisite
+  for the eventual bitmap area; binary framebuffer
+  streaming over the protocol is the remaining gating slice.
+- M19 (Cinema 4D Bridge (Plugin)): remains `in progress`
+  (same).
+
 ### 2026-04-28 — M19 (extension 4): bridge talks to the renderer server
 
 Fifth slice of the Cinema 4D bridge. Three new command plugins

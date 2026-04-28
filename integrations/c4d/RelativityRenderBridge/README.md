@@ -10,9 +10,11 @@ display in the C4D viewport land in subsequent slices.
 
 ## Commands
 
-The bridge ships five command plugins. Two operate on the
-Cinema 4D document only; the other three talk to the
-RelativityRender renderer server over TCP.
+The bridge ships six command plugins. Two operate on the
+Cinema 4D document only; three talk to the RelativityRender
+renderer server over TCP; one opens a floating dialog that
+groups the server-talking actions plus the four relativity
+sliders into a single panel.
 
 ### Plugins → RelativityRender: Export Scene
 
@@ -165,6 +167,41 @@ The bridge does NOT pull pixels back over the protocol
 itself - that's a follow-up slice. For now the user opens
 the saved file from the path the dialog reports.
 
+### Plugins → RelativityRender: Preview Dialog
+
+Opens a floating `c4d.gui.GeDialog` panel that groups every
+server-talking action and the four relativity controls into
+one window:
+
+| Group        | Controls                                          |
+|--------------|---------------------------------------------------|
+| Server       | host text field, port spinner, **Ping** button    |
+| Actions      | **Export Scene**, **Send Scene**, **Render**      |
+| Relativity   | beta, aberration, doppler, searchlight sliders    |
+| Response     | multi-line read-only text area                    |
+
+The dialog opens asynchronously (`DLG_TYPE_ASYNC`) so it
+stays available while the user keeps working in Cinema 4D.
+A single instance is reused across re-opens, so the
+response-text history persists for the life of the C4D
+session.
+
+The four relativity sliders are dialog-local state. Send
+Scene from the dialog passes its slider values directly into
+`_export_to_disk(doc, relativity_override=...)`, bypassing
+any controller in the document. The menu commands continue
+to read the controller as before. That keeps the two paths
+independent so a user comparing slider tweaks against a
+saved controller can do so without the dialog clobbering the
+document.
+
+The dialog is **text-only** at this slice. The response area
+shows the most recent server reply (and any input-validation
+error) one line at a time, newest at the bottom. Image
+preview - bitmap area, framebuffer streaming, progressive
+update - is a follow-up slice and is intentionally not in
+this slice's scope.
+
 #### Server connection details
 
 | Parameter      | Default          |
@@ -188,9 +225,11 @@ RelativityRenderBridge/
     RelativityRenderBridge.pyp    # Cinema 4D plugin entry point
     rrscene_writer.py             # plain-Python .rrscene writer (testable)
     server_client.py              # plain-Python protocol client (testable)
+    preview_state.py              # plain-Python dialog helpers (testable)
     tests/
         test_rrscene_writer.py    # standalone test (runs without C4D)
         test_server_client.py     # standalone test (runs without C4D)
+        test_preview_state.py     # standalone test (runs without C4D)
     README.md
 ```
 
@@ -210,7 +249,7 @@ Create Controller**.
 
 ## Plugin IDs
 
-Five development plugin ids are used as placeholders:
+Six development plugin ids are used as placeholders:
 
 | Command                                | Placeholder id |
 |----------------------------------------|----------------|
@@ -219,6 +258,7 @@ Five development plugin ids are used as placeholders:
 | `RelativityRender: Ping Server`        | `1058602`      |
 | `RelativityRender: Send Scene`         | `1058603`      |
 | `RelativityRender: Render Scene`       | `1058604`      |
+| `RelativityRender: Preview Dialog`     | `1058605`      |
 
 **Before any public release**, request real plugin ids from
 PluginCafe (https://plugincafe.maxon.net/) and replace each
@@ -252,9 +292,9 @@ Per `docs/MODULE_MAP.md` and `integrations/c4d/README.md`:
 
 ## Running the standalone tests
 
-`rrscene_writer.py` and `server_client.py` are plain Python
-with no Cinema 4D imports, so the test harnesses run under
-stock `python3`:
+`rrscene_writer.py`, `server_client.py`, and `preview_state.py`
+are plain Python with no Cinema 4D imports, so the test
+harnesses run under stock `python3`:
 
 ```
 $ python3 integrations/c4d/RelativityRenderBridge/tests/test_rrscene_writer.py
@@ -262,10 +302,15 @@ test_rrscene_writer: 118/118 passed
 
 $ python3 integrations/c4d/RelativityRenderBridge/tests/test_server_client.py
 test_server_client: 33/33 passed
+
+$ python3 integrations/c4d/RelativityRenderBridge/tests/test_preview_state.py
+test_preview_state: 89/89 passed
 ```
 
 The TCP socket layer of `RenderServerClient.send_command` is
 exercised manually via the `RelativityRender --serve` smoke
-test documented in `docs/BUILD_PLAN.md` - the standalone
-suites cover the protocol parser + reader + command-line
-normaliser without binding a real port.
+test documented in `docs/BUILD_PLAN.md`. The C4D-only parts
+of the bridge (`PreviewDialog`'s `CreateLayout` /
+`InitValues` / `Command` overrides) are validated by AST
+parse only - their behaviour reduces to calls into the
+already-tested helpers.

@@ -1,6 +1,6 @@
 """Cinema 4D Python plugin: RelativityRender bridge.
 
-Registers five commands under the Plugins menu:
+Registers six commands under the Plugins menu:
 
   - **RelativityRender: Export Scene** - reads the active
     document's camera / render settings / (optional)
@@ -31,6 +31,14 @@ Registers five commands under the Plugins menu:
     clear error otherwise). Does NOT pull pixels back over
     the wire - that's a future slice; for now the user
     opens the saved file from disk.
+  - **RelativityRender: Preview Dialog** - opens a floating
+    `c4d.gui.GeDialog` panel grouping the four protocol
+    actions (Ping / Export / Send / Render), the host +
+    port fields, the four relativity sliders (beta /
+    aberration / doppler / searchlight), and a multi-line
+    text area that shows the most recent server response.
+    Image preview is intentionally NOT in this slice; the
+    dialog displays text only.
 
 Unsupported object kinds (generators, deformers, volumes,
 hair) are skipped with a clear warning in the export dialog.
@@ -73,6 +81,7 @@ if _PLUGIN_DIR not in sys.path:
 
 import rrscene_writer  # noqa: E402  (sys.path mutation must precede)
 import server_client    # noqa: E402  (same)
+import preview_state    # noqa: E402  (same)
 
 
 # Cinema 4D plugin IDs are globally unique 32-bit integers. The
@@ -85,12 +94,14 @@ PLUGIN_ID_CREATE_CONTROLLER  = 1058601
 PLUGIN_ID_PING_SERVER        = 1058602
 PLUGIN_ID_SEND_SCENE         = 1058603
 PLUGIN_ID_RENDER_SCENE       = 1058604
+PLUGIN_ID_PREVIEW_DIALOG     = 1058605
 
 PLUGIN_NAME_EXPORT_SCENE      = "RelativityRender: Export Scene"
 PLUGIN_NAME_CREATE_CONTROLLER = "RelativityRender: Create Controller"
 PLUGIN_NAME_PING_SERVER       = "RelativityRender: Ping Server"
 PLUGIN_NAME_SEND_SCENE        = "RelativityRender: Send Scene"
 PLUGIN_NAME_RENDER_SCENE      = "RelativityRender: Render Scene"
+PLUGIN_NAME_PREVIEW_DIALOG    = "RelativityRender: Preview Dialog"
 
 # Per-command timeouts. Ping is trivial; load_scene parses a
 # JSON file so 10s is generous; render kicks off the GPU
@@ -129,6 +140,13 @@ PLUGIN_HELP_RENDER_SCENE = (
     "scene. The server saves the result to disk and replies with "
     "the absolute file path; the bridge displays the path. Pixel "
     "delivery over the protocol is a follow-up slice."
+)
+PLUGIN_HELP_PREVIEW_DIALOG = (
+    "Open the floating Preview Dialog. Groups the four protocol "
+    "actions (Ping / Export / Send / Render), the host + port "
+    "fields, and the four relativity sliders into a single panel "
+    "that shows the most recent server response in a text area. "
+    "No image preview yet."
 )
 
 # Marker name. Both commands use this constant: the export
@@ -1027,11 +1045,18 @@ class _ExportResult(object):
         self.light_skips                = light_skips
 
 
-def _export_to_disk(doc):
+def _export_to_disk(doc, relativity_override=None):
     """Build the .rrscene from the active document and write
     it to the resolved export path. Shared by the ExportScene
     and SendScene commands so the wire format the server sees
     is bit-for-bit what the standalone export wrote.
+
+    `relativity_override` lets the preview dialog hand in a
+    `relativity` section assembled from its own sliders -
+    bypassing the controller (and the controller-not-found
+    fallback). When `None` (the default) the function reads
+    the controller as before, preserving the existing menu
+    command behaviour.
 
     Returns an `_ExportResult` carrying every value the
     confirmation dialog (and, for SendScene, the load_scene
@@ -1044,14 +1069,18 @@ def _export_to_disk(doc):
     render_settings = rrscene_writer.make_render_settings(
         width=width, height=height)
 
-    controller = _find_controller(doc)
-    if controller is not None:
-        relativity_section = _read_relativity_from_controller(controller)
-        controller_note    = (
-            "controller='" + RELATIVITY_CONTROLLER_NAME + "'")
+    if relativity_override is not None:
+        relativity_section = relativity_override
+        controller_note    = "from preview dialog"
     else:
-        relativity_section = rrscene_writer.make_relativity_section()
-        controller_note    = "no controller found (using defaults)"
+        controller = _find_controller(doc)
+        if controller is not None:
+            relativity_section = _read_relativity_from_controller(controller)
+            controller_note    = (
+                "controller='" + RELATIVITY_CONTROLLER_NAME + "'")
+        else:
+            relativity_section = rrscene_writer.make_relativity_section()
+            controller_note    = "no controller found (using defaults)"
 
     (meshes,
      materials,
@@ -1361,6 +1390,330 @@ class RenderSceneCommand(plugins.CommandData):
         return True
 
 
+# ---------------------------------------------------------------------------
+# Preview dialog.
+# ---------------------------------------------------------------------------
+#
+# Floating GeDialog grouping the four server-talking actions
+# (Ping / Export / Send / Render), a host + port editor, and
+# the four relativity sliders. The display is text-only at
+# this slice: every server reply lands in a multi-line read-
+# only text area; no bitmap output yet.
+#
+# The dialog is its own state container - slider values do
+# NOT round-trip into the C4D scene's relativity controller.
+# Send Scene from the dialog uses the dialog's slider values
+# (via `_export_to_disk(doc, relativity_override=...)`); the
+# menu commands continue to read the controller as before.
+# Keeping the two paths independent means a user comparing
+# slider tweaks against a saved controller can do so without
+# the dialog clobbering the document.
+
+# Element IDs. Any positive int unique within the dialog. Do
+# NOT use the global plugin id range here - GeDialog element
+# ids share a separate namespace.
+_EID_GROUP_SERVER       = 1000
+_EID_HOST               = 1001
+_EID_PORT               = 1002
+_EID_PING               = 1003
+
+_EID_GROUP_ACTIONS      = 1010
+_EID_EXPORT             = 1011
+_EID_SEND               = 1012
+_EID_RENDER             = 1013
+
+_EID_GROUP_RELATIVITY   = 1020
+_EID_BETA               = 1021
+_EID_ABERRATION         = 1022
+_EID_DOPPLER            = 1023
+_EID_SEARCHLIGHT        = 1024
+
+_EID_GROUP_RESPONSE     = 1030
+_EID_RESPONSE           = 1031
+
+
+class PreviewDialog(c4d.gui.GeDialog):
+    """Floating text-only preview dialog.
+
+    Layout (top to bottom):
+
+      Server   :  [ host ] [ port ] [ Ping ]
+      Actions  :  [ Export ] [ Send ] [ Render ]
+      Relativity:
+        beta        :  | slider |
+        aberration  :  | slider |
+        doppler     :  | slider |
+        searchlight :  | slider |
+      Response :  multi-line text (read-only)
+
+    Each button performs its action SYNCHRONOUSLY on the
+    main C4D thread. That blocks the dialog until the server
+    replies; for ping (2s) / load_scene (10s) the wait is
+    fine, for render (60s) the user sees the C4D UI freeze.
+    Threaded async lives behind the eventual progress / cancel
+    work; it is NOT in this slice's scope.
+    """
+
+    def __init__(self):
+        super(PreviewDialog, self).__init__()
+        # Cached so the dialog can recover the most recent
+        # response without forcing the user to scroll back.
+        self._last_response_text = ""
+
+    # --- Lifecycle hooks ----------------------------------------------------
+
+    def CreateLayout(self):
+        self.SetTitle("RelativityRender Preview")
+
+        # Server row.
+        if self.GroupBegin(id=_EID_GROUP_SERVER,
+                           flags=c4d.BFH_SCALEFIT,
+                           cols=5, rows=1, title="Server"):
+            self.GroupBorderSpace(4, 4, 4, 4)
+            self.AddStaticText(id=0, flags=0, name="Host:")
+            self.AddEditText(id=_EID_HOST,
+                             flags=c4d.BFH_SCALEFIT, initw=140)
+            self.AddStaticText(id=0, flags=0, name="Port:")
+            self.AddEditNumberArrows(id=_EID_PORT,
+                                     flags=c4d.BFH_LEFT, initw=80)
+            self.AddButton(id=_EID_PING,
+                           flags=c4d.BFH_RIGHT, initw=80, name="Ping")
+        self.GroupEnd()
+
+        # Actions row.
+        if self.GroupBegin(id=_EID_GROUP_ACTIONS,
+                           flags=c4d.BFH_SCALEFIT,
+                           cols=3, rows=1, title="Actions"):
+            self.GroupBorderSpace(4, 4, 4, 4)
+            self.AddButton(id=_EID_EXPORT,
+                           flags=c4d.BFH_SCALEFIT, name="Export Scene")
+            self.AddButton(id=_EID_SEND,
+                           flags=c4d.BFH_SCALEFIT, name="Send Scene")
+            self.AddButton(id=_EID_RENDER,
+                           flags=c4d.BFH_SCALEFIT, name="Render")
+        self.GroupEnd()
+
+        # Sliders.
+        if self.GroupBegin(id=_EID_GROUP_RELATIVITY,
+                           flags=c4d.BFH_SCALEFIT,
+                           cols=2, rows=4, title="Relativity"):
+            self.GroupBorderSpace(4, 4, 4, 4)
+            self.AddStaticText(id=0, flags=0, name="beta")
+            self.AddEditSlider(id=_EID_BETA,
+                               flags=c4d.BFH_SCALEFIT)
+            self.AddStaticText(id=0, flags=0, name="aberration")
+            self.AddEditSlider(id=_EID_ABERRATION,
+                               flags=c4d.BFH_SCALEFIT)
+            self.AddStaticText(id=0, flags=0, name="doppler")
+            self.AddEditSlider(id=_EID_DOPPLER,
+                               flags=c4d.BFH_SCALEFIT)
+            self.AddStaticText(id=0, flags=0, name="searchlight")
+            self.AddEditSlider(id=_EID_SEARCHLIGHT,
+                               flags=c4d.BFH_SCALEFIT)
+        self.GroupEnd()
+
+        # Response area.
+        if self.GroupBegin(id=_EID_GROUP_RESPONSE,
+                           flags=c4d.BFH_SCALEFIT | c4d.BFV_SCALEFIT,
+                           cols=1, rows=1, title="Server Response"):
+            self.GroupBorderSpace(4, 4, 4, 4)
+            self.AddMultiLineEditText(
+                id=_EID_RESPONSE,
+                flags=c4d.BFH_SCALEFIT | c4d.BFV_SCALEFIT,
+                inith=120,
+                style=c4d.DR_MULTILINE_READONLY)
+        self.GroupEnd()
+
+        return True
+
+    def InitValues(self):
+        self.SetString(_EID_HOST, preview_state.DEFAULT_HOST)
+        self.SetInt32(_EID_PORT,  preview_state.DEFAULT_PORT,
+                      preview_state.MIN_PORT, preview_state.MAX_PORT)
+
+        # Slider ranges. step=0.001 keeps the spinner usable
+        # without adding a noticeable lag on the multi-decimal
+        # values.
+        self.SetReal(_EID_BETA,        preview_state.DEFAULT_BETA,
+                     0.0, 0.999, 0.001, c4d.FORMAT_FLOAT)
+        self.SetReal(_EID_ABERRATION,  preview_state.DEFAULT_ABERRATION,
+                     0.0, 1.0, 0.001, c4d.FORMAT_FLOAT)
+        self.SetReal(_EID_DOPPLER,     preview_state.DEFAULT_DOPPLER,
+                     0.0, 1.0, 0.001, c4d.FORMAT_FLOAT)
+        self.SetReal(_EID_SEARCHLIGHT, preview_state.DEFAULT_SEARCHLIGHT,
+                     0.0, 1.0, 0.001, c4d.FORMAT_FLOAT)
+
+        self.SetMultiLineEditText(_EID_RESPONSE, "")
+        return True
+
+    def Command(self, id, msg):
+        if id == _EID_PING:
+            self._on_ping()
+        elif id == _EID_EXPORT:
+            self._on_export()
+        elif id == _EID_SEND:
+            self._on_send()
+        elif id == _EID_RENDER:
+            self._on_render()
+        return True
+
+    # --- Helpers ------------------------------------------------------------
+
+    def _read_host_port(self):
+        host = self.GetString(_EID_HOST)
+        port = self.GetInt32(_EID_PORT)
+        return (host, port)
+
+    def _read_relativity(self):
+        return preview_state.make_relativity_from_dialog(
+            beta        = self.GetReal(_EID_BETA),
+            aberration  = self.GetReal(_EID_ABERRATION),
+            doppler     = self.GetReal(_EID_DOPPLER),
+            searchlight = self.GetReal(_EID_SEARCHLIGHT),
+        )
+
+    def _append_response_line(self, line):
+        """Append a line to the response text area, keeping
+        the whole history visible. The newest line is at the
+        bottom (read order) so a user can re-issue commands
+        and see them stack up.
+        """
+        text = self._last_response_text
+        if text:
+            text += "\n"
+        text += str(line)
+        self._last_response_text = text
+        self.SetMultiLineEditText(_EID_RESPONSE, text)
+
+    def _validate_server_target(self):
+        host, port = self._read_host_port()
+        ok, msg = preview_state.validate_host(host)
+        if not ok:
+            self._append_response_line("[error] " + msg)
+            return None
+        ok, msg = preview_state.validate_port(port)
+        if not ok:
+            self._append_response_line("[error] " + msg)
+            return None
+        return (host, port)
+
+    # --- Action handlers ---------------------------------------------------
+
+    def _on_ping(self):
+        target = self._validate_server_target()
+        if target is None:
+            return
+        host, port = target
+        try:
+            client = server_client.RenderServerClient(
+                host=host, port=port, timeout=TIMEOUT_PING)
+            response = client.send_command("ping",
+                                           timeout=TIMEOUT_PING)
+            self._append_response_line(
+                preview_state.format_server_reply(response, "ping"))
+        except server_client.ServerClientError as exc:
+            self._append_response_line(
+                preview_state.format_connection_error(
+                    exc, "ping", host, port))
+        except Exception as exc:  # noqa: BLE001
+            self._append_response_line(
+                "[ping] unexpected error: " + str(exc))
+
+    def _on_export(self):
+        doc = c4d.documents.GetActiveDocument()
+        try:
+            result = _export_to_disk(
+                doc, relativity_override=self._read_relativity())
+            self._append_response_line(
+                "[export] OK saved " + result.saved_path)
+        except Exception as exc:  # noqa: BLE001
+            self._append_response_line(
+                "[export] failed: " + str(exc))
+
+    def _on_send(self):
+        target = self._validate_server_target()
+        if target is None:
+            return
+        host, port = target
+
+        doc = c4d.documents.GetActiveDocument()
+        try:
+            result = _export_to_disk(
+                doc, relativity_override=self._read_relativity())
+        except Exception as exc:  # noqa: BLE001
+            self._append_response_line(
+                "[send] export failed: " + str(exc))
+            return
+
+        try:
+            client = server_client.RenderServerClient(
+                host=host, port=port, timeout=TIMEOUT_LOAD_SCENE)
+            response = client.send_command(
+                "load_scene " + result.saved_path,
+                timeout=TIMEOUT_LOAD_SCENE)
+            self._append_response_line(
+                preview_state.format_server_reply(response, "send"))
+        except server_client.ServerClientError as exc:
+            self._append_response_line(
+                preview_state.format_connection_error(
+                    exc, "send", host, port)
+                + " (file still on disk: " + result.saved_path + ")")
+        except Exception as exc:  # noqa: BLE001
+            self._append_response_line(
+                "[send] unexpected error: " + str(exc))
+
+    def _on_render(self):
+        target = self._validate_server_target()
+        if target is None:
+            return
+        host, port = target
+        try:
+            client = server_client.RenderServerClient(
+                host=host, port=port, timeout=TIMEOUT_RENDER)
+            response = client.send_command("render",
+                                           timeout=TIMEOUT_RENDER)
+            self._append_response_line(
+                preview_state.format_server_reply(response, "render"))
+        except server_client.ServerClientError as exc:
+            self._append_response_line(
+                preview_state.format_connection_error(
+                    exc, "render", host, port))
+        except Exception as exc:  # noqa: BLE001
+            self._append_response_line(
+                "[render] unexpected error: " + str(exc))
+
+
+# Keep a single dialog instance around for the life of the
+# Cinema 4D session. Re-opening the menu entry surfaces the
+# same window (with its accumulated response history) instead
+# of creating a fresh one each time.
+_preview_dialog_singleton = None
+
+
+class OpenPreviewDialogCommand(plugins.CommandData):
+    """Cinema 4D command: open the preview dialog. Async
+    (`DLG_TYPE_ASYNC`) so the dialog stays open while the
+    user keeps working in C4D; closing the window does not
+    end the C4D session.
+    """
+
+    def Execute(self, doc):
+        global _preview_dialog_singleton
+        try:
+            if _preview_dialog_singleton is None:
+                _preview_dialog_singleton = PreviewDialog()
+            _preview_dialog_singleton.Open(
+                dlgtype=c4d.DLG_TYPE_ASYNC,
+                pluginid=PLUGIN_ID_PREVIEW_DIALOG,
+                defaultw=420, defaulth=380)
+            return True
+        except Exception as exc:  # noqa: BLE001
+            gui.MessageDialog(
+                "RelativityRender: Preview Dialog\n\n"
+                "Could not open the dialog:\n" + str(exc))
+            return True
+
+
 def _register():
     plugins.RegisterCommandPlugin(
         id=PLUGIN_ID_EXPORT_SCENE,
@@ -1400,6 +1753,14 @@ def _register():
         info=0,
         help=PLUGIN_HELP_RENDER_SCENE,
         dat=RenderSceneCommand(),
+        icon=None,
+    )
+    plugins.RegisterCommandPlugin(
+        id=PLUGIN_ID_PREVIEW_DIALOG,
+        str=PLUGIN_NAME_PREVIEW_DIALOG,
+        info=0,
+        help=PLUGIN_HELP_PREVIEW_DIALOG,
+        dat=OpenPreviewDialogCommand(),
         icon=None,
     )
 
