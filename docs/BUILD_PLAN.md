@@ -93,6 +93,151 @@ All modules now have a placeholder source directory under `src/`,
 
 ## Change Log
 
+### 2026-04-28 — M23 (spec, framebuffer): Cinema 4D framebuffer integration
+
+Third doc slice for M23. Adds section 7 ("Framebuffer
+integration") to `docs/C4D_NATIVE_RENDERER_PLAN.md`,
+pinning HOW pixels move from the GPU path tracer's
+output into the bitmap surface Cinema 4D expects to
+display. Stays at the conceptual level - storage
+shapes, ownership, host vs device round trip,
+resolution and progressive contracts. Per the prompt
+the multi-pass / AOV channel mapping, scene
+translation, and live-update mechanics are NOT pinned
+here.
+
+- **`docs/C4D_NATIVE_RENDERER_PLAN.md`:**
+  - Inserted section 7 "Framebuffer integration":
+    - 7.1 What RelativityRender produces today: a
+      device-resident `GpuBuffer<float>` of size
+      `width * height * 4` floats; `Rgba32F`,
+      row-major, channel-interleaved, top-left
+      origin (matches the M17 AOV foundation).
+      Per-pixel writes inside the kernel; download
+      to host `rr::image::Image` after `cudaDeviceSynchronize`.
+      The plugin starts from the same `Image`; the
+      renderer's public façade does not change.
+    - 7.2 What Cinema 4D expects: `BaseBitmap` for
+      the simple beauty path; `MultipassBitmap` for
+      the AOV case (deferred). Cinema 4D OWNS the
+      bitmap (the plugin writes but does not
+      allocate / free). Cinema 4D DICTATES
+      resolution + format. The plugin must signal
+      completion / partial progress (mechanism is
+      the live-update slice's call).
+    - 7.3 Mapping: per-pixel copy from `Image` into
+      the bitmap. Channel order RGBA on both sides;
+      no swap. Origin top-left on both sides; no
+      vertical flip. Float-to-X conversion: 8-bit
+      = same logic as `Image::save_ppm`; 16-bit /
+      32-bit = identity / half-conversion. Alpha
+      forwarded as-is (renderer writes 1.0 today).
+      Future optimisation: skip the host round
+      trip via device-direct copy (CUDA / OpenGL
+      interop or device-friendly bitmap interface);
+      v1 stays with the host round trip for
+      portability.
+    - 7.4 Resolution handling: plugin honours C4D's
+      requested resolution exactly; render-region
+      strategy v1 = render full + copy in-region;
+      resolution change between Renders =
+      reallocate per Execute (the renderer's
+      `GpuBuffer` already supports `allocate(N)`
+      resizing). The plugin DOES NOT rescale the
+      renderer's output to match the bitmap.
+    - 7.5 Progressive rendering vs final frame: the
+      progressive loop sketched in pseudocode
+      mirrors the M22 denoising-plan's section 6
+      structure (same renderer path); final-frame
+      collapses to a single launch + one bitmap
+      fill. The differences live in per-batch knobs
+      (sample count, bitmap update cadence, denoiser
+      frequency, cancellation poll), not in two
+      parallel code paths.
+    - 7.6 Preview vs final render: 6-row table
+      covering IRR / Picture Viewer / Render Queue
+      surfaces. All three invoke the same plugin
+      Execute; parameter selection differs.
+      IRR-specific notes (dynamic resolution,
+      aggressive cancellation), Render-Queue notes
+      (unattended, prefer offline parameters), Take
+      rendering reuses the standard scene
+      translation.
+    - 7.7 What this slice does NOT cover: multi-pass
+      / AOV mapping into `MultipassBitmap` slots
+      (deferred), tone-mapping / view-transform
+      interplay with C4D's color-management pipeline
+      (deferred), HDR EXR write-out (deferred),
+      tile / scanline progressive granularity
+      (deferred), scene translation + live update
+      (out of scope per the prompt).
+  - Renumbered the trailing meta sections from 7 / 8
+    to 8 / 9. Updated section 8's "what this slice
+    covers" to include the new framebuffer entry,
+    and updated the deferred list to drop the
+    framebuffer-integration entry now that 7 has
+    landed; multi-pass / AOV mapping joins the
+    deferred list as a separate item (it was
+    implicitly under "framebuffer" before).
+
+#### Verified locally
+
+```
+$ ls docs/C4D_NATIVE_RENDERER_PLAN.md
+$ grep '^## ' docs/C4D_NATIVE_RENDERER_PLAN.md
+## 1. Purpose
+## 2. What a native Cinema 4D renderer integration is
+## 3. Why RelativityRender needs one
+## 4. Python bridge vs native C++ integration
+## 5. Goals
+## 6. Cinema 4D plugin registration paths
+## 7. Framebuffer integration
+## 8. What this slice covers
+## 9. Out of scope for v1 of the spec
+```
+
+Spec-only slice; no source / build / test changes.
+
+#### Per the prompt
+
+- "How RelativityRender produces images (GPU
+  framebuffer)": section 7.1 - device-resident
+  `GpuBuffer<float>` Rgba32F + the existing path
+  through `cudaDeviceSynchronize` and the host
+  `Image`.
+- "How images are passed back to C4D": sections 7.2 +
+  7.3 - C4D-owned bitmap, plugin fills it via per-
+  pixel writes after Execute drives the renderer.
+- "Mapping GPU buffer -> C4D bitmap": section 7.3 -
+  channel order, origin, float-to-X conversion,
+  alpha, ownership. Future device-direct optimisation
+  flagged but out of v1.
+- "Resolution handling": section 7.4 - plugin honours
+  C4D's resolution exactly; render-region v1 strategy
+  pinned; per-Execute reallocation.
+- "Progressive rendering vs final frame":
+  section 7.5 - same renderer path as the denoising
+  plan section 6; the differences are per-batch
+  knobs, not two code paths.
+- "Preview vs final render": section 7.6 - IRR /
+  Picture Viewer / Render Queue tabled; all three
+  share the Execute path.
+- "Do NOT cover scene translation or live updates":
+  section 7.7 + section 8's deferred list both call
+  the omission out explicitly; both remain in the
+  deferred list.
+
+#### Module / milestone status
+
+- Module 21 (Future Native Cinema 4D Renderer):
+  remains `not started`. Three doc slices in
+  (intro / registration / framebuffer); the
+  remaining slices are scene translation, live
+  update, AOV channel mapping, the v1 SDK target,
+  and the bridge-vs-native workflow split.
+- M23 (Native Cinema 4D Renderer Integration):
+  remains `not started` (same).
+
 ### 2026-04-28 — M23 (spec, registration): Cinema 4D plugin registration paths
 
 Second doc slice for M23 (Native Cinema 4D Renderer

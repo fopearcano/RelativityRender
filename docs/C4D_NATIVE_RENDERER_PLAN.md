@@ -444,7 +444,304 @@ relativistic camera model, the material graph, AOVs,
 denoising, OptiX path - is the renderer that already
 ships, unchanged.
 
-## 7. What this slice covers
+## 7. Framebuffer integration
+
+This section pins HOW pixels move from the GPU path
+tracer's output into the bitmap surface Cinema 4D
+expects to display. It stays at the conceptual level -
+storage shapes, ownership, the host vs device round
+trip, the resolution and progressive contracts - and
+defers the multi-pass / AOV channel mapping, the tone-
+mapping / view-transform interplay, scene translation,
+and live update to their own slices.
+
+### 7.1 What RelativityRender produces today
+
+The renderer's hot path produces pixels on the GPU. The
+shape, recap (`docs/MASTER_ARCHITECTURE.md`,
+`src/cuda/CudaRenderer.{h,cu}`):
+
+- A device-resident `GpuBuffer<float>` of size
+  `width * height * 4` floats. Layout is `Rgba32F`,
+  row-major, **channel-interleaved**, **top-left
+  origin** - the same layout the M17 AOV foundation
+  uses for every AOV slot.
+- Per-pixel writes happen inside the path-trace
+  kernel; one thread per pixel. The kernel writes
+  the four channels (RGBA) directly into its slot in
+  the device buffer.
+- After the launch, the host calls
+  `cudaDeviceSynchronize`, allocates an
+  `rr::image::Image` (`Rgba32F`, same layout), and
+  downloads the device buffer into it.
+- `Image` is the host-side container the rest of the
+  project consumes: `Image::save_ppm` writes 8-bit
+  PPM, `AOV::save_ppm` writes a normalised grayscale
+  PPM for scalar AOVs, the bridge wraps it in BMP for
+  the C4D preview dialog.
+
+The native renderer plugin starts from this same
+`Image`. The renderer's public façade does not need to
+change: the plugin calls `CudaRenderer::render_scene`
+or `render_pathtrace` and receives a `Result` whose
+`image` field is the same `rr::image::Image` every
+other consumer reads.
+
+The M17 AOV foundation (six v1 kinds: Beauty / Normal /
+Depth / Albedo / DopplerFactor / SearchlightFactor)
+extends the same shape: each AOV is its own
+`GpuBuffer<float>` and downloads into its own `Image`.
+Mapping AOVs onto C4D's multi-pass surface is the next
+slice; this section pins ONLY the beauty / single-
+output path.
+
+### 7.2 What Cinema 4D expects
+
+A `VideoPostData` plugin's `Execute` callback (per
+section 6.2) receives the target framebuffer Cinema 4D
+wants filled. The container is one of:
+
+- **`BaseBitmap`** for the simple case - a single
+  beauty buffer, no extra channels. Cinema 4D
+  pre-allocates it at the render's resolution and
+  hands it to the plugin.
+- **`MultipassBitmap`** for the multi-pass case. Each
+  pass (RGB / Alpha / Depth / Object Buffer / etc.)
+  is a separately-addressable channel. AOVs map
+  here.
+
+For both, the SDK exposes per-pixel write APIs the
+plugin uses to populate the bitmap. The exact symbol
+names vary across SDK releases; what's stable is the
+contract:
+
+- Cinema 4D **owns** the bitmap; the plugin writes
+  into it but does not allocate / free.
+- Cinema 4D **dictates** the bitmap's resolution and
+  pixel format. The plugin honours both; it does not
+  resize the bitmap or change its format.
+- The plugin **MUST** signal completion (or partial
+  progress, in progressive mode) so C4D's UI updates.
+  The signal mechanism is the same one the
+  cancellation contract from section 6.5 uses; the
+  details are in the live-update slice.
+
+### 7.3 Mapping the GPU framebuffer to a Cinema 4D bitmap
+
+The plugin's `Execute` runs the equivalent of:
+
+```
+   1. Read width / height + format from the C4D bitmap.
+   2. Drive RelativityRender's renderer for that size:
+        result = CudaRenderer::render_scene(scene, w, h)
+        // or render_pathtrace(...) for the progressive case.
+   3. Translate result.image -> bitmap pixels.
+   4. Notify C4D the bitmap is ready (or partially ready,
+      progressive mode).
+```
+
+The translation in step 3 is a per-pixel copy. For each
+of the bitmap's pixels:
+
+- **Channel order.** Both sides use RGBA (or RGB) in
+  the same component order. No swap; channel index 0
+  on the renderer side is channel index 0 on the
+  bitmap side.
+- **Origin.** Both surfaces use **top-left origin**
+  with row-major rows. No vertical flip is needed.
+  (This matches `rr::image::Image`'s
+  documented convention; if a future Cinema 4D SDK
+  release exposes a different origin convention, the
+  plugin's translation step is the only place that
+  knows about it.)
+- **Float-to-X conversion.** RelativityRender writes
+  HDR linear `float32`. Cinema 4D's bitmap may be
+  8-bit-per-channel, 16-bit, or 32-bit float
+  depending on the artist's render-settings choice.
+  The plugin converts in step 3:
+  - 8-bit: clamp `[0, 1]`, scale by 255, round to
+    `uint8`. Same logic `Image::save_ppm` already
+    uses; the v1 plugin will share the same helper.
+  - 16-bit / 32-bit float: identity copy (or a
+    half-conversion for the 16-bit case).
+- **Alpha.** RelativityRender writes alpha as `1.0`
+  for hit pixels and `1.0` for miss pixels (the
+  current kernels do not distinguish). The plugin
+  forwards it as-is. A future "transparent
+  background" feature would land in the renderer
+  before the bitmap copy sees it.
+- **Buffer ownership.** The host `Image` allocated
+  by the renderer's `Result` is short-lived: it lives
+  long enough to feed the bitmap and is then
+  discarded. No long-term double-buffering.
+
+A future optimisation worth flagging: skipping the
+host round trip and copying GPU buffer -> Cinema 4D
+bitmap directly. Modern Cinema 4D SDKs occasionally
+expose device-friendly bitmap interfaces (CUDA /
+OpenGL interop on a per-platform basis); when one is
+available + stable, the plugin can `cudaMemcpy` from
+its device buffer straight into the bitmap's memory
+without touching host RAM. v1 ships the host
+round-trip for portability; the optimisation is
+opt-in once the rest of the plugin is stable.
+
+### 7.4 Resolution handling
+
+The plugin does **not** decide its own resolution. The
+artist sets resolution in C4D's Render Settings; the
+render manager passes it through to the plugin via
+Init (and the bitmap C4D allocates is sized
+accordingly). The plugin's job is:
+
+- **Honour the requested resolution exactly.** If
+  C4D asks for 1920 x 1080, the plugin invokes
+  `render_scene(scene, 1920, 1080)` - no implicit
+  rescale, no border. The renderer's framebuffer is
+  reallocated by `CudaRenderer` for the requested
+  size on every Execute (today's behaviour; cheap
+  enough for v1).
+- **Handle render-region.** When C4D's render-region
+  feature is on, the active region is a sub-
+  rectangle of the bitmap. v1 strategy: render the
+  full frame at the requested resolution and copy
+  only the in-region pixels into the bitmap. (A
+  future optimisation does region-only rendering by
+  passing the region to the kernel; that's a
+  follow-up because it requires per-region camera
+  ray generation.)
+- **Handle resolution changes between renders.** The
+  artist can change Render Settings between two
+  Render clicks. v1 just re-allocates the renderer
+  framebuffer per Execute; the renderer's
+  `GpuBuffer<float>` already supports
+  `allocate(N)` re-sizing without leaks.
+
+The plugin **does not** rescale the renderer's output
+to match the bitmap. Both sides agree on dimensions
+because the plugin drove the renderer with the
+bitmap's dimensions. This invariant is the plugin's
+contract; a violation indicates a bug.
+
+### 7.5 Progressive rendering vs final frame
+
+The path tracer (M14) supports per-launch sample
+counts via `render_pathtrace(scene, w, h, spp,
+max_depth, seed_offset)`. Progressive rendering
+becomes a loop over launches:
+
+```
+   total_spp = 0
+   for each batch in [1, 1, 2, 4, 8, 16, ...]:
+       result = render_pathtrace(scene, w, h, batch,
+                                 max_depth,
+                                 seed_offset = total_spp)
+       accumulate(result.image, accum)
+       copy_to_bitmap(accum, bitmap)
+       notify_c4d(progress = total_spp / total_target)
+       total_spp += batch
+       if cancelled: break
+```
+
+The structure is the same one the
+`docs/DENOISING_PLAN.md` section 6 sketched - because
+it's the same renderer path. The plugin's progressive
+mode runs the same loop and updates the C4D bitmap
+between batches.
+
+For **final-frame** rendering, the loop collapses to a
+single call: one launch with the full target sample
+count, fill the bitmap once, return. v1 picks final-
+mode when Cinema 4D dispatches a one-shot Render (the
+default path); progressive mode for IRR (interactive
+preview, section 7.6).
+
+The differences live in the per-batch knobs, not in
+two parallel code paths:
+
+- **Final**: one batch of `spp_target` samples; no
+  intermediate bitmap updates; no cancellation poll
+  inside the launch (cancellation between launches
+  only); denoiser (M22+) runs once on the final
+  frame.
+- **Progressive**: many small batches; bitmap
+  updates after each; cancellation poll between
+  batches; denoiser (M22+) runs every batch in
+  interactive mode and once at the end in offline
+  mode.
+
+The plugin reads which mode Cinema 4D wants from the
+`Execute` flags - C4D's IRR / Picture-Viewer / Render
+Queue contexts each carry their own hints.
+
+### 7.6 Preview vs final render
+
+Two distinct UX surfaces in C4D drive the plugin's
+`Execute`. They share most of the code path but pick
+different parameters from Render Settings:
+
+| Surface                | Destination          | Resolution                | Sample target              | Denoise frequency           | Cancellation                       |
+|------------------------|----------------------|---------------------------|----------------------------|------------------------------|------------------------------------|
+| **IRR / preview**      | C4D viewport overlay | C4D's IRR resolution (often lower) | Low (e.g. 4-32 spp)          | Per progressive batch        | Aggressive (every parameter change)|
+| **Picture Viewer**     | Picture Viewer       | Render Settings           | Render Settings              | Per batch (progressive)      | On user request                    |
+| **Render Queue / Take**| Output file path     | Render Settings           | Render Settings              | Once on final frame          | Whole render at once               |
+
+All three surfaces invoke the same plugin Execute.
+The parameter selection and the bitmap update cadence
+differ; the renderer the plugin drives is identical
+(the standalone-executable's renderer, unchanged).
+
+A few specifics worth flagging at the plan level:
+
+- **IRR's resolution is dynamic.** As the artist
+  resizes the viewport, the IRR resolution changes;
+  the plugin re-allocates buffers on each Execute
+  request. v1's per-Execute reallocation policy
+  (section 7.4) covers this case for free.
+- **Render Queue runs unattended.** No user is
+  watching for IRR-style feedback; the plugin can
+  prefer offline-mode parameters (final-frame
+  denoising, fewer bitmap updates).
+- **Take rendering reuses the same plugin.** Each
+  take is a separate Execute call with the take's
+  resolved scene; the plugin does not need
+  take-specific code beyond the standard scene
+  translation (separate slice).
+
+### 7.7 What this slice does NOT cover
+
+Listed for clarity so the v1 framebuffer-integration
+implementation slice does not creep:
+
+- **Multi-pass / AOV channel mapping.** The M17 AOV
+  set (Beauty / Normal / Depth / Albedo /
+  DopplerFactor / SearchlightFactor) maps onto
+  C4D's `MultipassBitmap` slots. That mapping -
+  which pass index gets which AOV, how scalar AOVs
+  encode into multi-channel slots, what the
+  pass-name strings are - is its own slice once the
+  v1 single-buffer path is settled.
+- **Tone-mapping / view-transform integration.**
+  Cinema 4D's color-management pipeline (linear /
+  sRGB / OCIO depending on version) overlays the
+  renderer's HDR linear output. v1 hands C4D the
+  raw linear values and lets C4D's view transforms
+  apply; whether the plugin should run its own
+  tone-map first is a calibration question for a
+  future slice.
+- **HDR EXR write-out.** When C4D's render destination
+  is an EXR file (HDR), the plugin's float32 output
+  is exactly what the file format wants. The on-disk
+  format mapping is a follow-up.
+- **Tile / scanline progressive granularity.** v1
+  updates the entire bitmap after each progressive
+  batch. Per-tile updates (which most production
+  renderers support for very large frames) is a
+  bandwidth optimisation; out of scope for v1.
+- **Scene translation and live update.** Out of scope
+  per the prompt; both have their own slices.
+
+## 8. What this slice covers
 
 This and the previous slices together establish:
 
@@ -458,12 +755,14 @@ This and the previous slices together establish:
   where its `Execute` slot is the single coordination
   point with the RelativityRender renderer
   (section 6).
+- The framebuffer integration: how the GPU framebuffer
+  reaches Cinema 4D's bitmap, resolution handling,
+  progressive vs final rendering, and the IRR /
+  Picture Viewer / Render Queue surfaces the same
+  Execute path serves (section 7).
 
 It deliberately does NOT pin:
 
-- The framebuffer integration shape (per-pixel
-  `BaseBitmap` writes vs bulk upload vs multi-pass
-  output via Cinema 4D's `MultipassObject` API).
 - The scene-translation contract (which C4D types map
   to which RelativityRender types, which features fall
   back to defaults, which features are skipped).
@@ -471,6 +770,8 @@ It deliberately does NOT pin:
   `EVMSG_DOCUMENTRECALCULATED` / scene-hook
   message-handling interplay with the renderer's
   per-frame upload path).
+- The multi-pass / AOV channel mapping into Cinema 4D's
+  `MultipassBitmap` slots.
 - The limitations the v1 native path will deliberately
   ship with (procedural noise, hair, volumes, SSS,
   takes / network rendering, ...).
@@ -486,7 +787,7 @@ work begins only after the slices that constrain it have
 landed - the same incremental rule the rest of the
 project follows.
 
-## 8. Out of scope for v1 of the spec
+## 9. Out of scope for v1 of the spec
 
 Listed for clarity so the v1 implementation slice does
 not creep:
