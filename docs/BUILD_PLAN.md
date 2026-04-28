@@ -93,6 +93,172 @@ All modules now have a placeholder source directory under `src/`,
 
 ## Change Log
 
+### 2026-04-28 — M19 (extension 4): bridge talks to the renderer server
+
+Fifth slice of the Cinema 4D bridge. Three new command plugins
+turn the C4D side into a real client of the M18 renderer
+server: ping for connectivity, send-scene to upload the export
+over the protocol, render-scene to trigger a GPU render. No
+preview panel - dialogs only, per the prompt.
+
+- **`integrations/c4d/RelativityRenderBridge/server_client.py`:**
+  New plain-Python module (no `c4d` import). Implements the
+  M18 line-based protocol against the host's renderer server:
+  - `parse_response(text)` -> `ServerResponse(ok, status_line,
+    body, raw)`. Tolerates CR/LF and missing terminators so a
+    degenerate input never crashes the parser.
+  - `read_until_terminator(read_fn, terminator=b"\\nEND\\n")`
+    drains a callable in 4 KiB chunks until the terminator is
+    seen, raises on EOF-before-terminator, and caps at
+    1 MiB to bail out cleanly when something is wedged.
+  - `RenderServerClient(host, port, timeout)` opens one
+    socket per command via `socket.create_connection`,
+    `sendall`s the line, drives `read_until_terminator`,
+    decodes UTF-8, returns a parsed `ServerResponse`. Each
+    command opens a fresh socket - matching the v1 server's
+    one-client-at-a-time accept loop. `send_command` accepts
+    a per-call `timeout` override so render (60s) can use a
+    longer deadline than ping (2s).
+  - `ServerClientError` on connect / send / receive failures.
+    The .pyp catches it and surfaces the message in a
+    `c4d.gui.MessageDialog` so a Python exception never
+    escapes into the C4D plugin host.
+  - Module-level `DEFAULT_HOST` (`127.0.0.1`),
+    `DEFAULT_PORT` (`7777`), and `RESPONSE_TERMINATOR`
+    pinned to the v1 contract.
+- **`integrations/c4d/RelativityRenderBridge/RelativityRenderBridge.pyp`:**
+  - Existing `ExportSceneCommand.Execute` body refactored into
+    `_export_to_disk(doc) -> _ExportResult` plus a
+    `_format_export_summary(result)` helper. Both are reused
+    by the new SendScene command so the wire payload the
+    server receives is bit-for-bit what the standalone
+    Export Scene wrote.
+  - New `_format_server_reply(response, command_label)` and
+    `_format_server_error(exc, command_label)` produce the
+    standard dialog wording for every server-talking
+    command, so the three commands cannot drift.
+  - `PingServerCommand` (id `1058602`) sends `ping`,
+    surfaces the `OK pong` reply.
+  - `SendSceneCommand` (id `1058603`) calls
+    `_export_to_disk` first and then sends
+    `load_scene <abs_path>`. If the export succeeds but the
+    server cannot be reached, the dialog reports the
+    on-disk path so the user knows the file is still
+    available for later submission.
+  - `RenderSceneCommand` (id `1058604`) sends `render` with
+    a 60s timeout (renders kick off the GPU pipeline) and
+    surfaces the saved-image path the server reports.
+  - All three new commands go through the
+    `_format_server_error` path on `ServerClientError`,
+    pointing the user at `RelativityRender --serve` when
+    no server is listening on `127.0.0.1:7777`. They wrap
+    the whole `Execute` body in `try/except` for any other
+    exception so a Python error never escapes the plugin
+    host.
+  - `_register` now registers all five command plugins.
+- **`integrations/c4d/RelativityRenderBridge/tests/test_server_client.py`:**
+  New standalone test runner. 33 host assertions covering:
+  - `parse_response`: OK / ERR single-line replies, multi-line
+    bodies, CRLF tolerance, missing terminator soft-fallback,
+    empty body (`END` only), `OK` token alone.
+  - `read_until_terminator`: single-chunk read, multi-chunk
+    drain, post-terminator byte trim, EOF-before-terminator
+    raises, max-bytes cap raises.
+  - `RenderServerClient._normalise_command_line`: trims
+    whitespace and appends `\\n`; rejects empty commands;
+    rejects embedded `\\n` / `\\r`.
+  - Pinned defaults (`DEFAULT_HOST = 127.0.0.1`,
+    `DEFAULT_PORT = 7777`, `RESPONSE_TERMINATOR = b"\\nEND\\n"`)
+    so a future drift fails the test alongside the code.
+  - `server_client` does not import `c4d`.
+  The TCP socket layer is exercised manually via the live
+  `--serve` smoke test below; pinning the parser layer
+  means CI stays deterministic without binding a real port.
+- **`integrations/c4d/RelativityRenderBridge/README.md`:**
+  Documents the three new commands, the per-command timeouts
+  (ping 2s / load 10s / render 60s), the connection details
+  (default `127.0.0.1:7777`), and updates the layout +
+  plugin-id table + standalone-tests output.
+
+#### Verified locally
+
+```
+$ python3 integrations/c4d/RelativityRenderBridge/tests/test_server_client.py
+test_server_client: 33/33 passed
+
+$ python3 integrations/c4d/RelativityRenderBridge/tests/test_rrscene_writer.py
+test_rrscene_writer: 118/118 passed
+
+$ python3 -c 'import ast; ast.parse(open(
+    "integrations/c4d/RelativityRenderBridge/RelativityRenderBridge.pyp"
+).read()); ast.parse(open(
+    "integrations/c4d/RelativityRenderBridge/server_client.py").read())'
+# (no output -> both files are syntactically valid Python)
+```
+
+End-to-end through the live renderer server, driving the
+bridge's `RenderServerClient` directly:
+
+```
+$ ./build/bin/RelativityRender --serve &
+$ python3 -c "
+  import sys; sys.path.insert(0,
+      'integrations/c4d/RelativityRenderBridge')
+  import server_client as sc
+  c = sc.RenderServerClient(timeout=2.0)
+  print(c.send_command('ping').status_line)
+  print(c.send_command('load_scene /tmp/m19_smoke.rrscene',
+                       timeout=10.0).status_line)
+  print(c.send_command('render', timeout=60.0).status_line)
+  print(c.send_command('shutdown').status_line)
+  "
+OK pong
+OK loaded 1 materials, 0 spheres, 1 lights, 1 meshes
+ERR render: no CUDA backend compiled in (rebuild with -DRR_ENABLE_CUDA=ON)
+OK goodbye
+```
+
+Each call open / send / drain / closes a fresh socket
+against the server's accept loop. Status lines match the
+M18 wiring slice byte-for-byte. The host-only build hits
+the no-CUDA branch on `render` cleanly; on a CUDA-enabled
+build the same call would return
+`OK rendered <W>x<H> to <abs_path>` and the dialog would
+surface that path verbatim.
+
+#### Per the prompt
+
+- "Commands: RelativityRender: Ping Server / Send Scene /
+  Render Scene": all three registered as `CommandData`
+  plugins (ids `1058602` / `1058603` / `1058604`).
+- "Use socket to localhost:7777":
+  `server_client.RenderServerClient` defaults to
+  `127.0.0.1:7777`, with `socket.create_connection` opening
+  a fresh TCP connection per command and the v1
+  `\\n` / `END\\n` line protocol on top.
+- "Do not build preview panel yet": none of the new
+  commands instantiate a `c4d.gui.GeDialog`. Each invokes
+  `c4d.gui.MessageDialog` to display the server's reply -
+  status line plus any extra body lines on multi-line
+  replies.
+- "Just display server response": `_format_server_reply`
+  formats the reply directly into the dialog text. No
+  parsing of paths, no auto-open, no implicit retries.
+
+#### Module / milestone status
+
+- Module 19 (Renderer Server): remains `in progress`.
+  The bridge being a real protocol client is the M18 exit
+  signal that "an external process can submit a scene file
+  and receive a rendered EXR back" - one more slice (binary
+  framebuffer streaming) closes that.
+- Module 20 (Cinema 4D Bridge): remains `in progress`.
+  Server protocol client landed; preview frame display in
+  the C4D viewport (which depends on binary streaming) is
+  the remaining slice.
+- M19 (Cinema 4D Bridge (Plugin)): remains `in progress`
+  (same).
+
 ### 2026-04-28 — M19 (extension 3): materials + emission + viewport colour + lights
 
 Fourth slice of the Cinema 4D bridge. Materials now carry real

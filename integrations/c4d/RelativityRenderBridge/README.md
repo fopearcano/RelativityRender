@@ -10,6 +10,10 @@ display in the C4D viewport land in subsequent slices.
 
 ## Commands
 
+The bridge ships five command plugins. Two operate on the
+Cinema 4D document only; the other three talk to the
+RelativityRender renderer server over TCP.
+
 ### Plugins → RelativityRender: Export Scene
 
 Writes a v1 `.rrscene` containing:
@@ -125,14 +129,68 @@ all strengths at `1`. The values mirror the v1 `.rrscene`
 Re-running the command creates an additional controller; the
 Export Scene command picks the first one it finds (depth-first).
 
+### Plugins → RelativityRender: Ping Server
+
+Opens a TCP socket to the RelativityRender renderer server
+(default `127.0.0.1:7777`), sends `ping`, displays the reply
+in a dialog. Used as a connectivity check before issuing the
+heavier Send Scene / Render Scene commands. Fails with a
+clear "could not reach the renderer server" dialog when no
+server is listening on the port.
+
+### Plugins → RelativityRender: Send Scene
+
+Exports the active document to a `.rrscene` file via the
+same `_export_to_disk` path the Export Scene command uses,
+then sends `load_scene <abs_path>` over the protocol so the
+server caches the parsed scene ready to render. The dialog
+shows both the export summary and the server's reply
+(`OK loaded ... materials, ... spheres, ... lights, ...
+meshes` on success).
+
+If the export succeeds but the server cannot be reached, the
+dialog says so explicitly and reminds the user that the
+on-disk `.rrscene` is still available for later submission.
+
+### Plugins → RelativityRender: Render Scene
+
+Sends the `render` command and displays the server's reply.
+On a CUDA-enabled server build, that's
+`OK rendered <W>x<H> to <abs_path>` carrying the absolute
+path of the saved PPM. On host-only builds it reports
+`ERR render: no CUDA backend compiled in` so the user knows
+the server needs to be rebuilt with `-DRR_ENABLE_CUDA=ON`.
+
+The bridge does NOT pull pixels back over the protocol
+itself - that's a follow-up slice. For now the user opens
+the saved file from the path the dialog reports.
+
+#### Server connection details
+
+| Parameter      | Default          |
+|----------------|------------------|
+| Host           | `127.0.0.1`      |
+| Port           | `7777`           |
+| Ping timeout   | `2 s`            |
+| Load timeout   | `10 s`           |
+| Render timeout | `60 s`           |
+
+Each command opens a fresh TCP connection, sends one line,
+drains the response, and closes - matching the v1 server's
+"one client at a time" accept loop. A C4D plugin-prefs panel
+that lets the user override host / port / timeouts will land
+alongside the multi-client server work.
+
 ## Layout
 
 ```
 RelativityRenderBridge/
     RelativityRenderBridge.pyp    # Cinema 4D plugin entry point
     rrscene_writer.py             # plain-Python .rrscene writer (testable)
+    server_client.py              # plain-Python protocol client (testable)
     tests/
         test_rrscene_writer.py    # standalone test (runs without C4D)
+        test_server_client.py     # standalone test (runs without C4D)
     README.md
 ```
 
@@ -152,15 +210,19 @@ Create Controller**.
 
 ## Plugin IDs
 
-Two development plugin ids are used as placeholders:
+Five development plugin ids are used as placeholders:
 
-- `RelativityRender: Export Scene` — `1058600`
-- `RelativityRender: Create Controller` — `1058601`
+| Command                                | Placeholder id |
+|----------------------------------------|----------------|
+| `RelativityRender: Export Scene`       | `1058600`      |
+| `RelativityRender: Create Controller`  | `1058601`      |
+| `RelativityRender: Ping Server`        | `1058602`      |
+| `RelativityRender: Send Scene`         | `1058603`      |
+| `RelativityRender: Render Scene`       | `1058604`      |
 
 **Before any public release**, request real plugin ids from
-PluginCafe (https://plugincafe.maxon.net/) and replace
-`PLUGIN_ID_EXPORT_SCENE` / `PLUGIN_ID_CREATE_CONTROLLER` in
-`RelativityRenderBridge.pyp`.
+PluginCafe (https://plugincafe.maxon.net/) and replace each
+`PLUGIN_ID_*` constant in `RelativityRenderBridge.pyp`.
 
 ## Coordinate convention
 
@@ -190,10 +252,20 @@ Per `docs/MODULE_MAP.md` and `integrations/c4d/README.md`:
 
 ## Running the standalone tests
 
-`rrscene_writer.py` is plain Python with no Cinema 4D imports,
-so the test harness runs under stock `python3`:
+`rrscene_writer.py` and `server_client.py` are plain Python
+with no Cinema 4D imports, so the test harnesses run under
+stock `python3`:
 
 ```
 $ python3 integrations/c4d/RelativityRenderBridge/tests/test_rrscene_writer.py
 test_rrscene_writer: 118/118 passed
+
+$ python3 integrations/c4d/RelativityRenderBridge/tests/test_server_client.py
+test_server_client: 33/33 passed
 ```
+
+The TCP socket layer of `RenderServerClient.send_command` is
+exercised manually via the `RelativityRender --serve` smoke
+test documented in `docs/BUILD_PLAN.md` - the standalone
+suites cover the protocol parser + reader + command-line
+normaliser without binding a real port.

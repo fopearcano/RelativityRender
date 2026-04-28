@@ -1,6 +1,6 @@
 """Cinema 4D Python plugin: RelativityRender bridge.
 
-Registers two commands under the Plugins menu:
+Registers five commands under the Plugins menu:
 
   - **RelativityRender: Export Scene** - reads the active
     document's camera / render settings / (optional)
@@ -16,6 +16,21 @@ Registers two commands under the Plugins menu:
     `aberration_strength`, `doppler_strength`,
     `searchlight_strength`. Selects the new object so the
     user lands on it ready to scrub the values.
+  - **RelativityRender: Ping Server** - opens a TCP socket
+    to the M18 renderer server (default `127.0.0.1:7777`),
+    sends the `ping` command, displays the server reply.
+  - **RelativityRender: Send Scene** - exports the document
+    via the same `_export_to_disk` path the Export Scene
+    command uses, then sends `load_scene <abs_path>` over
+    the protocol so the server caches the parsed scene
+    ready to render. Shows the server reply alongside the
+    export summary.
+  - **RelativityRender: Render Scene** - sends the `render`
+    command and displays the server reply (which carries
+    the absolute path of the saved PPM on success or a
+    clear error otherwise). Does NOT pull pixels back over
+    the wire - that's a future slice; for now the user
+    opens the saved file from disk.
 
 Unsupported object kinds (generators, deformers, volumes,
 hair) are skipped with a clear warning in the export dialog.
@@ -57,6 +72,7 @@ if _PLUGIN_DIR not in sys.path:
     sys.path.insert(0, _PLUGIN_DIR)
 
 import rrscene_writer  # noqa: E402  (sys.path mutation must precede)
+import server_client    # noqa: E402  (same)
 
 
 # Cinema 4D plugin IDs are globally unique 32-bit integers. The
@@ -66,9 +82,22 @@ import rrscene_writer  # noqa: E402  (sys.path mutation must precede)
 # real IDs from PluginCafe and replace these constants.
 PLUGIN_ID_EXPORT_SCENE       = 1058600
 PLUGIN_ID_CREATE_CONTROLLER  = 1058601
+PLUGIN_ID_PING_SERVER        = 1058602
+PLUGIN_ID_SEND_SCENE         = 1058603
+PLUGIN_ID_RENDER_SCENE       = 1058604
 
 PLUGIN_NAME_EXPORT_SCENE      = "RelativityRender: Export Scene"
 PLUGIN_NAME_CREATE_CONTROLLER = "RelativityRender: Create Controller"
+PLUGIN_NAME_PING_SERVER       = "RelativityRender: Ping Server"
+PLUGIN_NAME_SEND_SCENE        = "RelativityRender: Send Scene"
+PLUGIN_NAME_RENDER_SCENE      = "RelativityRender: Render Scene"
+
+# Per-command timeouts. Ping is trivial; load_scene parses a
+# JSON file so 10s is generous; render kicks off the GPU
+# pipeline so the timeout has to be longer. All in seconds.
+TIMEOUT_PING        = 2.0
+TIMEOUT_LOAD_SCENE  = 10.0
+TIMEOUT_RENDER      = 60.0
 
 PLUGIN_HELP_EXPORT_SCENE = (
     "Export the current Cinema 4D document as a RelativityRender "
@@ -83,6 +112,23 @@ PLUGIN_HELP_CREATE_CONTROLLER = (
     "Create a Null object that carries the relativity controls "
     "(beta_velocity, velocity_direction, aberration / doppler / "
     "searchlight strengths) the Export Scene command picks up."
+)
+PLUGIN_HELP_PING_SERVER = (
+    "Send a ping to the RelativityRender renderer server on "
+    "127.0.0.1:7777 and display the reply. Confirms the server "
+    "is running and reachable from Cinema 4D."
+)
+PLUGIN_HELP_SEND_SCENE = (
+    "Export the active document to a .rrscene file and ask the "
+    "renderer server to load it. The bridge uses the same export "
+    "path as RelativityRender: Export Scene; the server caches "
+    "the parsed scene ready for the Render Scene command."
+)
+PLUGIN_HELP_RENDER_SCENE = (
+    "Ask the renderer server to render the most recently loaded "
+    "scene. The server saves the result to disk and replies with "
+    "the absolute file path; the bridge displays the path. Pixel "
+    "delivery over the protocol is a follow-up slice."
 )
 
 # Marker name. Both commands use this constant: the export
@@ -944,6 +990,141 @@ def _build_controller_object():
 # Command plugins.
 # ---------------------------------------------------------------------------
 
+class _ExportResult(object):
+    """Bag of values `_export_to_disk` returns. The
+    ExportSceneCommand renders this into a confirmation dialog;
+    the SendSceneCommand re-uses the saved path to build the
+    `load_scene <path>` request and renders a shorter dialog
+    with both the export summary and the server's reply.
+    """
+
+    def __init__(self,
+                 saved_path,
+                 width,
+                 height,
+                 camera_section,
+                 controller_note,
+                 meshes,
+                 materials,
+                 lights,
+                 skipped,
+                 deformer_warnings,
+                 unsupported_material_names,
+                 light_caveats,
+                 light_skips):
+        self.saved_path                 = saved_path
+        self.width                      = width
+        self.height                     = height
+        self.camera_section             = camera_section
+        self.controller_note            = controller_note
+        self.meshes                     = meshes
+        self.materials                  = materials
+        self.lights                     = lights
+        self.skipped                    = skipped
+        self.deformer_warnings          = deformer_warnings
+        self.unsupported_material_names = unsupported_material_names
+        self.light_caveats              = light_caveats
+        self.light_skips                = light_skips
+
+
+def _export_to_disk(doc):
+    """Build the .rrscene from the active document and write
+    it to the resolved export path. Shared by the ExportScene
+    and SendScene commands so the wire format the server sees
+    is bit-for-bit what the standalone export wrote.
+
+    Returns an `_ExportResult` carrying every value the
+    confirmation dialog (and, for SendScene, the load_scene
+    request) needs.
+    """
+    target = _resolve_export_path(doc)
+
+    width, height = _render_resolution(doc)
+    camera_section  = _build_camera_section(doc)
+    render_settings = rrscene_writer.make_render_settings(
+        width=width, height=height)
+
+    controller = _find_controller(doc)
+    if controller is not None:
+        relativity_section = _read_relativity_from_controller(controller)
+        controller_note    = (
+            "controller='" + RELATIVITY_CONTROLLER_NAME + "'")
+    else:
+        relativity_section = rrscene_writer.make_relativity_section()
+        controller_note    = "no controller found (using defaults)"
+
+    (meshes,
+     materials,
+     skipped,
+     deformer_warnings,
+     unsupported_material_names) = _walk_document_meshes(doc)
+
+    (lights,
+     light_caveats,
+     light_skips) = _walk_document_lights(doc)
+
+    note = ("Exported by RelativityRenderBridge; "
+            + controller_note + "; "
+            + "meshes=" + str(len(meshes)) + "; "
+            + "lights=" + str(len(lights)) + "; "
+            + "skipped=" + str(len(skipped) + len(light_skips)) + ".")
+    scene = rrscene_writer.build_rrscene(
+        camera=camera_section,
+        render_settings=render_settings,
+        relativity=relativity_section,
+        meshes=meshes,
+        materials=materials,
+        lights=lights,
+        note=note,
+    )
+    saved_path = rrscene_writer.write_rrscene(scene, target)
+
+    return _ExportResult(
+        saved_path=saved_path,
+        width=width, height=height,
+        camera_section=camera_section,
+        controller_note=controller_note,
+        meshes=meshes, materials=materials, lights=lights,
+        skipped=skipped, deformer_warnings=deformer_warnings,
+        unsupported_material_names=unsupported_material_names,
+        light_caveats=light_caveats, light_skips=light_skips)
+
+
+def _format_export_summary(result):
+    """Build the human-readable summary lines that follow a
+    successful export. Shared between the ExportScene dialog
+    and the SendScene dialog so both produce identical wording.
+    """
+    tri_count = 0
+    for m in result.meshes:
+        tri_count += len(m["triangles"])
+    n_point = sum(1 for L in result.lights
+                  if L.get("type") == rrscene_writer.LIGHT_TYPE_POINT)
+    n_dir   = sum(1 for L in result.lights
+                  if L.get("type")
+                  == rrscene_writer.LIGHT_TYPE_DIRECTIONAL)
+    warn_block = _format_skip_summary(
+        result.skipped, result.deformer_warnings,
+        result.light_caveats, result.light_skips,
+        result.unsupported_material_names)
+    body = (
+        "Saved: " + result.saved_path + "\n"
+        "Resolution: " + str(result.width) + " x "
+                       + str(result.height) + "\n"
+        "Camera FOV (vert): "
+        + ("%.2f" % result.camera_section["fov"]) + " deg\n"
+        "Relativity: " + result.controller_note + "\n"
+        "Polygon meshes: " + str(len(result.meshes))
+        + " (" + str(tri_count) + " triangles, "
+        + str(len(result.materials)) + " materials)\n"
+        "Lights: " + str(n_point) + " point, "
+        + str(n_dir) + " directional\n"
+        "\n"
+        + warn_block
+    )
+    return body
+
+
 class ExportSceneCommand(plugins.CommandData):
     """Cinema 4D command: export the active document as a
     `.rrscene` file. Reads the active camera transform + FOV,
@@ -953,82 +1134,11 @@ class ExportSceneCommand(plugins.CommandData):
 
     def Execute(self, doc):
         try:
-            target = _resolve_export_path(doc)
-
-            width, height = _render_resolution(doc)
-            camera_section  = _build_camera_section(doc)
-            render_settings = rrscene_writer.make_render_settings(
-                width=width, height=height)
-
-            controller = _find_controller(doc)
-            if controller is not None:
-                relativity_section = _read_relativity_from_controller(controller)
-                controller_note    = (
-                    "controller='" + RELATIVITY_CONTROLLER_NAME + "'")
-            else:
-                relativity_section = rrscene_writer.make_relativity_section()
-                controller_note    = "no controller found (using defaults)"
-
-            (meshes,
-             materials,
-             skipped,
-             deformer_warnings,
-             unsupported_material_names) = _walk_document_meshes(doc)
-
-            (lights,
-             light_caveats,
-             light_skips) = _walk_document_lights(doc)
-
-            note = ("Exported by RelativityRenderBridge; "
-                    + controller_note + "; "
-                    + "meshes=" + str(len(meshes)) + "; "
-                    + "lights=" + str(len(lights)) + "; "
-                    + "skipped=" + str(len(skipped) + len(light_skips)) + ".")
-            scene = rrscene_writer.build_rrscene(
-                camera=camera_section,
-                render_settings=render_settings,
-                relativity=relativity_section,
-                meshes=meshes,
-                materials=materials,
-                lights=lights,
-                note=note,
-            )
-
-            saved_path = rrscene_writer.write_rrscene(scene, target)
-
-            tri_count = 0
-            for m in meshes:
-                tri_count += len(m["triangles"])
-
-            # Count point/directional separately for the dialog;
-            # area lights show up in the point bucket since the
-            # bridge degrades them, with the lossy conversion
-            # surfaced in `light_caveats`.
-            n_point = sum(1 for L in lights
-                          if L.get("type") == rrscene_writer.LIGHT_TYPE_POINT)
-            n_dir   = sum(1 for L in lights
-                          if L.get("type")
-                          == rrscene_writer.LIGHT_TYPE_DIRECTIONAL)
-
-            warn_block = _format_skip_summary(
-                skipped, deformer_warnings,
-                light_caveats, light_skips,
-                unsupported_material_names)
+            result = _export_to_disk(doc)
             gui.MessageDialog(
                 "RelativityRender: Export Scene\n"
                 "\n"
-                "Saved: " + saved_path + "\n"
-                "Resolution: " + str(width) + " x " + str(height) + "\n"
-                "Camera FOV (vert): "
-                + ("%.2f" % camera_section["fov"]) + " deg\n"
-                "Relativity: " + controller_note + "\n"
-                "Polygon meshes: " + str(len(meshes))
-                + " (" + str(tri_count) + " triangles, "
-                + str(len(materials)) + " materials)\n"
-                "Lights: " + str(n_point) + " point, "
-                + str(n_dir) + " directional\n"
-                "\n"
-                + warn_block
+                + _format_export_summary(result)
             )
             return True
         except Exception as exc:  # noqa: BLE001
@@ -1092,6 +1202,165 @@ class CreateControllerCommand(plugins.CommandData):
             return True
 
 
+# ---------------------------------------------------------------------------
+# Server-talking commands.
+# ---------------------------------------------------------------------------
+#
+# Each command opens a fresh `server_client.RenderServerClient`,
+# sends one line, drains one response, and closes. That mirrors
+# the v1 server's "one client at a time" accept loop and keeps
+# the bridge's interaction with the renderer trivially
+# auditable from a wire trace.
+
+def _format_server_reply(response, command_label):
+    """Standard wording for the dialog that follows a server
+    round-trip. Always shows the status line first; tacks on
+    the body when the body has more than just that line so
+    multi-line replies do not lose information.
+    """
+    lines = ["RelativityRender: " + command_label, ""]
+    if response.ok:
+        lines.append("Server: " + response.status_line)
+    else:
+        lines.append("Server (error): " + response.status_line)
+
+    body = response.body.strip("\n")
+    extra = ""
+    if body and body != response.status_line:
+        # Strip the status line off the body so it's not shown
+        # twice; what's left is any extra content from a
+        # multi-line reply.
+        rest = []
+        seen_status = False
+        for line in body.split("\n"):
+            if not seen_status and line == response.status_line:
+                seen_status = True
+                continue
+            rest.append(line)
+        extra = "\n".join(rest).strip("\n")
+    if extra:
+        lines.append("")
+        lines.append(extra)
+    return "\n".join(lines)
+
+
+def _format_server_error(exc, command_label):
+    return ("RelativityRender: " + command_label + "\n"
+            "\n"
+            "Could not reach the renderer server.\n"
+            "\n"
+            + str(exc) + "\n"
+            "\n"
+            "Make sure RelativityRender is running with "
+            "`--serve` on " + server_client.DEFAULT_HOST + ":"
+            + str(server_client.DEFAULT_PORT) + ".")
+
+
+class PingServerCommand(plugins.CommandData):
+    """Cinema 4D command: send `ping` to the renderer server
+    and display the reply (`OK pong`). Used as a connectivity
+    check before issuing the heavier Send Scene / Render Scene
+    commands.
+    """
+
+    def Execute(self, doc):
+        try:
+            client = server_client.RenderServerClient(
+                timeout=TIMEOUT_PING)
+            response = client.send_command("ping",
+                                           timeout=TIMEOUT_PING)
+            gui.MessageDialog(
+                _format_server_reply(response, "Ping Server"))
+            return True
+        except server_client.ServerClientError as exc:
+            gui.MessageDialog(_format_server_error(exc, "Ping Server"))
+            return True
+        except Exception as exc:  # noqa: BLE001
+            gui.MessageDialog(
+                "RelativityRender: Ping Server\n\n"
+                "Unexpected error:\n" + str(exc))
+            return True
+
+
+class SendSceneCommand(plugins.CommandData):
+    """Cinema 4D command: export the active document and ask
+    the server to load it. The dialog shows the export summary
+    + the server's `OK loaded ...` (or `ERR ...`) reply.
+    """
+
+    def Execute(self, doc):
+        # Step 1: build + write the .rrscene through the same
+        # path the standalone Export Scene command uses, so
+        # what the server reads is bit-for-bit what the user
+        # would have seen on disk.
+        try:
+            result = _export_to_disk(doc)
+        except Exception as exc:  # noqa: BLE001
+            gui.MessageDialog(
+                "RelativityRender: Send Scene\n\n"
+                "Export failed:\n" + str(exc))
+            return True
+
+        # Step 2: tell the server to load_scene <abs_path>.
+        cmd = "load_scene " + result.saved_path
+        try:
+            client = server_client.RenderServerClient(
+                timeout=TIMEOUT_LOAD_SCENE)
+            response = client.send_command(cmd,
+                                           timeout=TIMEOUT_LOAD_SCENE)
+        except server_client.ServerClientError as exc:
+            # The export already succeeded - tell the user
+            # explicitly so they know the on-disk file is fine
+            # and they can retry the server connection.
+            gui.MessageDialog(
+                _format_server_error(exc, "Send Scene")
+                + "\n\nThe .rrscene file was still written to:\n"
+                + result.saved_path)
+            return True
+        except Exception as exc:  # noqa: BLE001
+            gui.MessageDialog(
+                "RelativityRender: Send Scene\n\n"
+                "Unexpected error contacting server:\n" + str(exc))
+            return True
+
+        gui.MessageDialog(
+            "RelativityRender: Send Scene\n"
+            "\n"
+            + _format_export_summary(result) + "\n"
+            "\n"
+            "Server reply (load_scene):\n"
+            + ("OK " if response.ok else "ERR ")
+            + response.status_line)
+        return True
+
+
+class RenderSceneCommand(plugins.CommandData):
+    """Cinema 4D command: ask the server to render the most
+    recently loaded scene. The server replies with the saved
+    image's absolute path on success.
+    """
+
+    def Execute(self, doc):
+        try:
+            client = server_client.RenderServerClient(
+                timeout=TIMEOUT_RENDER)
+            response = client.send_command("render",
+                                           timeout=TIMEOUT_RENDER)
+        except server_client.ServerClientError as exc:
+            gui.MessageDialog(
+                _format_server_error(exc, "Render Scene"))
+            return True
+        except Exception as exc:  # noqa: BLE001
+            gui.MessageDialog(
+                "RelativityRender: Render Scene\n\n"
+                "Unexpected error:\n" + str(exc))
+            return True
+
+        gui.MessageDialog(
+            _format_server_reply(response, "Render Scene"))
+        return True
+
+
 def _register():
     plugins.RegisterCommandPlugin(
         id=PLUGIN_ID_EXPORT_SCENE,
@@ -1107,6 +1376,30 @@ def _register():
         info=0,
         help=PLUGIN_HELP_CREATE_CONTROLLER,
         dat=CreateControllerCommand(),
+        icon=None,
+    )
+    plugins.RegisterCommandPlugin(
+        id=PLUGIN_ID_PING_SERVER,
+        str=PLUGIN_NAME_PING_SERVER,
+        info=0,
+        help=PLUGIN_HELP_PING_SERVER,
+        dat=PingServerCommand(),
+        icon=None,
+    )
+    plugins.RegisterCommandPlugin(
+        id=PLUGIN_ID_SEND_SCENE,
+        str=PLUGIN_NAME_SEND_SCENE,
+        info=0,
+        help=PLUGIN_HELP_SEND_SCENE,
+        dat=SendSceneCommand(),
+        icon=None,
+    )
+    plugins.RegisterCommandPlugin(
+        id=PLUGIN_ID_RENDER_SCENE,
+        str=PLUGIN_NAME_RENDER_SCENE,
+        info=0,
+        help=PLUGIN_HELP_RENDER_SCENE,
+        dat=RenderSceneCommand(),
         icon=None,
     )
 
