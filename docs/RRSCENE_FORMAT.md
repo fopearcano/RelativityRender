@@ -33,7 +33,8 @@ a mandatory `version` field:
     "relativity":      { ... },
     "spheres":         [ ... ],
     "materials":       [ ... ],
-    "meshes":          [ ... ]
+    "meshes":          [ ... ],
+    "lights":          [ ... ]
 }
 ```
 
@@ -349,7 +350,60 @@ Notes:
   versions add an alternative `rotation_quaternion: [x, y, z, w]`
   field; when both are present the quaternion takes precedence.
 
-## 11. Common types
+## 11. Section: `lights`
+
+Array of light sources. Each entry is a JSON object discriminated
+by a `type` string. The schema is intentionally a small subset of
+the host `rr::lighting::Light` POD; only the two light kinds the
+renderer evaluates today (`point` and `directional`) are exposed.
+
+```json
+[
+    {
+        "type":      "directional",
+        "direction": [-0.4, -1.0, -0.3],
+        "color":     [1.0, 0.95, 0.85],
+        "intensity": 0.9
+    },
+    {
+        "type":      "point",
+        "position":  [1.5, 2.5, -1.5],
+        "color":     [0.7, 0.8, 1.0],
+        "intensity": 8.0
+    }
+]
+```
+
+| Field       | Type   | Required when             | Default       | Notes                                                                                       |
+|-------------|--------|---------------------------|---------------|---------------------------------------------------------------------------------------------|
+| `type`      | string | always                    | -             | `"point"` or `"directional"`. Case-sensitive.                                               |
+| `position`  | Vec3   | `type == "point"`         | `[0, 0, 0]`   | World-space light position. Ignored for directional.                                        |
+| `direction` | Vec3   | `type == "directional"`   | `[0, -1, 0]`  | Direction the light **propagates** (a unit vector). Auto-normalised; zero-length falls back to default. The shader uses `-direction` as the to-light vector. Ignored for point. |
+| `color`     | Vec3   | no                        | `[1, 1, 1]`   | Linear RGB tint. Components clamped to `[0, ∞)`.                                            |
+| `intensity` | float  | no                        | `1.0`         | Multiplier on `color`. `>= 0`. `0` disables the light without removing it from the array.    |
+
+Notes:
+
+- An empty `lights` array is legal; the renderer falls back to
+  its default sky tint (the same vertical gradient it produces
+  when no environment light is uploaded).
+- Point lights use **inverse-square falloff**:
+  `Li = color * intensity / r^2`. There is no falloff radius or
+  cutoff in v1; for performance you can dial `intensity` down or
+  drop the light from the array.
+- Directional lights have no positional component and no
+  distance falloff: `Li = color * intensity` for every receiver
+  in front of the surface.
+- The kernel skips back-faced contributions (`dot(N, wi) <= 0`);
+  no occlusion / shadow ray is cast at this milestone (M14 will
+  add it with the path tracer).
+- Area lights and environment lights are explicitly **not in
+  v1**, even though the host `rr::lighting::LightType` enum
+  includes them. They land in a future schema version alongside
+  the path tracer (M14 area sampling) and texture system (M16
+  env-map IBL).
+
+## 12. Common types
 
 ### Vec3
 
@@ -363,7 +417,7 @@ distinguish; the parser converts to `float`).
 Anything else (`[1, 2]`, `[1, 2, 3, 4]`, an object, a string) is a
 parse error.
 
-## 12. Defaults policy
+## 13. Defaults policy
 
 Every field has a documented default. A minimal valid v1 file is:
 
@@ -379,7 +433,7 @@ A parser MUST apply defaults only to **missing** fields. It MUST
 NOT silently substitute defaults for malformed inputs (e.g., a Vec3
 with two entries) — those are errors.
 
-## 13. Validation rules
+## 14. Validation rules
 
 A v1 parser MUST enforce, in addition to the per-section rules
 above:
@@ -402,25 +456,33 @@ above:
    `[0, vertices.size())`; negative or out-of-range indices are
    errors. Empty `vertices` or `triangles` arrays are legal but
    the parser MAY warn.
-10. Unknown top-level keys SHOULD warn but MUST NOT fail.
+10. Each light has `type`; `type` is one of `"point"` /
+    `"directional"`. Other strings (including `"area"` /
+    `"environment"`) are v1 errors. `intensity` is `>= 0`;
+    negative is an error.
+11. Unknown top-level keys SHOULD warn but MUST NOT fail.
 
 Files that violate any MUST clause are rejected with a descriptive
 diagnostic that names the offending field and (when the underlying
 parser supports it) line / column.
 
-## 14. Complete example
+## 15. Complete example
 
-A single sphere sitting 3 units in front of a camera that is
-boosted to 50% of light speed along its forward direction, with all
-relativistic effects at full strength:
+Compact `.rrscene` exercising every section: render settings,
+camera, relativity, materials, spheres, meshes, lights. One
+sphere lit by a warm directional sun and a cool point light, with
+a small emissive triangle floating above. The observer is boosted
+to `β = 0.3` along the camera's view axis, so the relativistic
+pipeline (aberration, Doppler colour, searchlight) modifies the
+final shaded result.
 
 ```json
 {
     "version": 1,
 
     "render_settings": {
-        "width":  800,
-        "height": 600
+        "width":  640,
+        "height": 480
     },
 
     "camera": {
@@ -431,26 +493,18 @@ relativistic effects at full strength:
     },
 
     "relativity": {
-        "beta_velocity":        0.5,
+        "beta_velocity":        0.3,
         "velocity_direction":   [0.0, 0.0, -1.0],
         "aberration_strength":  1.0,
         "doppler_strength":     1.0,
         "searchlight_strength": 1.0
     },
 
-    "spheres": [
-        {
-            "position":    [0.0, 0.0, -3.0],
-            "radius":      1.0,
-            "material_id": 0
-        }
-    ],
-
     "materials": [
         {
             "id":                0,
             "name":              "matte_red",
-            "base_color":        [0.9, 0.15, 0.15],
+            "base_color":        [0.9, 0.2, 0.2],
             "emission_color":    [0.0, 0.0, 0.0],
             "emission_strength": 0.0,
             "roughness":         0.5
@@ -465,18 +519,24 @@ relativistic effects at full strength:
         }
     ],
 
+    "spheres": [
+        {
+            "position":    [0.0, 0.0, -3.0],
+            "radius":      1.0,
+            "material_id": 0
+        }
+    ],
+
     "meshes": [
         {
-            "name": "quad_emitter",
+            "name": "tri_emitter",
             "vertices": [
-                [-0.7, 0.4, -3.0],
-                [ 0.7, 0.4, -3.0],
-                [ 0.7, 1.6, -3.0],
-                [-0.7, 1.6, -3.0]
+                [-0.5, 1.4, -3.0],
+                [ 0.5, 1.4, -3.0],
+                [ 0.0, 2.2, -3.0]
             ],
             "triangles": [
-                [0, 1, 2],
-                [0, 2, 3]
+                [0, 1, 2]
             ],
             "material_id": 1,
             "transform": {
@@ -485,23 +545,40 @@ relativistic effects at full strength:
                 "scale":    [1.0, 1.0, 1.0]
             }
         }
+    ],
+
+    "lights": [
+        {
+            "type":      "directional",
+            "direction": [-0.4, -1.0, -0.3],
+            "color":     [1.0, 0.95, 0.85],
+            "intensity": 0.9
+        },
+        {
+            "type":      "point",
+            "position":  [1.5, 2.5, -1.5],
+            "color":     [0.7, 0.8, 1.0],
+            "intensity": 8.0
+        }
     ]
 }
 ```
 
-This file is parser-equivalent to the M9 relativistic-sphere case
-at `β = 0.5`, with the sphere now resolved to a matte-red material
-and a small emissive quad sitting just above it - the same
-two-primitive setup the M11 material scene already exercises in
-`main.cpp`.
+The seven host-side modules the parser will populate from this
+file are exactly the ones the M12 lighting kernel already
+consumes (`Camera`, `RelativityParams`, `MaterialParams`,
+`Sphere`, `Mesh`, `Light`), so a v1 parser implementation maps
+each JSON section to its host POD with no reshaping.
 
-## 15. Out of scope for v1
+## 16. Out of scope for v1
 
 These features are deferred to later schema versions and MUST NOT
 appear in v1 files. The eventual parser MAY warn-and-ignore them
 when present, to ease forward migration:
 
-- `lights` array (point / directional / area / environment).
+- Light types beyond `point` and `directional` (the host enum
+  also has `area` and `environment`; v1 lights are restricted to
+  the two kinds the renderer evaluates today).
 - Material fields beyond `base_color` / `emission_color` /
   `emission_strength` / `roughness` (i.e. `metallic`, `specular`,
   `transmission`).
@@ -509,6 +586,7 @@ when present, to ease forward migration:
   `transform` (per-vertex normals / UVs / tangents / colours,
   external `source_path` references, quaternion rotations).
 - `textures`, environment maps, IBL.
+- Material node graphs / shader graphs.
 - Per-frame motion (animation curves, per-object velocities,
   retarded-time controls).
 - AOV / render-pass selection.
@@ -518,13 +596,12 @@ when present, to ease forward migration:
 - Near / far clip planes.
 - Per-sphere transform / parent links / object names.
 
-The host data model already supports several of these (lights
-have host structs and GPU upload paths); they're left out of v1
-only because this slice is intentionally small. Future schema
+Each deferred feature has a host or kernel home already (or has
+one planned in `docs/MILESTONE_ROADMAP.md`); future schema
 versions add them by mapping the existing C++ structs to JSON
-sections of the same names.
+sections of the same names without breaking v1 files.
 
-## 16. References
+## 17. References
 
 - `src/scene/Scene.h` — host data model the parser populates.
 - `src/scene/Transform.h` — `rr::math::Transform` carried by every
@@ -545,6 +622,11 @@ sections of the same names.
 - `src/math/Transform.h` — `rr::math::Transform` carrying the
   position / `euler_rotation_radians` / scale fields the
   `transform` block maps onto.
+- `src/lighting/Light.h` — `Light` POD the parser populates
+  from each `lights[i]` entry. Only the `Point` and
+  `Directional` enumerators of `LightType` are reachable from a
+  v1 file; `Area` and `Environment` slots stay at their host
+  defaults until a future schema version exposes them.
 - `docs/MASTER_ARCHITECTURE.md` — `Scene File Format` module
   contract (no GPU / UI / DCC dependencies).
 - `docs/MODULE_MAP.md` — module 18 (Scene File Format).

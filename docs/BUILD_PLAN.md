@@ -93,6 +93,73 @@ All modules now have a placeholder source directory under `src/`,
 
 ## Change Log
 
+### 2026-04-27 — RRSCENE v1: `lights` section + final compact example
+
+Doc-only extension. The v1 spec is now feature-complete for the
+sections the prompt sequence defined. No parser, no source
+changes.
+
+- **`docs/RRSCENE_FORMAT.md`:** added section 11 (`lights`).
+  - Fields: `type` (required string, `"point"` or
+    `"directional"`), `position` (required for point),
+    `direction` (required for directional, propagation vector,
+    auto-normalised), `color` (linear RGB, defaults to white),
+    `intensity` (defaults to 1, must be >= 0).
+  - Point lights use **inverse-square falloff**
+    (`Li = color * intensity / r^2`); no falloff radius / cutoff
+    in v1.
+  - Directional lights have no positional component and no
+    distance falloff. The shader uses `-direction` as the
+    to-light vector, matching the kernel's M12 convention.
+  - The kernel skips back-faced contributions
+    (`dot(N, wi) <= 0`); no shadow / occlusion ray (M14).
+  - Light types beyond `point` / `directional` (`area`,
+    `environment`) are explicitly out of v1; the host
+    `LightType` enum carries them but a v1 file MUST NOT use
+    them - `area` / `environment` strings are parser errors.
+- Top-level shape (section 2) now lists `lights` as an optional
+  section. Section numbers below shifted by one
+  (Common types -> 12, Defaults -> 13, Validation -> 14,
+  Complete example -> 15, Out of scope -> 16, References -> 17).
+- Validation rules (section 14) gained a clause: each light has
+  a `type` from the {`"point"`, `"directional"`} set; `intensity`
+  is `>= 0`; out-of-set type strings (incl. `"area"` /
+  `"environment"`) are v1 errors.
+- Out of scope (section 16) updated: removed the standalone
+  `lights` bullet (lights are now defined); added an explicit
+  "light types beyond point and directional" bullet for
+  `area` / `environment`; added `material node graphs / shader
+  graphs` so the deferred shading-graph work is documented.
+- Complete example (section 15) **replaced** with a single
+  compact example exercising every section at once - render
+  settings, camera, relativity (`β = 0.3`), two materials, one
+  sphere, one triangle mesh, one directional + one point light.
+  The composition mirrors the M12 lighting scene in `main.cpp`,
+  so the file is a drop-in for what `--render` already
+  produces.
+- References (section 17) updated with `src/lighting/Light.h`
+  and noted that only the `Point` / `Directional` enumerators
+  of `LightType` are reachable from a v1 file.
+
+#### Verified
+
+No source changes; the existing build / tests remain green
+(`ctest -> 10/10`).
+
+#### Per the prompt
+
+- Only `lights` was added.
+- One final complete example exercises every section in a
+  compact form (one of each except materials and lights, which
+  show two entries to demonstrate arrays).
+- No textures, no node graphs, no parser code.
+
+#### v1 spec status
+
+With `lights` in, the v1 spec covers every host-side data
+module currently consumed by `--render`. The remaining v1 work
+is parser implementation (the next M13 slice).
+
 ### 2026-04-27 — RRSCENE v1: `meshes` section added
 
 Doc-only extension. No parser, no source changes.
