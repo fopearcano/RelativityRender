@@ -93,6 +93,91 @@ All modules now have a placeholder source directory under `src/`,
 
 ## Change Log
 
+### 2026-04-27 — OptiX backend plan: materials + camera + relativity + migration
+
+Doc-only extension. Four final sections in
+`docs/OPTIX_BACKEND_PLAN.md`. The plan is now design-complete -
+implementation slices follow the step-by-step migration in
+§15. No code, no CMake change.
+
+- **§12 Material system integration.** Maps the existing
+  CUDA-path material flow onto OptiX seam by seam. The
+  `MaterialParams` array stays launch-wide (lives in launch
+  parameters, not SBT records); per-instance / per-primitive
+  `material_index` rides in the hit-group SBT record's
+  payload. The host upload path (`GpuScene::upload_materials`)
+  is unchanged. Adding more BSDF lobes is a closest-hit
+  program edit; live material updates rewrite the buffer with
+  no AS / SBT touch.
+- **§13 Camera integration.** `GpuCamera` becomes a launch
+  parameter (per-launch state, same for every pixel and
+  bounce). The raygen program reads `launch_params.camera` and
+  calls the existing `RR_HD inline generate_camera_ray` with
+  no source change. The `M7 aspect / fov / basis` logic
+  carries over identically; `camera_tests` keeps validating
+  the device math by construction.
+- **§14 Relativity integration.** All five seams stay in the
+  raygen program: aberration on the primary ray's direction
+  immediately after `generate_camera_ray`; `dopplerFactor` /
+  `searchlightFactor` / `applyDopplerColor` wrap the
+  *integrated* radiance after the bounce loop. The closest-hit
+  and miss programs are deliberately relativity-free.
+  Per-bounce aberration is documented as a small follow-up,
+  not a blocker. Every `RR_HD inline` helper in
+  `relativity/RelativityMath.h` and the host
+  `relativity_tests` suite (52) carry over unchanged.
+- **§15 Migration plan.** Six concrete, independently-
+  shippable slices:
+  - M15.1: SDK + CMake plumbing (`RR_ENABLE_OPTIX` option,
+    `find_package(OptiX)`).
+  - M15.2: `rr_optix` library skeleton (`OptixContext`,
+    pipeline scaffold, no programs / AS / SBT yet).
+  - M15.3: Build acceleration structures from `GpuScene`
+    (sphere GAS, per-mesh triangle GAS, IAS over them; build
+    only, no traversal yet).
+  - M15.4: Programs + modules + SBT.
+    `RaygenPathTrace.cu` / `MissEnvironment.cu` /
+    `HitClosestRadiance.cu`; new entry point
+    `CudaRenderer::render_pathtrace_optix` next to the
+    existing `render_pathtrace`.
+  - M15.5: Validation. Side-by-side comparison test;
+    bit-equal at fixed seed for trivial scenes, sample-noise
+    envelope for the full path tracer.
+  - M15.6: Promote OptiX to default. CUDA stays available
+    behind the same flag.
+  Plus an explicit §15.7 statement of why the CUDA path stays
+  after M15: host-test coverage of the shared `RR_HD inline`
+  math, debug fallback for non-RTX hardware, regression
+  baseline for OptiX bugs. **OptiX as default, CUDA as
+  fallback - not "OptiX replaces CUDA".**
+
+The "Out of scope" list (now §16) shrinks dramatically -
+materials / camera / relativity / build & SDK plumbing are no
+longer there. What remains: specific OptiX SDK version
+targeting (chosen in step M15.1), OptiX denoiser integration
+(M22), multi-GPU / multi-stream traversal (M18+), per-bounce
+relativistic aberration (small follow-up), and curves /
+volumes / displaced surfaces (each adds incremental scaffolding
+on top of the v1 OptiX backend).
+
+References (§17) is unchanged.
+
+#### Verified
+
+No source changes; the existing build / tests remain green
+(`ctest -> 12/12`).
+
+#### Per the prompt
+
+- The four requested topics (Material System Integration,
+  Camera Integration, Relativity Integration, Migration Plan)
+  are now sections in the doc.
+- Explanations are concrete and tied to the current architecture
+  - each section names the existing source files, structs, and
+  test suites that map onto the OptiX layer.
+- No code; the migration plan is the implementation contract
+  for the M15 slices that follow.
+
 ### 2026-04-27 — OptiX backend plan: AS + SBT + data flow
 
 Doc-only extension. Three new sections in

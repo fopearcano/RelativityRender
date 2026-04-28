@@ -494,33 +494,361 @@ The architectural invariants this enforces:
 - **The CPU's job does not change.** Configure + load + upload
   + launch + save - no per-pixel work crosses back to the host.
 
-## 12. Out of scope for this slice
+## 12. Material system integration
 
-The following pieces are explicitly deferred to subsequent doc
-slices and will be added to this file in the same incremental
-style as the RRSCENE format spec:
+Materials are the data the closest-hit program reads after the
+traversal hardware lands on a primitive. Two concrete questions:
+how does `rr::material::MaterialParams` flow from `GpuScene`
+through the SBT to the closest-hit program, and how does the
+closest-hit program use it once it has the parameters?
 
-- **Material data.** How `rr::material::MaterialParams` flows
-  into hit-group records, where the BSDF interface plugs in,
-  and how a v2+ texture system rides through the SBT.
-- **Camera data.** Launch-parameter layout for `GpuCamera`,
-  observer state, and relativity flags; how the raygen program
-  reads them.
-- **Relativity integration.** Exactly where in the OptiX
-  pipeline each of `aberrateDirection`, `dopplerFactor`,
-  `searchlightFactor`, `applyDopplerColor` runs, and the
-  invariants that keep the host unit tests covering the OptiX
-  path by construction.
-- **Build / SDK integration.** CMake `find_package(OptiX)`
-  plumbing, the new module library (`rr_optix`), how the
-  existing CUDA backend stays available as a fallback /
-  regression baseline.
+### 12.1 What the CUDA path does today
 
-Each of those becomes a section in this file when its design
-slice is approved. Implementation work does not start until the
-relevant slice is in.
+`src/cuda/CudaTestKernel.cu` already wires this end-to-end:
 
-## 13. References
+- `GpuScene::upload_materials(...)` uploads a flat
+  `GpuBuffer<MaterialParams>` (`src/gpu/GpuScene.{h,cpp}`).
+- `CudaSceneView` (`src/cuda/CudaScene.cuh`) carries
+  `const MaterialParams* materials` + `int material_count` by
+  value as a kernel argument.
+- `k_path_trace` and `k_render_scene` call
+  `lookup_material(scene, hit.material_index) -> MaterialParams`
+  (with a `-1` / out-of-range fallback to a neutral default).
+- The shading function reads `.baseColor / .emissionColor /
+  .emissionStrength / .roughness` directly.
+
+### 12.2 Where each piece moves under OptiX
+
+The host upload path is **unchanged**. The handful of pointers
+`CudaSceneView` carries today gets split between two device-side
+homes:
+
+| What                                  | Today (CUDA path)         | OptiX                            |
+|---------------------------------------|---------------------------|----------------------------------|
+| `MaterialParams[]` array              | `CudaSceneView::materials`| Launch parameters (per-launch)   |
+| Sphere POD array (incl. material id)  | `CudaSceneView::spheres`  | Launch parameters + sphere hit-group payload |
+| Per-mesh `material_id`                | `CudaMeshView::material_id`| Hit-group SBT record payload     |
+| Per-pixel hit lookup                  | direct `scene.materials[i]` | `launch_params.materials[i]`    |
+
+The materials buffer itself is **launch-wide** - the same array is
+read from every hit, every bounce, every pixel - so it belongs in
+the launch parameters struct rather than in a per-record payload.
+That keeps SBT records small.
+
+### 12.3 How the index reaches the hit program
+
+The closest-hit program needs an `int material_index` so it can
+read `launch_params.materials[material_index]`. Two cases:
+
+- **Triangle meshes.** Each mesh has a single `material_id` baked
+  into its host `Mesh` (and its `GpuMesh::material_id()`). The
+  hit-group SBT record for a mesh carries that integer in its
+  payload directly. The closest-hit program reads it as
+  `sbt_data->material_index` and looks the params up.
+- **Spheres** (custom-primitive GAS). The per-primitive
+  `material_index` is on the `Sphere` POD itself
+  (`src/geometry/Sphere.h`). The hit-group SBT record for the
+  sphere GAS carries a device pointer to the sphere array; the
+  closest-hit program reads
+  `spheres[optixGetPrimitiveIndex()].material_index`.
+
+Either way, the closest-hit program ends up with an `int`. The
+`lookup_material(materials, count, idx)` helper from the CUDA
+path lifts verbatim - it's already host- and device-callable.
+
+### 12.4 What this gives us
+
+- The `MaterialParams` POD is unchanged; the host upload path is
+  unchanged; the host material tests (`material_tests`) keep
+  exercising the same struct.
+- Adding more BSDF lobes (the M14 path tracer's still-pending
+  `eval` / `sample` / `pdf`) is a closest-hit change - no SBT
+  rebuild, no AS rebuild.
+- Live material edits become a single
+  `cudaMemcpy(materials_buffer, ...)` - the AS and SBT do not
+  touch.
+- A future texture system (M16) plugs in by adding device
+  pointers to texture objects on the SBT record's payload (one
+  pointer per textured slot), with the same lookup pattern.
+
+## 13. Camera integration
+
+Camera data is **per-launch state**: the same camera transform,
+fov, and aspect apply to every pixel, every bounce, every ray
+within a single frame. That makes it a natural fit for OptiX
+launch parameters - a small device-resident struct passed to
+`optixLaunch` and read from `__constant__` memory by every
+program.
+
+### 13.1 What the CUDA path does today
+
+- `main.cpp` builds an `rr::camera::Camera` (or loads it via
+  `SceneLoader::load_rrscene`), calls
+  `Camera::to_gpu() -> GpuCamera`.
+- `GpuScene::upload_camera(camera)` snapshots the
+  `GpuCamera` POD into the scene's `device_camera()` slot.
+- `CudaSceneView::camera` carries the POD by value as a kernel
+  argument.
+- `k_path_trace`/`k_render_scene` call
+  `rr::camera::generate_camera_ray(scene.camera, x, y, w, h)`
+  (`RR_HD inline` from `src/camera/CameraRay.h`).
+
+### 13.2 Where each piece moves under OptiX
+
+| What                  | Today (CUDA path)         | OptiX                       |
+|-----------------------|---------------------------|-----------------------------|
+| Host `GpuCamera` build| `Camera::to_gpu()`        | Unchanged                   |
+| Device upload         | `GpuScene::upload_camera` | Unchanged                   |
+| Per-launch carrier    | `CudaSceneView::camera`   | Launch parameters struct    |
+| Per-pixel ray gen     | `generate_camera_ray(...)`| Same call from raygen       |
+
+The raygen program reads `launch_params.camera` and calls the
+existing `generate_camera_ray` helper. The function is already
+`RR_HD inline` and uses only host- and device-callable
+arithmetic; it works inside an OptiX program with **no source
+change**.
+
+```
+// raygen body (sketch)
+const auto& cam = launch_params.camera;
+const uint3 idx = optixGetLaunchIndex();
+auto ray = rr::camera::generate_camera_ray(
+    cam, idx.x, idx.y, launch_params.width, launch_params.height);
+```
+
+### 13.3 What this gives us
+
+- The aspect / fov / basis logic established at M7 carries over
+  identically.
+- `camera_tests` continues to validate the device math by
+  construction - the OptiX raygen program calls the same
+  `generate_camera_ray` the host suite covers.
+- A future per-frame animation update is a single small
+  `cudaMemcpyAsync` into the launch-params buffer - no AS / SBT
+  rebuild.
+- The launch-params struct stays small: pointers + a couple of
+  PODs (camera, observer, relativity flags), well within the
+  tens of KB OptiX caches in constant memory.
+
+## 14. Relativity integration
+
+The relativistic perception pipeline today wraps the kernel's
+per-pixel work at five well-defined seams. Every seam stays a
+**raygen-program responsibility** under OptiX; nothing moves
+into the closest-hit or miss programs. The architectural
+invariant is that relativity is a *per-pixel* wrapper around an
+otherwise standard light-transport integrator.
+
+### 14.1 The five seams (today and under OptiX)
+
+Mapping each piece directly to its current
+`src/cuda/CudaTestKernel.cu` location:
+
+| Step                                | Today (CUDA `k_path_trace`)              | OptiX (raygen)                     |
+|-------------------------------------|------------------------------------------|------------------------------------|
+| 1. Generate primary ray             | `generate_camera_ray(...)`               | Same call, same point in raygen    |
+| 2. Apply aberration (primary)       | `aberrateDirection(observer.velocity, ray.direction)` | Same call, immediately after step 1 |
+| 3. Bounce loop (light transport)    | per-bounce: `trace_closest` -> shade -> sample -> repeat | per-bounce: `optixTrace` -> hit-group runs -> raygen reads payload -> sample -> repeat |
+| 4. Compute Doppler factor           | `dopplerFactor(observer.velocity, primary_dir)` once before integration | Same, computed in raygen once |
+| 5. Wrap integrated radiance         | `applyDopplerColor(L, D, ...)` and `L *= lerp(1, searchlightFactor(D), ...)` | Same calls, same point - after the bounce loop, before framebuffer write |
+
+Every helper named above lives in
+`src/relativity/RelativityMath.h` and is `RR_HD inline`; every
+one is exercised by the host `relativity_tests` suite (52
+assertions). The OptiX raygen program calls the exact same
+functions in the exact same order.
+
+### 14.2 What relativity does *not* touch
+
+- **The closest-hit program.** It reads `MaterialParams`,
+  accumulates emission, samples the next bounce, returns. No
+  observer state, no Doppler, no aberration. Keeping the BSDF
+  surface free of relativity makes it interchangeable with
+  whatever future BSDF interface lands at M14 / M16.
+- **The miss program.** It returns the environment-light
+  radiance unmodified. Doppler / searchlight wrap the
+  *integrated total* at the end of the path - applying them
+  per-bounce inside the miss program would double-count.
+- **The acceleration structures.** The geometry sees the same
+  rays it would see in a non-relativistic renderer; only the
+  *primary* ray's direction is aberrated, and that aberration
+  happens before the AS is queried.
+
+### 14.3 Optional second pass: per-bounce aberration
+
+The current CUDA pipeline only aberrates the **primary** ray.
+Aberrating bounce rays (so a moving observer sees relativistic
+caustics, etc.) is straightforward to add later: it becomes
+"call `aberrateDirection` on `ray.direction` between
+`closest-hit returns` and `optixTrace next-bounce`" inside the
+raygen loop. This is intentionally not in the M15 first-light
+slice; the host tests will be extended to cover the per-bounce
+case when it lands.
+
+### 14.4 What remains unchanged from the CUDA backend
+
+- Every `RR_HD inline` helper in `src/relativity/RelativityMath.h`
+  (`clampBeta`, `gamma`, `lorentzContraction`, `dopplerFactor`,
+  `searchlightFactor`, `aberrateDirection`,
+  `applyDopplerColor`).
+- The `Observer` and `RelativityParams` PODs in
+  `src/relativity/RelativityParams.h`.
+- The mapping from the on-disk `.rrscene` `relativity` section
+  to those host structs (`SceneLoader::load_relativity`).
+- The host `relativity_tests` suite (52 assertions) - it covers
+  the device math by construction, since the OptiX programs
+  call the same functions.
+
+## 15. Migration plan
+
+Step-by-step transition from the current CUDA naive path to the
+OptiX backend. Each step is its own implementation slice; the
+existing CUDA path stays available throughout the migration as a
+fallback / regression baseline, and stays available after M15
+ships.
+
+### 15.1 Step M15.1 - SDK detection + CMake plumbing
+
+- Add an `RR_ENABLE_OPTIX` option to the top-level
+  `CMakeLists.txt` (off by default, mirroring how
+  `RR_ENABLE_CUDA` was off at M5). Off keeps every existing
+  build configuration unchanged.
+- Add `find_package(OptiX REQUIRED)` (or the equivalent
+  module-mode detection for the version we target) under the
+  `RR_ENABLE_OPTIX` branch.
+- Vendor or detect the OptiX SDK headers; the runtime itself is
+  loaded by `optixInit()` at backend startup, like the CUDA
+  Driver API.
+- No source-side OptiX yet - this slice just makes the build
+  configurable.
+
+### 15.2 Step M15.2 - `rr_optix` library skeleton
+
+- Create `src/optix/` (the placeholder directory has existed
+  since the M1 skeleton).
+- Add `OptixContext` (lifecycle wrapper: init, log callback,
+  shutdown) and a `OptixPipeline` scaffold. Same pattern as
+  `src/cuda/CudaContext.{h,cpp}`.
+- Add the `rr_optix` static library to CMake. Per
+  `docs/MODULE_MAP.md` the OptiX backend depends on `rr_gpu` and
+  PUBLIC-links `rr_image`, `rr_camera`, `rr_material`,
+  `rr_lighting` (transitively through `rr_gpu`). It MUST NOT
+  depend on UI / Cinema 4D.
+- No programs yet, no AS / SBT yet - just the lifecycle
+  skeleton plus a tiny host smoke test that initialises and
+  tears down the context cleanly.
+
+### 15.3 Step M15.3 - Build acceleration structures from `GpuScene`
+
+- Add `OptixSceneAS` that reads a `GpuScene` and produces:
+  - one custom-primitive GAS over the sphere AABBs,
+  - one triangle GAS per mesh,
+  - an IAS over those GASes with the per-mesh world transforms.
+- Pure AS construction; no traversal yet. The slice ships when
+  the build call returns a valid `OptixTraversableHandle` and
+  the host smoke test asserts the build succeeded for a
+  representative scene.
+- The CUDA renderer path is **untouched**.
+
+### 15.4 Step M15.4 - Programs, modules, and SBT
+
+- Three new `.cu` files compiled to PTX (the eventual layout
+  follows the spec sections above; names are illustrative):
+  - `src/optix/RaygenPathTrace.cu` - per-pixel state machine,
+    primary ray, aberration, bounce loop driving `optixTrace`,
+    post-loop Doppler / searchlight, framebuffer write.
+  - `src/optix/MissEnvironment.cu` - lifts the existing
+    `sky_color` logic.
+  - `src/optix/HitClosestRadiance.cu` - lifts the existing
+    material-lookup + bounce-sample logic.
+- Build the SBT records that bind these programs to the IAS.
+- Add a parallel host entry point
+  `CudaRenderer::render_pathtrace_optix(scene, w, h)` next to
+  the existing `render_pathtrace`. Same return type
+  (`Result { ok, image, message }`), so callers can swap one
+  for the other.
+- `main.cpp` picks the backend by config (an env var or a new
+  CLI flag, e.g. `--backend optix`). Default stays **CUDA**;
+  the OptiX path is opt-in for this slice.
+
+### 15.5 Step M15.5 - Validation
+
+- Run both backends side by side on the same `.rrscene` file
+  (start with `scenes/test_geometry.rrscene` and the M14
+  fixtures).
+- Add a comparison test in the host suite. With the same RNG
+  seed, primary ray sequence, and a single sample per pixel,
+  the two backends should produce bit-equal pixels for a
+  trivial scene - and within sample noise envelope for the
+  full path tracer.
+- Document any known divergence (e.g., traversal-order
+  tie-breaks at edges) in this file's
+  [Out of scope](#16-out-of-scope-for-this-slice) section.
+
+### 15.6 Step M15.6 - Promote OptiX to default
+
+- Switch the default backend in `main.cpp` to OptiX.
+- Update `docs/MODULE_MAP.md` (module 6 status) and
+  `docs/MILESTONE_ROADMAP.md` (M15 marked landed).
+- The CUDA path stays available behind the same flag. It is
+  not deprecated and not deleted.
+
+### 15.7 Why CUDA stays after OptiX is the default
+
+Removing the CUDA path costs us three things we want to keep:
+
+1. **Test coverage of the `RR_HD inline` math.** The host
+   `geometry_tests`, `camera_tests`, `relativity_tests`, and
+   `sampling_tests` suites cover the helper functions both
+   backends call. The CUDA kernels are how those same helpers
+   exercise the real GPU pipeline; without them the CI matrix
+   loses its strongest guarantee that "host tests pass" implies
+   "device path works".
+2. **A debug fallback for non-RTX hardware.** Compute-only
+   GPUs and pre-Turing cards can still drive the CUDA backend.
+   That keeps the renderer usable on a wider set of dev
+   machines.
+3. **A regression baseline for OptiX bugs.** When an OptiX
+   image looks wrong, rendering the same scene on the CUDA
+   path narrows the search to "OptiX-specific" vs "shared
+   math".
+
+So: **OptiX as default, CUDA as fallback** - not "OptiX
+replaces CUDA".
+
+## 16. Out of scope for this plan
+
+The bulk of the OptiX backend now has a design contract: the
+program model (§§5-8), the AS / SBT / data flow (§§9-11),
+material / camera / relativity wiring (§§12-14), and the
+migration plan itself (§15). What remains explicitly deferred:
+
+- **Specific OptiX SDK version targeting.** The plan is
+  version-agnostic; `find_package` configuration in step M15.1
+  picks the supported range when implementation begins.
+- **OptiX denoiser API integration.** The denoiser is part of
+  M22 (Denoiser Integration), not M15. The OptiX denoiser will
+  consume the same framebuffer + AOV outputs the CUDA path
+  produces.
+- **Multi-GPU / multi-stream traversal.** Single-GPU first;
+  multi-stream and multi-device traversal land with the
+  renderer-server milestone (M18+) where they have a clear
+  consumer.
+- **Per-bounce relativistic aberration.** The first OptiX slice
+  matches today's CUDA behaviour: only primary rays are
+  aberrated. Per-bounce aberration is a small follow-up
+  (§14.3), not a blocker for parity.
+- **Curves / volumes / displaced surfaces.** v1 OptiX ships
+  triangles + spheres only. Each new primitive type adds a GAS
+  build input, an SBT record kind, and (for non-triangle) a
+  custom intersection program; the existing scaffolding makes
+  this incremental.
+
+These are smaller follow-ups, not unresolved design questions.
+M15 ships when steps M15.1 through M15.6 in the migration plan
+are landed.
+
+## 17. References
 
 - `src/cuda/CudaTestKernel.cu` - the current naive `trace_closest`
   body that the OptiX migration replaces.
