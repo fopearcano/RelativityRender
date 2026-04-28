@@ -93,6 +93,175 @@ All modules now have a placeholder source directory under `src/`,
 
 ## Change Log
 
+### 2026-04-28 — M21 (impl, gpu-ir): GPU-friendly material IR
+
+Fifth implementation slice of the material node graph. Lands
+the **operation list + terminal table** IR the spec section
+9.2 calls for, plus the host-side lowering that turns a
+validated `graph::Graph` into one. Per the prompt, no GPU
+execution yet; this slice ships only the compact host POD,
+the lowering, the device-side view header, and a debug print
+so the on-disk shape is inspectable.
+
+- **`src/material/GpuMaterial.h`** (new): the host-side IR.
+  - `GpuOpcode` enum (1 byte; mirrors `NodeType` but stays
+    independent so non-IR catalogue extensions don't leak
+    onto the GPU side).
+  - `GpuOp`: fixed-shape per-op record (opcode + 2 input
+    slot indices as `int16_t` + immediate vec3 + immediate
+    int). No pointers; cross-record references are integer
+    slot indices into the op array's own positions.
+  - `GpuTerminal`: terminal-table entry (`Diffuse` writes
+    `MaterialParams::baseColor`; `Emission` writes
+    `emissionColor` + `emissionStrength`). Always carries
+    immediate fallbacks alongside slot indices so the
+    future kernel never branches on "wired?".
+  - `GpuMaterial` = `vector<GpuOp> ops` + `vector<GpuTerminal>
+    terminals` + `slot_count`. The two arrays upload to
+    separate device buffers in a future slice.
+  - `compile_graph_to_gpu_material(graph::Graph) ->
+    GpuMaterialResult` and `debug_print_gpu_material(...)`.
+- **`src/material/GpuMaterial.cpp`** (new): the lowering
+  pipeline.
+  - Stage 1: validation via `graph::validate_graph`.
+  - Stage 2: terminal-driven topological sort
+    (defence-in-depth cycle check). Iterative DFS with a
+    deterministic per-node source order.
+  - Stage 3: assigns each non-terminal reachable node a
+    slot index = its position in the topo order. Caps at
+    32k slots (fits `int16_t`).
+  - Stage 4-5: emits `GpuOp` per non-terminal and
+    `GpuTerminal` per terminal. `resolve_input_slot`
+    walks `graph.connections` to find the source for each
+    socket; unwired inputs land as `-1` so the kernel
+    side reads the immediate fallback.
+  - `debug_print_gpu_material(mat, FILE*)`: dumps the IR
+    in human-readable form (one line per op, one per
+    terminal, with the relevant per-opcode fields).
+- **`src/cuda/CudaMaterialGraph.cuh`** (new): device-side
+  launch-argument view. `CudaMaterialGraphView` exposes
+  `(const GpuOp* ops, int op_count, const GpuTerminal*
+  terminals, int terminal_count)` - what a future kernel
+  reads after `GpuScene::upload_material_graphs` fills the
+  matching `GpuBuffer`s. `CudaMaterialGraphArrayView`
+  wraps a per-material array of those for the
+  material-id-to-IR lookup at hit time. v1 ships the
+  header + the shape; no kernel calls into it yet (per
+  the prompt's "do not execute on GPU yet" rule).
+- **`tests/material_graph_core_tests.cpp`**: 302 host
+  assertions (up from 225). New coverage:
+  - `gpu_opcode_name` round-trip for all six opcodes.
+  - `Const -> Diffuse` lowers to one op + one terminal,
+    `slot_count == 1`, terminal references slot 0.
+  - Unwired Diffuse: zero ops, one terminal with
+    `in_color == -1` and `imm_color` falling back to the
+    catalogue's mid-grey default.
+  - Emission carries `imm_color` + `imm_strength`
+    immediates from the node when both inputs unwired.
+  - `(Const + Const) -> Diffuse`: three ops, one
+    terminal; the Add op references both constants by
+    distinct slot indices; the Diffuse terminal
+    references the Add slot.
+  - `TextureSample` carries `texture_id` verbatim and
+    bakes the white missing-texture fallback into
+    `imm_color`. (Fixed mid-write: the test originally
+    built an unwired TextureSample and expected it to
+    appear in the IR; terminal-driven reachability
+    correctly drops dead code per spec 7.4, so the
+    sample now wires into the Diffuse terminal.)
+  - Dead-code branch (Multiply with two inputs but no
+    consumer reaching a terminal) is dropped.
+  - Invalid graph (no terminal) surfaces the validator's
+    error message through the lowering.
+  - Wired-color Emission records the source slot.
+  - Diffuse + Emission graph emits two terminals; both
+    kinds present.
+  - Smoke (printed): builds Const(0.7, 0.4, 0.2) ->
+    DiffuseBSDF, lowers, prints the compiled IR via
+    `debug_print_gpu_material`. Live trace:
+    ```
+    [smoke] compiled GpuMaterial:
+    GpuMaterial: ops=1 terminals=1 slot_count=1
+      ops:
+        [ 0] ConstantColor  imm_color=(0.700, 0.400, 0.200)
+      terminals:
+        [ 0] Diffuse        in_color=0 imm_color=(0.800, 0.800, 0.800)
+    ```
+- **`CMakeLists.txt`:** `rr_material` adds
+  `src/material/GpuMaterial.cpp` to its source list. No
+  new public dependency; `GpuMaterial.h` only needs
+  `math/Vec3.h` (already on the include path) and
+  forward-declares `graph::Graph` to keep the include set
+  small.
+
+#### Verified locally
+
+```
+$ cmake --build build && cd build && ctest --output-on-failure
+ 1/17 ... 17/17 all Passed
+100% tests passed, 0 tests failed out of 17
+
+$ ./build/bin/material_graph_core_tests
+[smoke] ConstantColor(0) -> DiffuseBSDF(1)
+[smoke]   connect    -> true
+[smoke]   validate() -> OK
+[smoke] evaluate(DiffuseBSDF(1)) = (0.700, 0.400, 0.200)
+[smoke] compiled GpuMaterial:
+GpuMaterial: ops=1 terminals=1 slot_count=1
+  ops:
+    [ 0] ConstantColor  imm_color=(0.700, 0.400, 0.200)
+  terminals:
+    [ 0] Diffuse        in_color=0 imm_color=(0.800, 0.800, 0.800)
+material_graph_core_tests: 302/302 passed
+```
+
+#### Per the prompt
+
+- "Files: `src/material/GpuMaterial.{h,cpp}`,
+  `src/cuda/CudaMaterialGraph.cuh`": all three created.
+- "Flattened node array (struct per node)":
+  `vector<GpuOp>` + `vector<GpuTerminal>`. Each is one
+  POD struct per record.
+- "Enum for node type": `GpuOpcode` enum class. Six v1
+  values; mirrors `NodeType` but kept distinct.
+- "Compact storage for parameters": immediates live
+  inside each record; no constant pool, no string
+  table. Slot indices are `int16_t` for compactness.
+- "Add conversion: Graph -> GpuMaterial":
+  `compile_graph_to_gpu_material(graph::Graph) ->
+  GpuMaterialResult`.
+- "No dynamic pointers on GPU": every cross-record
+  reference is an integer index.
+  `CudaMaterialGraphView` exposes the bytes through raw
+  device pointers + counts; the kernel reads
+  `ops[i].in_a` and indexes `ops[in_a]` rather than
+  following a host-side pointer.
+- "Fixed/compact arrays preferred":
+  `std::vector<GpuOp>` / `std::vector<GpuTerminal>`
+  upload as flat byte buffers to `GpuBuffer`s in a
+  future slice.
+- "TextureSample still placeholder":
+  `GpuOp::imm_color` for a TextureSample is hard-coded
+  to white (matching the M16 sampler's null-data
+  fallback in `cuda/CudaTexture.cuh`); the future
+  kernel will replace this with a real
+  `sample_texture(view, uv)` call.
+- "Do not execute on GPU yet": no kernel changes;
+  no opcode interpreter; the device-side view header is
+  the shape, not the implementation.
+- "Add debug print of compiled structure":
+  `debug_print_gpu_material(mat, FILE*)` writes the
+  human-readable dump shown above; smoke test exercises
+  it with the prompt's small graph.
+
+#### Module / milestone status
+
+- Module 22 (Node Editor / Material Graph): remains
+  `in progress`. The IR is the bridge between the data
+  core and the (future) per-hit kernel evaluator.
+- M21 (Material Node Graph (Editor)): remains `in
+  progress` (same).
+
 ### 2026-04-28 — M21 (impl, evaluator): CPU reference evaluator (testing only)
 
 Fourth implementation slice of the material node graph.

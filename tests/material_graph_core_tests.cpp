@@ -17,6 +17,7 @@
 //
 // No evaluation, no GPU, no UI - the new data core is data only.
 
+#include "material/GpuMaterial.h"
 #include "material/graph/Graph.h"
 #include "material/graph/GraphEvaluator.h"
 #include "material/graph/Node.h"
@@ -887,6 +888,269 @@ void test_smoke_evaluator_prints_resulting_color() {
     RR_CHECK(nearly_eq(result, rr::math::Vec3{0.7f, 0.4f, 0.2f}));
 }
 
+
+// ---------------------------------------------------------------------------
+// GPU-friendly material lowering (this slice).
+//
+// The lowering produces a `rr::material::GpuMaterial`: a flat
+// op list + terminal table the future kernel will read through
+// raw device pointers. Every test below verifies a structural
+// property of the IR the spec section 9.2 calls for; nothing
+// here exercises kernel execution (per the prompt).
+// ---------------------------------------------------------------------------
+
+using rr::material::GpuMaterial;
+using rr::material::GpuOp;
+using rr::material::GpuOpcode;
+using rr::material::GpuTerminal;
+using rr::material::compile_graph_to_gpu_material;
+using rr::material::debug_print_gpu_material;
+using rr::material::gpu_opcode_name;
+
+void test_gpu_opcode_name_round_trip() {
+    RR_CHECK(std::strcmp(gpu_opcode_name(GpuOpcode::ConstantColor),
+                         "ConstantColor") == 0);
+    RR_CHECK(std::strcmp(gpu_opcode_name(GpuOpcode::TextureSample),
+                         "TextureSample") == 0);
+    RR_CHECK(std::strcmp(gpu_opcode_name(GpuOpcode::Add),
+                         "Add") == 0);
+    RR_CHECK(std::strcmp(gpu_opcode_name(GpuOpcode::Multiply),
+                         "Multiply") == 0);
+    RR_CHECK(std::strcmp(gpu_opcode_name(GpuOpcode::Diffuse),
+                         "Diffuse") == 0);
+    RR_CHECK(std::strcmp(gpu_opcode_name(GpuOpcode::Emission),
+                         "Emission") == 0);
+}
+
+void test_compile_const_diffuse_emits_one_op_one_terminal() {
+    Graph g;
+    const NodeId color   = g.add_node(NodeType::ConstantColor);
+    const NodeId diffuse = g.add_node(NodeType::DiffuseBSDF);
+    find_node(g, color)->color_value = rr::math::Vec3{0.7f, 0.4f, 0.2f};
+    RR_CHECK(g.connect(color, "value", diffuse, "albedo"));
+
+    auto r = compile_graph_to_gpu_material(g);
+    RR_CHECK(r.ok);
+    RR_CHECK(r.material.ops.size()       == 1);
+    RR_CHECK(r.material.terminals.size() == 1);
+    RR_CHECK(r.material.slot_count       == 1);
+
+    const auto& op = r.material.ops[0];
+    RR_CHECK(op.opcode == GpuOpcode::ConstantColor);
+    RR_CHECK(op.imm_color.x == 0.7f);
+    RR_CHECK(op.imm_color.y == 0.4f);
+    RR_CHECK(op.imm_color.z == 0.2f);
+
+    const auto& t = r.material.terminals[0];
+    RR_CHECK(t.kind     == GpuOpcode::Diffuse);
+    RR_CHECK(t.in_color == 0);                  // wired to slot 0
+    RR_CHECK(t.in_strength == -1);              // Diffuse leaves strength at -1
+}
+
+void test_compile_unwired_diffuse_uses_immediate_default() {
+    // Diffuse with no albedo input -> in_color = -1, the
+    // imm_color falls back to the node's color_value (the
+    // catalogue's mid-grey default).
+    Graph g;
+    g.add_node(NodeType::DiffuseBSDF);
+    auto r = compile_graph_to_gpu_material(g);
+    RR_CHECK(r.ok);
+    RR_CHECK(r.material.ops.empty());
+    RR_CHECK(r.material.terminals.size() == 1);
+    const auto& t = r.material.terminals[0];
+    RR_CHECK(t.kind     == GpuOpcode::Diffuse);
+    RR_CHECK(t.in_color == -1);
+    // make_node defaults DiffuseBSDF.color_value to mid-grey
+    // (0.8, 0.8, 0.8) per the catalogue.
+    RR_CHECK(nearly_eq(t.imm_color, rr::math::Vec3{0.8f, 0.8f, 0.8f}));
+}
+
+void test_compile_emission_carries_color_and_strength_immediate() {
+    Graph g;
+    const NodeId em = g.add_node(NodeType::Emission);
+    Node* n = find_node(g, em);
+    n->color_value  = rr::math::Vec3{1.0f, 0.5f, 0.25f};
+    n->scalar_value = 2.5f;
+    auto r = compile_graph_to_gpu_material(g);
+    RR_CHECK(r.ok);
+    RR_CHECK(r.material.terminals.size() == 1);
+    const auto& t = r.material.terminals[0];
+    RR_CHECK(t.kind          == GpuOpcode::Emission);
+    RR_CHECK(t.in_color      == -1);
+    RR_CHECK(t.in_strength   == -1);
+    RR_CHECK(nearly_eq(t.imm_color, rr::math::Vec3{1.0f, 0.5f, 0.25f}));
+    RR_CHECK(nearly_eq(t.imm_strength, 2.5f));
+}
+
+void test_compile_add_chain_assigns_dense_slots_in_topo_order() {
+    // (a + b) -> Diffuse.albedo. Three ops, slots 0 / 1 / 2.
+    // Slot 2 (the Add) must reference slots 0 and 1.
+    Graph g;
+    const NodeId ca   = g.add_node(NodeType::ConstantColor);
+    const NodeId cb   = g.add_node(NodeType::ConstantColor);
+    const NodeId sum  = g.add_node(NodeType::Add);
+    const NodeId diff = g.add_node(NodeType::DiffuseBSDF);
+    find_node(g, ca)->color_value = rr::math::Vec3{0.1f, 0.2f, 0.3f};
+    find_node(g, cb)->color_value = rr::math::Vec3{0.4f, 0.5f, 0.6f};
+    RR_CHECK(g.connect(ca,  "value", sum,  "a"));
+    RR_CHECK(g.connect(cb,  "value", sum,  "b"));
+    RR_CHECK(g.connect(sum, "value", diff, "albedo"));
+
+    auto r = compile_graph_to_gpu_material(g);
+    RR_CHECK(r.ok);
+    RR_CHECK(r.material.ops.size()       == 3);
+    RR_CHECK(r.material.terminals.size() == 1);
+    RR_CHECK(r.material.slot_count       == 3);
+
+    // The two constants come first (in some order); the Add
+    // is last - it depends on both. Find the Add op and
+    // check its in_a / in_b reference the two constants.
+    int add_idx = -1;
+    int const_count = 0;
+    for (std::size_t i = 0; i < r.material.ops.size(); ++i) {
+        if (r.material.ops[i].opcode == GpuOpcode::Add) {
+            add_idx = static_cast<int>(i);
+        } else if (r.material.ops[i].opcode == GpuOpcode::ConstantColor) {
+            ++const_count;
+        }
+    }
+    RR_CHECK(const_count == 2);
+    RR_CHECK(add_idx     == 2);
+    const auto& add_op = r.material.ops[add_idx];
+    // in_a / in_b must be 0 or 1 (the two constants), in
+    // some order, both within bounds and distinct.
+    RR_CHECK((add_op.in_a == 0 || add_op.in_a == 1));
+    RR_CHECK((add_op.in_b == 0 || add_op.in_b == 1));
+    RR_CHECK(add_op.in_a != add_op.in_b);
+
+    // Diffuse terminal references the Add slot.
+    const auto& t = r.material.terminals[0];
+    RR_CHECK(t.kind     == GpuOpcode::Diffuse);
+    RR_CHECK(t.in_color == 2);
+}
+
+void test_compile_texture_sample_carries_id_and_fallback_color() {
+    // TextureSample is a placeholder in v1. The IR carries
+    // its texture_id verbatim and bakes the white "missing
+    // texture" fallback into imm_color.
+    //
+    // The TextureSample MUST be wired into the Diffuse
+    // terminal - the lowering's terminal-driven reachability
+    // would otherwise drop it as dead code (per spec 7.4),
+    // which is the correct behaviour but masks the property
+    // we want to assert.
+    Graph g;
+    const NodeId ts      = g.add_node(NodeType::TextureSample);
+    const NodeId diffuse = g.add_node(NodeType::DiffuseBSDF);
+    find_node(g, ts)->texture_id = 7;
+    RR_CHECK(g.connect(ts, "value", diffuse, "albedo"));
+
+    auto r = compile_graph_to_gpu_material(g);
+    RR_CHECK(r.ok);
+    RR_CHECK(r.material.ops.size() == 1);
+    if (r.material.ops.empty()) return;     // defensive: avoid OOB
+    const auto& op = r.material.ops[0];
+    RR_CHECK(op.opcode  == GpuOpcode::TextureSample);
+    RR_CHECK(op.imm_int == 7);
+    RR_CHECK(nearly_eq(op.imm_color, rr::math::Vec3{1.0f, 1.0f, 1.0f}));
+}
+
+void test_compile_drops_dead_code_subgraph() {
+    // Add a Multiply branch that doesn't reach any terminal.
+    // The IR MUST NOT contain it.
+    Graph g;
+    const NodeId reach   = g.add_node(NodeType::ConstantColor);
+    const NodeId dead_a  = g.add_node(NodeType::ConstantColor);
+    const NodeId dead_b  = g.add_node(NodeType::ConstantColor);
+    const NodeId dead_m  = g.add_node(NodeType::Multiply);
+    const NodeId diffuse = g.add_node(NodeType::DiffuseBSDF);
+    RR_CHECK(g.connect(reach,  "value", diffuse, "albedo"));
+    RR_CHECK(g.connect(dead_a, "value", dead_m,  "a"));
+    RR_CHECK(g.connect(dead_b, "value", dead_m,  "b"));
+    // dead_m has no consumer - it's unreachable from the
+    // single Diffuse terminal.
+
+    auto r = compile_graph_to_gpu_material(g);
+    RR_CHECK(r.ok);
+    // Only the reach constant survives; dead_a / dead_b /
+    // dead_m all dropped.
+    RR_CHECK(r.material.ops.size()       == 1);
+    RR_CHECK(r.material.terminals.size() == 1);
+    RR_CHECK(r.material.slot_count       == 1);
+    RR_CHECK(r.material.ops[0].opcode    == GpuOpcode::ConstantColor);
+}
+
+void test_compile_rejects_invalid_graph() {
+    // No terminal: validate_graph rejects, the lowering
+    // surfaces the error message.
+    Graph g;
+    g.add_node(NodeType::ConstantColor);
+    auto r = compile_graph_to_gpu_material(g);
+    RR_CHECK(!r.ok);
+    RR_CHECK(contains(r.message, "terminal"));
+}
+
+void test_compile_emission_with_wired_color_records_slot() {
+    Graph g;
+    const NodeId c  = g.add_node(NodeType::ConstantColor);
+    const NodeId em = g.add_node(NodeType::Emission);
+    find_node(g, c)->color_value = rr::math::Vec3{1.0f, 0.5f, 0.25f};
+    RR_CHECK(g.connect(c, "value", em, "color"));
+    auto r = compile_graph_to_gpu_material(g);
+    RR_CHECK(r.ok);
+    RR_CHECK(r.material.ops.size()       == 1);
+    RR_CHECK(r.material.terminals.size() == 1);
+    const auto& t = r.material.terminals[0];
+    RR_CHECK(t.kind         == GpuOpcode::Emission);
+    RR_CHECK(t.in_color     == 0);
+    RR_CHECK(t.in_strength  == -1);
+}
+
+void test_compile_diffuse_plus_emission_emits_two_terminals() {
+    Graph g;
+    const NodeId base = g.add_node(NodeType::ConstantColor);
+    const NodeId glow = g.add_node(NodeType::ConstantColor);
+    const NodeId d    = g.add_node(NodeType::DiffuseBSDF);
+    const NodeId e    = g.add_node(NodeType::Emission);
+    find_node(g, base)->color_value = rr::math::Vec3{0.8f, 0.2f, 0.1f};
+    find_node(g, glow)->color_value = rr::math::Vec3{0.0f, 0.5f, 1.0f};
+    find_node(g, e)->scalar_value   = 0.7f;
+    RR_CHECK(g.connect(base, "value", d, "albedo"));
+    RR_CHECK(g.connect(glow, "value", e, "color"));
+    auto r = compile_graph_to_gpu_material(g);
+    RR_CHECK(r.ok);
+    RR_CHECK(r.material.ops.size()       == 2);
+    RR_CHECK(r.material.terminals.size() == 2);
+    // Both terminal kinds present.
+    bool seen_diffuse = false, seen_emission = false;
+    for (const auto& t : r.material.terminals) {
+        if (t.kind == GpuOpcode::Diffuse)  seen_diffuse  = true;
+        if (t.kind == GpuOpcode::Emission) seen_emission = true;
+    }
+    RR_CHECK(seen_diffuse);
+    RR_CHECK(seen_emission);
+}
+
+
+// --- Smoke test: print compiled IR ------------------------------------
+
+void test_smoke_debug_print_compiled_gpu_material() {
+    // Builds Const(0.7, 0.4, 0.2) -> DiffuseBSDF, compiles
+    // to the GPU IR, and prints the result so the test
+    // output makes the on-disk shape visible at a glance.
+    Graph g;
+    const NodeId color   = g.add_node(NodeType::ConstantColor);
+    const NodeId diffuse = g.add_node(NodeType::DiffuseBSDF);
+    find_node(g, color)->color_value = rr::math::Vec3{0.7f, 0.4f, 0.2f};
+    RR_CHECK(g.connect(color, "value", diffuse, "albedo"));
+
+    auto r = compile_graph_to_gpu_material(g);
+    RR_CHECK(r.ok);
+
+    std::printf("[smoke] compiled GpuMaterial:\n");
+    debug_print_gpu_material(r.material);
+}
+
 }
 
 int main() {
@@ -970,9 +1234,22 @@ int main() {
     test_evaluate_diamond_fanout_does_not_corrupt_value();
     test_evaluate_depth_cap_returns_black_on_runaway();
 
+    // GPU-friendly material lowering (this slice).
+    test_gpu_opcode_name_round_trip();
+    test_compile_const_diffuse_emits_one_op_one_terminal();
+    test_compile_unwired_diffuse_uses_immediate_default();
+    test_compile_emission_carries_color_and_strength_immediate();
+    test_compile_add_chain_assigns_dense_slots_in_topo_order();
+    test_compile_texture_sample_carries_id_and_fallback_color();
+    test_compile_drops_dead_code_subgraph();
+    test_compile_rejects_invalid_graph();
+    test_compile_emission_with_wired_color_records_slot();
+    test_compile_diffuse_plus_emission_emits_two_terminals();
+
     // Smoke (printed):
     test_smoke_constant_color_to_diffuse_via_builder();
     test_smoke_evaluator_prints_resulting_color();
+    test_smoke_debug_print_compiled_gpu_material();
 
     std::printf("material_graph_core_tests: %d/%d passed\n",
                 g_total - g_failed, g_total);

@@ -143,6 +143,7 @@ endif()
 add_library(rr_material STATIC
     src/material/Material.cpp
     src/material/MaterialGraph.cpp
+    src/material/GpuMaterial.cpp
     src/material/graph/Graph.cpp
     src/material/graph/GraphEvaluator.cpp
 )
