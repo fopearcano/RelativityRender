@@ -93,6 +93,158 @@ All modules now have a placeholder source directory under `src/`,
 
 ## Change Log
 
+### 2026-04-28 — M21 (spec, integration): material node graph - integration strategy
+
+Fifth doc slice of the material node graph specification.
+Adds section 10 ("Integration strategy") to
+`docs/MATERIAL_GRAPH_SPEC.md`, pinning HOW the graph
+reaches the renderer: where it comes from (Cinema 4D
+today, the standalone editor tomorrow), how it grows
+without breaking what is already there, and how the
+producers / consumers of graph data layer against the
+renderer's architecture. The slice is **data plus
+architecture only**: UI / interaction design is
+explicitly out of scope and stays out of scope across
+the whole spec.
+
+- **`docs/MATERIAL_GRAPH_SPEC.md`:**
+  - Inserted section 10 "Integration strategy":
+    - 10.1 Cinema 4D bridge integration:
+      - Maps each C4D material the M19-extension-3
+        bridge already translates onto v1 catalogue
+        nodes: Standard `Mmaterial` color-only ->
+        `ConstantColor` -> `Diffuse.albedo`; color +
+        luminance -> +`Emission`; viewport "Display
+        Color" fallback -> `ConstantColor` ->
+        `Diffuse.albedo`; future bitmap-shader color
+        -> `TextureSample` -> `Diffuse.albedo`;
+        future tinted bitmap -> `TextureSample` ->
+        `Multiply` -> `Diffuse.albedo`. Each mapping
+        reuses ONLY the v1 catalogue.
+      - Fallback strategy: bridge writes the existing
+        flat material section and no graph block when
+        the C4D source is non-Standard, uses
+        unsupported features, or has channels too
+        complex to translate. Same path the bridge
+        has shipped since M19 ext 3.
+      - Future advanced mapping (separate slices):
+        C4D node-material translation, layered
+        materials / BSDF mixing.
+    - 10.2 Standalone node editor architecture:
+      - Editor-agnostic graph data: same catalogue +
+        section-7 contract, regardless of producer
+        (bridge, editor, CLI, test fixture).
+      - Separation rule: graph data is plain old data
+        (defined by sections 6-7); editor depends on
+        graph data + UI framework (M21 / L7); renderer
+        depends on graph data via the section-9 IR.
+        Renderer NEVER reaches into editor or bridge;
+        editor / bridge reach the renderer through
+        `.rrscene` (static) and the M18 server
+        protocol (preview).
+      - Layered ASCII diagram pinning the three
+        dependency rules.
+      - Serialisation: an optional `graph` block
+        inside each `materials[]` entry of a
+        `.rrscene` file. Carries `version`, a list of
+        nodes (each with id, type from the catalogue,
+        connections / defaults per input, immediates
+        for node-parameter inputs), and an implicit
+        terminal set. Exact JSON keys deferred to a
+        small follow-up schema slice; the
+        architectural shape is settled here.
+      - Coexistence rule: when both a flat snapshot
+        and a graph block are present, the flat
+        fields are the BAKE of the graph for the
+        default shading context. Renderer without
+        graph eval reads the snapshot; renderer with
+        graph eval reads the graph and treats the
+        snapshot as a sanity-check / authoring hint
+        (no byte-perfect requirement on the bake).
+    - 10.3 Future compatibility:
+      - Open-catalogue rule re-stated (from 6.1).
+      - Graph-block versioning: own integer `version`
+        (currently `1`). Parser MUST reject unknown
+        future versions (matches `RRSCENE_FORMAT.md`'s
+        rule); MUST tolerate unknown node types
+        within a known version (warn + fall back to
+        the flat snapshot for that material; do NOT
+        fail the whole load).
+      - Specific extension points: advanced BSDFs
+        (existing Metallic / Glass placeholders light
+        up without schema changes), texture
+        extensions (new optional inputs on
+        TextureSample or new utility nodes),
+        procedural noise (new "Procedural" category),
+        volumes / SSS (new category), BSDF mixing /
+        layered materials (relaxes the "at most one
+        of each terminal type" rule, additively).
+  - Renumbered the previous "What this slice covers"
+    / "Out of scope" sections from 10 / 11 to 11 / 12.
+    Updated section 11's deferred list: only the
+    JSON-schema sub-slice and the editor's UX /
+    framework choice remain. The architectural shape
+    is now settled.
+  - Section 12 (out of scope for v1) is unchanged.
+
+#### Verified locally
+
+```
+$ ls docs/MATERIAL_GRAPH_SPEC.md
+$ python3 -c "open('docs/MATERIAL_GRAPH_SPEC.md').read()"
+$ wc -l docs/MATERIAL_GRAPH_SPEC.md
+```
+
+Spec-only slice; no source / build / test changes.
+
+#### Per the prompt
+
+- "How C4D materials map to RelativityRender node graph":
+  10.1's mapping table covers each material type the
+  M19-ext-3 bridge already translates, plus two
+  future-bridge cases (bitmap-shader color, tinted
+  bitmap) that exercise `TextureSample` + `Multiply`.
+- "Fallback strategy (basic materials)": 10.1's
+  fallback paragraph - the bridge keeps emitting the
+  flat material section and no graph block when it
+  cannot translate faithfully. Same code path the
+  bridge has shipped since M19 ext 3.
+- "Future advanced mapping": 10.1's last paragraph
+  pins two extension cases and notes each arrives as
+  its own slice once the catalogue / renderer work is
+  in place.
+- "Graph must be editor-agnostic": 10.2's first
+  subsection lists four producers (bridge, editor,
+  CLI, test fixture) and pins that all four produce
+  the same on-disk form.
+- "Separation between graph data, UI/editor": 10.2's
+  separation subsection states the rule one-way and
+  pins the three dependency rules in a layered ASCII
+  diagram.
+- "Ability to serialize graph to .rrscene": 10.2's
+  serialisation subsection - optional `graph` block
+  per material entry, carrying the section-6/7
+  contents plus a version. Exact JSON keys deferred
+  to a small follow-up.
+- "Support expansion (textures, volumes, advanced
+  BSDFs)": 10.3 maps each deferred concern to a
+  concrete extension point.
+- "Do not implement editor / Do not design UI / Focus
+  on data + architecture only": Section 10 opens with
+  the explicit "data plus architecture only" pin.
+  Editor UX, framework choice, and interaction model
+  are listed as out of scope in 10.2 and section 11's
+  deferred list.
+
+#### Module / milestone status
+
+- Module 22 (Node Editor / Material Graph): remains
+  `not started`. Integration strategy is a doc
+  contract; nothing is promoted until implementation
+  begins.
+- M21 (Material Node Graph (Editor)): remains `not
+  started` (same).
+
 ### 2026-04-28 — M21 (spec, evaluation + GPU compilation): material node graph - eval + lowering
 
 Fourth doc slice of the material node graph specification.

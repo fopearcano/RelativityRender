@@ -1114,7 +1114,321 @@ deserve their own slice. v1 does NOT pin:
   one slider tick" rule is the constraint; the
   granularity is the implementation slice's call.
 
-## 10. What this slice covers
+## 10. Integration strategy
+
+This section pins HOW the graph reaches the renderer:
+where it comes from (Cinema 4D today, the standalone
+editor tomorrow, anything else later), and how it grows
+without breaking what is already there. The contract is
+**data plus architecture only**: how the data flows, how
+the dependencies layer. The exact JSON keys for the
+serialised graph land in a small follow-up slice once
+this architectural shape is settled. UI / editor
+interaction design is out of scope here and stays out of
+scope across the whole spec.
+
+### 10.1 Cinema 4D bridge integration
+
+The Cinema 4D bridge (`integrations/c4d/RelativityRenderBridge/`,
+M19) is the project's current authoring path: a Python
+plugin that reads the active C4D document and writes a
+`.rrscene` file the renderer server consumes. Today's
+bridge (M19 extension 3) emits the flat material section -
+`base_color` / `emission_color` / `emission_strength` -
+directly. The graph contract extends that path; it does
+NOT replace it.
+
+#### From C4D material to graph
+
+For each material the bridge already translates, the
+mapping into the v1 catalogue is direct:
+
+| C4D source                                              | v1 graph                                                                 |
+|---------------------------------------------------------|--------------------------------------------------------------------------|
+| Standard `Mmaterial`, color channel only                | `ConstantColor` -> `Diffuse.albedo`.                                     |
+| Standard `Mmaterial`, color + luminance                 | `ConstantColor` -> `Diffuse.albedo`; `ConstantColor` + `ConstantFloat` -> `Emission.color` / `Emission.strength`. |
+| Viewport "Display Color" fallback (M19 ext 3)           | `ConstantColor` -> `Diffuse.albedo`. Material name `"Viewport: r, g, b"` carries through to the graph block. |
+| Standard `Mmaterial`, color channel with bitmap shader (future) | `TextureSample` (binding the existing scene-level `texture_id`) -> `Diffuse.albedo`. |
+| Standard `Mmaterial`, color channel + luminance + tint slider (future) | `TextureSample` -> `Multiply` (other side: `ConstantColor`) -> `Diffuse.albedo`. |
+
+Each mapping reuses ONLY the v1 catalogue. The bridge
+does not invent C4D-specific node types; if a C4D source
+has no v1 mapping, the bridge falls back (next paragraph)
+rather than emitting a non-portable graph.
+
+#### Fallback strategy
+
+The bridge falls back to writing the flat material
+section (and no graph block) when:
+
+- The C4D material is a non-Standard type the bridge
+  cannot read (Physical / Redshift / Octane / ...).
+- The C4D material uses features the v1 catalogue
+  cannot express (procedural noise channels, layered
+  shaders, BSDF mixing, ...).
+- A specific channel is too complex to translate
+  faithfully (a complex shader graph in C4D's color
+  channel today, when the bridge does not yet read C4D
+  shader graphs).
+
+The fallback path is the same one the bridge has shipped
+since M19 extension 3: emit `base_color` / `emission_*`
+fields with the bridge's best-effort approximation, plus
+the existing dialog warnings flagging unsupported types.
+The renderer parses such materials exactly as it does
+today; the absence of a graph block IS the fallback
+signal.
+
+This is consistent with the coexistence contract from
+section 4: a material with no graph is a valid material
+that simply uses its flat snapshot. Adding the graph
+block is purely additive.
+
+#### Future advanced mapping
+
+Two extensions of the bridge's mapping land in their own
+slices once the corresponding catalogue / renderer work
+is in place:
+
+- **C4D node-material translation.** When Cinema 4D's
+  scene uses C4D's own node-based materials, the bridge
+  walks the C4D node tree and emits a v1 graph by mapping
+  each C4D node to the closest v1 catalogue node. The
+  fallback path still applies for any C4D node that has
+  no v1 equivalent: the affected channel collapses into
+  a constant and the dialog warns.
+- **Layered materials and BSDF mixing.** v1's "at most
+  one terminal of each type" rule (per 7.5) does not
+  cover C4D's layered materials. Once the BSDF-mixing
+  slice lands (currently in section 11's deferred list),
+  the bridge's mapping picks it up; until then layered
+  C4D materials use the fallback.
+
+Neither extension changes the contract above: the bridge
+ALWAYS reaches the renderer through `.rrscene` only, with
+either a graph block or a flat snapshot, and the
+fallback path is always available.
+
+### 10.2 Standalone node editor architecture
+
+The standalone node editor is the M21 deliverable -
+`tools/node_editor/` per `docs/MODULE_MAP.md`. This spec
+defines the data side and the architectural shape; UI /
+interaction design is the editor's own concern and is NOT
+specified here.
+
+#### Editor-agnostic graph data
+
+The graph data is **editor-agnostic**. Sections 6 and 7
+define the graph entirely in terms of node types,
+sockets, types, connection rules, and topology - none of
+those references an editor, an interaction model, or a
+specific authoring tool. The same data can be:
+
+- written by the Cinema 4D bridge (10.1),
+- authored interactively in the standalone editor (M21),
+- emitted by a CLI tool that reads a third-party scene
+  (a future slice's option, not pinned),
+- generated programmatically in a renderer-test fixture.
+
+All four producers MUST emit the same on-disk form, and
+all four consumers (the renderer, the C4D bridge's
+preview path, the standalone editor's load command, the
+renderer-test harness) MUST read it identically. That
+is the same contract `.rrscene` already has for cameras,
+meshes, materials, and lights.
+
+#### Separation between graph data and editor
+
+The architectural rule is one-way:
+
+- The **graph data** is plain old data, defined by this
+  spec and serialised through `.rrscene` (10.2.3 below).
+  It depends on nothing in `tools/node_editor/`,
+  `integrations/c4d/`, or anywhere else outside the
+  scene-format module (`src/io/`).
+- The **editor** depends on the graph data: it reads
+  graph blocks from `.rrscene`, lets a user mutate
+  them, writes them back. It also depends on the UI
+  framework it picks (`tools/node_editor/` chooses a
+  framework in its own slice; this spec does not
+  constrain that choice).
+- The **renderer** depends on the graph data
+  (specifically on its compiled IR per section 9). The
+  renderer does NOT depend on the editor; the editor
+  reaches the renderer's preview path through the
+  renderer server protocol (M18), the same way the
+  C4D bridge does.
+
+In dependency-rule terms (`docs/DEVELOPMENT_RULES.md`,
+`docs/MODULE_MAP.md`'s L0..L7 layering):
+
+```
+                   +-------------------+
+                   |  Standalone Node  |   L7 (UI)
+                   |  Editor (M21)     |
+                   +---------+---------+
+                             |
+                             v reads / writes
+              +----------------------------+
+              |   .rrscene graph block     |   L4 (Scene File Format)
+              |   (this spec, section 10.2.3)|
+              +----------------------------+
+                             ^
+                             | reads / writes
+              +----------------------------+
+              |  Cinema 4D Bridge (M19)    |   L7 (DCC integration)
+              +----------------------------+
+                             ^
+                             | reads (renderer side)
+              +----------------------------+
+              |  Renderer (sections 8 + 9) |   L5 (Path Tracer)
+              +----------------------------+
+```
+
+The diagram pins three rules:
+
+- The renderer NEVER reaches into the editor or the
+  bridge. They are clients of `.rrscene`.
+- The editor NEVER reaches into the renderer's
+  internals. It reaches the renderer through `.rrscene`
+  (for the static graph) and the server protocol (for
+  preview frames - same M18 contract the bridge uses).
+- The bridge NEVER reaches into the editor. The two are
+  independent producers of the same data.
+
+#### Serialisation through `.rrscene`
+
+The graph is serialised as an **optional `graph` block
+inside each `materials[]` entry** of a `.rrscene` file.
+The block carries the data the catalogue (section 6)
+and the structural contract (section 7) define:
+
+- A `version` field (`1` for this spec).
+- A list of nodes, each with an integer id, a node
+  type from the v1 catalogue, the connections /
+  defaults for each input socket, and the immediate
+  values for any node-parameter inputs.
+- An implicit terminal set (every catalogue terminal
+  node in the list contributes to shading; section
+  7.5 pins the rules).
+
+The exact JSON keys (`graph.nodes[].type`,
+`graph.nodes[].inputs.<name>.node`, etc.) are pinned
+in a small follow-up schema slice. The architectural
+shape is enough here: a parser knows where to look
+(per material), what to look for (the section-6/7
+contract), and how to fall back (when the block is
+absent).
+
+When both forms are present in the same material:
+
+- The flat fields (`base_color`, `emission_color`,
+  `emission_strength`, ...) MUST be the **bake** of
+  the graph for the default shading context (per
+  section 4).
+- A renderer that does NOT implement graph evaluation
+  reads the flat snapshot and ignores the graph
+  block.
+- A renderer that DOES implement graph evaluation
+  reads the graph block and uses the flat snapshot
+  only as a sanity-check / authoring hint (the spec
+  does not require the bake to be byte-perfect; it
+  only requires that the graph and the bake describe
+  the same material under the default shading
+  context).
+
+That coexistence rule is what lets the bridge ship
+graph blocks immediately without breaking any loader
+that has not yet implemented graph evaluation. It is
+the same forward / backward compatibility model the
+project's other formats follow.
+
+### 10.3 Future compatibility
+
+The graph spec is built to grow without breaking
+existing graphs. The growth points are pinned here so
+each future slice has a clear place to attach.
+
+#### Open catalogue (re-stated)
+
+Section 6.1 already pins the catalogue as **open**:
+new node types are added by future slices following
+the same per-entry shape; existing nodes are not
+modified or removed. A graph written against today's
+catalogue MUST keep parsing and evaluating identically
+when later slices land. This applies recursively to
+the section-7 type system: new types added in future
+slices MUST NOT redefine the existing types' meanings
+or their implicit-conversion table.
+
+#### Graph block versioning
+
+The `graph` block carries its own integer `version`
+(currently `1`). Future spec changes that break
+backward compatibility bump it; backward-compatible
+extensions (new optional fields, new node types, new
+type entries) keep `version: 1`.
+
+A `.rrscene` parser:
+
+- MUST reject a graph block with an unknown / future
+  version (the same way `.rrscene` itself rejects
+  unknown top-level versions, per `RRSCENE_FORMAT.md`).
+- MUST tolerate unknown node types within a known
+  version. Unknown nodes signal a forward-compatible
+  extension; the parser warns and falls back to the
+  flat snapshot for that material (per 10.2.3's
+  coexistence rule). It does NOT fail the whole load.
+
+This split keeps the graph block's evolution
+independent of the rest of the `.rrscene` schema:
+adding a new node type is a graph-block extension,
+not a `.rrscene` version bump.
+
+#### Specific expansions on the road map
+
+The deferred items from section 11 each map to a
+clear extension point:
+
+- **Advanced BSDFs** (GGX metallic, dielectric glass,
+  layered shaders): existing `Metallic` and `Glass`
+  terminal nodes are placeholders today. When the
+  renderer's BSDF code lands, the SAME terminal nodes
+  light up. Graphs that reference them today keep
+  parsing and round-tripping unchanged; the
+  renderer's shading just stops falling back to
+  Lambertian / diffuse.
+- **Texture extensions**: filtering modes (bilinear,
+  trilinear), wrap modes (repeat, mirror), and
+  projection helpers join `TextureSample` either as
+  new optional inputs (still typed per 7.2) or as
+  new utility nodes (`UVProjectFlat`,
+  `UVProjectSpherical`, ...). Either way the
+  catalogue grows additively.
+- **Procedural noise** (Perlin / Worley / etc.):
+  enters as a new "Procedural" node category. The
+  category vocabulary documented in 6.1 was pinned
+  exactly so a future slice can introduce a new
+  category with no ambiguity.
+- **Volumes and SSS**: the v1 spec's surface focus
+  (per section 11) leaves the door open; a `Volume`
+  category and corresponding terminal nodes land
+  alongside the renderer's volume pipeline. Surface
+  graphs are unaffected.
+- **BSDF mixing / layered materials**: the v1 rule
+  "at most one of each terminal type" (per 7.5)
+  relaxes when the mixing slice lands. The relaxation
+  is purely additive: graphs that have always been
+  one-of-each remain valid; graphs that mix terminals
+  become valid.
+
+Each of these is a future doc slice plus an
+implementation slice. None of them require breaking
+existing graphs, an existing scene format, or the
+section-8 / 9 evaluation + lowering contract.
+
+## 11. What this slice covers
 
 This and the previous slices together establish:
 
@@ -1133,20 +1447,26 @@ This and the previous slices together establish:
 - The GPU compilation strategy: pipeline, IR shape,
   per-node mapping, branching policy, CUDA / OptiX
   backend mapping (section 9).
+- The integration strategy: how the C4D bridge maps
+  C4D materials onto v1 graphs and falls back when
+  it cannot, the editor / data / renderer dependency
+  layering, the `.rrscene` coexistence rule, and the
+  future-compatibility extension points (section 10).
 
 It deliberately does NOT pin:
 
-- The scene-file integration (the optional
-  `materials[].graph` block in `.rrscene`).
-- The standalone editor's UX.
-- The Cinema 4D bridge's graph emission.
+- The exact JSON keys of the `materials[].graph`
+  block. That is a small follow-up schema slice -
+  the architectural shape is settled; only the
+  naming remains.
+- The standalone node editor's UX, framework
+  choice, or interaction model. Those are the
+  editor's own concern.
 
-Each of those lands as its own doc slice. Implementation
-work begins only after the slices that constrain it have
-landed - the same incremental rule the rest of the project
-follows.
+The remaining schema slice is the last gating doc
+work before implementation slices can begin.
 
-## 11. Out of scope for v1 of the spec
+## 12. Out of scope for v1 of the spec
 
 The graph contract documented across this and the upcoming
 slices is a v1 contract. The following are explicitly **not**
