@@ -38,3 +38,8 @@ Testing/
 *.swo
 *~
 .DS_Store
+
+# Python (used by integrations/c4d/RelativityRenderBridge tests).
+__pycache__/
+*.py[cod]
+*$py.class

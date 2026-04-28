@@ -52,7 +52,7 @@ Update it after every implementation step, per
 | 17 | Render Passes / AOVs                | landed        |
 | 18 | Scene File Format                   | landed        |
 | 19 | Renderer Server                     | in progress   |
-| 20 | Cinema 4D Bridge                    | not started   |
+| 20 | Cinema 4D Bridge                    | in progress   |
 | 21 | Future Native Cinema 4D Renderer    | not started   |
 | 22 | Node Editor / Material Graph        | not started   |
 
@@ -83,7 +83,7 @@ All modules now have a placeholder source directory under `src/`,
 | M16       | Texture System                          | landed      |
 | M17       | Render Passes / AOVs                    | landed      |
 | M18       | Renderer Server                         | in progress |
-| M19       | Cinema 4D Bridge (Plugin)               | not started |
+| M19       | Cinema 4D Bridge (Plugin)               | in progress |
 | M20       | Preview UI                              | not started |
 | M21       | Material Node Graph (Editor)            | not started |
 | M22       | Denoiser Integration                    | not started |
@@ -92,6 +92,154 @@ All modules now have a placeholder source directory under `src/`,
 ---
 
 ## Change Log
+
+### 2026-04-28 — M19 (foundation): Cinema 4D bridge plugin
+
+First slice of the Cinema 4D bridge. A Python command plugin
+that registers under **Plugins → RelativityRender: Export
+Scene**, writes a minimal but-valid v1 `.rrscene` file to
+disk, and shows a confirmation dialog with the saved path.
+Strictly the foundation: no live document translation, no
+preview UI, no server connection, no progressive frames yet.
+
+The bridge is the only place in the repository allowed to
+depend on Cinema 4D. Per
+`docs/MODULE_MAP.md` + `integrations/c4d/README.md` the
+plugin depends on the Cinema 4D SDK and the project's
+`.rrscene` file format only - it does NOT import any
+`rr_*` C++ headers or link against renderer internals.
+Nothing under `src/` may know this plugin exists.
+
+- **`integrations/c4d/RelativityRenderBridge/RelativityRenderBridge.pyp`:**
+  Cinema 4D Python plugin entry point. Registers a single
+  `c4d.plugins.CommandData` under
+  `id=1058600` (placeholder development id - flagged in the
+  README as needing a real PluginCafe registration before
+  any public release). On execute:
+  - Resolves the export path: next to the active document if
+    it's been saved (`<doc_stem>.rrscene` next to the
+    original); otherwise under
+    `<C4D_startup_write>/RelativityRender/untitled.rrscene`.
+    `os.getcwd()` is the last-resort fallback.
+  - Reads `RDATA_XRES` / `RDATA_YRES` from the document's
+    active render data when available; falls back to 640x480.
+  - Calls `rrscene_writer.write_empty_rrscene(...)` to write
+    the file (creates parents as needed; returns the absolute
+    path saved).
+  - Surfaces the saved path in `c4d.gui.MessageDialog`. Wraps
+    the whole `Execute` body in `try/except` so a Python
+    exception never escapes into the C4D plugin host.
+- **`integrations/c4d/RelativityRenderBridge/rrscene_writer.py`:**
+  Plain-Python helper. No `c4d` import - the module is
+  exercised under stock python3 in the test harness, and the
+  same code path runs inside Cinema 4D when the .pyp imports
+  it.
+  - `RRSCENE_VERSION = 1` mirrors the host loader's expected
+    schema version so a future drift fails loudly at parse
+    time on the host rather than silently in the writer.
+  - `build_empty_rrscene(width, height, fov_deg, note)`
+    builds a v1 dict with `render_settings` / `camera` /
+    `relativity` populated to sane defaults
+    (forward = `[0, 0, -1]`, up = `[0, 1, 0]`,
+    `beta_velocity = 0`). No materials / spheres / lights /
+    meshes - on the host side this parses to an empty scene.
+    Optional `note` becomes a `_note` top-level key; the
+    `.rrscene` v1 spec lets the parser warn-and-ignore
+    unknown top-level keys, so the note round-trips cleanly.
+  - `serialize_rrscene(scene)` produces JSON with 4-space
+    indentation + a trailing newline so the file is
+    diff-friendly when a human inspects it.
+  - `write_empty_rrscene(path, ...)` makes parent directories
+    (`os.makedirs(parent, exist_ok=True)`) and returns the
+    absolute path saved.
+- **`integrations/c4d/RelativityRenderBridge/tests/test_rrscene_writer.py`:**
+  Standalone test runner. Stock `python3`; no `c4d` import
+  required. 27 assertions covering:
+  - Default dict shape (`version: 1`, render_settings,
+    camera, relativity) and default values.
+  - Custom width / height / fov are preserved verbatim.
+  - `_note` round-trips under that key when set, and is
+    absent when not.
+  - `serialize_rrscene` output round-trips through
+    `json.loads` to an equal dict.
+  - `write_empty_rrscene` creates missing parent
+    directories, returns an absolute path, the file on disk
+    parses back to the same dict, custom resolution is
+    preserved on disk, and successive calls overwrite (not
+    append).
+  - `rrscene_writer` does NOT import the `c4d` module -
+    pinned so a future contributor doesn't accidentally
+    break the bridge's standalone testability.
+- **`integrations/c4d/RelativityRenderBridge/README.md`:**
+  Install instructions (Cinema 4D plugins folder per
+  platform), how to run the standalone tests, the plugin-id
+  placeholder warning, the dependency rules. Documents
+  where the `.rrscene` lands depending on whether the
+  document has been saved.
+
+#### Verified locally
+
+```
+$ python3 integrations/c4d/RelativityRenderBridge/tests/test_rrscene_writer.py
+test_rrscene_writer: 27/27 passed
+
+$ python3 -c 'import ast; ast.parse(open(
+    "integrations/c4d/RelativityRenderBridge/RelativityRenderBridge.pyp"
+).read())'
+# (no output -> .pyp is syntactically valid Python)
+```
+
+End-to-end round-trip through the host's renderer server:
+
+```
+$ python3 -c "
+import sys; sys.path.insert(0,
+    'integrations/c4d/RelativityRenderBridge')
+import rrscene_writer
+rrscene_writer.write_empty_rrscene(path='/tmp/x.rrscene',
+    width=800, height=600, note='smoke')
+"
+
+$ ./build/bin/RelativityRender --serve &
+$ printf 'load_scene /tmp/x.rrscene\nshutdown\n' | nc -q1 127.0.0.1 7777
+< OK loaded 0 materials, 0 spheres, 0 lights, 0 meshes
+< END
+< OK goodbye
+< END
+```
+
+The bridge's writer output parses cleanly through the
+production C++ scene loader (`src/io/SceneLoader.cpp`) with
+no warnings - confirming the schema mirror in
+`rrscene_writer.py` is accurate at this slice's scope.
+
+#### Per the prompt
+
+- Folder: `integrations/c4d/RelativityRenderBridge/` exists
+  and is self-contained.
+- Command plugin: `RelativityRender: Export Scene` registered
+  in `RelativityRenderBridge.pyp`.
+- "Show message dialog": `c4d.gui.MessageDialog(...)` after a
+  successful export, and again on failure (so Python
+  exceptions never escape the plugin host).
+- "Write empty test .rrscene file": minimal v1 scene saved to
+  the resolved path; no live document translation yet.
+- "Do not create preview UI yet": no `GeDialog`, no preview
+  area, no server-protocol traffic. The plugin's only side
+  effect on disk is the single `.rrscene` file it writes.
+
+#### Module / milestone status
+
+- Module 20 (Cinema 4D Bridge): `not started` -> `in progress`.
+- M19 (Cinema 4D Bridge (Plugin)): `not started` -> `in progress`.
+
+The remaining bridge work (live document translation:
+camera + objects + materials + lights into the .rrscene
+schema; server-protocol client; preview frame display in C4D
+viewport; cancellation; multi-doc support) lands in
+subsequent slices. M19 / Module 20 close when a Cinema 4D
+scene renders through the server and the result is shown in
+the C4D viewport.
 
 ### 2026-04-28 — M18 (wiring): server connected to GPU renderer + `--serve` CLI
 
