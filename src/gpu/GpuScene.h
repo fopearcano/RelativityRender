@@ -2,14 +2,17 @@
 
 #include "camera/Camera.h"
 #include "camera/CameraRay.h"
+#include "cuda/CudaTexture.cuh"   // host-includable: no CUDA-runtime types
 #include "geometry/Sphere.h"
 #include "gpu/GpuBuffer.h"
 #include "gpu/GpuMesh.h"
 #include "lighting/Light.h"
 #include "material/MaterialTypes.h"
 #include "relativity/RelativityParams.h"
+#include "texture/ImageTexture.h"
 
 #include <cstddef>
+#include <vector>
 
 namespace rr::geometry { struct Mesh; }
 namespace rr::scene    { struct Scene; }
@@ -77,6 +80,17 @@ public:
     // working GPU backend.
     bool upload_lights(const rr::lighting::Light* host, std::size_t count);
 
+    // Upload a list of host-side `ImageTexture` instances. Each
+    // texture's pixel buffer becomes its own device allocation
+    // owned by this `GpuScene`; the per-texture device pointers
+    // are then packed into a flat `GpuBuffer<TextureView>` that
+    // the kernel reads through `CudaSceneView::textures`. Empty
+    // textures get a `Constant`-typed view with a white fallback
+    // colour. `count == 0` clears the buffer; non-empty uploads
+    // require a working GPU backend.
+    bool upload_textures(const rr::texture::ImageTexture* host,
+                         std::size_t count);
+
     // Convenience: pull camera + relativity + visible spheres from a
     // host `rr::scene::Scene`. Invisible spheres are filtered out on
     // the host before upload. Returns the AND of every individual
@@ -93,6 +107,7 @@ public:
     bool        has_mesh()        const noexcept { return mesh_.has_data(); }
     std::size_t material_count()  const noexcept { return materials_count_; }
     std::size_t light_count()     const noexcept { return lights_count_; }
+    std::size_t texture_count()   const noexcept { return texture_count_; }
 
     // --- Backend accessors used by the CUDA renderer -----------------
 
@@ -120,6 +135,12 @@ public:
         return lights_.device_ptr();
     }
 
+    // Device pointer to the texture-view array. Returns nullptr
+    // when no textures have been successfully uploaded.
+    const rr::cuda::TextureView* device_textures() const noexcept {
+        return texture_views_.device_ptr();
+    }
+
 private:
     rr::camera::GpuCamera             camera_{};
     rr::relativity::Observer          observer_{};
@@ -137,6 +158,14 @@ private:
 
     rr::gpu::GpuBuffer<rr::lighting::Light> lights_;
     std::size_t                              lights_count_ = 0;
+
+    // M16 textures: one device pixel buffer per texture, plus a
+    // packed array of `TextureView` PODs that the kernel reads.
+    // The pixel buffers must outlive any `device_textures()` call
+    // so they're owned here for the lifetime of the GpuScene.
+    std::vector<rr::gpu::GpuBuffer<float>>  texture_pixels_;
+    rr::gpu::GpuBuffer<rr::cuda::TextureView> texture_views_;
+    std::size_t                              texture_count_ = 0;
 };
 
 }

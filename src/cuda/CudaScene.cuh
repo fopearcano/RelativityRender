@@ -16,6 +16,7 @@
 #include "cuda/CudaLight.cuh"
 #include "cuda/CudaMaterial.cuh"
 #include "cuda/CudaMesh.cuh"
+#include "cuda/CudaTexture.cuh"
 #include "geometry/Sphere.h"
 #include "lighting/Light.h"
 #include "material/MaterialTypes.h"
@@ -51,6 +52,14 @@ struct CudaSceneView {
     // falls back to its default ambient + sky-gradient response".
     const rr::lighting::Light*           lights         = nullptr;
     int                                  light_count    = 0;
+
+    // Texture array. `MaterialParams::base_color_texture_id` indexes
+    // into this list; valid ids are in
+    // `[0, texture_count)`. `nullptr` + `texture_count == 0` is
+    // allowed and means "no textures uploaded - materials always
+    // use their constant `baseColor`".
+    const rr::cuda::TextureView*         textures       = nullptr;
+    int                                  texture_count  = 0;
 };
 
 // Host-callable launch wrapper for the scene-render kernel.

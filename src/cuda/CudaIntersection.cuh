@@ -65,6 +65,17 @@ RR_HD inline rr::renderer::Hit intersect_sphere(const rr::camera::CameraRay& ray
     // a precondition, and this avoids a redundant `length` call.
     out.normal         = (out.position - sphere.center) * (1.0f / sphere.radius);
     out.material_index = sphere.material_index;
+
+    // Spherical UV mapping. `u` is the longitude around +Y in [0, 1);
+    // `v` is the latitude with v = 0 at the south pole and v = 1 at
+    // the north pole - matching the texture-system v-up convention
+    // (UV (0, 0) maps to the texture's bottom-left).
+    {
+        const rr::math::Vec3& n = out.normal;
+        const float ny = n.y < -1.0f ? -1.0f : (n.y > 1.0f ? 1.0f : n.y);
+        out.uv.x = atan2f(n.x, n.z) * (1.0f / (2.0f * rr::math::kPi)) + 0.5f;
+        out.uv.y = 1.0f - acosf(ny) * (1.0f / rr::math::kPi);
+    }
     return out;
 }
 
@@ -116,6 +127,12 @@ RR_HD inline rr::renderer::Hit intersect_triangle(const rr::camera::CameraRay& r
     out.t        = t;
     out.position = ray.origin + ray.direction * t;
     out.normal   = normalize(cross(e1, e2));
+    // Surface the barycentric coordinates so the kernel can
+    // interpolate per-vertex attributes (UVs, normals, ...) from
+    // the mesh's vertex array. The third coord is implicitly
+    // `1 - bary_u - bary_v`.
+    out.bary_u   = u;
+    out.bary_v   = v;
     return out;
 }
 

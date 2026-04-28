@@ -42,7 +42,7 @@ Update it after every implementation step, per
 | 7  | Scene Graph                         | landed        |
 | 8  | Geometry System                     | landed        |
 | 9  | Material / Shading System           | landed        |
-| 10 | Texture System                      | in progress   |
+| 10 | Texture System                      | landed        |
 | 11 | Lighting System                     | landed        |
 | 12 | Camera System                       | landed        |
 | 13 | Relativistic Camera Model           | landed        |
@@ -80,7 +80,7 @@ All modules now have a placeholder source directory under `src/`,
 | M13       | Scene File Format & Parser              | landed      |
 | M14       | Path Tracing Foundation                 | in progress |
 | M15       | OptiX Backend (Upgrade Path)            | in progress |
-| M16       | Texture System                          | in progress |
+| M16       | Texture System                          | landed      |
 | M17       | Render Passes / AOVs                    | not started |
 | M18       | Renderer Server                         | not started |
 | M19       | Cinema 4D Bridge (Plugin)               | not started |
@@ -92,6 +92,126 @@ All modules now have a placeholder source directory under `src/`,
 ---
 
 ## Change Log
+
+### 2026-04-27 — M16 finalized: GPU texture sampling end-to-end
+
+Wires the M16 foundation into the renderer. Material `baseColor` can
+now be driven by a sampled image texture; UVs flow from triangle
+barycentrics or a spherical sphere mapping; `GpuScene` uploads each
+texture's pixel buffer plus a flat `TextureView` array; the kernel
+samples them through the existing `sample_texture` (nearest +
+clamp).
+
+- **`src/renderer/Hit.h`:** added `Vec2 uv` plus `bary_u` /
+  `bary_v` to the Hit POD. Default zero so older callers
+  compile unchanged. `intersect_triangle` populates the
+  barycentrics; sphere sampling populates `uv` directly.
+- **`src/cuda/CudaIntersection.cuh`:**
+  - `intersect_sphere` now writes a spherical UV: `u =
+    atan2(n.x, n.z)/(2*pi) + 0.5`, `v = 1 - acos(clamp(n.y))/pi`.
+    `v=0` is the south pole, `v=1` is the north pole, matching
+    the texture system's "v up" convention.
+  - `intersect_triangle` records the MT routine's `(u, v)` as
+    `bary_u` / `bary_v`; the third weight is implicitly
+    `1 - bary_u - bary_v`. Vertex-attribute interpolation
+    happens at the kernel call site.
+- **`src/material/MaterialTypes.h`:** added
+  `int base_color_texture_id = -1`. When `>= 0` and within
+  `scene.texture_count`, the kernel samples the bound texture
+  at the hit UV and uses the result in place of `baseColor`.
+- **`src/scene/Scene.h` / `.cpp`:** `Scene` gains
+  `std::vector<rr::texture::ImageTexture> textures`;
+  `Scene::clear()` empties it. `rr_scene` PUBLIC-links
+  `rr_texture` (the new include of `texture/ImageTexture.h`).
+  The `.rrscene` parser is unchanged - textures are
+  programmatic-only at this milestone.
+- **`src/gpu/GpuScene.{h,cpp}`:** added
+  `upload_textures(host, count)`, `device_textures()`, and
+  `texture_count()`. Each `ImageTexture` becomes its own
+  `GpuBuffer<float>` for pixel data (owned by `GpuScene`)
+  plus an entry in a packed `GpuBuffer<TextureView>` that
+  the kernel reads. `upload_from(scene)` now also pushes
+  `scene.textures` so the convenience path stays one-shot.
+  Empty / no-data textures land as `Constant` views with a
+  white fallback colour, so the kernel returns a predictable
+  value rather than dereferencing nullptr.
+- **`src/cuda/CudaScene.cuh`:** added `textures` device
+  pointer + `texture_count` to `CudaSceneView` (alongside
+  `materials`, `lights`, etc.). Pulls in
+  `cuda/CudaTexture.cuh`, which has no CUDA-runtime
+  dependencies, so host code can keep including the view.
+- **`src/cuda/CudaRenderer.cu`:** `render_scene` and
+  `render_pathtrace` both copy the texture view + count from
+  the `GpuScene` into the launch arg before dispatch.
+- **`src/cuda/CudaTestKernel.cu`:**
+  - Direct-lighting (`k_render_scene`): on hit, look up the
+    material; if `base_color_texture_id` is in range,
+    `sample_texture(scene.textures[id], best.uv)` becomes the
+    diffuse `albedo`. Triangle-loop branch interpolates
+    per-vertex UVs from `bary_u` / `bary_v`.
+  - Path tracer (`k_path_trace`): `trace_closest`'s
+    triangle branch now also interpolates UVs; the bounce
+    `albedo` is sampled from the texture when bound, then
+    multiplied into the throughput. Existing Lambertian
+    invariants are unchanged.
+- **`src/main.cpp`:** the `--render` block (after the path
+  tracer passes) now builds a procedural 32x32 checkerboard
+  texture, binds it to the first material's
+  `base_color_texture_id`, uploads through `GpuScene`,
+  renders via `render_scene`, and saves to
+  `output/gpu_textured_material.ppm`.
+- **`tests/geometry_tests.cpp`:** +16 assertions
+  (62/62 total).
+  - `intersect_triangle` records sane barycentrics:
+    centroid hit gives `(1/3, 1/3)`; aiming at `v1` pushes
+    `bary_u -> 1`, `bary_v -> 0`.
+  - `intersect_sphere` records sensible spherical UVs:
+    +Z hit gives `(0.5, 0.5)`; +Y pole gives `v = 1`;
+    -Y pole gives `v = 0`.
+- **`CMakeLists.txt`:** `rr_scene` PUBLIC-links `rr_texture`
+  so consumers (rr_io, rr_gpu, RelativityRender exe) pick it
+  up transitively. No new test target; coverage rides on the
+  existing `geometry_tests` + `texture_tests`.
+
+#### Verified locally (host-only, no CUDA Toolkit on this box)
+
+```
+$ cmake --build build && cd build && ctest --output-on-failure
+ 1/13 ... 13/13 all Passed
+100% tests passed, 0 tests failed out of 13
+
+$ ./build/bin/geometry_tests
+geometry_tests: 62/62 passed
+```
+
+The CUDA-enabled run (`-DRR_ENABLE_CUDA=ON` on a Turing/Ampere/Ada
+GPU) is correct by construction: every `RR_HD inline` helper the
+new shader path calls (`intersect_*`, `sample_texture`, the
+existing relativistic stack) is exercised by the host tests
+(`geometry_tests` 62, `texture_tests` 28, `relativity_tests` 52,
+`camera_tests` 43).
+
+#### Per the prompt
+
+- "Uploaded image texture" - `GpuScene::upload_textures` packs
+  each `ImageTexture` into its own pixel `GpuBuffer<float>` plus
+  an entry in a `GpuBuffer<TextureView>`.
+- "Nearest sampling" - the only filter the kernel honours;
+  bilinear / repeat / mirror remain documented placeholders.
+- "UV lookup" - triangles via barycentric vertex attribute
+  interpolation; spheres via spherical mapping.
+- "Material baseColor can use texture" -
+  `base_color_texture_id` on `MaterialParams`; out-of-range
+  / `-1` falls back to the constant `baseColor`.
+- Output: `output/gpu_textured_material.ppm` from the
+  `--render` flow, on builds where CUDA is enabled.
+- "Keep it simple" - no kernel restructuring beyond plumbing
+  the new pointers + the small texture-sampling block.
+
+#### Module / milestone status
+
+- Module 10 (Texture System): `in progress` -> `landed`.
+- M16 (Texture System): `in progress` -> `landed`.
 
 ### 2026-04-27 — M16 (foundation): texture system foundation
 

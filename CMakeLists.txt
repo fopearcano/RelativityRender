@@ -214,6 +214,7 @@ target_link_libraries(rr_scene PUBLIC
     rr_camera
     rr_geometry
     rr_lighting
+    rr_texture
 )
 target_include_directories(rr_scene PUBLIC src)
 if(MSVC)

@@ -1,11 +1,14 @@
 #include "gpu/GpuScene.h"
 
 #include "geometry/Mesh.h"
+#include "image/Image.h"
 #include "lighting/Light.h"
 #include "material/MaterialTypes.h"
 #include "scene/Scene.h"
+#include "texture/ImageTexture.h"
 
 #include <map>
+#include <utility>
 #include <vector>
 
 namespace rr::gpu {
@@ -62,6 +65,80 @@ bool GpuScene::upload_lights(const rr::lighting::Light* host, std::size_t count)
         return false;
     }
     lights_count_ = count;
+    return true;
+}
+
+bool GpuScene::upload_textures(const rr::texture::ImageTexture* host,
+                               std::size_t count) {
+    // Always reset first - either we'll repopulate from `host` or
+    // we're explicitly clearing.
+    texture_pixels_.clear();
+    texture_views_.reset();
+    texture_count_ = 0;
+
+    if (count == 0) {
+        return true;
+    }
+    if (host == nullptr) {
+        return false;
+    }
+
+    texture_pixels_.reserve(count);
+
+    std::vector<rr::cuda::TextureView> views;
+    views.reserve(count);
+
+    for (std::size_t i = 0; i < count; ++i) {
+        const auto& tex = host[i];
+        rr::cuda::TextureView v;
+
+        if (tex.empty()) {
+            // No image data -> Constant fallback. Keep an empty
+            // GpuBuffer<float> in the parallel slot so the
+            // index-by-position invariant holds for the views.
+            v.type           = rr::texture::TextureType::Constant;
+            v.constant_color = rr::math::Vec3{1.0f, 1.0f, 1.0f};
+            texture_pixels_.emplace_back();
+            views.push_back(v);
+            continue;
+        }
+
+        // Upload pixel data into its own device buffer. The buffer
+        // outlives the views array (it's owned by `*this`), so the
+        // device pointer baked into the view stays valid.
+        rr::gpu::GpuBuffer<float> pixels;
+        const auto floats = tex.image().size_in_floats();
+        if (!pixels.upload(tex.image().data(), floats)) {
+            // Clean up any partial state - reuploading from
+            // scratch is cheaper than reasoning about half-built
+            // arrays.
+            texture_pixels_.clear();
+            texture_views_.reset();
+            texture_count_ = 0;
+            return false;
+        }
+
+        v.type           = rr::texture::TextureType::Image;
+        v.constant_color = rr::math::Vec3{1.0f, 1.0f, 1.0f};  // unused fallback
+        v.image_data     = pixels.device_ptr();
+        v.image_width    = tex.width();
+        v.image_height   = tex.height();
+        v.image_channels = tex.image().channels();
+        v.wrap_u         = static_cast<int>(tex.wrap_u());
+        v.wrap_v         = static_cast<int>(tex.wrap_v());
+        v.filter         = static_cast<int>(tex.filter());
+
+        texture_pixels_.push_back(std::move(pixels));
+        views.push_back(v);
+    }
+
+    if (!texture_views_.upload(views.data(), views.size())) {
+        texture_pixels_.clear();
+        texture_views_.reset();
+        texture_count_ = 0;
+        return false;
+    }
+    texture_count_ = views.size();
     return true;
 }
 
@@ -160,6 +237,14 @@ bool GpuScene::upload_from(const rr::scene::Scene& scene) {
         // surprising side-effect for callers reusing a GpuScene.
         ok = upload_mesh(rr::geometry::Mesh{}) && ok;
     }
+
+    // ---- Textures ----------------------------------------------------
+    //
+    // Materials reference textures by index into this list. Empty
+    // texture list is fine - the kernel falls back to the
+    // material's `baseColor` when `base_color_texture_id` is -1
+    // or out-of-range.
+    ok = upload_textures(scene.textures.data(), scene.textures.size()) && ok;
 
     return ok;
 }

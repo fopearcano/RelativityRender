@@ -161,6 +161,9 @@ CudaRenderer::Result CudaRenderer::render_scene(const rr::gpu::GpuScene& scene,
     view.lights         = scene.device_lights();
     view.light_count    = static_cast<int>(scene.light_count());
 
+    view.textures       = scene.device_textures();
+    view.texture_count  = static_cast<int>(scene.texture_count());
+
     return run_kernel_render(width, height,
         [view](float* device_pixels, int w, int h) {
             launch_render_scene(device_pixels, w, h, view, /*stream=*/nullptr);
@@ -205,6 +208,9 @@ CudaRenderer::Result CudaRenderer::render_pathtrace(const rr::gpu::GpuScene& sce
 
     view.lights         = scene.device_lights();
     view.light_count    = static_cast<int>(scene.light_count());
+
+    view.textures       = scene.device_textures();
+    view.texture_count  = static_cast<int>(scene.texture_count());
 
     return run_kernel_render(width, height,
         [view, spp, max_depth, seed_offset](float* device_pixels, int w, int h) {

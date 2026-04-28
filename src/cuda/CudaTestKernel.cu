@@ -293,6 +293,14 @@ __global__ void k_render_scene(float* pixels, int width, int height,
         if (h.hit) {
             // Triangles inherit the per-mesh material id.
             h.material_index = mesh.material_id;
+            // Interpolate per-vertex UVs from the barycentrics
+            // intersect_triangle returned. The third weight is
+            // implicitly `1 - bary_u - bary_v`.
+            const auto uv0 = mesh.vertices[tri.v0].uv;
+            const auto uv1 = mesh.vertices[tri.v1].uv;
+            const auto uv2 = mesh.vertices[tri.v2].uv;
+            const float w0 = 1.0f - h.bary_u - h.bary_v;
+            h.uv = uv0 * w0 + uv1 * h.bary_u + uv2 * h.bary_v;
             best             = h;
             t_max            = h.t;
         }
@@ -319,6 +327,19 @@ __global__ void k_render_scene(float* pixels, int width, int height,
         && scene.materials != nullptr;
     if (have_material) {
         mat = scene.materials[best.material_index];
+    }
+
+    // M16: when a material binds a texture, sample it at the hit
+    // UV and replace `mat.baseColor` for this hit. Out-of-range
+    // ids and a missing texture array fall through to the
+    // material's constant baseColor.
+    Vec3 albedo = mat.baseColor;
+    if (best.hit
+        && mat.base_color_texture_id >= 0
+        && mat.base_color_texture_id < scene.texture_count
+        && scene.textures != nullptr) {
+        albedo = rr::cuda::sample_texture(scene.textures[mat.base_color_texture_id],
+                                          best.uv);
     }
 
     for (int i = 0; i < scene.light_count; ++i) {
@@ -369,7 +390,7 @@ __global__ void k_render_scene(float* pixels, int width, int height,
         // skipped at this milestone (no path-traced light transport
         // yet); the relativistic searchlight scale wraps the result
         // anyway, so the absolute brightness is artistic.
-        const Vec3 diffuse  = mat.baseColor * (lighting + env_color);
+        const Vec3 diffuse  = albedo * (lighting + env_color);
         const Vec3 emission = mat.emissionColor * mat.emissionStrength;
         color = diffuse + emission;
     } else if (has_env) {
@@ -451,6 +472,13 @@ trace_closest(const rr::cuda::CudaSceneView& scene,
         auto h = rr::cuda::intersect_triangle(ray, v0, v1, v2, t_min, t_max);
         if (h.hit) {
             h.material_index = mesh.material_id;
+            // Interpolate per-vertex UVs from the barycentrics
+            // intersect_triangle returned (M16).
+            const auto uv0 = mesh.vertices[tri.v0].uv;
+            const auto uv1 = mesh.vertices[tri.v1].uv;
+            const auto uv2 = mesh.vertices[tri.v2].uv;
+            const float w0 = 1.0f - h.bary_u - h.bary_v;
+            h.uv = uv0 * w0 + uv1 * h.bary_u + uv2 * h.bary_v;
             best  = h;
             t_max = h.t;
         }
@@ -541,13 +569,24 @@ trace_one_path(const rr::cuda::CudaSceneView& scene,
         // throughput update simplifies to
         //   throughput *= baseColor * cos(theta) / pi * pi / cos(theta)
         //              =  baseColor.
+        // M16: when the material binds a texture, sample it at the
+        // hit's UV and use the result as `baseColor` for this
+        // bounce.
+        Vec3 albedo = mat.baseColor;
+        if (mat.base_color_texture_id >= 0
+            && mat.base_color_texture_id < scene.texture_count
+            && scene.textures != nullptr) {
+            albedo = rr::cuda::sample_texture(
+                scene.textures[mat.base_color_texture_id], hit.uv);
+        }
+
         Vec3 n = hit.normal;
         if (rr::math::dot(n, ray.direction) > 0.0f) {
             n = -n;  // shading normal faces the incoming ray
         }
         const Vec3 wi = rr::pathtracer::sample_hemisphere_cosine(n, rng);
 
-        throughput = throughput * mat.baseColor;
+        throughput = throughput * albedo;
 
         // Move the new ray's origin slightly off the surface so
         // the next intersection's t_min epsilon doesn't reject it.

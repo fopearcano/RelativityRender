@@ -8,6 +8,7 @@
 #include "math/Vec3.h"
 #include "relativity/RelativityParams.h"
 #include "scene/SceneObject.h"
+#include "texture/ImageTexture.h"
 
 #include <cstdint>
 #include <string>
@@ -106,6 +107,14 @@ struct Scene {
     std::vector<SceneMesh>             meshes;
     std::vector<SceneMaterial>         materials;
     std::vector<SceneLight>            lights;
+
+    // M16: image textures the materials reference by index. A
+    // material with `params.base_color_texture_id == i` samples
+    // `textures[i]` for its diffuse albedo. Empty by default; the
+    // .rrscene format does not yet carry textures (a future schema
+    // version will), so today the renderer / main builds them
+    // programmatically.
+    std::vector<rr::texture::ImageTexture> textures;
 
     // Reset the scene to its default-constructed state. Cheaper than
     // building a fresh `Scene` object when the same instance is

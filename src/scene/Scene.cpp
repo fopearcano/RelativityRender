@@ -7,6 +7,7 @@ void Scene::clear() {
     meshes.clear();
     materials.clear();
     lights.clear();
+    textures.clear();
 
     camera          = rr::camera::Camera{};
     render_settings = RenderSettings{};

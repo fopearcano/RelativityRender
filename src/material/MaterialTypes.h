@@ -39,6 +39,14 @@ struct MaterialParams {
     // shading systems (M16). Keeping the field here means the
     // upload buffer layout is forward-compatible without ABI churn.
     float          transmission     = 0.0f;
+
+    // M16: index into the scene's texture array
+    // (`rr::scene::Scene::textures` / `GpuScene::device_textures()`).
+    // When `>= 0` and within range, the kernel samples the bound
+    // texture at the hit's UV and uses the result as the diffuse
+    // albedo, replacing `baseColor` for that hit. `-1` (default)
+    // means "no texture binding"; `baseColor` is used as-is.
+    int            base_color_texture_id = -1;
 };
 
 }

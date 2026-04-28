@@ -13,6 +13,9 @@
 #ifdef RR_HAS_CUDA
     #include "cuda/CudaRenderer.h"
     #include "gpu/GpuScene.h"
+    #include "image/Color.h"
+    #include "image/Image.h"
+    #include "texture/ImageTexture.h"
 #endif
 
 #include <filesystem>
@@ -178,6 +181,74 @@ int main(int argc, char** argv) {
                 return 1;
             }
             Logger::info("saved " + pt_path.string());
+        }
+
+        // M16 deliverable: textured-material render. Build a
+        // procedural checkerboard texture, bind it to the first
+        // material's `base_color_texture_id`, upload, render. The
+        // existing scene's spheres get spherical UVs from
+        // `intersect_sphere`; meshes (e.g. the M11 emissive quad)
+        // pick UVs from per-vertex attributes. Output is fixed at
+        // `output/gpu_textured_material.ppm` so the deliverable is
+        // reproducible across runs.
+        {
+            rr::scene::Scene textured = scene;
+
+            // 32 x 32 checkerboard. Coarse 4-pixel cells so the
+            // pattern is unmistakable in the rendered output.
+            constexpr int kSize = 32;
+            constexpr int kCell = 4;
+            rr::image::Image checker(kSize, kSize,
+                                     rr::image::PixelFormat::Rgba32F);
+            for (int yy = 0; yy < kSize; ++yy) {
+                for (int xx = 0; xx < kSize; ++xx) {
+                    const bool dark = (((xx / kCell) ^ (yy / kCell)) & 1) == 0;
+                    const auto rgba = dark
+                        ? rr::image::Rgba(0.05f, 0.05f, 0.05f, 1.0f)
+                        : rr::image::Rgba(0.95f, 0.55f, 0.10f, 1.0f);
+                    checker.set_pixel(xx, yy, rgba);
+                }
+            }
+
+            rr::texture::ImageTexture tex;
+            tex.set_image(std::move(checker));
+            textured.textures.push_back(std::move(tex));
+            const int tex_index = static_cast<int>(textured.textures.size()) - 1;
+
+            // Bind the texture to the first material. The host
+            // scene was loaded from a `.rrscene` file, so it has
+            // at least one material - guard for the
+            // empty-material edge case anyway.
+            if (!textured.materials.empty()) {
+                textured.materials[0].params.base_color_texture_id = tex_index;
+            }
+
+            rr::gpu::GpuScene tex_gpu;
+            if (!tex_gpu.upload_from(textured)) {
+                Logger::error("textured GPU upload failed (no CUDA "
+                              "device or device allocation refused)");
+                return 1;
+            }
+            Logger::info("uploaded textured scene: "
+                         + std::to_string(tex_gpu.texture_count()) + " textures");
+
+            auto tex_result = rr::cuda::CudaRenderer::render_scene(
+                tex_gpu, width, height);
+            if (!tex_result.ok) {
+                Logger::error("textured render failed: " + tex_result.message);
+                return 1;
+            }
+
+            const std::filesystem::path tex_out = "output/gpu_textured_material.ppm";
+            std::error_code tex_ec;
+            if (tex_out.has_parent_path()) {
+                std::filesystem::create_directories(tex_out.parent_path(), tex_ec);
+            }
+            if (!tex_result.image.save_ppm(tex_out)) {
+                Logger::error("saving image failed: " + tex_out.string());
+                return 1;
+            }
+            Logger::info("saved " + tex_out.string());
         }
 #else
         Logger::info("(no CUDA backend compiled; rebuild with "

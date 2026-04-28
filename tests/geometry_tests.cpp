@@ -282,6 +282,70 @@ void test_triangle_winding_flips_normal() {
     RR_CHECK(nearly_equal(ccw.normal, -cw.normal));
 }
 
+// --- M16 attribute extensions ------------------------------------------
+
+void test_triangle_records_barycentrics() {
+    using rr::cuda::intersect_triangle;
+    // CCW triangle in z = -3.
+    const Vec3 v0{-1.0f, -1.0f, -3.0f};
+    const Vec3 v1{ 1.0f, -1.0f, -3.0f};
+    const Vec3 v2{ 0.0f,  1.0f, -3.0f};
+
+    // Centroid lies at bary (1/3, 1/3, 1/3); MT's u, v are the
+    // weights of v1 and v2.
+    const auto centroid = (v0 + v1 + v2) * (1.0f / 3.0f);
+    const auto r = make_ray(Vec3{0, 0, 0}, centroid);
+    const auto h = intersect_triangle(r, v0, v1, v2, 0.0f, 1.0e30f);
+    RR_CHECK(h.hit);
+    RR_CHECK(nearly_equal(h.bary_u, 1.0f / 3.0f, 1.0e-3f));
+    RR_CHECK(nearly_equal(h.bary_v, 1.0f / 3.0f, 1.0e-3f));
+
+    // Aim straight at v1 (perturbed slightly inside): bary_u -> 1.
+    const Vec3 aim_v1 = v1 * 0.999f;  // pull back from corner so
+                                      // the ray parameter is positive
+    const auto r1 = make_ray(Vec3{0, 0, 0}, aim_v1);
+    const auto h1 = intersect_triangle(r1, v0, v1, v2, 0.0f, 1.0e30f);
+    RR_CHECK(h1.hit);
+    RR_CHECK(h1.bary_u > 0.95f);
+    RR_CHECK(h1.bary_v < 0.05f);
+}
+
+void test_sphere_records_uv() {
+    using rr::cuda::intersect_sphere;
+    // Sphere centered at origin so the hit normal directly equals
+    // the unit world position. Probe along +Z, +Y, and -Z to spot
+    // the longitude / latitude mapping clearly.
+    const rr::geometry::Sphere s{Vec3{0, 0, 0}, 1.0f};
+
+    // +Z hit: longitude 0 + 0.5 wraps to 0.5; latitude pi/2 -> v=0.5.
+    {
+        const auto r = make_ray(Vec3{0, 0, 5}, Vec3{0, 0, -1});
+        const auto h = intersect_sphere(r, s, 0.0f, 1.0e30f);
+        RR_CHECK(h.hit);
+        RR_CHECK(nearly_equal(h.normal, Vec3{0, 0, 1}));
+        RR_CHECK(nearly_equal(h.uv.x, 0.5f, 1.0e-3f));
+        RR_CHECK(nearly_equal(h.uv.y, 0.5f, 1.0e-3f));
+    }
+
+    // +Y hit (north pole): v = 1.
+    {
+        const auto r = make_ray(Vec3{0, 5, 0}, Vec3{0, -1, 0});
+        const auto h = intersect_sphere(r, s, 0.0f, 1.0e30f);
+        RR_CHECK(h.hit);
+        RR_CHECK(nearly_equal(h.normal, Vec3{0, 1, 0}));
+        RR_CHECK(nearly_equal(h.uv.y, 1.0f, 1.0e-3f));
+    }
+
+    // -Y hit (south pole): v = 0.
+    {
+        const auto r = make_ray(Vec3{0, -5, 0}, Vec3{0, 1, 0});
+        const auto h = intersect_sphere(r, s, 0.0f, 1.0e30f);
+        RR_CHECK(h.hit);
+        RR_CHECK(nearly_equal(h.normal, Vec3{0, -1, 0}));
+        RR_CHECK(nearly_equal(h.uv.y, 0.0f, 1.0e-3f));
+    }
+}
+
 }
 
 int main() {
@@ -302,6 +366,8 @@ int main() {
     test_triangle_double_sided_hit_from_back();
     test_triangle_t_min_and_t_max_clip();
     test_triangle_winding_flips_normal();
+    test_triangle_records_barycentrics();
+    test_sphere_records_uv();
 
     std::printf("geometry_tests: %d/%d passed\n", g_total - g_failed, g_total);
     return g_failed == 0 ? 0 : 1;
