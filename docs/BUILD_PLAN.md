@@ -93,6 +93,141 @@ All modules now have a placeholder source directory under `src/`,
 
 ## Change Log
 
+### 2026-04-28 — M21 (spec, sockets): material node graph - sockets and topology
+
+Third doc slice of the material node graph specification.
+Adds section 7 ("Sockets and graph structure") to
+`docs/MATERIAL_GRAPH_SPEC.md`, formalising the wiring
+contract: what a socket is, the closed v1 type list, the
+legal implicit conversions, the DAG topology requirement,
+and the terminal-node contract.
+
+- **`docs/MATERIAL_GRAPH_SPEC.md`:**
+  - Inserted section 7 "Sockets and graph structure":
+    - 7.1 Sockets: a socket is a named, typed connection
+      point on a node. Inputs receive (at most one
+      incoming connection; default per the catalogue when
+      unwired); outputs emit (fan-out permitted: one
+      output may drive multiple inputs). "Node parameter"
+      catalogue entries (`ConstantFloat.value`,
+      `TextureSample.texture_id`) are NOT sockets in the
+      wiring sense - they store a literal on the node.
+    - 7.2 Data types: closed v1 list of `float` / `vec3`
+      / `color` / `normal` / `vec2`. Per-type notes pin
+      the storage (32-bit floats), the linear-RGB
+      contract on `color`, and the unit-length contract
+      on `normal`. `vec2` is the smallest extension over
+      the prompt's four-type list: it formalises the
+      coordinate type the existing catalogue's UV /
+      UVTransform / TextureSample.uv sockets carry. No
+      `vec2` constant node ships in v1; the type exists
+      only to type UV-flavoured connections.
+    - 7.3 Connection rules: a connection is admitted iff
+      (1) types match or an implicit conversion is
+      permitted, (2) the sink is not already wired, (3)
+      the connection does not introduce a cycle. Full
+      implicit-conversion table pins `float` -> any
+      (broadcast), `vec3` <-> `color` (reinterpret, no
+      rescale), `normal` -> `vec3` (drop the
+      unit-length contract), and `normal` -> `normal`.
+      Conversions explicitly NOT allowed include `vec3`
+      -> `normal` (no implicit normalise; future
+      `Normalize` node), `vec3` <-> `vec2` (no
+      truncation / pad; future explicit
+      `Swizzle` / `Combine`), and `color` -> `float`
+      (no implicit luminance; future `Luminance`).
+    - 7.4 Graph topology: the graph MUST be a DAG.
+      "Leaf" nodes have no incoming connections
+      (`ConstantFloat`, `ConstantColor`, `Normal`,
+      `UV`); "terminal" nodes have no outgoing
+      connections (the four BSDFs from 6.5). Isolated
+      subgraphs that don't reach a terminal are dead
+      code: parser MAY warn, evaluator MUST NOT spend
+      work on them.
+    - 7.5 Root / terminal nodes: a graph contributes to
+      shading through its terminal nodes. MUST contain
+      at least one terminal (graphs with zero are
+      rejected); SHOULD contain at most one node of
+      each terminal type (multiple `Diffuse` /
+      `Emission` etc. is not defined in v1; the BSDF-
+      mixing semantics are the dedicated concern
+      section 9 already punts). Per-terminal table
+      pins each terminal's contribution to
+      `MaterialParams` (`Diffuse` -> `baseColor`,
+      `Emission` -> `emissionColor` /
+      `emissionStrength`, etc.).
+  - Renumbered the previous "What this slice covers" /
+    "Out of scope" sections from 7 / 8 to 8 / 9.
+    Updated section 8's deferred list to drop the
+    socket-type-system entry now that 7 has landed; the
+    remaining deferred items (evaluation model / GPU
+    compilation / scene-format integration / editor UX
+    / bridge emission) are unchanged.
+  - Section 9 (out of scope for v1) is unchanged: BSDF
+    mixing / layered shaders / volumes / procedural
+    noise / time-varying inputs / differentiable graphs
+    all still apply at v1.
+
+#### Verified locally
+
+```
+$ ls docs/MATERIAL_GRAPH_SPEC.md
+$ python3 -c "open('docs/MATERIAL_GRAPH_SPEC.md').read()"
+$ wc -l docs/MATERIAL_GRAPH_SPEC.md
+```
+
+Spec-only slice; no source / build / test changes.
+
+#### Per the prompt
+
+- "Define what a socket is": 7.1 - named, typed
+  connection point on a node; the node-parameter
+  exception is called out.
+- "Input vs output sockets": 7.1 - inputs receive (one
+  incoming, defaults when unwired); outputs emit
+  (fan-out permitted).
+- "Supported data types: float / vec3 / color /
+  normal (optional)": 7.2 pins all four explicitly,
+  with `normal` documented as kept-for-v1 because the
+  existing `Normal` utility node already produces
+  one. The per-type notes also call out `vec2` as the
+  minimum honest extension to type UV connections,
+  since the catalogue's `UV` / `UVTransform` /
+  `TextureSample.uv` sockets need a 2D coordinate
+  type and pretending they are `vec3` would
+  contradict 7.3's truncation rules.
+- "Connection rules: type matching, implicit
+  conversions": 7.3 pins both. Implicit conversions
+  are listed in a table; everything not in the table
+  is rejected at parse time. Each disallowed
+  conversion is justified by pointing at the future
+  explicit node that will perform it.
+- "Graph topology (DAG)": 7.4. Cycles forbidden;
+  leaf / internal / terminal roles defined; dead-code
+  policy noted.
+- "Root/output node concept": 7.5 - a graph's "root"
+  is the SET of terminal nodes; v1 keeps the set
+  explicit instead of introducing an aggregator node,
+  because the renderer's existing shading model
+  already processes contributions independently.
+  Multi-terminal-of-same-type semantics deferred (BSDF
+  mixing slice).
+- "Do NOT define evaluation execution yet": section 8
+  explicitly defers the evaluation model. 7.4's
+  dead-code clause notes "the parser MAY warn / the
+  evaluator MUST NOT spend work" without committing to
+  WHEN the evaluator decides what's reachable - that's
+  the evaluation-model slice's call.
+
+#### Module / milestone status
+
+- Module 22 (Node Editor / Material Graph): remains
+  `not started`. The structural contract is a doc
+  contract; nothing is promoted until implementation
+  begins.
+- M21 (Material Node Graph (Editor)): remains `not
+  started` (same).
+
 ### 2026-04-28 — M21 (spec, nodes): material node graph - node catalogue
 
 Second doc slice of the material node graph specification.

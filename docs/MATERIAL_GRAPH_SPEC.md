@@ -566,23 +566,247 @@ Twelve nodes - the smallest set that covers every
 parameter `MaterialParams` exposes today plus the
 placeholder BSDFs that pin the contract for tomorrow.
 
-## 7. What this slice covers
+## 7. Sockets and graph structure
 
-This and the previous (intro) slice together establish:
+This section formalises the wiring between nodes: what a
+socket is, what kinds of values flow through them, when a
+connection is legal, and what shape the resulting graph
+must have. It pins the structural contract; the
+evaluation model (when each node fires, how outputs are
+cached, what the host-side compile step does) is the next
+doc slice.
+
+### 7.1 Sockets
+
+A **socket** is a named, typed connection point on a node.
+Each socket sits on exactly one node and is identified by
+its name within that node. Names are pinned by the node
+catalogue (section 6) and follow the `snake_case`
+convention from 6.1.
+
+Sockets come in two kinds, distinguished by direction:
+
+- An **input socket** receives a value the node consumes
+  during evaluation. Inputs may be wired (connected to an
+  output socket on another node) or unwired (the node
+  uses the input's catalogue-defined default value, e.g.
+  `Mix.factor` defaults to `0.5`). An input socket has at
+  most ONE incoming connection.
+- An **output socket** emits a value the node produces.
+  Outputs may fan out: a single output MAY drive multiple
+  input sockets on different nodes. An output's value is
+  the same for every consumer in a single evaluation
+  (the evaluation model slice pins the caching contract).
+
+A few sockets in the catalogue are flagged "node parameter"
+(e.g. `ConstantFloat.value`, `TextureSample.texture_id`).
+These are NOT sockets in the wiring sense: they store a
+literal value on the node itself and cannot be wired from
+another node's output. They are listed in the catalogue
+under "Inputs" only because they share the node-bound
+input shape; future tooling treats them as fields, not
+sockets.
+
+### 7.2 Data types
+
+Every socket carries one of the following data types. The
+type list is intentionally narrow: each entry maps directly
+to a primitive the rest of the renderer already uses, and
+the connection rules below depend on the list staying
+small enough to enumerate.
+
+| Type     | Width | Storage notes                              |
+|----------|-------|--------------------------------------------|
+| `float`  | 1     | 32-bit IEEE float scalar.                  |
+| `vec3`   | 3     | Three 32-bit floats, generic geometry.     |
+| `color`  | 3     | Three 32-bit floats, linear RGB.           |
+| `normal` | 3     | Three 32-bit floats, unit-length contract. |
+| `vec2`   | 2     | Two 32-bit floats, generic 2D coordinate.  |
+
+Notes on each type:
+
+- **`float`** - scalar values: blend factors, roughness,
+  emission strength, IOR, ...
+- **`vec3`** - geometric vectors that do NOT carry a
+  brightness or a unit-length contract. Useful for raw
+  direction outputs that have not been normalised.
+- **`color`** - three components in **linear RGB**. Values
+  SHOULD be non-negative; the renderer's writers
+  (`make_material_section`, `make_light_section`)
+  non-negative-clamp the destination, and the host parser
+  clamps to zero on load. HDR / above-1.0 values are
+  permitted.
+- **`normal`** - a `vec3` with the additional contract that
+  the value is **unit-length** at evaluation time. Surface
+  shading paths (Lambertian, future GGX) rely on this.
+  The `Normal` utility node produces a value that already
+  satisfies the contract; `vec3` -> `normal` requires an
+  explicit normalisation step (see 7.3 - the conversion
+  is NOT implicit). This type is documented as "optional"
+  in the original prompt; v1 keeps it because the
+  catalogue's `Normal` node already produces one and the
+  shading path consumes one - making the type explicit
+  pins that contract instead of pretending the renderer
+  treats raw vectors and unit normals identically.
+- **`vec2`** - the smallest extension to the prompt's
+  four-type list. The catalogue's `UV` / `UVTransform` /
+  `TextureSample.uv` sockets carry 2D coordinates;
+  formalising `vec2` is the most honest way to type them.
+  No `vec2` constant nodes ship in v1 (the
+  `ConstantColor` / `ConstantFloat` pair is enough);
+  `vec2` exists only to type UV-flavoured connections.
+
+The list is closed for v1. New types (a hypothetical
+`vec4`, an explicit `bsdf` handle, a procedural-mask type)
+land only through their own doc slice with the matching
+node-catalogue updates.
+
+### 7.3 Connection rules
+
+A connection wires a source output socket on one node to a
+sink input socket on another node. v1 admits a connection
+when:
+
+1. **The source type matches the sink type, OR an implicit
+   conversion is permitted between them.** The legal
+   implicit conversions are pinned in the table below;
+   anything not listed is a parse-time error.
+2. **The sink is not already wired.** An input socket
+   accepts at most ONE incoming connection.
+3. **The connection does not introduce a cycle.** The
+   resulting graph MUST stay a DAG (see 7.4).
+
+The full implicit-conversion table:
+
+| From    | To      | Behaviour                                       |
+|---------|---------|-------------------------------------------------|
+| `float` | `float` | Identity.                                       |
+| `float` | `vec2`  | Broadcast: `x` -> `(x, x)`.                     |
+| `float` | `vec3`  | Broadcast: `x` -> `(x, x, x)`.                  |
+| `float` | `color` | Broadcast: `x` -> `(x, x, x)`.                  |
+| `vec2`  | `vec2`  | Identity.                                       |
+| `vec3`  | `vec3`  | Identity.                                       |
+| `vec3`  | `color` | Reinterpret: same three floats, no rescale.     |
+| `color` | `color` | Identity.                                       |
+| `color` | `vec3`  | Reinterpret: same three floats, no rescale.     |
+| `normal`| `normal`| Identity.                                       |
+| `normal`| `vec3`  | Identity (a normal IS a vec3, drops the         |
+|         |         | unit-length contract for downstream use).       |
+
+Conversions NOT in the table (and therefore rejected at
+parse time) include:
+
+- `vec3` -> `normal` (no implicit normalisation; a future
+  `Normalize` math node will perform it explicitly).
+- `vec3` -> `vec2` or `vec2` -> `vec3` (no truncation /
+  zero-padding of components; future slices may add
+  explicit `Swizzle` / `Combine` nodes).
+- `color` -> `float` (no implicit luminance reduction; a
+  future `Luminance` math node will perform it
+  explicitly).
+- Any conversion involving a type not yet in the table.
+
+The fan-out direction has no conversion: the same source
+output can drive multiple sink inputs, and each sink
+applies its own implicit conversion (or none) at the
+point of use.
+
+### 7.4 Graph topology
+
+A material graph is a **directed acyclic graph** of nodes:
+
+- Nodes are the entries listed in section 6's catalogue
+  (or future-slice extensions to it).
+- Edges run from output sockets to input sockets,
+  obeying the connection rules in 7.3.
+- The graph MUST be acyclic: there MUST NOT be a sequence
+  of edges that returns to a node it has already
+  visited. A graph that contains a cycle is rejected at
+  parse time.
+
+Two role labels follow from the topology and are useful
+when reasoning about a graph:
+
+- A **leaf** node has no incoming connections (every
+  input is either a node parameter or unwired). The v1
+  leaves are `ConstantFloat`, `ConstantColor`,
+  `Normal`, `UV` (the utility shading-context emitters
+  count as leaves; they pull from the renderer's
+  shading context, not from another node).
+- A **terminal** node has no outgoing connections (it
+  exposes no output sockets). The v1 terminals are
+  `Diffuse`, `Emission`, `Metallic`, `Glass` -
+  exactly the BSDF category from 6.5.
+
+Internal nodes (`TextureSample`, `Add`, `Multiply`,
+`Mix`, `UVTransform`) have both inputs and outputs and
+sit in the middle of the DAG.
+
+A graph MAY contain isolated subgraphs - paths that do
+not reach any terminal. Such subgraphs are **dead code**:
+they parse, they pass the DAG check, but they contribute
+nothing to shading. The parser MAY warn about them; the
+evaluator MUST NOT spend work evaluating them. The exact
+warning policy is the evaluation-model slice's call.
+
+### 7.5 Root / terminal nodes
+
+A graph contributes to surface shading **through its
+terminal nodes**. v1's terminals are the four BSDF nodes
+in 6.5; each one produces a piece of the renderer's
+existing `MaterialParams`-shape consumer set:
+
+| Terminal   | Produces                                                |
+|------------|---------------------------------------------------------|
+| `Diffuse`  | The Lambertian albedo term (`MaterialParams::baseColor`). |
+| `Emission` | Emissive radiance (`emissionColor` + `emissionStrength`). |
+| `Metallic` | (Placeholder) metallic specular contribution.           |
+| `Glass`    | (Placeholder) transmissive dielectric contribution.     |
+
+A graph MUST contain **at least one** terminal node. A
+graph with zero terminals does not describe any shading
+and MUST be rejected at parse time.
+
+A v1 graph SHOULD contain **at most one** node of each
+terminal type. The motivating case is the existing
+flat-struct material's coexisting baseColor + emission:
+a graph with one `Diffuse` and one `Emission` terminal
+matches that material exactly. Multiple terminals of the
+same type (two `Diffuse` nodes, two `Glass` nodes) are
+NOT defined for v1: the rules for blending their
+contributions are the BSDF-mixing concern that section
+8 explicitly punts. Parsers MAY accept such graphs and
+warn; renderers MAY pick one and ignore the rest, or
+sum them, or reject; the spec does not pin a winner
+until the mixing slice lands.
+
+The set of terminals therefore plays the same role as a
+single conventional "root" or "output" node: it is the
+point at which the graph hands its computed shading
+contributions back to the renderer. v1 keeps the set
+explicit (multiple distinct terminals) instead of
+introducing a single "Output" node that aggregates them,
+because the renderer's existing shading model already
+processes the contributions independently.
+
+## 8. What this slice covers
+
+This and the previous slices together establish:
 
 - The graph at the conceptual level: purpose, relationship
   to `MaterialParams`, GPU / real-time / path-tracing
   constraints (sections 1-5).
 - The v1 node catalogue with naming conventions and a
   per-node entry shape (section 6).
+- The socket / connection / topology contract: what
+  sockets are, the closed v1 type list, the legal
+  implicit conversions, the DAG requirement, and the
+  terminal-node contract (section 7).
 
 It deliberately does NOT pin:
 
-- The socket type system or connection rules (what kinds
-  exist, what conversions are implicit, how cycles are
-  rejected). That is the next doc slice.
 - The evaluation model (lazy / eager, caching strategy,
-  default-value semantics).
+  default-value semantics, traversal order).
 - The GPU compilation strategy (interpreted bytecode,
   emitted CUDA source, lookup tables, ...).
 - The scene-file integration (the optional
@@ -595,7 +819,7 @@ work begins only after the slices that constrain it have
 landed - the same incremental rule the rest of the project
 follows.
 
-## 8. Out of scope for v1 of the spec
+## 9. Out of scope for v1 of the spec
 
 The graph contract documented across this and the upcoming
 slices is a v1 contract. The following are explicitly **not**
