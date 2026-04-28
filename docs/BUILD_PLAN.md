@@ -93,6 +93,194 @@ All modules now have a placeholder source directory under `src/`,
 
 ## Change Log
 
+### 2026-04-28 — M19 (extension 6): preview dialog displays the rendered image
+
+Seventh slice of the Cinema 4D bridge. The preview dialog now
+shows the rendered image after a successful `render`, with a
+robust two-stage display path:
+
+1. **Primary**: convert the renderer's PPM to BMP, load via
+   `c4d.bitmaps.BaseBitmap`, paint into an in-dialog
+   `c4d.gui.GeUserArea` fitted to aspect.
+2. **Fallback**: when any step in the primary path fails,
+   create / update a `RelativityRender Preview` Plane in the
+   active document and apply the BMP as a Color-channel
+   bitmap shader so the user still sees the image somewhere.
+
+Every step writes a one-line status message into the
+existing response text area so the user always knows which
+display path succeeded.
+
+- **`integrations/c4d/RelativityRenderBridge/image_io.py`:**
+  New plain-Python module (no `c4d` import). Implements:
+  - `decode_ppm_p6(bytes)` / `read_ppm_p6(path)` -> a
+    `(width, height, rgb_bytes)` triple. Handles PPM header
+    comments, mixed whitespace tokens, `maxval` rescaling
+    (any maxval in `[1, 65535]` is normalised to 8-bit
+    samples), and 16-bit big-endian samples for `maxval >
+    255`. Rejects `P3` (ASCII), wrong magic, truncated
+    bodies, and zero dimensions with a `PpmDecodeError`.
+  - `encode_bmp_24(width, height, rgb_bytes)` -> a 24-bit
+    BI_RGB BMP byte string. 14-byte BITMAPFILEHEADER + 40-
+    byte BITMAPINFOHEADER + bottom-up pixel rows with BGR
+    samples and 4-byte row alignment. No compression / no
+    colour table; the simplest format every C4D bitmap
+    loader accepts.
+  - `convert_ppm_to_bmp(ppm_path, bmp_path="")` -> reads
+    PPM, writes BMP next to the source (or at the explicit
+    destination), creates parent dirs, returns the absolute
+    BMP path.
+- **`integrations/c4d/RelativityRenderBridge/preview_state.py`:**
+  - New `parse_render_response(status_line)` returns
+    `(width, height, path)` parsed from the
+    `OK rendered <W>x<H> to <abs_path>` reply, or
+    `(None, None, None)` for any reply that doesn't fit
+    the schema. The parser uses the FIRST `" to "` after
+    the dimensions block as the path delimiter, so paths
+    that themselves contain `" to "` round-trip verbatim.
+- **`integrations/c4d/RelativityRenderBridge/RelativityRenderBridge.pyp`:**
+  - New `_PreviewArea(c4d.gui.GeUserArea)`. `DrawMsg`
+    paints the cached `BaseBitmap` fitted-to-aspect inside
+    the area's pixel rect; the empty case fills the rect
+    with `c4d.COLOR_BG`. Wraps every draw + `Redraw()` call
+    in `try/except` so a paint failure cannot abort the
+    dialog event loop.
+  - `PreviewDialog.__init__` owns the `_PreviewArea` and
+    holds the most recent `BaseBitmap` so the bitmap stays
+    alive across re-layouts.
+  - `PreviewDialog.CreateLayout` adds a "Preview" group
+    below the response area with an `AddUserArea` +
+    `AttachUserArea(self._preview_area, ...)`.
+  - `PreviewDialog._on_render` is rewritten as a state
+    machine: send `render`, surface the reply, parse
+    `(width, height, path)` from the OK status line, then
+    call `_show_rendered_image(ppm_path)`.
+  - `_show_rendered_image` runs the two-stage display
+    path. Step A converts PPM->BMP and writes status into
+    the response area on success and on each kind of
+    failure (file missing, decode error, conversion
+    error). Step B (`_try_load_into_dialog`) loads the BMP
+    into a `BaseBitmap` and hands it to the preview area;
+    returns False on failure to signal the fallback. Step
+    C (`_fallback_to_scene_plane`) calls the new helpers
+    to create / update a Plane + Material in the document.
+    Every step is wrapped: a Python exception in any step
+    surfaces as a single response line, never as a
+    plugin-host crash.
+  - New module-level helpers
+    `_find_or_create_preview_plane(doc)`,
+    `_find_or_create_preview_material(doc, image_path)`,
+    `_ensure_texture_tag(plane, mat)` build / refresh the
+    fallback scene state. Stable names
+    (`PREVIEW_PLANE_NAME` / `PREVIEW_MATERIAL_NAME`) keep
+    successive renders updating the same objects rather
+    than spawning duplicates. The material reuses an
+    existing bitmap shader when present so we don't leak
+    shaders on repeat renders.
+- **`integrations/c4d/RelativityRenderBridge/tests/test_image_io.py`:**
+  44 standalone Python assertions. Coverage:
+  - PPM P6 decode: 2x1 maxval-255, comments between
+    tokens, mixed whitespace, maxval-127 rescale,
+    16-bit-sample handling, P3 rejection, truncated body
+    rejection, zero-dimension rejection.
+  - `read_ppm_p6` round-trip through tempfile.
+  - BMP 24-bit encode: 2x2 round-trip via a tiny test
+    decoder; 3-wide row padding to 12 bytes; buffer-length
+    validation; zero-dimension rejection.
+  - End-to-end `convert_ppm_to_bmp`: default destination
+    lands next to source with `.bmp` extension; explicit
+    destination respected; parent dir created when missing.
+  - Pin: `image_io` does not import `c4d`.
+- **`integrations/c4d/RelativityRenderBridge/tests/test_preview_state.py`:**
+  104 standalone Python assertions (up from 89). New
+  coverage on `parse_render_response`:
+  - Typical reply.
+  - Path with embedded spaces, including " to " inside the
+    path.
+  - Unicode path component.
+  - ERR / missing-marker / non-numeric dims / zero dims /
+    empty path / empty-or-None input cases.
+- **`integrations/c4d/RelativityRenderBridge/README.md`:**
+  Documents the rendered-image display pipeline (PPM->BMP
+  conversion + GeUserArea blit + scene-plane fallback),
+  the per-render status messages, and the layout block
+  now lists `image_io.py` + its test.
+
+#### Verified locally
+
+```
+$ python3 integrations/c4d/RelativityRenderBridge/tests/test_image_io.py
+test_image_io: 44/44 passed
+
+$ python3 integrations/c4d/RelativityRenderBridge/tests/test_preview_state.py
+test_preview_state: 104/104 passed
+
+$ python3 integrations/c4d/RelativityRenderBridge/tests/test_server_client.py
+test_server_client: 33/33 passed
+
+$ python3 integrations/c4d/RelativityRenderBridge/tests/test_rrscene_writer.py
+test_rrscene_writer: 118/118 passed
+
+$ python3 -c 'import ast; ast.parse(open(
+    "integrations/c4d/RelativityRenderBridge/RelativityRenderBridge.pyp"
+).read()); ast.parse(open(
+    "integrations/c4d/RelativityRenderBridge/image_io.py").read())'
+# (no output -> both files are syntactically valid Python)
+```
+
+End-to-end smoke through the bridge's display pipeline
+(no Cinema 4D needed): a synthetic 4x3 PPM (the same
+`P6 W H 255 <body>` shape `Image::save_ppm` produces) is
+parsed via `parse_render_response`, converted via
+`convert_ppm_to_bmp`, and the resulting file's
+BITMAPFILEHEADER `file_size` field matches the on-disk
+size (90 bytes, header + 4-byte-aligned rows). The C4D-
+only stages (`BaseBitmap.InitWith`, the user-area draw,
+the scene-plane creation) reduce to calls into the
+already-tested helpers; the two failure paths (in-dialog
+fail -> scene-plane fallback; scene-plane fail -> single
+response line) are exception-wrapped so a Python error
+never escapes the plugin host.
+
+#### Per the prompt
+
+- "After render: load output image path returned by
+  server": `parse_render_response` extracts the absolute
+  path from the `OK rendered <W>x<H> to <path>` reply;
+  the dialog then converts the PPM to BMP and loads it
+  via `BaseBitmap.InitWith`.
+- "Display it in dialog if possible":
+  `_PreviewArea(c4d.gui.GeUserArea)` paints the bitmap
+  fitted-to-aspect inside the dialog's preview area.
+- "Fallback: create/update preview plane in C4D scene;
+  apply output image as texture":
+  `_find_or_create_preview_plane` + `_find_or_create_preview_material`
+  + `_ensure_texture_tag` create or update a stable-
+  named Plane + Material with a Color-channel bitmap
+  shader. Successive renders update the existing
+  material rather than spawning duplicates.
+- "Keep robust": every step is wrapped in `try/except`
+  so a Python error never escapes into the C4D plugin
+  host. Failures degrade through the fallback rather
+  than aborting the dialog. Each transition (file
+  missing, decode failure, BMP write failure, bitmap
+  init failure, scene-plane failure) writes a one-line
+  status into the response area so the user always
+  knows which path was used.
+
+#### Module / milestone status
+
+- Module 20 (Cinema 4D Bridge): remains `in progress`.
+  In-dialog image preview + scene-plane fallback landed;
+  binary framebuffer streaming over the protocol (so the
+  bridge can render scenes when host and renderer are on
+  different filesystems) is the remaining slice. Once
+  that lands, M19's exit criterion ("a Cinema 4D scene
+  renders through the server and the result is shown in
+  the C4D viewport") is met.
+- M19 (Cinema 4D Bridge (Plugin)): remains `in progress`
+  (same).
+
 ### 2026-04-28 — M19 (extension 5): C4D preview dialog (text-only)
 
 Sixth slice of the Cinema 4D bridge. A floating

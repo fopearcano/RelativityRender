@@ -195,12 +195,47 @@ independent so a user comparing slider tweaks against a
 saved controller can do so without the dialog clobbering the
 document.
 
-The dialog is **text-only** at this slice. The response area
-shows the most recent server reply (and any input-validation
-error) one line at a time, newest at the bottom. Image
-preview - bitmap area, framebuffer streaming, progressive
-update - is a follow-up slice and is intentionally not in
-this slice's scope.
+The dialog has both a text response area and a bitmap
+preview area:
+
+- The response area shows the most recent server reply (and
+  any input-validation error) one line at a time, newest at
+  the bottom.
+- The preview area paints the most recently rendered image,
+  fitted while preserving aspect, after a successful
+  `Render` round-trip.
+
+#### Rendered-image display
+
+After the server replies `OK rendered <W>x<H> to <abs_path>`
+the dialog runs a two-stage pipeline:
+
+1. **Convert PPM -> BMP.** The renderer saves PPM
+   (`Image::save_ppm` in `src/image/Image.cpp`); Cinema 4D's
+   `BaseBitmap.InitWith` reliably loads BMP / PNG / JPG /
+   TIFF / EXR / ... but not PPM on every C4D version. The
+   bridge converts to a 24-bit BMP next to the source PPM
+   (`<stem>.bmp`) using the pure-Python encoder in
+   `image_io.py` - no third-party dependency.
+2. **In-dialog preview (primary).** The BMP is loaded into
+   a `c4d.bitmaps.BaseBitmap` and handed to a
+   `c4d.gui.GeUserArea` that paints it scaled-to-fit in the
+   dialog's preview area.
+3. **Scene-plane fallback (secondary).** If any of {file
+   missing, PPM decode, BMP write, bitmap init} fail, the
+   bridge creates or updates a `RelativityRender Preview`
+   Plane object in the active document and applies the BMP
+   as a Color-channel bitmap shader. The plane sits at the
+   world origin facing +Z; the user can move it freely
+   afterwards. Successive renders update the bitmap on the
+   existing material rather than spawning a new plane each
+   time.
+
+Every step writes a one-line status message into the
+response area so the user always knows which path succeeded.
+Pixel streaming over the protocol (so the bridge can render
+remote scenes without filesystem-shared paths) is a
+follow-up slice.
 
 #### Server connection details
 
@@ -226,10 +261,12 @@ RelativityRenderBridge/
     rrscene_writer.py             # plain-Python .rrscene writer (testable)
     server_client.py              # plain-Python protocol client (testable)
     preview_state.py              # plain-Python dialog helpers (testable)
+    image_io.py                   # plain-Python PPM reader + BMP writer (testable)
     tests/
         test_rrscene_writer.py    # standalone test (runs without C4D)
         test_server_client.py     # standalone test (runs without C4D)
         test_preview_state.py     # standalone test (runs without C4D)
+        test_image_io.py          # standalone test (runs without C4D)
     README.md
 ```
 
@@ -292,9 +329,9 @@ Per `docs/MODULE_MAP.md` and `integrations/c4d/README.md`:
 
 ## Running the standalone tests
 
-`rrscene_writer.py`, `server_client.py`, and `preview_state.py`
-are plain Python with no Cinema 4D imports, so the test
-harnesses run under stock `python3`:
+`rrscene_writer.py`, `server_client.py`, `preview_state.py`,
+and `image_io.py` are plain Python with no Cinema 4D imports,
+so the test harnesses run under stock `python3`:
 
 ```
 $ python3 integrations/c4d/RelativityRenderBridge/tests/test_rrscene_writer.py
@@ -304,13 +341,17 @@ $ python3 integrations/c4d/RelativityRenderBridge/tests/test_server_client.py
 test_server_client: 33/33 passed
 
 $ python3 integrations/c4d/RelativityRenderBridge/tests/test_preview_state.py
-test_preview_state: 89/89 passed
+test_preview_state: 104/104 passed
+
+$ python3 integrations/c4d/RelativityRenderBridge/tests/test_image_io.py
+test_image_io: 44/44 passed
 ```
 
 The TCP socket layer of `RenderServerClient.send_command` is
 exercised manually via the `RelativityRender --serve` smoke
 test documented in `docs/BUILD_PLAN.md`. The C4D-only parts
 of the bridge (`PreviewDialog`'s `CreateLayout` /
-`InitValues` / `Command` overrides) are validated by AST
-parse only - their behaviour reduces to calls into the
+`InitValues` / `Command` overrides, `_PreviewArea.DrawMsg`,
+and the scene-plane fallback) are validated by AST parse
+only - their behaviour reduces to calls into the
 already-tested helpers.

@@ -186,3 +186,52 @@ def format_connection_error(exc, command_label, host, port):
     return ("[" + str(command_label) + "] could not reach "
             + str(host) + ":" + str(port) + " - " + str(exc)
             + " (start the server with `RelativityRender --serve`)")
+
+
+# ---------------------------------------------------------------------------
+# Render-response parser.
+# ---------------------------------------------------------------------------
+
+# The renderer server's render reply (M18 wiring slice) is:
+#   `OK rendered <W>x<H> to <abs_path>`
+# After a successful render the preview dialog parses this
+# line to know (a) how big the image is and (b) where to
+# load it from.
+
+def parse_render_response(status_line):
+    """Return `(width, height, path)` parsed out of the
+    server's `OK rendered ...` reply, or `(None, None, None)`
+    when the line is not a successful render reply.
+
+    The path is everything after the literal " to " - so
+    spaces inside the path are preserved verbatim. Width and
+    height are returned as integers; non-numeric components
+    yield `(None, None, None)` rather than raising, so the
+    caller can fall through to a friendlier error path.
+    """
+    if not status_line:
+        return (None, None, None)
+    s = str(status_line).strip()
+    prefix = "OK rendered "
+    if not s.startswith(prefix):
+        return (None, None, None)
+    rest = s[len(prefix):]
+    marker = " to "
+    idx = rest.find(marker)
+    if idx < 0:
+        return (None, None, None)
+    dims = rest[:idx]
+    path = rest[idx + len(marker):].strip()
+    if not path:
+        return (None, None, None)
+    if "x" not in dims:
+        return (None, None, None)
+    w_str, h_str = dims.split("x", 1)
+    try:
+        w = int(w_str)
+        h = int(h_str)
+    except (TypeError, ValueError):
+        return (None, None, None)
+    if w <= 0 or h <= 0:
+        return (None, None, None)
+    return (w, h, path)

@@ -242,6 +242,81 @@ def test_format_connection_error_includes_host_port_and_remedy():
 
 
 # ---------------------------------------------------------------------------
+# parse_render_response.
+# ---------------------------------------------------------------------------
+
+def test_parse_render_response_typical():
+    w, h, p = preview_state.parse_render_response(
+        "OK rendered 1280x720 to /tmp/render.ppm")
+    check(w == 1280, "width")
+    check(h == 720,  "height")
+    check(p == "/tmp/render.ppm", "path")
+
+
+def test_parse_render_response_path_with_spaces():
+    w, h, p = preview_state.parse_render_response(
+        "OK rendered 100x50 to /tmp/space dir/render to thing.ppm")
+    check(w == 100 and h == 50,                 "dimensions")
+    # Path must preserve every space verbatim - including the
+    # literal " to " inside it. The parser uses the FIRST
+    # `" to "` after the dimensions block, then takes the
+    # rest as the path.
+    check(p == "/tmp/space dir/render to thing.ppm", "path with spaces")
+
+
+def test_parse_render_response_unicode_path():
+    line = "OK rendered 1x1 to /tmp/éclair.ppm"
+    w, h, p = preview_state.parse_render_response(line)
+    check(w == 1 and h == 1, "dimensions")
+    check(p.endswith("éclair.ppm"), "unicode preserved")
+
+
+def test_parse_render_response_rejects_err_line():
+    out = preview_state.parse_render_response(
+        "ERR render: no scene loaded")
+    check(out == (None, None, None), "ERR -> None")
+
+
+def test_parse_render_response_rejects_missing_to():
+    out = preview_state.parse_render_response(
+        "OK rendered 100x50 /tmp/render.ppm")
+    check(out == (None, None, None),
+          "missing ' to ' marker -> None")
+
+
+def test_parse_render_response_rejects_non_numeric_dims():
+    out = preview_state.parse_render_response(
+        "OK rendered foox50 to /tmp/render.ppm")
+    check(out == (None, None, None),
+          "non-numeric width -> None")
+    out = preview_state.parse_render_response(
+        "OK rendered 100xbar to /tmp/render.ppm")
+    check(out == (None, None, None),
+          "non-numeric height -> None")
+
+
+def test_parse_render_response_rejects_zero_dims():
+    out = preview_state.parse_render_response(
+        "OK rendered 0x0 to /tmp/render.ppm")
+    check(out == (None, None, None),
+          "zero dims -> None")
+
+
+def test_parse_render_response_rejects_empty_path():
+    out = preview_state.parse_render_response(
+        "OK rendered 10x10 to    ")
+    check(out == (None, None, None),
+          "empty path -> None")
+
+
+def test_parse_render_response_rejects_empty_input():
+    check(preview_state.parse_render_response("") ==
+          (None, None, None), "empty -> None")
+    check(preview_state.parse_render_response(None) ==
+          (None, None, None), "None input -> None")
+
+
+# ---------------------------------------------------------------------------
 # No c4d import sneaks in.
 # ---------------------------------------------------------------------------
 
@@ -272,6 +347,15 @@ def main():
     test_format_server_reply_err()
     test_format_server_reply_none()
     test_format_connection_error_includes_host_port_and_remedy()
+    test_parse_render_response_typical()
+    test_parse_render_response_path_with_spaces()
+    test_parse_render_response_unicode_path()
+    test_parse_render_response_rejects_err_line()
+    test_parse_render_response_rejects_missing_to()
+    test_parse_render_response_rejects_non_numeric_dims()
+    test_parse_render_response_rejects_zero_dims()
+    test_parse_render_response_rejects_empty_path()
+    test_parse_render_response_rejects_empty_input()
     test_module_does_not_import_c4d()
     print("test_preview_state: %d/%d passed" % (g_total - g_failed, g_total))
     return 0 if g_failed == 0 else 1

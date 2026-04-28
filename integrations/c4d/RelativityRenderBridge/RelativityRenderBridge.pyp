@@ -82,6 +82,7 @@ if _PLUGIN_DIR not in sys.path:
 import rrscene_writer  # noqa: E402  (sys.path mutation must precede)
 import server_client    # noqa: E402  (same)
 import preview_state    # noqa: E402  (same)
+import image_io         # noqa: E402  (same)
 
 
 # Cinema 4D plugin IDs are globally unique 32-bit integers. The
@@ -1431,6 +1432,164 @@ _EID_SEARCHLIGHT        = 1024
 _EID_GROUP_RESPONSE     = 1030
 _EID_RESPONSE           = 1031
 
+_EID_GROUP_PREVIEW      = 1040
+_EID_PREVIEW            = 1041
+
+# Names of the scene objects the fallback preview path
+# creates / updates. Both are kept stable across runs so a
+# user re-rendering sees the same Plane / Material instead of
+# a forest of duplicates.
+PREVIEW_PLANE_NAME    = "RelativityRender Preview"
+PREVIEW_MATERIAL_NAME = "RelativityRender Preview Material"
+
+
+def _find_or_create_preview_plane(doc):
+    """Find a top-level Plane object named
+    `PREVIEW_PLANE_NAME` in the document; create one if
+    missing. Returns the BaseObject. Plane is sized 200x150
+    on creation so it's visible in a default scene; the user
+    can rescale freely afterwards.
+    """
+    plane = doc.SearchObject(PREVIEW_PLANE_NAME)
+    if plane is not None and plane.GetType() == c4d.Oplane:
+        return plane
+
+    plane = c4d.BaseObject(c4d.Oplane)
+    plane.SetName(PREVIEW_PLANE_NAME)
+    try:
+        plane[c4d.PRIM_PLANE_WIDTH]   = 200.0
+        plane[c4d.PRIM_PLANE_HEIGHT]  = 150.0
+        plane[c4d.PRIM_PLANE_SUBW]    = 1
+        plane[c4d.PRIM_PLANE_SUBH]    = 1
+    except Exception:  # noqa: BLE001
+        # Older C4D versions occasionally rename plane
+        # parameters. Defaults are fine; skip the resize.
+        pass
+    # The default Plane lies in the XZ plane; rotate it so it
+    # faces +Z (toward a viewer at the origin looking forward)
+    # which makes the texture visible without further setup.
+    try:
+        plane.SetRelRot(c4d.Vector(0.0, 0.0, math.radians(-90.0)))
+    except Exception:  # noqa: BLE001
+        pass
+    doc.InsertObject(plane)
+    return plane
+
+
+def _find_or_create_preview_material(doc, image_path):
+    """Find a Standard material named
+    `PREVIEW_MATERIAL_NAME`; create one if missing. Either
+    way set its color-channel bitmap shader to `image_path`
+    and update the material so a re-render of the preview
+    refreshes in the viewport.
+    """
+    mat = None
+    cur = doc.GetFirstMaterial()
+    while cur is not None:
+        if cur.GetName() == PREVIEW_MATERIAL_NAME:
+            mat = cur
+            break
+        cur = cur.GetNext()
+    if mat is None:
+        mat = c4d.BaseMaterial(c4d.Mmaterial)
+        mat.SetName(PREVIEW_MATERIAL_NAME)
+        doc.InsertMaterial(mat)
+
+    mat[c4d.MATERIAL_USE_COLOR] = True
+
+    # Reuse an existing bitmap shader when possible so we
+    # don't leak shaders on repeated renders. Cinema 4D
+    # `BaseShader` has no public delete-from-material API in
+    # all versions, so re-using the existing one is the
+    # robust path.
+    shader = mat[c4d.MATERIAL_COLOR_SHADER]
+    if shader is None or shader.GetType() != c4d.Xbitmap:
+        shader = c4d.BaseList2D(c4d.Xbitmap)
+        mat.InsertShader(shader)
+        mat[c4d.MATERIAL_COLOR_SHADER] = shader
+
+    shader[c4d.BITMAPSHADER_FILENAME] = image_path
+    mat.Message(c4d.MSG_UPDATE)
+    mat.Update(True, True)
+    return mat
+
+
+def _ensure_texture_tag(plane, mat):
+    """Make sure `plane` has exactly one Texture tag pointing
+    at `mat`. Reuses an existing Texture tag for `mat` when
+    found; otherwise adds a new one.
+    """
+    tag = plane.GetFirstTag()
+    while tag is not None:
+        if tag.GetType() == c4d.Ttexture:
+            if tag[c4d.TEXTURETAG_MATERIAL] == mat:
+                return tag
+        tag = tag.GetNext()
+    new_tag = plane.MakeTag(c4d.Ttexture)
+    new_tag[c4d.TEXTURETAG_MATERIAL] = mat
+    return new_tag
+
+
+class _PreviewArea(c4d.gui.GeUserArea):
+    """Bitmap blitter for the dialog's preview area.
+
+    Cinema 4D draws a `GeUserArea` by calling `DrawMsg` with
+    the area's pixel rect. We blit the most recently loaded
+    bitmap into the rect, fitted while preserving aspect.
+    Background is filled with the C4D background colour so an
+    empty (no-bitmap) area looks like the rest of the dialog.
+    """
+
+    def __init__(self):
+        super(_PreviewArea, self).__init__()
+        self._bitmap = None
+
+    def set_bitmap(self, bmp):
+        self._bitmap = bmp
+        try:
+            self.Redraw()
+        except Exception:  # noqa: BLE001
+            # GeUserArea.Redraw() can raise if the area is
+            # not yet attached to a layout; ignore so the
+            # dialog still opens cleanly on first use.
+            pass
+
+    def DrawMsg(self, x1, y1, x2, y2, msg_ref):
+        try:
+            self.OffScreenOn()
+            self.DrawSetPen(c4d.COLOR_BG)
+            self.DrawRectangle(x1, y1, x2, y2)
+            bmp = self._bitmap
+            if bmp is None:
+                return
+
+            area_w = x2 - x1
+            area_h = y2 - y1
+            if area_w <= 0 or area_h <= 0:
+                return
+
+            img_w = bmp.GetBw()
+            img_h = bmp.GetBh()
+            if img_w <= 0 or img_h <= 0:
+                return
+
+            # Fit while preserving aspect; centre.
+            scale = min(float(area_w) / img_w,
+                        float(area_h) / img_h)
+            draw_w = max(1, int(img_w * scale))
+            draw_h = max(1, int(img_h * scale))
+            ox = x1 + (area_w - draw_w) // 2
+            oy = y1 + (area_h - draw_h) // 2
+
+            self.DrawBitmap(bmp,
+                            ox, oy, draw_w, draw_h,
+                            0, 0, img_w, img_h,
+                            c4d.BMP_NORMAL)
+        except Exception:  # noqa: BLE001
+            # A draw failure must not abort the dialog event
+            # loop; swallow and let the next paint try again.
+            pass
+
 
 class PreviewDialog(c4d.gui.GeDialog):
     """Floating text-only preview dialog.
@@ -1459,6 +1618,14 @@ class PreviewDialog(c4d.gui.GeDialog):
         # Cached so the dialog can recover the most recent
         # response without forcing the user to scroll back.
         self._last_response_text = ""
+        # GeUserArea instance owned by the dialog; populated
+        # at CreateLayout time and re-used across rebuilds.
+        self._preview_area = _PreviewArea()
+        # Last successfully loaded preview bitmap. Held by the
+        # dialog (not just the GeUserArea) so the bitmap stays
+        # alive across re-layouts and the next render can
+        # release it deterministically.
+        self._preview_bitmap = None
 
     # --- Lifecycle hooks ----------------------------------------------------
 
@@ -1520,8 +1687,23 @@ class PreviewDialog(c4d.gui.GeDialog):
             self.AddMultiLineEditText(
                 id=_EID_RESPONSE,
                 flags=c4d.BFH_SCALEFIT | c4d.BFV_SCALEFIT,
-                inith=120,
+                inith=100,
                 style=c4d.DR_MULTILINE_READONLY)
+        self.GroupEnd()
+
+        # Preview area. A `GeUserArea` we own + attach; the
+        # `_PreviewArea.DrawMsg` callback paints the most
+        # recent rendered bitmap fitted into the rect. Empty
+        # until the first successful render.
+        if self.GroupBegin(id=_EID_GROUP_PREVIEW,
+                           flags=c4d.BFH_SCALEFIT | c4d.BFV_SCALEFIT,
+                           cols=1, rows=1, title="Preview"):
+            self.GroupBorderSpace(4, 4, 4, 4)
+            self.AddUserArea(
+                id=_EID_PREVIEW,
+                flags=c4d.BFH_SCALEFIT | c4d.BFV_SCALEFIT,
+                initw=400, inith=240)
+            self.AttachUserArea(self._preview_area, _EID_PREVIEW)
         self.GroupEnd()
 
         return True
@@ -1667,6 +1849,8 @@ class PreviewDialog(c4d.gui.GeDialog):
         if target is None:
             return
         host, port = target
+
+        response = None
         try:
             client = server_client.RenderServerClient(
                 host=host, port=port, timeout=TIMEOUT_RENDER)
@@ -1678,9 +1862,131 @@ class PreviewDialog(c4d.gui.GeDialog):
             self._append_response_line(
                 preview_state.format_connection_error(
                     exc, "render", host, port))
+            return
         except Exception as exc:  # noqa: BLE001
             self._append_response_line(
                 "[render] unexpected error: " + str(exc))
+            return
+
+        # Only attempt the image display path on a clean OK.
+        # Every step below is best-effort: failures land in
+        # the response area, never as Python exceptions out
+        # of the dialog event loop.
+        if response is None or not response.ok:
+            return
+        w, h, ppm_path = preview_state.parse_render_response(
+            response.status_line)
+        if not ppm_path:
+            self._append_response_line(
+                "[render] could not parse path from server reply")
+            return
+
+        self._show_rendered_image(ppm_path)
+
+    # --- Rendered-image display (post-render) -----------------------------
+
+    def _show_rendered_image(self, ppm_path):
+        """Two-stage image display.
+
+        Stage 1 (primary): convert the PPM to BMP, load via
+        `c4d.bitmaps.BaseBitmap.InitWith`, hand to the
+        `_PreviewArea` so the dialog paints it.
+
+        Stage 2 (fallback): if any of {file missing, PPM
+        decode, BMP write, bitmap init} fail, create-or-update
+        a "RelativityRender Preview" plane in the active
+        document with the BMP applied as a texture so the
+        user still sees the image somewhere.
+
+        Each step is wrapped: a failure in stage 1 falls
+        through to stage 2; a failure in stage 2 logs a line
+        in the response area but doesn't otherwise raise.
+        """
+        if not os.path.isfile(ppm_path):
+            self._append_response_line(
+                "[render] saved image not found on disk: " + ppm_path
+                + " (server saved to a path the bridge cannot read)")
+            return
+
+        # Step A: convert PPM -> BMP.
+        bmp_path = ""
+        try:
+            bmp_path = image_io.convert_ppm_to_bmp(ppm_path)
+            self._append_response_line(
+                "[render] converted to BMP: " + bmp_path)
+        except image_io.PpmDecodeError as exc:
+            self._append_response_line(
+                "[render] could not decode PPM: " + str(exc))
+            return
+        except Exception as exc:  # noqa: BLE001
+            self._append_response_line(
+                "[render] PPM->BMP conversion failed: " + str(exc))
+            return
+
+        # Step B: try the in-dialog preview (primary path).
+        if self._try_load_into_dialog(bmp_path):
+            return
+
+        # Step C: fallback - scene plane.
+        self._fallback_to_scene_plane(bmp_path)
+
+    def _try_load_into_dialog(self, bmp_path):
+        """Returns True iff the bitmap loaded successfully and
+        the dialog will display it. False signals the caller
+        to try the fallback path.
+        """
+        try:
+            bmp = c4d.bitmaps.BaseBitmap()
+            init = bmp.InitWith(bmp_path)
+            # `InitWith` returns either an int or a tuple
+            # depending on the C4D Python build; tolerate both.
+            if isinstance(init, tuple):
+                rc = init[0]
+            else:
+                rc = init
+            if rc != c4d.IMAGERESULT_OK:
+                self._append_response_line(
+                    "[render] BaseBitmap.InitWith failed (rc="
+                    + str(rc) + "); falling back to scene plane")
+                return False
+            self._preview_bitmap = bmp
+            self._preview_area.set_bitmap(bmp)
+            self._append_response_line(
+                "[render] preview displayed in dialog "
+                "(" + str(bmp.GetBw()) + "x" + str(bmp.GetBh()) + ")")
+            return True
+        except Exception as exc:  # noqa: BLE001
+            self._append_response_line(
+                "[render] in-dialog preview failed: " + str(exc)
+                + "; falling back to scene plane")
+            return False
+
+    def _fallback_to_scene_plane(self, image_path):
+        """Create or update a "RelativityRender Preview" plane
+        in the active document with `image_path` applied as a
+        Color-channel bitmap shader. The plane is parked at
+        the world origin in front of the camera; the user can
+        move it freely afterwards (the bridge updates the
+        bitmap, not the transform, on subsequent renders).
+        """
+        try:
+            doc = c4d.documents.GetActiveDocument()
+            if doc is None:
+                self._append_response_line(
+                    "[render] no active document for fallback plane")
+                return
+
+            mat = _find_or_create_preview_material(doc, image_path)
+            plane = _find_or_create_preview_plane(doc)
+            _ensure_texture_tag(plane, mat)
+
+            c4d.EventAdd()
+            self._append_response_line(
+                "[render] preview applied to scene plane '"
+                + PREVIEW_PLANE_NAME + "'")
+        except Exception as exc:  # noqa: BLE001
+            self._append_response_line(
+                "[render] scene-plane fallback failed: " + str(exc))
 
 
 # Keep a single dialog instance around for the life of the
