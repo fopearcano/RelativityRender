@@ -93,6 +93,105 @@ All modules now have a placeholder source directory under `src/`,
 
 ## Change Log
 
+### 2026-04-28 — M22 (spec): denoising research / design plan
+
+First doc slice for M22 (Denoiser Integration). Research
++ design only - no code touched. Pins the scope of an OptiX-
+AOV denoiser integration alongside the existing path tracer
++ M17 AOV foundation, including the project-specific
+relativity handling.
+
+- **`docs/DENOISING_PLAN.md`** (new):
+  - 1 + 2: purpose and the three pressures pushing the
+    renderer towards a denoiser (preview UX after M19's
+    blocking renders, time-to-final cost, and the noise
+    amplification under high `|beta|`).
+  - 3: OptiX denoiser at a glance - the four denoiser
+    kinds (HDR / AOV / Temporal / Upscale), the v1
+    target (AOV variant), the small-shape call
+    sequence (`Create -> ComputeMemory -> Setup ->
+    Invoke per frame`).
+  - 4: required AOVs - beauty + albedo + normal as the
+    three denoiser inputs, mapped onto the existing M17
+    catalogue. The other M17 AOVs (depth, doppler /
+    searchlight factors) are NOT denoiser inputs.
+  - 5: per-AOV byte-level contract.
+    - 5.1 Beauty: HDR linear RGB; tone-mapping /
+      sRGB-encoding the input defeats the denoiser.
+    - 5.2 Albedo: pre-lighting base colour (M17's
+      `AOVKind::Albedo` already produces this).
+    - 5.3 Normal: world-space unit-length vec3. M17's
+      `Normal` AOV stores `0.5*N + 0.5` for
+      visualisation; the denoiser wants raw normals.
+      Two implementation options pinned (new
+      `RawNormal` AOV vs decode pass) for the impl
+      slice to pick.
+    - 5.4 PhysicalBeauty addition - the project-
+      specific concern. The OptiX denoiser is trained
+      on standard photographic lighting; relativistic
+      Doppler / searchlight modify the perceived
+      radiance in ways the network does not expect.
+      Solution: a new `PhysicalBeauty` AOV (pre-
+      relativity radiance) feeds the denoiser; the
+      relativity factors reapply after denoising.
+      `D` and `D^4` are deterministic per-pixel
+      functions, so reapply preserves the visible
+      relativistic look at no denoiser-quality cost.
+      Fallback: when the relativity strength sliders
+      are zero, `PhysicalBeauty == Beauty` byte-for-
+      byte and the reapply is the identity.
+  - 6: progressive render workflow. Sample-accumulation
+    loop sketched in pseudocode (`render_pathtrace` in
+    chunks, running mean of the per-pixel radiance);
+    denoise frequency (per-emit interactive vs final-
+    only offline); server-protocol implications (today's
+    M18 single-frame `render` ships v1; streaming is a
+    future slice).
+  - 7: integration shape. `src/denoise/` per the module
+    map (forbidden imports: UI, Cinema 4D, Path Tracer
+    internals). Public surface sketched as
+    `rr::denoise::Denoiser` with `init(w, h)`,
+    `run(inputs) -> outputs`, `destroy()`. Piggybacks
+    on the M15 OptiX backend's `OptixDeviceContext`.
+  - 8: open questions for the impl slice's checklist
+    (normal-space confirmation, miss-pixel albedo
+    convention, tile mode, half-float, OIDN parity,
+    relativity-aware kernel sharing).
+  - 9: out-of-scope footer (temporal, upscale, OIDN,
+    adaptive sampling, multi-light, volume / SSS,
+    progressive-stream protocol, spectral denoising).
+
+#### Verified locally
+
+```
+$ ls docs/DENOISING_PLAN.md
+$ wc -l docs/DENOISING_PLAN.md
+$ python3 -c "open('docs/DENOISING_PLAN.md').read()"
+```
+
+Spec-only slice; no source / build / test changes.
+
+#### Per the prompt
+
+- "OptiX denoiser": section 3 covers what it is, the four
+  variants, and which one v1 picks (AOV).
+- "Required AOVs": section 4 (the three-input table) and
+  section 5 (per-AOV contract).
+- "Beauty / albedo / normal inputs": sections 5.1 / 5.2 /
+  5.3, plus the project-specific 5.4 (PhysicalBeauty)
+  that pins the relativity handling.
+- "Progressive render workflow": section 6.
+- "Do not implement yet": section 7 explicitly defers
+  every decision; section 8 lists the open questions
+  whose resolution gates the impl slice.
+
+#### Module / milestone status
+
+- Module 16 (Denoiser Integration): remains `not
+  started`. The plan is the contract; no code lands.
+- M22 (Denoiser Integration): remains `not started`
+  (same).
+
 ### 2026-04-28 — M21 (impl, gpu-shading): material graph integrated into the kernel
 
 Sixth implementation slice of the material node graph. Lands
