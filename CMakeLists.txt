@@ -13,11 +13,11 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 # Build options. Defaults are chosen so the host-only build always works,
 # even when CUDA / OptiX / Cinema 4D toolchains are not installed.
-option(RR_ENABLE_CUDA        "Enable CUDA backend (requires CUDA Toolkit)" OFF)
-option(RR_ENABLE_OPTIX       "Enable OptiX backend (requires OptiX SDK)"   OFF)
-option(RR_BUILD_TESTS        "Build tests"                                 ON)
-option(RR_BUILD_TOOLS        "Build standalone tools"                      OFF)
-option(RR_BUILD_INTEGRATIONS "Build DCC integrations (Cinema 4D, ...)"     OFF)
+option(RR_ENABLE_CUDA                  "Enable CUDA backend (requires CUDA Toolkit)" OFF)
+option(RELATIVITYRENDER_ENABLE_OPTIX   "Enable OptiX backend (requires OptiX SDK)"   OFF)
+option(RR_BUILD_TESTS                  "Build tests"                                 ON)
+option(RR_BUILD_TOOLS                  "Build standalone tools"                      OFF)
+option(RR_BUILD_INTEGRATIONS           "Build DCC integrations (Cinema 4D, ...)"     OFF)
 
 # Output layout.
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
@@ -29,7 +29,7 @@ set(RR_ROOT_DIR ${CMAKE_CURRENT_SOURCE_DIR})
 message(STATUS "RelativityRender ${PROJECT_VERSION}")
 message(STATUS "  C++ standard       : ${CMAKE_CXX_STANDARD}")
 message(STATUS "  CUDA backend       : ${RR_ENABLE_CUDA}")
-message(STATUS "  OptiX backend      : ${RR_ENABLE_OPTIX}")
+message(STATUS "  OptiX backend      : ${RELATIVITYRENDER_ENABLE_OPTIX}")
 message(STATUS "  Build tests        : ${RR_BUILD_TESTS}")
 message(STATUS "  Build tools        : ${RR_BUILD_TOOLS}")
 message(STATUS "  Build integrations : ${RR_BUILD_INTEGRATIONS}")
@@ -50,6 +50,45 @@ if(RR_ENABLE_CUDA)
     endif()
     message(STATUS "  CUDA Toolkit       : ${CUDAToolkit_VERSION}")
     message(STATUS "  CUDA architectures : ${CMAKE_CUDA_ARCHITECTURES}")
+endif()
+
+# Optional OptiX SDK. Only required when RELATIVITYRENDER_ENABLE_OPTIX
+# is ON. The SDK is header-only at compile time; the runtime is loaded
+# from the NVIDIA driver via `optixInit()` at startup. OptiX requires
+# CUDA - it sits on top of a CUDA context.
+if(RELATIVITYRENDER_ENABLE_OPTIX)
+    if(NOT RR_ENABLE_CUDA)
+        message(FATAL_ERROR
+            "RELATIVITYRENDER_ENABLE_OPTIX requires RR_ENABLE_CUDA. "
+            "Configure with both options enabled.")
+    endif()
+
+    if(NOT OPTIX_INSTALL_DIR AND DEFINED ENV{OPTIX_INSTALL_DIR})
+        set(OPTIX_INSTALL_DIR "$ENV{OPTIX_INSTALL_DIR}" CACHE PATH
+            "Root of the OptiX SDK installation")
+    endif()
+
+    set(_optix_hints "")
+    if(OPTIX_INSTALL_DIR)
+        list(APPEND _optix_hints "${OPTIX_INSTALL_DIR}/include")
+    endif()
+
+    find_path(OPTIX_INCLUDE_DIR
+        NAMES optix.h
+        HINTS ${_optix_hints}
+              "/usr/local/optix/include"
+              "/opt/nvidia/optix/include"
+              "/opt/optix/include"
+              "$ENV{HOME}/optix/include"
+    )
+
+    if(NOT OPTIX_INCLUDE_DIR)
+        message(FATAL_ERROR
+            "RELATIVITYRENDER_ENABLE_OPTIX is ON but optix.h was not found.\n"
+            "Set OPTIX_INSTALL_DIR (CMake -D var or environment) to the SDK root.")
+    endif()
+
+    message(STATUS "  OptiX include dir  : ${OPTIX_INCLUDE_DIR}")
 endif()
 
 # Module libraries. As each module grows it gets promoted from "sources
@@ -202,6 +241,35 @@ if(RR_ENABLE_CUDA)
     set_target_properties(rr_gpu PROPERTIES POSITION_INDEPENDENT_CODE ON)
 endif()
 
+# OptiX backend. Compiled into the build whether or not the SDK is
+# detected, so the lifecycle / status surface is reachable from
+# main.cpp regardless. When RELATIVITYRENDER_ENABLE_OPTIX is ON the
+# SDK headers are added to the private include path and `RR_HAS_OPTIX`
+# is defined for the implementation TU; OFF leaves stub bodies that
+# report "not compiled in".
+add_library(rr_optix STATIC
+    src/optix/OptixBackend.cpp
+    src/optix/OptixRenderer.cpp
+)
+target_include_directories(rr_optix PUBLIC src)
+# rr_optix consumes rr::image::Image (in OptixRenderer::Result) and
+# the rest of the host-side scene types via rr_gpu transitively.
+target_link_libraries(rr_optix PUBLIC rr_image)
+if(MSVC)
+    target_compile_options(rr_optix PRIVATE /W4 /permissive-)
+else()
+    target_compile_options(rr_optix PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+
+if(RELATIVITYRENDER_ENABLE_OPTIX)
+    target_compile_definitions(rr_optix PUBLIC RR_HAS_OPTIX)
+    # OptiX is header + driver-loaded runtime; no library to link.
+    # CUDA Runtime is needed because optix.h transitively includes
+    # cuda_runtime.h.
+    target_include_directories(rr_optix PRIVATE ${OPTIX_INCLUDE_DIR})
+    target_link_libraries(rr_optix PRIVATE CUDA::cudart)
+endif()
+
 # Main executable. As more modules land they will be promoted to their
 # own static libraries and linked here.
 add_executable(RelativityRender
@@ -210,7 +278,7 @@ add_executable(RelativityRender
     src/core/Config.cpp
     src/core/CommandLine.cpp
 )
-target_link_libraries(RelativityRender PRIVATE rr_gpu rr_io)
+target_link_libraries(RelativityRender PRIVATE rr_gpu rr_io rr_optix)
 
 target_include_directories(RelativityRender PRIVATE src)
 

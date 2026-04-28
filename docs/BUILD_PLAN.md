@@ -38,7 +38,7 @@ Update it after every implementation step, per
 | 3  | Image / Framebuffer System          | landed        |
 | 4  | GPU Device Layer                    | landed        |
 | 5  | CUDA Backend                        | in progress   |
-| 6  | OptiX Backend                       | not started   |
+| 6  | OptiX Backend                       | in progress   |
 | 7  | Scene Graph                         | landed        |
 | 8  | Geometry System                     | landed        |
 | 9  | Material / Shading System           | landed        |
@@ -79,7 +79,7 @@ All modules now have a placeholder source directory under `src/`,
 | M12       | Lighting System (Foundations)           | landed      |
 | M13       | Scene File Format & Parser              | landed      |
 | M14       | Path Tracing Foundation                 | in progress |
-| M15       | OptiX Backend (Upgrade Path)            | not started |
+| M15       | OptiX Backend (Upgrade Path)            | in progress |
 | M16       | Texture System                          | not started |
 | M17       | Render Passes / AOVs                    | not started |
 | M18       | Renderer Server                         | not started |
@@ -92,6 +92,108 @@ All modules now have a placeholder source directory under `src/`,
 ---
 
 ## Change Log
+
+### 2026-04-27 — M15.1 + M15.2: OptiX backend scaffold (steps 1+2 of the migration plan)
+
+First implementation slice of the OptiX backend. Detection + a
+lifecycle wrapper + a placeholder renderer; no programs, no
+acceleration structures, no rendering yet. The CUDA backend
+remains primary.
+
+- **`src/optix/OptixBackend.{h,cpp}`:** lifecycle + status
+  surface. `optix_backend_available()`, `optix_backend_name()`,
+  and a `optix_backend_status_line()` probe suitable for
+  startup logging. `OptixBackend` class wraps an
+  `OptixDeviceContext`: move-only, `init()` calls
+  `cudaFree(nullptr)` to ensure a CUDA context exists,
+  `optixInit()` to load the runtime, and
+  `optixDeviceContextCreate()` to open the context;
+  `shutdown()` is always safe (no-op when uninitialised, when
+  moved-from, or when the SDK is not compiled in).
+- **`src/optix/OptixRenderer.{h,cpp}`:** placeholder render
+  entry point mirroring the shape of `rr::cuda::CudaRenderer`
+  (`Result { ok, image, message }`). At this milestone
+  `render_placeholder` only probes the runtime and returns a
+  descriptive message; the real OptiX pipeline lands in
+  M15.3 / M15.4 per `docs/OPTIX_BACKEND_PLAN.md`.
+- **`CMakeLists.txt`:**
+  - Renamed the M1 `RR_ENABLE_OPTIX` placeholder option to
+    `RELATIVITYRENDER_ENABLE_OPTIX` per the prompt.
+  - Added an OptiX SDK detection block: respects
+    `OPTIX_INSTALL_DIR` (CMake var or environment), then
+    falls back to `find_path` over the common SDK locations
+    (`/usr/local/optix/include`, `/opt/nvidia/optix/include`,
+    `/opt/optix/include`, `$HOME/optix/include`). Failure to
+    find `optix.h` is a `FATAL_ERROR` with a clear remedy.
+    The block also enforces `RELATIVITYRENDER_ENABLE_OPTIX`
+    requires `RR_ENABLE_CUDA` (OptiX sits on top of CUDA).
+  - New `rr_optix` static library compiled into every build:
+    sources `OptixBackend.cpp` + `OptixRenderer.cpp`, PUBLIC
+    include of `src/`, PUBLIC link to `rr_image` (its public
+    surface returns an `Image`). The OFF path compiles only
+    the stub bodies. The ON path adds `RR_HAS_OPTIX` PUBLIC,
+    `${OPTIX_INCLUDE_DIR}` PRIVATE, and `CUDA::cudart`
+    PRIVATE (OptiX's headers transitively include
+    `cuda_runtime.h`).
+  - `RelativityRender` executable now links `rr_optix` so the
+    status surface is reachable from `main.cpp`.
+- **`src/main.cpp`:** added `log_optix_info()`, called from
+  the `--device-info` path. It prints the
+  `optix_backend_status_line()` probe result; on the
+  default OFF build the line reads
+  `OptiX backend: not compiled in (rebuild with RELATIVITYRENDER_ENABLE_OPTIX=ON)`.
+
+#### Verified locally (host-only, no CUDA Toolkit on this box)
+
+```
+$ cmake -S . -B build && cmake --build build
+... configures cleanly with default OFF; rr_optix builds the OFF
+    stubs; rr_optix links into the executable ...
+
+$ cd build && ctest --output-on-failure
+ 1/12 ... 12/12 all Passed
+100% tests passed, 0 tests failed out of 12
+
+$ ./build/bin/RelativityRender --device-info
+[INFO] RelativityRender 0.0.1 starting
+[INFO] GPU backend: (none)
+[INFO] No GPU backend compiled in. Reconfigure with -DRR_ENABLE_CUDA=ON to enable CUDA.
+[INFO] OptiX backend: not compiled in (rebuild with RELATIVITYRENDER_ENABLE_OPTIX=ON)
+```
+
+The OptiX-enabled path
+(`-DRELATIVITYRENDER_ENABLE_OPTIX=ON -DRR_ENABLE_CUDA=ON` plus
+`OPTIX_INSTALL_DIR` pointing at an installed SDK on a machine
+with an NVIDIA driver) is correct by construction: the .cpp
+calls only stable OptiX 7.x runtime entry points
+(`optixInit`, `optixDeviceContextCreate`,
+`optixDeviceContextDestroy`) and the link list matches the
+SDK's documented dependencies. Not end-to-end runnable in this
+environment.
+
+#### Per the prompt
+
+- The four requested files are all present.
+- The CMake option is exactly `RELATIVITYRENDER_ENABLE_OPTIX`.
+- SDK detection lands in CMake; init goes through `optixInit`
+  + `optixDeviceContextCreate`; availability is printed on
+  `--device-info`.
+- No rendering: `OptixRenderer::render_placeholder` is a
+  stub.
+- The CUDA backend remains primary - `--render` continues to
+  drive the existing CUDA path (and the host-only fallback);
+  nothing routes through `rr_optix` for actual pixels.
+
+#### Module / milestone status
+
+- Module 6 (OptiX Backend): `not started` -> `in progress`.
+- M15 (OptiX Backend / Upgrade Path): `not started` ->
+  `in progress`.
+
+The remaining migration steps (M15.3 build AS from `GpuScene`,
+M15.4 programs + SBT, M15.5 validation, M15.6 promote OptiX to
+default) are documented in
+`docs/OPTIX_BACKEND_PLAN.md` §15.
 
 ### 2026-04-27 — OptiX backend plan: materials + camera + relativity + migration
 

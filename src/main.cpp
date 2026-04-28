@@ -7,6 +7,7 @@
 // SceneLoader runs on the host even when CUDA is absent (the
 // loader is pure host code), so include it unconditionally.
 #include "io/SceneLoader.h"
+#include "optix/OptixBackend.h"
 #include "scene/Scene.h"
 
 #ifdef RR_HAS_CUDA
@@ -49,6 +50,10 @@ void log_device_info() {
     }
 }
 
+void log_optix_info() {
+    rr::core::Logger::info(rr::optix::optix_backend_status_line());
+}
+
 }
 
 int main(int argc, char** argv) {
@@ -78,6 +83,7 @@ int main(int argc, char** argv) {
 
     if (cfg.show_device_info) {
         log_device_info();
+        log_optix_info();
         return 0;
     }
 
