@@ -382,6 +382,113 @@ def test_make_material_section_with_name_and_color():
     check(mat["base_color"] == [0.9, 0.1, 0.1],        "base_color")
 
 
+def test_make_material_section_clamps_negative_base_color():
+    # Cinema 4D sliders are non-negative, but a misconfigured
+    # multiplier on the C4D side could produce a negative
+    # component. The host parser clamps these to zero; the
+    # writer mirrors that so the saved file matches what the
+    # renderer will actually load.
+    mat = rrscene_writer.make_material_section(
+        id=0, base_color=(-0.5, 0.6, 1.2))
+    check(mat["base_color"] == [0.0, 0.6, 1.2], "negative clamp")
+
+
+def test_make_material_section_emission_emitted_only_when_strength_positive():
+    # Strength == 0 should NOT round-trip as emission - the
+    # host parser treats zero strength as "no emission", so
+    # writing the colour without strength would be misleading.
+    mat = rrscene_writer.make_material_section(
+        id=0, emission_color=(1.0, 1.0, 1.0), emission_strength=0.0)
+    check("emission_color"    not in mat, "no emission_color at strength 0")
+    check("emission_strength" not in mat, "no emission_strength at strength 0")
+
+    # Negative strength is also pruned (clamped to zero).
+    mat = rrscene_writer.make_material_section(
+        id=0, emission_color=(1.0, 1.0, 1.0), emission_strength=-2.0)
+    check("emission_color"    not in mat, "negative -> pruned")
+    check("emission_strength" not in mat, "negative -> pruned")
+
+    # Positive strength + colour DOES round-trip.
+    mat = rrscene_writer.make_material_section(
+        id=0, emission_color=(0.2, 0.4, 0.6), emission_strength=2.5)
+    check(mat["emission_color"]    == [0.2, 0.4, 0.6], "emission_color")
+    check(mat["emission_strength"] == 2.5,             "emission_strength")
+
+
+def test_make_material_section_emission_requires_both_inputs():
+    # Caller must provide BOTH a colour and a strength.
+    mat = rrscene_writer.make_material_section(
+        id=0, emission_color=(1.0, 1.0, 1.0))
+    check("emission_color"    not in mat, "color alone -> pruned")
+    mat = rrscene_writer.make_material_section(
+        id=0, emission_strength=1.0)
+    check("emission_strength" not in mat, "strength alone -> pruned")
+
+
+def test_make_material_section_roughness_clamps_to_unit_interval():
+    mat = rrscene_writer.make_material_section(id=0, roughness=2.0)
+    check(mat["roughness"] == 1.0, "roughness high clamp")
+    mat = rrscene_writer.make_material_section(id=0, roughness=-0.5)
+    check(mat["roughness"] == 0.0, "roughness low clamp")
+    mat = rrscene_writer.make_material_section(id=0, roughness=0.4)
+    check(mat["roughness"] == 0.4, "roughness in-range")
+
+
+# ---------------------------------------------------------------------------
+# Light builders.
+# ---------------------------------------------------------------------------
+
+def test_make_point_light_defaults():
+    light = rrscene_writer.make_point_light(position=(1.0, 2.0, 3.0))
+    check(light["type"]      == "point",            "type")
+    check(light["position"]  == [1.0, 2.0, 3.0],    "position")
+    check(light["color"]     == [1.0, 1.0, 1.0],    "default color")
+    check(light["intensity"] == 1.0,                "default intensity")
+
+
+def test_make_point_light_explicit_color_and_intensity():
+    light = rrscene_writer.make_point_light(
+        position=(0.0, 0.0, 0.0),
+        color=(0.5, 0.7, 0.9), intensity=2.5)
+    check(light["color"]     == [0.5, 0.7, 0.9], "color round-trip")
+    check(light["intensity"] == 2.5,             "intensity round-trip")
+
+
+def test_make_point_light_clamps_negative_intensity():
+    # The host parser rejects negative intensity. Clamp on the
+    # writer side so a Cinema 4D bug surfaces as zero rather
+    # than a hard parse failure.
+    light = rrscene_writer.make_point_light(
+        position=(0, 0, 0), intensity=-3.0)
+    check(light["intensity"] == 0.0, "negative intensity clamped")
+
+
+def test_make_directional_light_defaults():
+    light = rrscene_writer.make_directional_light(direction=(0, 0, -1))
+    check(light["type"]      == "directional",   "type")
+    check(light["direction"] == [0.0, 0.0, -1.0], "direction")
+    check(light["color"]     == [1.0, 1.0, 1.0], "default color")
+    check(light["intensity"] == 1.0,             "default intensity")
+
+
+def test_make_directional_light_explicit():
+    light = rrscene_writer.make_directional_light(
+        direction=(1.0, -0.5, 0.0),
+        color=(1.0, 0.8, 0.6), intensity=0.75)
+    check(light["direction"] == [1.0, -0.5, 0.0], "direction")
+    check(light["color"]     == [1.0, 0.8, 0.6],  "color")
+    check(light["intensity"] == 0.75,             "intensity")
+
+
+def test_light_type_constants_match_v1_protocol():
+    # Pin: the v1 .rrscene parser expects exactly "point" and
+    # "directional"; a future drift in the writer's constants
+    # would silently break parsing on the host. Asserting the
+    # exact strings here makes the constraint visible.
+    check(rrscene_writer.LIGHT_TYPE_POINT       == "point",       "point")
+    check(rrscene_writer.LIGHT_TYPE_DIRECTIONAL == "directional", "directional")
+
+
 def test_build_rrscene_with_meshes_and_materials():
     cam = rrscene_writer.make_camera_section()
     rs  = rrscene_writer.make_render_settings()
@@ -400,9 +507,22 @@ def test_build_rrscene_with_meshes_and_materials():
     check(scene["materials"] == materials, "materials preserved")
 
 
-def test_build_rrscene_omits_empty_meshes_and_materials():
-    # Older callers that pass no meshes/materials, or empty
-    # iterables, must produce identical output to the
+def test_build_rrscene_with_lights():
+    lights = [
+        rrscene_writer.make_point_light(position=(1, 2, 3)),
+        rrscene_writer.make_directional_light(direction=(0, -1, 0)),
+    ]
+    scene = rrscene_writer.build_rrscene(
+        camera=rrscene_writer.make_camera_section(),
+        render_settings=rrscene_writer.make_render_settings(),
+        relativity=rrscene_writer.make_relativity_section(),
+        lights=lights)
+    check(scene["lights"] == lights, "lights preserved")
+
+
+def test_build_rrscene_omits_empty_meshes_materials_lights():
+    # Older callers that pass no meshes/materials/lights, or
+    # empty iterables, must produce identical output to the
     # camera+render+relativity-only slice.
     scene_a = rrscene_writer.build_rrscene(
         camera=rrscene_writer.make_camera_section(),
@@ -413,10 +533,11 @@ def test_build_rrscene_omits_empty_meshes_and_materials():
         camera=rrscene_writer.make_camera_section(),
         render_settings=rrscene_writer.make_render_settings(),
         relativity=rrscene_writer.make_relativity_section(),
-        meshes=[], materials=[],
+        meshes=[], materials=[], lights=[],
     )
     check("meshes"    not in scene_a, "no meshes key when omitted")
     check("materials" not in scene_a, "no materials key when omitted")
+    check("lights"    not in scene_a, "no lights key when omitted")
     check(scene_a == scene_b,
           "empty iterables match the omit-by-default shape")
 
@@ -479,8 +600,19 @@ def main():
     test_make_mesh_section_default_material_id()
     test_make_material_section_minimal()
     test_make_material_section_with_name_and_color()
+    test_make_material_section_clamps_negative_base_color()
+    test_make_material_section_emission_emitted_only_when_strength_positive()
+    test_make_material_section_emission_requires_both_inputs()
+    test_make_material_section_roughness_clamps_to_unit_interval()
+    test_make_point_light_defaults()
+    test_make_point_light_explicit_color_and_intensity()
+    test_make_point_light_clamps_negative_intensity()
+    test_make_directional_light_defaults()
+    test_make_directional_light_explicit()
+    test_light_type_constants_match_v1_protocol()
     test_build_rrscene_with_meshes_and_materials()
-    test_build_rrscene_omits_empty_meshes_and_materials()
+    test_build_rrscene_with_lights()
+    test_build_rrscene_omits_empty_meshes_materials_lights()
     test_full_mesh_scene_round_trips_through_json()
     test_module_does_not_import_c4d()
     print("test_rrscene_writer: %d/%d passed" % (g_total - g_failed, g_total))

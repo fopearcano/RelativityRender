@@ -394,40 +394,135 @@ def _has_deformer_descendant(obj):
     return False
 
 
-def _primary_material_name(obj):
-    """Return the name of the first Texture tag's material on
-    `obj`, or `None` when no Texture tag is present. We do NOT
-    follow material inheritance up the hierarchy in this slice;
-    a future slice can add the proper Cinema 4D material
-    inheritance walk.
+def _primary_texture_material(obj):
+    """Return the first Texture tag's bound `BaseMaterial`, or
+    `None`. The bridge does not follow material inheritance up
+    the hierarchy in this slice; a follow-up can add the proper
+    Cinema 4D inheritance walk.
     """
     tag = obj.GetFirstTag()
     while tag is not None:
         if tag.GetType() == c4d.Ttexture:
             mat = tag[c4d.TEXTURETAG_MATERIAL]
             if mat is not None:
-                name = mat.GetName()
-                if name:
-                    return name
+                return mat
         tag = tag.GetNext()
     return None
 
 
-def _polygon_to_mesh_entry(obj, material_name_to_id):
+def _extract_standard_material_params(mat):
+    """Read base colour + emission off a Cinema 4D Standard
+    material (`Mmaterial`). Returns a dict with `base_color` and
+    optional `emission_color` / `emission_strength` populated.
+
+    Non-Standard material types (Physical, Redshift, Octane, ...)
+    fall through with an empty dict + a `kind` of "unsupported"
+    so the caller can warn the user that only the material name
+    made it across.
+    """
+    out = {}
+    if mat is None or mat.GetType() != c4d.Mmaterial:
+        out["kind"] = "unsupported"
+        return out
+    out["kind"] = "standard"
+
+    if mat[c4d.MATERIAL_USE_COLOR]:
+        col = mat[c4d.MATERIAL_COLOR_COLOR]
+        # MATERIAL_COLOR_BRIGHTNESS is a multiplier (default 1.0).
+        try:
+            mult = float(mat[c4d.MATERIAL_COLOR_BRIGHTNESS])
+        except Exception:  # noqa: BLE001
+            mult = 1.0
+        out["base_color"] = (col.x * mult, col.y * mult, col.z * mult)
+
+    # Emission: only emit when the channel is actually enabled.
+    # `MATERIAL_LUMINANCE_BRIGHTNESS` is a multiplier; we use it
+    # as the strength so a 0% slider produces no emission.
+    if mat[c4d.MATERIAL_USE_LUMINANCE]:
+        ec = mat[c4d.MATERIAL_LUMINANCE_COLOR]
+        try:
+            ebr = float(mat[c4d.MATERIAL_LUMINANCE_BRIGHTNESS])
+        except Exception:  # noqa: BLE001
+            ebr = 1.0
+        if ebr > 0.0:
+            out["emission_color"]    = (ec.x, ec.y, ec.z)
+            out["emission_strength"] = ebr
+
+    return out
+
+
+def _viewport_fallback_color(obj):
+    """If `obj` has its viewport "Display Color" enabled, return
+    the (r, g, b) triple. Otherwise return `None`.
+
+    `ID_BASEOBJECT_USECOLOR` modes:
+      0 -> "Off"     (no override)
+      1 -> "Auto"    (parent / inherit)
+      2 -> "Always"  (use the per-object color)
+      3 -> "Layer"   (use the layer's color)
+    Modes 2 and 3 surface a real per-object viewport colour;
+    modes 0 and 1 do not. We treat 2 / 3 as "use it" and fall
+    back otherwise.
+    """
+    if obj is None:
+        return None
+    try:
+        mode = int(obj[c4d.ID_BASEOBJECT_USECOLOR])
+    except Exception:  # noqa: BLE001
+        return None
+    if mode not in (2, 3):
+        return None
+    try:
+        col = obj[c4d.ID_BASEOBJECT_COLOR]
+    except Exception:  # noqa: BLE001
+        return None
+    if col is None:
+        return None
+    return (col.x, col.y, col.z)
+
+
+def _format_color_slug(rgb, ndigits=3):
+    """Stable string slug for an RGB triple, used as the dedupe
+    key (and the human-readable name) for viewport-fallback
+    materials. Keeps the precision low so two near-identical
+    colours collapse into one entry.
+    """
+    fmt = "%." + str(ndigits) + "f"
+    return ", ".join(fmt % float(c) for c in rgb)
+
+
+def _polygon_to_mesh_entry(obj, material_registry, unsupported_mat_names):
     """Convert a Cinema 4D `PolygonObject` into one
     `meshes[]` entry. Bakes the global matrix into world-space
     vertex positions, then Z-flips into the renderer's
     right-handed coordinate system. Triangulates quads.
+
+    Resolves the polygon's material id in this priority order:
+      1. First Texture tag's bound `Mmaterial` -> a deduped
+         `materials[]` entry built from the standard material's
+         colour + luminance channels.
+      2. The polygon's viewport "Display Color" when enabled
+         (`ID_BASEOBJECT_USECOLOR` mode 2/3) -> a deduped
+         `materials[]` entry named `Viewport: r, g, b`.
+      3. `material_id = -1` (renderer's neutral default).
+
     Returns `None` when the polygon has no points or no faces
     (caller filters those out so the .rrscene stays clean).
+
+    `material_registry` is the shared `MaterialRegistry`
+    instance owned by the document walker; this function calls
+    `register(...)` on it but does not own the storage.
+
+    `unsupported_mat_names` accumulates the names of Cinema 4D
+    materials that were of an unsupported type (Physical,
+    Redshift, Octane, ...) so the caller can warn the user
+    that only the material name made it across.
     """
     points = obj.GetAllPoints()
     if not points:
         return None
 
     mg = obj.GetMg()
-    # Cinema 4D matrix columns as plain tuples - keeps the math
-    # entirely inside the writer's pure helpers.
     v1  = (mg.v1.x,  mg.v1.y,  mg.v1.z)
     v2  = (mg.v2.x,  mg.v2.y,  mg.v2.z)
     v3  = (mg.v3.x,  mg.v3.y,  mg.v3.z)
@@ -448,17 +543,18 @@ def _polygon_to_mesh_entry(obj, material_name_to_id):
     if not triangles:
         return None
 
-    mat_name = _primary_material_name(obj)
-    if mat_name is None:
-        material_id = -1
+    material_id = -1
+    mat = _primary_texture_material(obj)
+    if mat is not None:
+        params = _extract_standard_material_params(mat)
+        if params.get("kind") == "unsupported":
+            unsupported_mat_names.append(mat.GetName())
+        material_id = material_registry.register_c4d_material(
+            mat.GetName(), params)
     else:
-        # Allocate a fresh integer id the first time we see the
-        # material, reuse otherwise. Stable across the export so
-        # multiple meshes that share a Cinema 4D material end up
-        # referencing the same materials[] entry.
-        if mat_name not in material_name_to_id:
-            material_name_to_id[mat_name] = len(material_name_to_id)
-        material_id = material_name_to_id[mat_name]
+        rgb = _viewport_fallback_color(obj)
+        if rgb is not None:
+            material_id = material_registry.register_viewport_color(rgb)
 
     return rrscene_writer.make_mesh_section(
         vertices=world_vertices,
@@ -467,25 +563,93 @@ def _polygon_to_mesh_entry(obj, material_name_to_id):
     )
 
 
+class MaterialRegistry(object):
+    """Allocates and stores `materials[]` entries during an
+    export. Two key spaces share a single integer id sequence:
+
+      - `register_c4d_material(name, params)` keys by Cinema 4D
+        material name; same name always returns the same id and
+        contributes one entry built from `_extract_standard_material_params`.
+      - `register_viewport_color(rgb)` keys by an RGB slug and
+        emits a `Viewport: r, g, b` entry, deduping near-equal
+        colours.
+
+    The registry stores the entries in insertion order so the
+    final `materials[]` array enumerates 0, 1, 2, ... contiguously.
+    """
+
+    def __init__(self):
+        self._key_to_id = {}      # ("c4d", name) | ("vp", slug) -> int
+        self._entries   = []      # list of dicts (parallel to the ids)
+
+    def __len__(self):
+        return len(self._entries)
+
+    def entries(self):
+        return list(self._entries)
+
+    def register_c4d_material(self, name, params):
+        key = ("c4d", name)
+        if key in self._key_to_id:
+            return self._key_to_id[key]
+        idx = len(self._entries)
+        self._key_to_id[key] = idx
+        entry = rrscene_writer.make_material_section(
+            id=idx,
+            name=name,
+            base_color=params.get("base_color"),
+            emission_color=params.get("emission_color"),
+            emission_strength=params.get("emission_strength"),
+        )
+        self._entries.append(entry)
+        return idx
+
+    def register_viewport_color(self, rgb):
+        slug = _format_color_slug(rgb)
+        key = ("vp", slug)
+        if key in self._key_to_id:
+            return self._key_to_id[key]
+        idx = len(self._entries)
+        self._key_to_id[key] = idx
+        entry = rrscene_writer.make_material_section(
+            id=idx,
+            name="Viewport: " + slug,
+            base_color=rgb,
+        )
+        self._entries.append(entry)
+        return idx
+
+
 def _walk_document_meshes(doc):
     """Walk the document collecting polygon meshes + skipped
     objects. Returns a tuple
-      (mesh_entries, materials_list, skipped, deformer_warnings)
+      (mesh_entries, materials_list, skipped, deformer_warnings,
+       unsupported_material_names)
     where:
-      - `mesh_entries`        : list of dicts ready for `meshes[]`.
-      - `materials_list`      : list of stub material dicts referenced
-                                by the meshes (id + name only).
-      - `skipped`             : list of `(name, reason)` for
-                                generators / deformers / volumes /
-                                hair we declined to export.
-      - `deformer_warnings`   : list of polygon-mesh names whose
-                                subtrees contain deformers (the
-                                deformation was ignored).
+      - `mesh_entries`               : list of dicts ready for `meshes[]`.
+      - `materials_list`             : list of materials referenced
+                                       by the meshes (id + name +
+                                       base_color + optional emission).
+      - `skipped`                    : list of `(name, reason)` for
+                                       generators / deformers /
+                                       volumes / hair we declined
+                                       to export.
+      - `deformer_warnings`          : list of polygon-mesh names
+                                       whose subtrees contain
+                                       deformers (the deformation
+                                       was ignored).
+      - `unsupported_material_names` : list of Cinema 4D material
+                                       names whose type is not
+                                       `Mmaterial`. Only the name
+                                       made it into the export;
+                                       the user is warned in the
+                                       dialog.
     """
+    registry = MaterialRegistry()
     mesh_entries = []
     skipped = []
     deformer_warnings = []
-    material_name_to_id = {}
+    unsupported_mat_names = []
 
     def visit(op):
         while op is not None:
@@ -493,15 +657,12 @@ def _walk_document_meshes(doc):
             if kind == "polygon":
                 if _has_deformer_descendant(op):
                     deformer_warnings.append(op.GetName())
-                entry = _polygon_to_mesh_entry(op, material_name_to_id)
+                entry = _polygon_to_mesh_entry(
+                    op, registry, unsupported_mat_names)
                 if entry is not None:
                     mesh_entries.append((op.GetName(), entry))
             elif kind == "skip":
                 skipped.append((op.GetName(), reason))
-            # In all cases recurse into children: a Null parent
-            # might hold polygon meshes; a generator's polygon
-            # children are not exported (the generator owns
-            # them) but a deformer's polygon siblings are.
             child = op.GetDown()
             if child is not None:
                 visit(child)
@@ -510,42 +671,206 @@ def _walk_document_meshes(doc):
     if doc is not None:
         visit(doc.GetFirstObject())
 
-    materials_list = []
-    for name, idx in sorted(material_name_to_id.items(), key=lambda kv: kv[1]):
-        materials_list.append(rrscene_writer.make_material_section(
-            id=idx, name=name))
-
     return (
         [entry for (_n, entry) in mesh_entries],
-        materials_list,
+        registry.entries(),
         skipped,
         deformer_warnings,
+        # Dedupe while preserving order.
+        list(dict.fromkeys(unsupported_mat_names)),
     )
 
 
-def _format_skip_summary(skipped, deformer_warnings, max_lines=8):
-    """Format the warning section of the export dialog. Caps
-    the number of lines so a document with hundreds of skipped
-    generators doesn't produce an unscrollable dialog.
+# ---------------------------------------------------------------------------
+# Light export.
+# ---------------------------------------------------------------------------
+#
+# rrscene v1 supports two light types: "point" and "directional".
+# Cinema 4D's omni / distant / parallel map cleanly:
+#   - LIGHT_TYPE_OMNI       -> "point"
+#   - LIGHT_TYPE_DISTANT    -> "directional"
+#   - LIGHT_TYPE_PARALLEL   -> "directional"
+# Area lights are degraded to a point at the area's origin, with
+# the dialog flagging the lossy conversion. Spot / parallel-spot
+# lights are skipped (no v1 cone metadata).
+
+# Map from C4D light-type ids to a (rrscene_type, lossy_label).
+# `lossy_label` is None when the conversion is faithful and a
+# string when the dialog should flag it.
+def _light_type_mapping():
+    """Build the C4D-light-type -> rrscene-type mapping at
+    runtime so missing constants on older C4D builds don't
+    break the import. Not a module-level constant because
+    `c4d.LIGHT_TYPE_*` is only available after `import c4d`.
     """
-    lines = []
+    mapping = {}
+    for (attr, rr_type, lossy) in (
+        ("LIGHT_TYPE_OMNI",     rrscene_writer.LIGHT_TYPE_POINT,       None),
+        ("LIGHT_TYPE_DISTANT",  rrscene_writer.LIGHT_TYPE_DIRECTIONAL, None),
+        ("LIGHT_TYPE_PARALLEL", rrscene_writer.LIGHT_TYPE_DIRECTIONAL, None),
+        ("LIGHT_TYPE_AREA",     rrscene_writer.LIGHT_TYPE_POINT,
+            "area light degraded to point (no area metadata in rrscene v1)"),
+        ("LIGHT_TYPE_TUBE",     rrscene_writer.LIGHT_TYPE_POINT,
+            "tube area light degraded to point"),
+        ("LIGHT_TYPE_SPOT",     None,
+            "spot light skipped (no spot cone in rrscene v1)"),
+        ("LIGHT_TYPE_PARSPOT",  None,
+            "parallel-spot light skipped (no spot cone in rrscene v1)"),
+    ):
+        val = getattr(c4d, attr, None)
+        if val is not None:
+            mapping[val] = (rr_type, lossy)
+    return mapping
+
+
+def _read_light_color_and_intensity(light):
+    """Return (color_rgb, intensity) for a Cinema 4D light. The
+    brightness slider value drives `intensity`; the colour
+    drives `color`. Both are non-negative-clamped on the writer
+    side, so out-of-range C4D inputs surface as zero rather than
+    a parse error.
+    """
+    try:
+        col = light[c4d.LIGHT_COLOR]
+    except Exception:  # noqa: BLE001
+        col = c4d.Vector(1.0, 1.0, 1.0)
+    try:
+        intensity = float(light[c4d.LIGHT_BRIGHTNESS])
+    except Exception:  # noqa: BLE001
+        intensity = 1.0
+    return ((col.x, col.y, col.z), intensity)
+
+
+def _build_light_entry(light, c4d_to_rr):
+    """Convert one Cinema 4D `LightObject` into one
+    `lights[]` entry. Returns `(entry, caveat)` where `entry` is
+    either a dict or `None` (when the light is unsupported), and
+    `caveat` is either `None` or a string describing a lossy
+    conversion the user should know about.
+    """
+    try:
+        type_id = int(light[c4d.LIGHT_TYPE])
+    except Exception:  # noqa: BLE001
+        type_id = -1
+
+    mapping = c4d_to_rr.get(type_id)
+    if mapping is None:
+        return (None, "unsupported light type")
+    rr_type, lossy = mapping
+    if rr_type is None:
+        return (None, lossy)
+
+    color, intensity = _read_light_color_and_intensity(light)
+    mg = light.GetMg()
+
+    if rr_type == rrscene_writer.LIGHT_TYPE_POINT:
+        c4d_pos = (mg.off.x, mg.off.y, mg.off.z)
+        position = rrscene_writer.convert_c4d_position(c4d_pos)
+        return (rrscene_writer.make_point_light(
+            position=position, color=color, intensity=intensity),
+            lossy)
+
+    # Directional: photons travel along the light's local +Z in
+    # Cinema 4D. World-space propagation direction = mg.v3.
+    c4d_dir = (mg.v3.x, mg.v3.y, mg.v3.z)
+    direction = rrscene_writer.convert_c4d_direction(c4d_dir)
+    return (rrscene_writer.make_directional_light(
+        direction=direction, color=color, intensity=intensity),
+        lossy)
+
+
+def _walk_document_lights(doc):
+    """Walk the document collecting Cinema 4D LightObjects.
+    Returns (light_entries, light_caveats, light_skips) where:
+      - `light_entries` : list of dicts ready for `lights[]`.
+      - `light_caveats` : list of `(name, message)` for lights
+                          that were exported but lossily.
+      - `light_skips`   : list of `(name, message)` for lights
+                          that were dropped entirely.
+    """
+    light_entries = []
+    light_caveats = []
+    light_skips   = []
+    if doc is None:
+        return (light_entries, light_caveats, light_skips)
+
+    olight = getattr(c4d, "Olight", None)
+    if olight is None:
+        return (light_entries, light_caveats, light_skips)
+
+    c4d_to_rr = _light_type_mapping()
+
+    def visit(op):
+        while op is not None:
+            if op.GetType() == olight:
+                entry, caveat = _build_light_entry(op, c4d_to_rr)
+                if entry is None:
+                    light_skips.append((op.GetName(), caveat or "unsupported"))
+                else:
+                    light_entries.append(entry)
+                    if caveat:
+                        light_caveats.append((op.GetName(), caveat))
+            child = op.GetDown()
+            if child is not None:
+                visit(child)
+            op = op.GetNext()
+
+    visit(doc.GetFirstObject())
+    return (light_entries, light_caveats, light_skips)
+
+
+def _format_skip_summary(skipped,
+                         deformer_warnings,
+                         light_caveats,
+                         light_skips,
+                         unsupported_material_names,
+                         max_lines=8):
+    """Format the warning section of the export dialog. Caps
+    each list at `max_lines` so a document with hundreds of
+    items doesn't produce an unscrollable dialog.
+    """
+    def _bullet_block(header, items, format_item):
+        out = [header]
+        for it in items[:max_lines]:
+            out.append("  - " + format_item(it))
+        if len(items) > max_lines:
+            out.append("  ... and {0} more".format(len(items) - max_lines))
+        return out
+
+    blocks = []
     if skipped:
-        lines.append("Skipped {0} unsupported object(s):".format(len(skipped)))
-        for (name, reason) in skipped[:max_lines]:
-            lines.append("  - {0} ({1})".format(name, reason))
-        if len(skipped) > max_lines:
-            lines.append("  ... and {0} more".format(len(skipped) - max_lines))
+        blocks.append(_bullet_block(
+            "Skipped {0} unsupported object(s):".format(len(skipped)),
+            skipped, lambda it: "{0} ({1})".format(it[0], it[1])))
     if deformer_warnings:
-        lines.append("")
-        lines.append("Deformers ignored on {0} polygon mesh(es) "
-                     "(undeformed geometry exported):"
-                     .format(len(deformer_warnings)))
-        for name in deformer_warnings[:max_lines]:
-            lines.append("  - " + name)
-        if len(deformer_warnings) > max_lines:
-            lines.append("  ... and {0} more"
-                         .format(len(deformer_warnings) - max_lines))
-    return "\n".join(lines) if lines else "No unsupported objects."
+        blocks.append(_bullet_block(
+            "Deformers ignored on {0} polygon mesh(es) "
+            "(undeformed geometry exported):".format(len(deformer_warnings)),
+            deformer_warnings, lambda it: it))
+    if light_skips:
+        blocks.append(_bullet_block(
+            "Skipped {0} light(s):".format(len(light_skips)),
+            light_skips, lambda it: "{0} ({1})".format(it[0], it[1])))
+    if light_caveats:
+        blocks.append(_bullet_block(
+            "Light caveats ({0}):".format(len(light_caveats)),
+            light_caveats, lambda it: "{0}: {1}".format(it[0], it[1])))
+    if unsupported_material_names:
+        blocks.append(_bullet_block(
+            "Material types not fully supported ({0}); "
+            "only the name was exported:".format(
+                len(unsupported_material_names)),
+            unsupported_material_names, lambda it: it))
+
+    if not blocks:
+        return "No unsupported objects."
+
+    lines = []
+    for i, blk in enumerate(blocks):
+        if i > 0:
+            lines.append("")
+        lines.extend(blk)
+    return "\n".join(lines)
 
 
 def _add_user_data_real(obj, name, default, *,
@@ -647,18 +972,25 @@ class ExportSceneCommand(plugins.CommandData):
             (meshes,
              materials,
              skipped,
-             deformer_warnings) = _walk_document_meshes(doc)
+             deformer_warnings,
+             unsupported_material_names) = _walk_document_meshes(doc)
+
+            (lights,
+             light_caveats,
+             light_skips) = _walk_document_lights(doc)
 
             note = ("Exported by RelativityRenderBridge; "
                     + controller_note + "; "
                     + "meshes=" + str(len(meshes)) + "; "
-                    + "skipped=" + str(len(skipped)) + ".")
+                    + "lights=" + str(len(lights)) + "; "
+                    + "skipped=" + str(len(skipped) + len(light_skips)) + ".")
             scene = rrscene_writer.build_rrscene(
                 camera=camera_section,
                 render_settings=render_settings,
                 relativity=relativity_section,
                 meshes=meshes,
                 materials=materials,
+                lights=lights,
                 note=note,
             )
 
@@ -668,7 +1000,20 @@ class ExportSceneCommand(plugins.CommandData):
             for m in meshes:
                 tri_count += len(m["triangles"])
 
-            warn_block = _format_skip_summary(skipped, deformer_warnings)
+            # Count point/directional separately for the dialog;
+            # area lights show up in the point bucket since the
+            # bridge degrades them, with the lossy conversion
+            # surfaced in `light_caveats`.
+            n_point = sum(1 for L in lights
+                          if L.get("type") == rrscene_writer.LIGHT_TYPE_POINT)
+            n_dir   = sum(1 for L in lights
+                          if L.get("type")
+                          == rrscene_writer.LIGHT_TYPE_DIRECTIONAL)
+
+            warn_block = _format_skip_summary(
+                skipped, deformer_warnings,
+                light_caveats, light_skips,
+                unsupported_material_names)
             gui.MessageDialog(
                 "RelativityRender: Export Scene\n"
                 "\n"
@@ -680,11 +1025,10 @@ class ExportSceneCommand(plugins.CommandData):
                 "Polygon meshes: " + str(len(meshes))
                 + " (" + str(tri_count) + " triangles, "
                 + str(len(materials)) + " materials)\n"
+                "Lights: " + str(n_point) + " point, "
+                + str(n_dir) + " directional\n"
                 "\n"
-                + warn_block + "\n"
-                "\n"
-                "(Lights translation + scene-camera animation "
-                "come in later slices.)"
+                + warn_block
             )
             return True
         except Exception as exc:  # noqa: BLE001

@@ -93,6 +93,173 @@ All modules now have a placeholder source directory under `src/`,
 
 ## Change Log
 
+### 2026-04-28 — M19 (extension 3): materials + emission + viewport colour + lights
+
+Fourth slice of the Cinema 4D bridge. Materials now carry real
+RGB albedo from C4D Standard `Mmaterial`'s colour channel, and
+emission when the luminance channel is enabled. Polygons without
+a Texture tag fall through to the object's "Display Color" so
+the renderer no longer sees a wall of mid-grey defaults. Cinema
+4D lights map to the v1 `lights[]` types where the protocol
+supports them: omni -> point, distant / parallel -> directional,
+area -> point with a clear warning, spot -> skipped.
+
+The .rrscene the bridge produces is now end-to-end usable: the
+host renderer server's `load_scene` accepts a complete
+camera + render + relativity + materials + meshes + lights
+document with no warnings.
+
+- **`integrations/c4d/RelativityRenderBridge/rrscene_writer.py`:**
+  - `make_material_section` learnt `emission_color`,
+    `emission_strength`, and `roughness` kwargs. Emission
+    fields are emitted only when BOTH a colour and a
+    positive strength are supplied (matches the host parser's
+    "zero strength = no emission" rule). `base_color` and
+    `emission_color` components are non-negative-clamped;
+    `roughness` is clamped to `[0, 1]`.
+  - New light builders `make_point_light` and
+    `make_directional_light`, plus `LIGHT_TYPE_POINT` /
+    `LIGHT_TYPE_DIRECTIONAL` constants pinned to the v1
+    protocol's exact strings ("point" / "directional"). Both
+    builders non-negative-clamp colour components and
+    intensity.
+  - `build_rrscene` learnt an optional `lights=` kwarg, with
+    the same omit-on-empty invariant the meshes / materials
+    kwargs honour.
+  - Module remains free of any `c4d` import.
+- **`integrations/c4d/RelativityRenderBridge/RelativityRenderBridge.pyp`:**
+  - `_extract_standard_material_params(mat)` reads
+    `MATERIAL_COLOR_COLOR` * `MATERIAL_COLOR_BRIGHTNESS` for
+    `base_color`, and (when `MATERIAL_USE_LUMINANCE` is on)
+    `MATERIAL_LUMINANCE_COLOR` + `MATERIAL_LUMINANCE_BRIGHTNESS`
+    for `emission_color` + `emission_strength`. Non-Standard
+    material types return `kind="unsupported"` so the dialog
+    can warn the user that only the material name made it
+    across.
+  - `_viewport_fallback_color(obj)` reads
+    `ID_BASEOBJECT_COLOR` when `ID_BASEOBJECT_USECOLOR` is
+    in mode `2` (Always) or `3` (Layer). Otherwise returns
+    `None`, leaving the polygon to fall back to the renderer
+    default.
+  - New `MaterialRegistry` class (replaces the old
+    `material_name_to_id` dict). Two registration paths share
+    one id sequence: `register_c4d_material(name, params)`
+    keys by Cinema 4D material name and consumes the
+    extracted standard-material params; `register_viewport_color(rgb)`
+    keys by an RGB slug (3 decimal digits) and emits a
+    `Viewport: r, g, b` entry. Both reuse ids when called
+    with the same key, so dedup is automatic.
+  - New `_walk_document_lights(doc)`. Builds the C4D
+    light-type-to-rrscene-type mapping at runtime so missing
+    constants on older C4D builds don't break the import.
+    Returns three lists: `light_entries` (ready for
+    `lights[]`), `light_caveats` (`(name, message)` pairs
+    for lossy conversions like area -> point), and
+    `light_skips` (`(name, message)` pairs for spot lights
+    and other unsupported types).
+  - `_format_skip_summary(...)` extended with light caveats /
+    skips and unsupported-material-name lists; each block
+    capped at 8 entries with a "... and N more" suffix.
+  - `ExportSceneCommand.Execute` calls both walkers, threads
+    every list through the dialog text, and writes
+    `Polygon meshes: N (T triangles, M materials)` +
+    `Lights: P point, D directional` summary lines. The
+    `_note` field on the saved scene now records mesh +
+    light + skipped counts.
+- **`integrations/c4d/RelativityRenderBridge/tests/test_rrscene_writer.py`:**
+  118 standalone Python assertions (up from 88). New
+  coverage:
+  - `make_material_section` clamps negative `base_color`
+    components; emission fields are emitted only when BOTH
+    `emission_color` and a positive `emission_strength` are
+    supplied; negative strength is pruned; one input alone
+    is pruned.
+  - `make_material_section` clamps `roughness` to `[0, 1]`.
+  - `make_point_light` and `make_directional_light` defaults
+    + explicit overrides + non-negative intensity clamp.
+  - `LIGHT_TYPE_POINT` / `LIGHT_TYPE_DIRECTIONAL` constants
+    pinned to "point" / "directional" so a future drift in
+    the writer can never silently break v1 parsing.
+  - `build_rrscene` with `lights=`; the omit-on-empty
+    invariant extended to cover `meshes=[]`, `materials=[]`,
+    and `lights=[]` in one assertion.
+- **`integrations/c4d/RelativityRenderBridge/README.md`:**
+  Documents the new material extraction (Standard material's
+  Color + Luminance channels), the viewport-color fallback
+  rule, the C4D-light -> rrscene-light mapping table
+  (omni / distant / parallel / area / tube / spot / parspot),
+  the unsupported-material-type warning. Updates the
+  standalone-tests pass count.
+
+#### Verified locally
+
+```
+$ python3 integrations/c4d/RelativityRenderBridge/tests/test_rrscene_writer.py
+test_rrscene_writer: 118/118 passed
+
+$ python3 -c 'import ast; ast.parse(open(
+    "integrations/c4d/RelativityRenderBridge/RelativityRenderBridge.pyp"
+).read())'
+# (no output -> .pyp is syntactically valid Python)
+```
+
+End-to-end through the host renderer server, this time with a
+complete .rrscene exercising every new builder: three materials
+(Mmaterial standard, Mmaterial with luminance emission, viewport
+fallback), three cube meshes, one point light, one directional
+sun light. Through `RelativityRender --serve` + `load_scene`:
+
+```
+< OK loaded 3 materials, 0 spheres, 2 lights, 3 meshes
+< END
+```
+
+Materials, lights, meshes all round-trip through the production
+C++ scene loader (`src/io/SceneLoader.cpp`) without warnings.
+The renderer treats out-of-range or omitted material fields as
+defaults, so meshes whose textures were not Mmaterial still
+shade correctly with their Cinema 4D material name preserved
+in the saved file.
+
+#### Per the prompt
+
+- "Material base color": pulled from
+  `MATERIAL_COLOR_COLOR * MATERIAL_COLOR_BRIGHTNESS` for
+  Standard materials; written as `base_color`.
+- "Emission if detectable": pulled from the luminance channel
+  when `MATERIAL_USE_LUMINANCE` is on; emitted as
+  `emission_color` + `emission_strength` only when the
+  combined input would round-trip through the host parser
+  (positive strength).
+- "Object viewport fallback color":
+  `ID_BASEOBJECT_COLOR` is consulted when no Texture tag is
+  present and `ID_BASEOBJECT_USECOLOR` is `Always` (2) or
+  `Layer` (3); a deduped `Viewport: r, g, b` material entry
+  carries the colour.
+- "Point/directional/area lights where possible": omni and
+  distant / parallel cleanly map to the v1 `"point"` /
+  `"directional"` types. Area + tube lights export as a
+  point at the area's origin, with the dialog flagging the
+  lossy conversion. Spot / parallel-spot lights are skipped
+  (no spot cone in v1). Each kind has a separate code path
+  in `_light_type_mapping()`, gated on the constants being
+  available on the running C4D build so the import does not
+  fail on older releases.
+- "Save complete .rrscene compatible with RelativityRender":
+  the dialog's saved file now exercises every section the
+  host parser supports (camera + render_settings + relativity
+  + materials + meshes + lights). Verified by the live
+  `--serve` round-trip above.
+
+#### Module / milestone status
+
+- Module 20 (Cinema 4D Bridge): remains `in progress`.
+  Material + light translation landed; generator-bake-via-
+  cache support, server-protocol client, and preview frame
+  display in the C4D viewport are the remaining slices.
+- M19 (Cinema 4D Bridge (Plugin)): remains `in progress`
+  (same).
+
 ### 2026-04-28 — M19 (extension 2): polygon mesh export
 
 Third slice of the Cinema 4D bridge. The Export Scene command

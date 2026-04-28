@@ -303,23 +303,85 @@ def make_mesh_section(vertices:    Iterable[Sequence[float]],
 def make_material_section(id: int,
                           name: Optional[str] = None,
                           base_color: Optional[Sequence[float]] = None,
+                          emission_color: Optional[Sequence[float]] = None,
+                          emission_strength: Optional[float] = None,
+                          roughness: Optional[float] = None,
                           ) -> Dict[str, Any]:
     """Build one `materials[]` entry.
 
     Only `id` is required by the host parser; everything else
     falls back to the renderer's `MaterialParams` defaults
     (mid-grey base colour, no emission, neutral roughness). The
-    bridge writes a stub entry per unique Cinema 4D material it
-    sees, so meshes can reference materials by id even though
-    real material parameter translation (RGB albedo, roughness,
-    emission) is a follow-up slice.
+    optional fields below mirror the host loader's keys
+    (`src/io/SceneLoader.cpp` `load_materials`).
+
+    Emission is emitted only when the caller provides BOTH a
+    colour and a non-zero strength: the host parser clamps
+    negative strengths to zero and treats a zero strength as
+    "no emission", so writing a colour with strength=0 would
+    be a misleading round-trip. Likewise, base_color components
+    are clamped to non-negative values to match the parser.
     """
     out: Dict[str, Any] = {"id": int(id)}
     if name:
         out["name"] = str(name)
     if base_color is not None:
-        out["base_color"] = _vec3_list(base_color)
+        bc = _vec3_list(base_color)
+        out["base_color"] = [max(0.0, c) for c in bc]
+    if (emission_color is not None
+            and emission_strength is not None
+            and float(emission_strength) > 0.0):
+        ec = _vec3_list(emission_color)
+        out["emission_color"]    = [max(0.0, c) for c in ec]
+        out["emission_strength"] = max(0.0, float(emission_strength))
+    if roughness is not None:
+        out["roughness"] = _clamp(float(roughness), 0.0, 1.0)
     return out
+
+
+# ---------------------------------------------------------------------------
+# Light section builder.
+# ---------------------------------------------------------------------------
+#
+# The .rrscene v1 light schema (`src/io/SceneLoader.cpp`
+# `load_lights`) accepts two `type` strings: `"point"` and
+# `"directional"`. Each carries `color` (Vec3), `intensity`
+# (non-negative float), plus a type-specific positional field
+# (`position` for point, `direction` for directional). Other
+# light shapes the bridge encounters (area, spot, ...) are
+# either degraded to a point or skipped on the .pyp side; the
+# writer itself only knows about the two v1 forms.
+
+LIGHT_TYPE_POINT       = "point"
+LIGHT_TYPE_DIRECTIONAL = "directional"
+
+
+def make_point_light(position:  Sequence[float],
+                     color:     Sequence[float] = (1.0, 1.0, 1.0),
+                     intensity: float = 1.0,
+                     ) -> Dict[str, Any]:
+    """Build one `lights[]` point-light entry."""
+    return {
+        "type":      LIGHT_TYPE_POINT,
+        "position":  _vec3_list(position),
+        "color":     [max(0.0, c) for c in _vec3_list(color)],
+        "intensity": max(0.0, float(intensity)),
+    }
+
+
+def make_directional_light(direction: Sequence[float],
+                           color:     Sequence[float] = (1.0, 1.0, 1.0),
+                           intensity: float = 1.0,
+                           ) -> Dict[str, Any]:
+    """Build one `lights[]` directional-light entry. `direction`
+    is the photon propagation direction in renderer coordinates.
+    """
+    return {
+        "type":      LIGHT_TYPE_DIRECTIONAL,
+        "direction": _vec3_list(direction),
+        "color":     [max(0.0, c) for c in _vec3_list(color)],
+        "intensity": max(0.0, float(intensity)),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -351,6 +413,7 @@ def build_rrscene(camera: Dict[str, Any],
                   note: Optional[str] = None,
                   meshes:    Optional[Iterable[Dict[str, Any]]] = None,
                   materials: Optional[Iterable[Dict[str, Any]]] = None,
+                  lights:    Optional[Iterable[Dict[str, Any]]] = None,
                   ) -> Dict[str, Any]:
     """Assemble the top-level v1 .rrscene dict from per-section
     inputs. The optional `note` is written to a top-level
@@ -358,10 +421,10 @@ def build_rrscene(camera: Dict[str, Any],
     top-level keys (per the .rrscene v1 spec) so it round-trips
     through a real load without breaking the parse.
 
-    `meshes` and `materials` are emitted only when a non-empty
-    iterable is supplied, so older callers that just want the
-    camera + render + relativity sections produce identical
-    output to the previous slice.
+    `meshes`, `materials`, and `lights` are emitted only when
+    a non-empty iterable is supplied, so older callers that
+    just want the camera + render + relativity sections produce
+    identical output to the previous slice.
     """
     scene: Dict[str, Any] = {
         "version": RRSCENE_VERSION,
@@ -373,6 +436,10 @@ def build_rrscene(camera: Dict[str, Any],
         mats = list(materials)
         if mats:
             scene["materials"] = mats
+    if lights is not None:
+        ls = list(lights)
+        if ls:
+            scene["lights"] = ls
     if meshes is not None:
         ms = list(meshes)
         if ms:

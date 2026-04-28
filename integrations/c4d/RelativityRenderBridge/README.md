@@ -36,15 +36,37 @@ Writes a v1 `.rrscene` containing:
     pruned. Native triangles (Cinema 4D's `c == d` quad
     encoding) emit a single triangle.
   - **Material id** - an integer lookup key into the scene's
-    `materials[]`. The bridge allocates a fresh id the first
-    time it sees a Cinema 4D material name and reuses the
-    same id for every later mesh that references it. Meshes
-    without a Texture tag get `material_id = -1` (renderer's
-    neutral default). Real material parameter translation
-    (RGB albedo, roughness, emission) is a follow-up slice;
-    today the bridge only writes a stub `{ id, name }` per
-    unique material so the mesh ↔ material relationship is
-    visible.
+    `materials[]`. Resolved in priority order:
+    1. First Texture tag's bound material - pulls
+       `MATERIAL_COLOR_COLOR` × `MATERIAL_COLOR_BRIGHTNESS`
+       into `base_color`, and (when `MATERIAL_USE_LUMINANCE`
+       is on) `MATERIAL_LUMINANCE_COLOR` plus
+       `MATERIAL_LUMINANCE_BRIGHTNESS` as
+       `emission_color` + `emission_strength`. The bridge
+       supports Cinema 4D's Standard `Mmaterial`; other
+       material types (Physical, Redshift, Octane, ...)
+       export only the material name and surface a warning
+       in the dialog.
+    2. **Viewport "Display Color"** when no Texture tag is
+       present and `ID_BASEOBJECT_USECOLOR` is set to
+       `Always` or `Layer`. The bridge emits a deduped
+       `Viewport: r, g, b` material entry; multiple
+       polygons with the same viewport colour share one
+       `materials[]` slot.
+    3. `material_id = -1` (renderer's neutral default)
+       when neither resolves.
+- Cinema 4D **lights** the v1 protocol can carry:
+  - `LIGHT_TYPE_OMNI` -> `"point"` (position from `mg.off`).
+  - `LIGHT_TYPE_DISTANT` / `LIGHT_TYPE_PARALLEL` ->
+    `"directional"` (direction from `mg.v3`).
+  - `LIGHT_TYPE_AREA` / `LIGHT_TYPE_TUBE` -> degraded to
+    `"point"` at the area's origin; the dialog flags the
+    lossy conversion (rrscene v1 has no area metadata).
+  - `LIGHT_TYPE_SPOT` / `LIGHT_TYPE_PARSPOT` -> skipped with
+    a warning (no spot cone in v1).
+  Light `color` comes from `LIGHT_COLOR`; `intensity` from
+  `LIGHT_BRIGHTNESS`. Both are non-negative-clamped on the
+  writer side.
 
 #### Unsupported objects
 
@@ -76,8 +98,9 @@ knows their on-disk geometry is the pre-deform mesh.
 
 The confirmation dialog summarises the export: saved path,
 resolution, camera FOV, controller status, exported mesh /
-triangle / material counts, and a list of skipped objects
-with reasons.
+triangle / material counts, point + directional light counts,
+and warning blocks for skipped objects, deformer-affected
+polygons, light-type caveats, and unsupported material types.
 
 ### Plugins → RelativityRender: Create Controller
 
@@ -172,5 +195,5 @@ so the test harness runs under stock `python3`:
 
 ```
 $ python3 integrations/c4d/RelativityRenderBridge/tests/test_rrscene_writer.py
-test_rrscene_writer: 88/88 passed
+test_rrscene_writer: 118/118 passed
 ```
