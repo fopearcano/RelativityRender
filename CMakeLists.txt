@@ -310,6 +310,26 @@ if(RELATIVITYRENDER_ENABLE_OPTIX)
     target_link_libraries(rr_optix PRIVATE CUDA::cudart)
 endif()
 
+# Renderer server. Long-running TCP service that exposes the
+# renderer to external clients (the future Cinema 4D bridge, a CLI
+# submitter). v1 is a one-client-at-a-time line protocol on
+# 127.0.0.1:7777 with five commands (ping / load_scene <path> /
+# render / set_beta <value> / shutdown). The server links rr_io
+# (for the scene loader) and rr_gpu (for the render command). Per
+# the dependency rules it must NOT link any UI / Cinema 4D
+# bridge code; the bridge is a client of this server, never the
+# other way around.
+add_library(rr_server STATIC
+    src/server/RenderServer.cpp
+)
+target_include_directories(rr_server PUBLIC src)
+target_link_libraries(rr_server PUBLIC  rr_io rr_gpu)
+if(MSVC)
+    target_compile_options(rr_server PRIVATE /W4 /permissive-)
+else()
+    target_compile_options(rr_server PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+
 # Main executable. As more modules land they will be promoted to their
 # own static libraries and linked here.
 add_executable(RelativityRender
@@ -493,4 +513,21 @@ if(RR_BUILD_TESTS)
         target_compile_options(aov_tests PRIVATE -Wall -Wextra -Wpedantic)
     endif()
     add_test(NAME aov_tests COMMAND aov_tests)
+
+    # Renderer server tests. Exercises `dispatch_command` directly -
+    # ping / unknown / empty / set_beta validation / load_scene
+    # success + failure / render's no-CUDA error / shutdown's
+    # wants_shutdown flag. The TCP loop itself is not exercised
+    # (avoiding flaky port-binding tests in CI); the dispatcher is
+    # pure and covers all v1 protocol semantics.
+    add_executable(server_tests tests/server_tests.cpp)
+    target_link_libraries(server_tests PRIVATE rr_server)
+    target_compile_definitions(server_tests PRIVATE
+        RR_TEST_FIXTURES_DIR="${CMAKE_SOURCE_DIR}/scenes")
+    if(MSVC)
+        target_compile_options(server_tests PRIVATE /W4 /permissive-)
+    else()
+        target_compile_options(server_tests PRIVATE -Wall -Wextra -Wpedantic)
+    endif()
+    add_test(NAME server_tests COMMAND server_tests)
 endif()

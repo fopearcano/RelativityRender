@@ -51,7 +51,7 @@ Update it after every implementation step, per
 | 16 | Denoiser Integration                | not started   |
 | 17 | Render Passes / AOVs                | landed        |
 | 18 | Scene File Format                   | landed        |
-| 19 | Renderer Server                     | not started   |
+| 19 | Renderer Server                     | in progress   |
 | 20 | Cinema 4D Bridge                    | not started   |
 | 21 | Future Native Cinema 4D Renderer    | not started   |
 | 22 | Node Editor / Material Graph        | not started   |
@@ -82,7 +82,7 @@ All modules now have a placeholder source directory under `src/`,
 | M15       | OptiX Backend (Upgrade Path)            | in progress |
 | M16       | Texture System                          | landed      |
 | M17       | Render Passes / AOVs                    | landed      |
-| M18       | Renderer Server                         | not started |
+| M18       | Renderer Server                         | in progress |
 | M19       | Cinema 4D Bridge (Plugin)               | not started |
 | M20       | Preview UI                              | not started |
 | M21       | Material Node Graph (Editor)            | not started |
@@ -92,6 +92,127 @@ All modules now have a placeholder source directory under `src/`,
 ---
 
 ## Change Log
+
+### 2026-04-28 — M18 (foundation): renderer server foundation
+
+First slice of the renderer server. v1 protocol is intentionally
+minimal: a one-client-at-a-time TCP listener on `127.0.0.1:7777`
+that accepts five line-based commands and replies with a status
+line + an `END` terminator. No framebuffer streaming, no
+multi-client, no auth - just the foundation the Cinema 4D bridge
+(M19) and a future CLI submitter will plug into.
+
+- **`src/server/RenderServer.h`:** new module. `ServerConfig`
+  carries `host` (default `127.0.0.1`) and `port` (default
+  `7777`). `ServerState` holds the loaded scene, the last scene
+  path, and a fixed v1 `output_path = "output/server_render.ppm"`.
+  Public free function `dispatch_command(line, state)` is the
+  pure command parser (no IO; testable in isolation).
+  `RenderServer` class owns config + state and exposes a single
+  blocking `run()` that returns `RunResult{ok, message}`.
+- **`src/server/RenderServer.cpp`:**
+  - Wire format: ASCII line-based. Request = one line ending in
+    `\n`. Response = one or more lines, terminated by `END\n`.
+    First reply line begins `OK ` or `ERR ` so a client can
+    parse status without per-command knowledge. CRLF inputs from
+    Windows clients are tolerated (CR stripped before parsing).
+  - Five v1 commands:
+    - `ping` -> `OK pong`.
+    - `load_scene <path>` -> calls `rr::io::load_rrscene`,
+      replies with material / sphere / light / mesh counts on
+      success or `ERR load_scene failed: <message>` on parse
+      failure.
+    - `set_beta <value>` -> validates the float, rejects
+      non-finite / `|value| >= 1`, and on success sets
+      `state.scene.observer.velocity = {value, 0, 0}` (the v1
+      convention: scalar beta drives the +x axis; multi-axis
+      observer velocity is reachable through the scene file).
+    - `render` -> on builds with CUDA, runs the existing
+      `GpuScene::upload_from` -> `CudaRenderer::render_scene`
+      pipeline and saves to `state.output_path`. Without CUDA
+      the command replies `ERR render: no CUDA backend
+      compiled in`. Either way the scene must already be
+      loaded; otherwise replies with the no-scene error.
+    - `shutdown` -> sets `wants_shutdown` on the result so the
+      accept loop returns after the reply is flushed.
+  - Unknown verbs and empty / whitespace-only lines are
+    rejected with `ERR` responses; verb matching is
+    case-insensitive.
+  - TCP loop uses POSIX BSD sockets (Linux + macOS). Handles
+    short reads/writes, `EINTR` retries, and per-connection
+    cleanup. `SO_REUSEADDR` so a quick restart does not trip
+    `TIME_WAIT`. Windows is a deliberate follow-up: the
+    `_WIN32` build returns `RunResult{ok=false}` from `run()`
+    with a clear "not implemented yet" message so the file
+    still compiles on MSVC.
+  - One client at a time per the v1 spec. The accept loop
+    handles a connection to completion (until disconnect or
+    `shutdown`) before accepting the next.
+- **`tests/server_tests.cpp`:** 50 host assertions. Every
+  v1 command exercised through `dispatch_command` directly
+  (no real sockets - keeps CI deterministic without a free
+  port).
+  - `ping` round-trips and is case-insensitive; trims
+    surrounding whitespace and tolerates trailing CR.
+  - empty / whitespace-only / unknown verbs all produce
+    `ERR` responses with descriptive messages.
+  - `shutdown` sets `wants_shutdown` on the result; flag
+    stays false for everything else.
+  - `set_beta` updates `observer.velocity.x`, accepts
+    negative values, and rejects missing / non-numeric /
+    `|value| >= 1` arguments without mutating state.
+  - `load_scene` reports missing-argument and missing-file
+    errors, and on the existing `scenes/test_minimal.rrscene`
+    fixture loads the scene + records `last_scene_path`.
+  - `render` errors clearly on no-scene-loaded; on host-only
+    builds it also errors with a CUDA-mention so a client
+    knows to rebuild with the toolkit.
+- **`CMakeLists.txt`:** new `rr_server` static library
+  (PUBLIC-links `rr_io` for the loader and `rr_gpu` for the
+  CUDA-conditional render path; per the dependency rules
+  `rr_server` is forbidden from depending on UI / Cinema 4D
+  bridge code, so neither is mentioned). New `server_tests`
+  target registered with `add_test`; gets the same fixtures
+  define `RR_TEST_FIXTURES_DIR` `io_tests` already uses.
+
+#### Verified locally
+
+```
+$ cmake --build build && cd build && ctest --output-on-failure
+ 1/15 ... 15/15 all Passed
+100% tests passed, 0 tests failed out of 15
+
+$ ./build/bin/server_tests
+server_tests: 50/50 passed
+```
+
+End-to-end TCP smoke test (separate harness, not in CI):
+binding to `127.0.0.1:7778` and sending ping / set_beta /
+unknown-verb / shutdown over `nc -q1`, the server replies
+with the expected `OK ` / `ERR ` lines + `END` terminators
+and returns cleanly from `run()` after the shutdown.
+
+#### Per the prompt
+
+- Two requested files (`src/server/RenderServer.h`,
+  `src/server/RenderServer.cpp`) both present.
+- All five commands present (ping, load_scene, render,
+  set_beta, shutdown) with reasonable error reporting.
+- Server bound to `127.0.0.1:7777` by default, one client at
+  a time per the v1 contract.
+
+#### Module / milestone status
+
+- Module 19 (Renderer Server): `not started` -> `in progress`.
+- M18 (Renderer Server): `not started` -> `in progress`.
+
+The remaining renderer-server work (multi-client / threaded
+accept, framebuffer streaming with a binary frame protocol,
+scene-payload upload over the wire, AOV streaming, EXR
+delivery, a CLI submitter binary, cancellation + multi-job
+queuing) lands in subsequent slices. M18 / Module 19 close
+when the bridge can submit a scene file and receive a
+rendered EXR back over the protocol.
 
 ### 2026-04-28 — M17: render-pass / AOV foundation
 
