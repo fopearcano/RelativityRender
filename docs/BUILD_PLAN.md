@@ -93,6 +93,184 @@ All modules now have a placeholder source directory under `src/`,
 
 ## Change Log
 
+### 2026-04-28 — M19 (extension 1): live document export + relativity controller
+
+Second slice of the Cinema 4D bridge. Replaces the foundation's
+empty placeholder export with a real read of the active
+document's camera transform / FOV / render resolution, and adds
+a second command that creates a relativity controller Null whose
+user data the export reads back. No preview UI, no server-protocol
+traffic, no geometry / materials / lights translation yet.
+
+- **`integrations/c4d/RelativityRenderBridge/rrscene_writer.py`:**
+  Promoted from the foundation slice's "build the empty stub"
+  helper into the bridge's data layer.
+  - New per-section builders: `make_render_settings`,
+    `make_camera_section`, `make_relativity_section`. Each
+    mirrors the host parser's field names + value clamps
+    (`src/io/SceneLoader.cpp`); a clamp / default-fallback in
+    each builder means the saved file is always parseable
+    even when the C4D side hands us a degenerate value.
+  - New top-level `build_rrscene(camera, render_settings,
+    relativity, note)` + `write_rrscene(scene, path)` so the
+    .pyp plugin can hand in fully-populated sections.
+  - New coordinate-conversion helpers:
+    `convert_c4d_position`, `convert_c4d_direction`,
+    `convert_c4d_camera_basis`. Negate the `Z` component of
+    every world-space position and direction vector to bridge
+    Cinema 4D's left-handed `+Z forward` to the renderer's
+    right-handed `-Z forward`. Keeping the flip in one place
+    means the .pyp plugin never has to know about handedness
+    directly.
+  - Foundation-slice helpers (`build_empty_rrscene`,
+    `write_empty_rrscene`) preserved as fallback paths.
+  - Module remains free of any `c4d` import - the standalone
+    test harness still runs under stock `python3`.
+- **`integrations/c4d/RelativityRenderBridge/RelativityRenderBridge.pyp`:**
+  Two `CommandData`s now register under separate plugin ids:
+  - `1058600` - `RelativityRender: Export Scene` (existing).
+    Resolves the active rendering camera through
+    `BaseDocument.GetRenderBaseDraw().GetSceneCamera(doc)` (with
+    the editor camera as a fallback), pulls position / forward
+    / up from `cam.GetMg()` (`mg.off`, `mg.v3`, `mg.v2`),
+    converts to renderer coordinates via the writer's helper,
+    reads vertical FOV from `CAMERAOBJECT_FOV_VERTICAL`
+    (with a horizontal-FOV + 4:3 fallback), reads
+    `RDATA_XRES` / `RDATA_YRES` from the active render data,
+    and walks the document looking for an object named
+    `RelativityRender Controller` (depth first). When found,
+    its five user-data fields populate the relativity
+    section; when not, the writer's defaults are used. The
+    confirmation dialog now reports the saved path,
+    resolution, FOV, and whether a controller was picked up.
+  - `1058601` - `RelativityRender: Create Controller` (new).
+    Creates a Null object named `RelativityRender Controller`
+    with five user-data fields:
+    - `beta_velocity` (Real, `0..0.999999`, step `0.001`).
+    - `velocity_direction` (Vector, default `(0, 0, -1)`).
+    - `aberration_strength` (Real, `0..1`, step `0.01`).
+    - `doppler_strength` (Real, `0..1`, step `0.01`).
+    - `searchlight_strength` (Real, `0..1`, step `0.01`).
+    The defaults mirror `RelativityParams::*` and the .rrscene
+    parser's clamps. The create operation is wrapped in
+    `StartUndo` / `AddUndo(UNDOTYPE_NEW)` / `EndUndo` so the
+    standard Edit -> Undo reverses it; `c4d.EventAdd()` updates
+    the Object Manager + viewport. The new Null is selected via
+    `SetActiveObject(obj, SELECTION_NEW)` so the user lands on
+    it ready to scrub the values.
+  - Both commands wrap `Execute` in `try/except` so a Python
+    exception never escapes into the C4D plugin host. Marker
+    name + user-data field names live in module-level
+    constants so the create + export commands cannot drift.
+  - User-data velocity is converted with the writer's
+    direction Z-flip on export; both the controller's
+    authored direction and the camera basis end up in the
+    same right-handed frame in the saved file.
+- **`integrations/c4d/RelativityRenderBridge/tests/test_rrscene_writer.py`:**
+  61 standalone Python assertions (up from 27). New coverage:
+  - `make_render_settings` defaults, explicit values,
+    non-positive fallbacks, float-to-int coercion.
+  - `make_camera_section` defaults, explicit values, FOV
+    clamp on `<= 0` / `>= 180` (must fall back to writer
+    default so the saved file passes the host parser).
+  - `make_relativity_section` defaults, explicit values,
+    beta clamp to `[0, 0.999999]`, strength clamps to
+    `[0, 1]`.
+  - `convert_c4d_position` and `convert_c4d_direction`
+    Z-flip behaviour; identity-pose camera maps to the
+    renderer's identity camera basis.
+  - `build_rrscene` assembles a full v1 dict; round-trips
+    through `serialize_rrscene` + `json.loads`.
+  - `write_rrscene` creates parent dirs and returns an
+    absolute path; written file parses back to the same
+    dict, custom resolution / FOV / beta preserved on disk.
+  - Pin: `rrscene_writer` does not import `c4d`.
+- **`integrations/c4d/RelativityRenderBridge/README.md`:**
+  Documents the two commands, their plugin ids, the user-
+  data shape on the controller, the coordinate-system
+  conversion (C4D left-handed +Z -> renderer right-handed
+  -Z), and the dependency rules.
+
+#### Verified locally
+
+```
+$ python3 integrations/c4d/RelativityRenderBridge/tests/test_rrscene_writer.py
+test_rrscene_writer: 61/61 passed
+
+$ python3 -c 'import ast; ast.parse(open(
+    "integrations/c4d/RelativityRenderBridge/RelativityRenderBridge.pyp"
+).read())'
+# (no output -> .pyp is syntactically valid Python)
+```
+
+End-to-end round-trip through the host's renderer server, this
+time with non-default camera / resolution / relativity built via
+the new section builders + Z-flip helpers:
+
+```
+$ python3 -c "
+import sys; sys.path.insert(0,
+    'integrations/c4d/RelativityRenderBridge')
+import rrscene_writer as w
+pos, fwd, up = w.convert_c4d_camera_basis(
+    (0, 1.5, 4),  # C4D position 4 units forward
+    (0, 0, 1),    # C4D forward (+Z)
+    (0, 1, 0))
+scene = w.build_rrscene(
+    camera=w.make_camera_section(position=pos, forward=fwd,
+                                 up=up, fov_degrees=35.0),
+    render_settings=w.make_render_settings(800, 600),
+    relativity=w.make_relativity_section(
+        beta_velocity=0.5,
+        velocity_direction=w.convert_c4d_direction((1, 0, 0)),
+        aberration_strength=0.8,
+        doppler_strength=1.0,
+        searchlight_strength=0.6))
+w.write_rrscene(scene, '/tmp/x.rrscene')
+"
+$ ./build/bin/RelativityRender --serve &
+$ printf 'load_scene /tmp/x.rrscene\nshutdown\n' | nc -q1 127.0.0.1 7777
+< OK loaded 0 materials, 0 spheres, 0 lights, 0 meshes
+< END
+< OK goodbye
+< END
+```
+
+The bridge's full-section output parses cleanly through the
+production C++ scene loader (`src/io/SceneLoader.cpp`) with no
+warnings - the camera (off-origin position, off-default FOV),
+render settings (800x600), and relativity (custom beta +
+direction + strengths) all round-trip end to end.
+
+#### Per the prompt
+
+- "Active camera transform": `cam.GetMg()` ->
+  `position` / `forward` / `up` after the Z-flip conversion.
+- "FOV/focal length": vertical FOV in degrees from
+  `CAMERAOBJECT_FOV_VERTICAL`; horizontal-FOV fallback
+  derives the vertical one when needed. Focal length is the
+  same scalar in different units; the rrscene format
+  carries vertical FOV directly.
+- "Render resolution": `RDATA_XRES` / `RDATA_YRES` from
+  `doc.GetActiveRenderData()`.
+- "Relativity controller values if available": user-data
+  fields by name on the `RelativityRender Controller` Null,
+  with writer defaults filling any missing slot.
+- "Create command - RelativityRender: Create Controller":
+  registered as `CreateControllerCommand`, plugin id
+  `1058601`. User data is exactly the five fields the prompt
+  enumerates.
+
+#### Module / milestone status
+
+- Module 20 (Cinema 4D Bridge): remains `in progress`
+  (live camera + render-data + controller export landed;
+  geometry / materials / lights translation, server-protocol
+  client, and preview frame display in C4D viewport are the
+  remaining slices before the module flips to `landed`).
+- M19 (Cinema 4D Bridge (Plugin)): remains `in progress`
+  (same).
+
 ### 2026-04-28 — M19 (foundation): Cinema 4D bridge plugin
 
 First slice of the Cinema 4D bridge. A Python command plugin
