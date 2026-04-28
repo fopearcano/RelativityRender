@@ -239,37 +239,288 @@ control flow recognisable next to today's `trace_one_path`: the
 loop body becomes "fire one optixTrace call" instead of "scan two
 arrays of primitives".
 
-## 9. Out of scope for this slice
+## 9. Acceleration structures
+
+OptiX expresses spatial indexing as **acceleration structures
+(AS)** - hardware-traversable BVHs built once per change to the
+scene's geometry and read by every ray. RelativityRender's first
+OptiX pipeline uses two kinds:
+
+- **GAS** (Geometry Acceleration Structure) - a BVH over a single
+  set of primitives in a fixed local space.
+- **IAS** (Instance Acceleration Structure) - a BVH whose leaves
+  are *instances*, each referencing a GAS plus a `3x4` world
+  transform.
+
+### 9.1 GAS
+
+A GAS is the leaf-level structure. Each GAS contains one
+*build input*:
+
+- A **triangle GAS** consumes a vertex buffer + an index buffer
+  (the `Vertex` / `Triangle` arrays our existing `GpuMesh`
+  already uploads). OptiX uses the built-in triangle intersection
+  - no custom intersection program needed.
+- A **custom-primitive GAS** consumes an axis-aligned bounding
+  box per primitive plus a custom intersection program. Spheres
+  fall here; the AABB is `(center +/- radius)` and the custom
+  intersection program is the existing
+  `rr::cuda::intersect_sphere` lifted from
+  `cuda/CudaIntersection.cuh`.
+
+Mapping the current scene onto GAS list:
+
+| Scene contents (today)         | GAS in v1                                  |
+|--------------------------------|--------------------------------------------|
+| `GpuScene::device_spheres()`   | one custom-primitive GAS over the sphere AABBs |
+| `GpuScene::gpu_mesh()`         | one triangle GAS per mesh (today: a single mesh) |
+
+GAS builds are sticky - a build is amortised over every frame
+that doesn't change the underlying geometry. Vertex animation /
+deformation will need *refit* later, but v1 only needs static
+builds.
+
+### 9.2 IAS
+
+An IAS is a BVH-of-BVHs. Each leaf is an OptiX `Instance`,
+carrying:
+
+- A handle to the underlying GAS.
+- A `3x4` `transform` (the same SRT decomposition our host
+  `rr::math::Transform` already produces).
+- A 32-bit `instanceId` used by hit programs to look up
+  per-instance data (materials, etc.) through the SBT.
+
+The IAS is what makes instancing cheap. A scene of 1 000 copies of
+the same teapot uploads one vertex/index buffer and one GAS; the
+IAS carries 1 000 `Instance` entries with different transforms.
+The current `GpuMesh::transform` field flows straight into the
+instance transform without churn.
+
+Mapping the current scene onto an IAS:
+
+```
+IAS root
+  +-- Instance(GAS = sphere_gas,   transform = identity, id = 0)
+  +-- Instance(GAS = mesh0_gas,    transform = mesh0_world, id = 1)
+  +-- Instance(GAS = mesh1_gas,    transform = mesh1_world, id = 2)
+  ...
+```
+
+`optixTrace` from the raygen program targets the IAS; the
+hardware walks the IAS down to a GAS, then walks the GAS down to
+the primitive, then calls the matching hit program.
+
+### 9.3 Why BVH is critical
+
+A BVH is the difference between "cost grows with the scene's
+local complexity around the ray" and "cost grows with total
+primitive count":
+
+| Approach                          | Per-ray work                |
+|-----------------------------------|-----------------------------|
+| Today's naive linear scan         | `O(N)` over all primitives  |
+| Software BVH                      | `~O(log N)` plus traversal overhead |
+| OptiX hardware-accelerated BVH    | `~O(log N)` on RT cores - the traversal itself is offloaded from the SM |
+
+The middle row is what we'd be writing if we built a BVH in
+plain CUDA. The bottom row is what we get for free by handing
+the BVH to OptiX: the traversal hardware does the box tests and
+the primitive descent in dedicated silicon, freeing the SM to
+run the actual hit / shade logic.
+
+The naive path stays as a fallback / regression baseline (it's
+already validated end-to-end and the host tests cover its math),
+but the OptiX path is what scales.
+
+## 10. Shader Binding Table (SBT)
+
+The **shader binding table** is a device-resident array of
+records that connects three things at traversal time:
+
+1. **Which geometry was hit** (instance id, GAS, primitive id).
+2. **Which programs run** (raygen / miss / closest-hit /
+   any-hit / intersection).
+3. **Which per-geometry data the program reads** (vertex buffer
+   pointer, material index, transform inverse, ...).
+
+The traversal hardware computes an offset into the SBT from the
+hit's `(instance.sbt_offset, gas.sbt_offset, ray_type,
+sbt_stride)` and dispatches the program at that record. The SBT
+is the *only* mechanism that wires geometry to materials; there
+is no global "this primitive belongs to material X" map - the
+mapping lives entirely in records.
+
+### 10.1 Record layout
+
+Every SBT record has the same shape: a fixed header followed by
+a user-defined payload.
+
+```
++---------------------+
+| header (32 bytes)   |  <- written by optixSbtRecordPackHeader
++---------------------+
+| user data (struct)  |  <- arbitrary; aligned to 16 bytes
++---------------------+
+```
+
+The header is a hash of the program group the record dispatches
+to; the runtime binds it to the corresponding device function at
+launch time. The payload is whatever the corresponding program
+needs.
+
+### 10.2 Record kinds in v1
+
+RelativityRender's first OptiX pipeline ships three kinds of
+records:
+
+- **One raygen record** - the entry point of the pipeline. Its
+  payload carries the launch-wide pointers the raygen program
+  reads (framebuffer, accumulation buffer, scene view); details
+  belong to the camera / launch-parameter slice.
+- **One miss record per ray type** - in v1 there is exactly one
+  ray type ("radiance"). Its payload is the data the existing
+  `sky_color` reads (the scene's environment light, sky tint
+  fallback).
+- **One hitgroup record per (instance, ray type) pair** - the
+  bundle of closest-hit + any-hit + intersection programs the
+  hit dispatches to. The payload is the per-geometry data the
+  closest-hit program needs.
+
+The hitgroup payload is where the geometry / material wiring
+lives. For a triangle mesh hit, the payload typically includes:
+
+- Device pointers to the vertex and index buffers (so the hit
+  program can reconstruct the surface position and normal).
+- The mesh's `material_index` (the lookup key the closest-hit
+  program uses to find the right `MaterialParams`).
+- A transform pointer (or a flag that the GAS already lives in
+  world space).
+
+For a sphere hit, the payload includes:
+
+- A pointer to the sphere POD array (so the hit program can read
+  centre / radius / material index by primitive id).
+
+The exact field list, alignment, and how `MaterialParams` flows
+through the hit-group payload belongs to the materials slice of
+this plan; this section only fixes the *shape*.
+
+### 10.3 Why the SBT matters
+
+In a hand-written CUDA kernel, dispatch is just an `if /
+else if` ladder over primitive types. In an OptiX pipeline, the
+ladder is replaced by a data structure - the SBT. Three
+consequences are worth calling out:
+
+- **Adding a new primitive type means adding an SBT record
+  kind, not changing the kernel.** Curves, volumes, displaced
+  surfaces all plug in the same way once the SBT is in place.
+- **Material updates do not rebuild geometry.** Changing a
+  sphere's `material_index` is a record-payload edit; the AS is
+  untouched.
+- **Multiple ray types share the same hit groups.** When shadow
+  rays land later, every hitgroup gets a second record (the
+  any-hit / closest-hit pair for the shadow type) without
+  changing the geometry path.
+
+## 11. Data flow
+
+The end-to-end picture, from a `.rrscene` file to a rendered PPM,
+adds an OptiX-construction step between the existing GPU upload
+and the existing kernel launch. Nothing on either side of that
+new step moves:
+
+```
+CPU side                            GPU side
+========                            ========
+
+1. SceneLoader::load_rrscene
+       |
+       v
+   rr::scene::Scene (host)
+       |
+       v
+2. GpuScene::upload_from(scene)
+       |                               GpuScene buffers (device):
+       |                                 - sphere array
+       |                                 - mesh vertex / index buffers
+       |                                 - material array
+       |                                 - light array
+       |                                 - camera / observer / params PODs
+       v
+3. OptiX backend build  -----------> AS objects (device):
+   (M15 - new step)                    - sphere GAS  (custom prim, AABBs)
+                                       - triangle GAS per mesh
+                                       - IAS over GAS list
+                                     SBT (device):
+                                       - raygen record
+                                       - miss record(s)
+                                       - hitgroup record per (instance, ray type)
+                                     Pipeline / module objects (device-resident
+                                     program code)
+       |
+       v
+4. CudaRenderer::render_pathtrace_optix
+       |                               optixLaunch:
+       |                                 raygen runs per pixel
+       |                                 -> optixTrace -> traversal
+       |                                 -> miss or closest-hit
+       |                                 raygen accumulates radiance,
+       |                                 writes framebuffer
+       v
+5. download framebuffer
+       |
+       v
+6. Image::save_ppm
+```
+
+Steps 1, 2, 5, and 6 already exist. Steps 3 and 4 are what M15
+adds. Every device-side buffer in step 3 is **read from**
+GpuScene's existing device pointers - the OptiX backend does not
+duplicate vertex / index / material / sphere data, it just
+references it through GAS build inputs and SBT payloads.
+
+The architectural invariants this enforces:
+
+- **GpuScene remains the single owner of scene data on the
+  device.** When materials / lights / geometry are uploaded,
+  they go through `GpuScene::upload_*` exactly like today; the
+  OptiX backend is a consumer.
+- **`CudaRenderer` keeps its public surface.** The new entry
+  point sits next to `render_pathtrace`; the CPU caller in
+  `main.cpp` switches between them by config (or by build
+  flag) without touching the rest of the pipeline.
+- **The CPU's job does not change.** Configure + load + upload
+  + launch + save - no per-pixel work crosses back to the host.
+
+## 12. Out of scope for this slice
 
 The following pieces are explicitly deferred to subsequent doc
 slices and will be added to this file in the same incremental
 style as the RRSCENE format spec:
 
-- **Acceleration structures.** Geometry-AS layout for triangle
-  meshes (built-in) and spheres (custom intersection), instance-AS
-  for the scene's per-object world transforms, build / refit
-  policies.
-- **Shader binding table.** Record types, per-geometry hit
-  records, miss records, ray types, how the OptiX runtime maps
-  hits to the right closest-hit program.
 - **Material data.** How `rr::material::MaterialParams` flows
-  into hit records and how the BSDF interface (M14+) plugs in.
-- **Camera data.** Launch parameter layout for `GpuCamera`,
-  observer state, relativity flags.
-- **Relativity integration.** Exactly where in the OptiX pipeline
-  each of `aberrateDirection`, `dopplerFactor`,
+  into hit-group records, where the BSDF interface plugs in,
+  and how a v2+ texture system rides through the SBT.
+- **Camera data.** Launch-parameter layout for `GpuCamera`,
+  observer state, and relativity flags; how the raygen program
+  reads them.
+- **Relativity integration.** Exactly where in the OptiX
+  pipeline each of `aberrateDirection`, `dopplerFactor`,
   `searchlightFactor`, `applyDopplerColor` runs, and the
   invariants that keep the host unit tests covering the OptiX
   path by construction.
-- **Build / SDK integration.** CMake `find_package(OptiX)` plumbing,
-  the new module library (`rr_optix`), how the existing CUDA
-  backend stays available as a fallback / regression baseline.
+- **Build / SDK integration.** CMake `find_package(OptiX)`
+  plumbing, the new module library (`rr_optix`), how the
+  existing CUDA backend stays available as a fallback /
+  regression baseline.
 
 Each of those becomes a section in this file when its design
 slice is approved. Implementation work does not start until the
 relevant slice is in.
 
-## 10. References
+## 13. References
 
 - `src/cuda/CudaTestKernel.cu` - the current naive `trace_closest`
   body that the OptiX migration replaces.

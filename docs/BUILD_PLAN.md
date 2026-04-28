@@ -93,6 +93,84 @@ All modules now have a placeholder source directory under `src/`,
 
 ## Change Log
 
+### 2026-04-27 — OptiX backend plan: AS + SBT + data flow
+
+Doc-only extension. Three new sections in
+`docs/OPTIX_BACKEND_PLAN.md`. No code, no CMake change, no
+implementation.
+
+- **§9 Acceleration structures.** Two AS kinds in v1.
+  - **GAS** (Geometry Acceleration Structure): a BVH over a
+    single set of primitives. Triangle GAS uses OptiX's
+    built-in triangle intersection (consumes `Vertex` /
+    `Triangle` arrays our existing `GpuMesh` already
+    uploads). Custom-primitive GAS uses AABB build inputs
+    plus a custom intersection program; spheres land here,
+    with `rr::cuda::intersect_sphere` lifted from
+    `cuda/CudaIntersection.cuh` as the program body.
+  - **IAS** (Instance Acceleration Structure): a BVH-of-BVHs.
+    Each leaf is an `Instance` carrying a GAS handle plus a
+    `3x4` world transform (the existing host
+    `rr::math::Transform` SRT decomposition flows in
+    unchanged). Instancing lets N copies share one
+    vertex/index buffer + one GAS.
+  - **Why BVH is critical.** Compares the three approaches
+    side by side: today's naive `O(N)` linear scan, a
+    software BVH at `~O(log N)` plus traversal overhead, and
+    OptiX hardware BVH at `~O(log N)` on RT cores. The naive
+    path stays as a fallback / regression baseline; the
+    OptiX path is what scales to non-trivial scene
+    complexity.
+- **§10 Shader Binding Table.** Three record kinds in v1.
+  - **Record layout**: 32-byte header (program-group hash
+    populated by `optixSbtRecordPackHeader`) plus an aligned
+    user-defined payload.
+  - **Records**: one raygen, one miss per ray type (v1 has
+    one ray type, "radiance"), one hitgroup per (instance,
+    ray type) pair. Hit-group payload is where the
+    geometry / material wiring lives - device pointers to
+    vertex / index buffers, the mesh's `material_index`,
+    transform pointers. Exact field list deferred to the
+    materials slice of the plan.
+  - **Why the SBT matters**: dispatch is a data structure,
+    not an `if/else` ladder; new primitive types add record
+    kinds; material updates don't rebuild geometry; multiple
+    ray types share hit groups.
+- **§11 Data flow.** End-to-end ASCII pipeline diagram
+  showing the seven steps from `.rrscene` to PPM. Steps 1, 2,
+  5, 6 already exist (loader, `GpuScene::upload_from`,
+  framebuffer download, `Image::save_ppm`); steps 3 and 4 are
+  what M15 adds (OptiX backend build + `optixLaunch`).
+  Captured the three architectural invariants:
+  - GpuScene remains the single owner of scene data on the
+    device; the OptiX backend is a consumer that references
+    GpuScene's pointers through GAS build inputs and SBT
+    payloads (no data duplication).
+  - `CudaRenderer` keeps its public surface; the new entry
+    point sits next to `render_pathtrace`.
+  - The CPU's job does not change - no per-pixel work
+    crosses back to the host.
+
+The "Out of scope" list (now §12) shrinks: AS, SBT, and the
+data-flow diagram are no longer there. Materials / camera /
+relativity integration / build-and-SDK plumbing remain
+deferred. References (§13) is unchanged.
+
+#### Verified
+
+No source changes; the existing build / tests remain green
+(`ctest -> 12/12`).
+
+#### Per the prompt
+
+- The three requested topics (Acceleration Structures, Shader
+  Binding Table, Data flow) are now sections in the doc.
+- Focus is architectural - GAS / IAS roles, SBT shape, end-to-end
+  pipeline. No record byte layouts, no concrete code.
+- Materials, camera, relativity integration intentionally
+  remain out-of-scope (still listed in §12 with the build /
+  SDK plumbing).
+
 ### 2026-04-27 — OptiX backend plan: introduction slice
 
 Documentation-only. First slice of `docs/OPTIX_BACKEND_PLAN.md`.
