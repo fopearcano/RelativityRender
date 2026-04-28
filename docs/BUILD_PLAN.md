@@ -50,7 +50,7 @@ Update it after every implementation step, per
 | 15 | Progressive Renderer                | not started   |
 | 16 | Denoiser Integration                | not started   |
 | 17 | Render Passes / AOVs                | not started   |
-| 18 | Scene File Format                   | not started   |
+| 18 | Scene File Format                   | in progress   |
 | 19 | Renderer Server                     | not started   |
 | 20 | Cinema 4D Bridge                    | not started   |
 | 21 | Future Native Cinema 4D Renderer    | not started   |
@@ -77,7 +77,7 @@ All modules now have a placeholder source directory under `src/`,
 | M10       | GPU Scene Upload & Triangle Mesh        | landed      |
 | M11       | Material System (Foundations)           | landed      |
 | M12       | Lighting System (Foundations)           | landed      |
-| M13       | Scene File Format & Parser              | not started |
+| M13       | Scene File Format & Parser              | in progress |
 | M14       | Path Tracing Foundation                 | not started |
 | M15       | OptiX Backend (Upgrade Path)            | not started |
 | M16       | Texture System                          | not started |
@@ -92,6 +92,69 @@ All modules now have a placeholder source directory under `src/`,
 ---
 
 ## Change Log
+
+### 2026-04-27 — RRSCENE v1 format spec landed (doc only, M13 in progress)
+
+Documentation-only slice. Defines the minimal v1 contract the
+upcoming parser implements; no parser code, no CMake / source
+changes.
+
+- **`docs/RRSCENE_FORMAT.md`:** v1 specification.
+  - File extensions: `.rrscene` (canonical) and `.rrjson`
+    (explicit JSON alias).
+  - JSON encoding. Top-level shape is `{ version: 1,
+    render_settings, camera, relativity, spheres }`. Every
+    section is optional; defaults are explicitly listed and
+    match the existing C++ defaults.
+  - Sections defined in v1:
+    1. `render_settings` - `width`, `height` only. `samples_per_pixel`,
+       `max_depth`, AOV selection deferred to v2+.
+    2. `camera` - `position`, `forward`, `up`, `fov` (degrees).
+       Aspect derives from `render_settings`. Near/far deferred.
+    3. `relativity` - `beta_velocity` (scalar), `velocity_direction`
+       (Vec3), and three continuous strengths
+       (`aberration_strength`, `doppler_strength`,
+       `searchlight_strength`). The parser will reconstruct the
+       host `Observer.velocity = beta * normalize(direction)` and
+       map `strength == 0` to the corresponding boolean toggle.
+    4. `spheres` - array of `{ position, radius, material_id }`.
+       `material_id` is a forward-compatibility hint;
+       v1 has no `materials` section yet, so unknown / `-1` ids
+       map to the renderer's neutral default.
+  - Conventions: right-handed +Y up / -Z forward, lengths in
+    scene units, angles in degrees only when named
+    `*_degrees`, all `Vec3` are 3-element JSON arrays.
+  - Validation rules enumerated explicitly (positive
+    dimensions, FOV in `(0, 180)`, non-zero forward, etc.).
+  - One full example file matches the M9 single-sphere
+    relativistic test at `β = 0.5`.
+  - Explicit "out of scope for v1" list: materials, meshes,
+    lights, textures, environment maps, AOVs, motion blur,
+    DOF, near/far. Each has a host data model already; v2 adds
+    the matching JSON section.
+- **`docs/BUILD_PLAN.md`:** marked module 18 (Scene File Format)
+  and milestone M13 as **in progress** - spec landed; parser
+  implementation is the next slice.
+
+#### Verified locally
+
+No source changes; the existing build is unaffected.
+
+```
+$ cd build && ctest --output-on-failure
+ 1/10 ... 10/10 all Passed
+100% tests passed, 0 tests failed out of 10
+```
+
+#### Per the prompt
+
+- Only `render_settings` (width/height), `camera`, `relativity`
+  (the listed five fields), and `spheres` (position, radius,
+  material_id) are defined.
+- No meshes, lights, materials, textures, AOVs, environment
+  maps in v1 - these are explicitly enumerated as deferred.
+- No parser code; the spec is the contract M13's parser slice
+  implements.
 
 ### 2026-04-27 — M12 finalized: simple direct lighting on GPU
 
@@ -1781,22 +1844,31 @@ and does not affect the architecture or dependency rules.
 
 ## Next Step
 
-**M13 — Scene File Format & Parser.** With camera + relativity +
-spheres + meshes + materials + lights all uploadable, the next
-gap is loading them from a file rather than hard-coding in
-`main.cpp`:
+**Finish M13 — implement the v1 parser.** The format spec is in
+(`docs/RRSCENE_FORMAT.md`). To move M13 / Module 18 from
+"in progress" to "landed":
 
-1. Define a small versioned on-disk schema (TOML or JSON)
-   covering camera / relativity params / sphere list / mesh
-   list / material list / light list.
-2. `rr::scene_format::load(path) -> rr::scene::Scene` populating
-   the host data model the renderer already consumes; the
-   reverse `save(scene, path)` round-trips byte-for-byte.
-3. Wire `--render <scene file>` to load the file before
-   uploading, replacing today's hard-coded
-   `output/gpu_direct_lighting.ppm` scene.
-4. A small `scene_format_tests` host suite covering the
-   round-trip and a handful of fixture files.
+1. Vendor a minimal JSON parser under `third_party/` (e.g.,
+   nlohmann/json single-header). Its include is the only
+   third-party header `src/io/` needs.
+2. `rr::io::load_rrscene(path) -> rr::scene::Scene` populating
+   the host data model the renderer already consumes. Strict
+   validation per the spec's rule list; descriptive
+   diagnostics (file path + JSON pointer or line/column).
+3. The reverse `save_rrscene(scene, path)` for round-trip
+   stability. v1 does not yet round-trip materials / meshes /
+   lights (they're not in v1); it serialises only what the v1
+   schema covers and skips the rest cleanly.
+4. Wire `--render <scene file>` to load the file before
+   uploading, replacing today's hard-coded scene in `main.cpp`.
+5. A small `io_tests` (or `scene_format_tests`) host suite
+   covering the canonical example, the all-defaults minimum
+   (`{ "version": 1 }`), and every documented validation
+   error.
+
+After v1 ships, v2 adds the deferred sections (materials, meshes,
+lights, ...) by mapping the existing host structs to JSON
+sections of the same names.
 
 Before or alongside this, the M2 deferred items (`Error`,
 `FileSystem`, `App`, `Config::load`/`save`, real test framework,
