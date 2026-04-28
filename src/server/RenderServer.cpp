@@ -174,7 +174,23 @@ CommandResult cmd_render(ServerState& state) {
         return { "ERR render: saving image failed: " + state.output_path.string(),
                  false };
     }
-    return { "OK rendered to " + state.output_path.string(), false };
+
+    // Reply with an absolute path so a client doesn't have to
+    // know the server's current working directory. `weakly_canonical`
+    // resolves the existing file (we just wrote it) and normalises
+    // any `.` / `..` / symlink components on the way.
+    auto abs = std::filesystem::weakly_canonical(state.output_path, ec);
+    if (ec) abs = std::filesystem::absolute(state.output_path);
+
+    state.last_render_width  = width;
+    state.last_render_height = height;
+    state.last_render_path   = abs;
+    ++state.render_count;
+
+    std::ostringstream os;
+    os << "OK rendered " << width << "x" << height
+       << " to " << abs.string();
+    return { os.str(), false };
 #else
     (void)state;
     return { "ERR render: no CUDA backend compiled in "

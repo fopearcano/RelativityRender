@@ -93,6 +93,126 @@ All modules now have a placeholder source directory under `src/`,
 
 ## Change Log
 
+### 2026-04-28 — M18 (wiring): server connected to GPU renderer + `--serve` CLI
+
+Wires the renderer server foundation into the executable and
+strengthens the `render` reply. The protocol is unchanged; the
+`render` command now (a) saves the GPU output to disk and
+(b) responds with an absolute file path + `WxH` resolution so a
+client never has to know the server's working directory or peek
+into the PPM header. No binary framebuffer streaming yet - the
+file path is the only side channel for image data at this
+slice, per the prompt.
+
+- **`src/core/Config.h`:** new `bool serve = false;` flag and
+  `wants_serve()` accessor. Mirrors the existing
+  `wants_render()` shape so `main` selects between the
+  one-shot render path and the long-running server with the
+  same conditional style.
+- **`src/core/CommandLine.cpp`:** parses `--serve`. Usage line
+  documents the v1 contract: server runs on `127.0.0.1:7777`.
+  No `--port` / `--host` knobs yet; the protocol stays on a
+  fixed port so the bridge can connect without configuration.
+- **`src/main.cpp`:** when `cfg.wants_serve()` is true, builds
+  a `rr::server::RenderServer` and blocks in `run()`. The
+  one-shot `--render` path is unchanged. Failure to bind
+  emits a single `Logger::error` line and exits 1.
+- **`src/server/RenderServer.h`:** `ServerState` gains
+  `render_count`, `last_render_width`, `last_render_height`,
+  and `last_render_path`. Populated only on a successful
+  `render`; left at the defaults otherwise. Useful for the
+  OK reply today and for a future "status" command without
+  changing state shape.
+- **`src/server/RenderServer.cpp`:** `cmd_render`'s success
+  path on a CUDA-enabled build now:
+  - Resolves the saved file's absolute path through
+    `std::filesystem::weakly_canonical` (with an
+    `absolute(...)` fallback if the resolver errors).
+  - Updates the `last_render_*` bookkeeping and increments
+    `render_count` (only on success).
+  - Replies `OK rendered <W>x<H> to <abs_path>` so a client
+    knows the resolution + the canonical path in one line.
+  - Without CUDA the response is unchanged (clean error +
+    no state mutation).
+- **`tests/server_tests.cpp`:** 66 host assertions (up from
+  50). Expanded coverage:
+  - Failed renders (no scene loaded, no CUDA) leave
+    `render_count` at 0 and `last_render_*` at the defaults.
+  - End-to-end client sequence `load_scene` -> `set_beta` ->
+    `render` threads scene + observer state through the
+    dispatcher's mutable state without spurious errors. The
+    GPU branch is unreachable on host-only CI; the test
+    confirms the chain reaches `render`'s entry without
+    falling into the no-scene path.
+  - `load_scene` after `set_beta` resets the velocity (load
+    replaces the entire scene by design); pinned so a future
+    change cannot silently start preserving prior beta.
+- **`CMakeLists.txt`:** the `RelativityRender` executable now
+  links `rr_server`. No new library; the existing
+  `rr_server` static library carries the dispatcher and TCP
+  loop.
+
+#### Verified locally
+
+```
+$ cmake --build build && cd build && ctest --output-on-failure
+ 1/15 ... 15/15 all Passed
+100% tests passed, 0 tests failed out of 15
+
+$ ./build/bin/server_tests
+server_tests: 66/66 passed
+```
+
+End-to-end TCP smoke test (separate harness):
+```
+$ ./build/bin/RelativityRender --serve &
+$ printf 'ping\nload_scene scenes/test_minimal.rrscene\n
+            set_beta 0.6\nrender\nshutdown\n' | nc -q1 127.0.0.1 7777
+< OK pong
+< END
+< OK loaded 0 materials, 0 spheres, 0 lights, 0 meshes
+< END
+< OK beta set to 0.6
+< END
+< ERR render: no CUDA backend compiled in (rebuild with -DRR_ENABLE_CUDA=ON)
+< END
+< OK goodbye
+< END
+```
+
+The render branch above hits the no-CUDA fallback (host-only
+box). On a CUDA-enabled build the branch instead goes through
+`GpuScene::upload_from` -> `CudaRenderer::render_scene` ->
+`Image::save_ppm` and replies with the absolute saved path,
+matching the existing `--render` deliverable's pixels but
+addressed via the protocol.
+
+#### Per the prompt
+
+- "load_scene parses rrscene": `cmd_load_scene` calls
+  `rr::io::load_rrscene`, replies with material / sphere /
+  light / mesh counts on success.
+- "render launches GPU renderer": `cmd_render` calls the
+  existing `GpuScene::upload_from(state.scene)` ->
+  `CudaRenderer::render_scene(width, height)` pipeline on
+  builds where `RR_HAS_CUDA` is defined.
+- "saves output image": writes `state.output_path` (default
+  `output/server_render.ppm`) via `Image::save_ppm`.
+- "responds with file path": `OK rendered <W>x<H> to
+  <abs_path>` carries the canonical absolute path.
+- "No binary framebuffer transfer yet": the protocol
+  carries pixels only via the saved file (path-by-reference);
+  no bytes are inlined in the response.
+
+#### Module / milestone status
+
+- Module 19 (Renderer Server): `in progress` (foundation +
+  CLI hook + GPU wire-through landed; multi-client / binary
+  framebuffer streaming / EXR delivery / cancellation /
+  multi-job queuing are the remaining slices before the
+  module flips to `landed`).
+- M18 (Renderer Server): `in progress` (same).
+
 ### 2026-04-28 — M18 (foundation): renderer server foundation
 
 First slice of the renderer server. v1 protocol is intentionally

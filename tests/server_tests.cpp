@@ -194,6 +194,12 @@ void test_render_without_scene_errors() {
     RR_CHECK(starts_with(r.response, "ERR "));
     RR_CHECK(contains(r.response, "no scene loaded"));
     RR_CHECK(!r.wants_shutdown);
+    // Failed renders do not advance the success counter or
+    // populate the `last_render_*` bookkeeping.
+    RR_CHECK(state.render_count       == 0);
+    RR_CHECK(state.last_render_width  == 0);
+    RR_CHECK(state.last_render_height == 0);
+    RR_CHECK(state.last_render_path.empty());
 }
 
 #ifndef RR_HAS_CUDA
@@ -209,8 +215,62 @@ void test_render_without_cuda_reports_clearly() {
     const auto r = dispatch_command("render", state);
     RR_CHECK(starts_with(r.response, "ERR "));
     RR_CHECK(contains(r.response, "CUDA"));
+    // Even with a scene loaded, a failed render must not advance
+    // the success counter.
+    RR_CHECK(state.render_count == 0);
 }
 #endif
+
+// --- end-to-end command sequence ----------------------------------------
+
+void test_load_then_set_beta_threads_state() {
+    // Verify the natural client sequence (load_scene -> set_beta
+    // -> render) flows scene + observer state through the
+    // dispatcher's mutable state correctly. The render call's
+    // GPU branch is unreachable on a host-only build, but we
+    // can confirm the chain reaches it without spurious errors.
+    ServerState state;
+    const std::string path = std::string(RR_TEST_FIXTURES_DIR)
+                           + "/test_minimal.rrscene";
+
+    const auto loaded = dispatch_command("load_scene " + path, state);
+    RR_CHECK(starts_with(loaded.response, "OK "));
+    RR_CHECK(state.scene_loaded);
+
+    // After load_scene the velocity is whatever the file declared
+    // (the fixture leaves it at zero); set_beta should rewrite it.
+    const auto beta = dispatch_command("set_beta 0.7", state);
+    RR_CHECK(starts_with(beta.response, "OK "));
+    RR_CHECK(state.scene.observer.velocity.x == 0.7f);
+    RR_CHECK(state.scene.observer.velocity.y == 0.0f);
+    RR_CHECK(state.scene.observer.velocity.z == 0.0f);
+
+    // The render call should reach the no-CUDA branch (host-only
+    // CI) or the GPU branch (CUDA-enabled CI) - either way it
+    // must not raise the no-scene-loaded error path now.
+    const auto rendered = dispatch_command("render", state);
+    RR_CHECK(!contains(rendered.response, "no scene loaded"));
+}
+
+void test_load_scene_resets_after_set_beta() {
+    // load_scene replaces the entire scene. Beta set BEFORE a
+    // load is therefore expected to be lost on the load - this
+    // pins the behaviour so a future change doesn't silently
+    // start preserving it.
+    ServerState state;
+
+    const auto beta = dispatch_command("set_beta 0.4", state);
+    RR_CHECK(starts_with(beta.response, "OK "));
+    RR_CHECK(state.scene.observer.velocity.x == 0.4f);
+
+    const std::string path = std::string(RR_TEST_FIXTURES_DIR)
+                           + "/test_minimal.rrscene";
+    const auto loaded = dispatch_command("load_scene " + path, state);
+    RR_CHECK(starts_with(loaded.response, "OK "));
+    // Fixture has no relativity section, so the loaded scene's
+    // observer velocity is back to the default (zero).
+    RR_CHECK(state.scene.observer.velocity.x == 0.0f);
+}
 
 // --- argument parsing edge cases ----------------------------------------
 
@@ -254,6 +314,8 @@ int main() {
 #ifndef RR_HAS_CUDA
     test_render_without_cuda_reports_clearly();
 #endif
+    test_load_then_set_beta_threads_state();
+    test_load_scene_resets_after_set_beta();
     test_paths_with_spaces_are_passed_through();
 
     std::printf("server_tests: %d/%d passed\n", g_total - g_failed, g_total);

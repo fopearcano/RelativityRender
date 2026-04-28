@@ -15,6 +15,13 @@ struct Config {
     // Action flags.
     bool show_device_info = false;
 
+    // Renderer-server mode. When set, `main` constructs a
+    // `rr::server::RenderServer` and blocks in its accept loop
+    // instead of running the one-shot render path. The server
+    // binds to `127.0.0.1:7777` by v1 convention; multi-port /
+    // multi-host support is a follow-up.
+    bool serve = false;
+
     // Render request (M2 scope: parsed only, no rendering yet).
     std::optional<std::string> render_scene_path;
     std::optional<std::string> output_image_path;
@@ -25,6 +32,9 @@ struct Config {
 
     // True iff `--render <path>` was specified on the command line.
     [[nodiscard]] bool wants_render() const { return render_scene_path.has_value(); }
+
+    // True iff `--serve` was specified on the command line.
+    [[nodiscard]] bool wants_serve()  const { return serve; }
 };
 
 }

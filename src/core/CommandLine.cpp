@@ -46,6 +46,10 @@ CommandLine::ParseResult CommandLine::parse(int argc, char** argv, Config& out) 
             out.show_device_info = true;
             continue;
         }
+        if (arg == "--serve") {
+            out.serve = true;
+            continue;
+        }
         if (arg == "--render") {
             const char* v = next_value(argc, argv, i);
             if (!v) return {Status::Error, "--render requires a scene file path"};
@@ -97,6 +101,7 @@ std::string CommandLine::usage() {
         "  -h, --help                Show this message and exit.\n"
         "  -v, --version             Print version and exit.\n"
         "      --device-info         Print available GPU devices and exit.\n"
+        "      --serve               Run as renderer server on 127.0.0.1:7777.\n"
         "      --render <scene>      Render the given scene file.\n"
         "      --output <path>       Image output path (used with --render).\n"
         "      --width  <pixels>     Image width  (default: 1280).\n"

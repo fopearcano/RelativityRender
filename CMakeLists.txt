@@ -338,7 +338,7 @@ add_executable(RelativityRender
     src/core/Config.cpp
     src/core/CommandLine.cpp
 )
-target_link_libraries(RelativityRender PRIVATE rr_gpu rr_io rr_optix)
+target_link_libraries(RelativityRender PRIVATE rr_gpu rr_io rr_optix rr_server)
 
 target_include_directories(RelativityRender PRIVATE src)
 

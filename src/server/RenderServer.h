@@ -60,6 +60,16 @@ struct ServerState {
     // server contract stays simple; later versions will let the
     // client choose per-render.
     std::filesystem::path output_path = "output/server_render.ppm";
+
+    // Bookkeeping for the most recent successful render. Populated
+    // only on a successful `render` dispatch; left at the defaults
+    // when no render has succeeded yet. Useful both for the OK
+    // reply (resolution + absolute path) and for clients that may
+    // poll status in a future protocol slice.
+    int                   render_count       = 0;
+    int                   last_render_width  = 0;
+    int                   last_render_height = 0;
+    std::filesystem::path last_render_path;
 };
 
 // Result of dispatching one request line. The dispatcher is pure

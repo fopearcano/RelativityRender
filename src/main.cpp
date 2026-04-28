@@ -9,6 +9,7 @@
 #include "io/SceneLoader.h"
 #include "optix/OptixBackend.h"
 #include "scene/Scene.h"
+#include "server/RenderServer.h"
 
 #ifdef RR_HAS_CUDA
     #include "cuda/CudaRenderer.h"
@@ -88,6 +89,23 @@ int main(int argc, char** argv) {
     if (cfg.show_device_info) {
         log_device_info();
         log_optix_info();
+        return 0;
+    }
+
+    if (cfg.wants_serve()) {
+        // Renderer-server mode. Construct with the v1 defaults
+        // (`127.0.0.1:7777`) and block in the accept loop. The
+        // command dispatcher inside `RenderServer` runs the same
+        // GPU pipeline `--render` does (load -> upload -> render
+        // -> save) when a client issues `render`; on builds
+        // without CUDA the dispatcher reports a clear error per
+        // command so the server itself stays alive and reachable.
+        rr::server::RenderServer server;
+        const auto result = server.run();
+        if (!result.ok) {
+            Logger::error(std::string("RenderServer failed: ") + result.message);
+            return 1;
+        }
         return 0;
     }
 
