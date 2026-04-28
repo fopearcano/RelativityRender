@@ -93,6 +93,88 @@ All modules now have a placeholder source directory under `src/`,
 
 ## Change Log
 
+### 2026-04-28 — M21 (spec, intro): material node graph plan
+
+First doc slice of the material node graph specification.
+Introduces the graph at the conceptual level: what it is,
+why RelativityRender needs one above and beyond the flat
+`MaterialParams` struct, how the two coexist, and the three
+hard constraints any implementation MUST respect (GPU-first
+execution, real-time compatibility, path-tracing
+compatibility). No node types, no sockets, no evaluation
+model, no implementation - those are deliberately deferred
+to subsequent slices.
+
+- **`docs/MATERIAL_GRAPH_SPEC.md`** (new):
+  - Sections 1-2: purpose + what a material node graph is
+    (declarative DAG of typed nodes; terminal-node
+    convention; no control flow; no renderer internals).
+  - Section 3: why RelativityRender needs one - flat-struct
+    limits (per-parameter compositions, authoring evolution,
+    per-hit detail) and how a graph addresses each.
+  - Section 4: how the graph differs from `MaterialParams`.
+    Pinned: the graph is an EXTENSION of the existing
+    material model (flattened result vs. recipe). A material
+    with no graph remains valid; a scene file carrying both
+    treats the snapshot as a bake of the graph for default
+    shading context.
+  - Section 5: three hard constraints any implementation
+    MUST respect:
+    - 5.1 GPU-first execution: device-resident run-time
+      form; no host callbacks / dynamic allocation /
+      unbounded recursion at shading time.
+    - 5.2 Real-time compatibility: cheap host-side compile
+      step; bounded per-evaluation cost; partial re-uploads
+      so per-slider edits do not churn the whole scene.
+    - 5.3 Path-tracing compatibility: each evaluation
+      independent; fixed shading-context input contract;
+      outputs decompose to the existing `MaterialParams`
+      consumers; differentiability NOT required in v1.
+  - Section 6: explicitly defers node types / sockets /
+    evaluation model / GPU compilation / scene-format
+    integration / C4D bridge emission / standalone
+    editor UX to future slices.
+  - Section 7: out-of-scope-for-v1 footer
+    (light networks, volume / SSS, layered BSDFs,
+    procedural noise, time-varying inputs, graph-driven
+    AOVs, differentiable graphs, GPU compilation, scene
+    integration, bridge emission, editor UX).
+
+#### Verified locally
+
+```
+$ wc -l docs/MATERIAL_GRAPH_SPEC.md
+$ python3 -c "open('docs/MATERIAL_GRAPH_SPEC.md').read()"
+$ ls docs/MATERIAL_GRAPH_SPEC.md
+```
+
+Spec-only slice; no source / build / test changes.
+
+#### Per the prompt
+
+- "What the material node graph is": Section 2.
+- "Why it is needed in RelativityRender": Section 3 (three
+  flat-struct limits and how the graph addresses each).
+- "How it differs from simple material structs": Section 4
+  (table + pinning that the two coexist - the struct is
+  the bake of the graph).
+- "Constraints: GPU-first execution / real-time
+  compatibility / compatibility with path tracing":
+  Section 5, one subsection each, each subsection ending
+  with an explicit "this rules out, in v1" list so the
+  constraint is enforceable rather than aspirational.
+- "Do NOT define node types / sockets / implementation":
+  Section 6 explicitly defers each. Section 7's
+  out-of-scope list reinforces.
+
+#### Module / milestone status
+
+- Module 22 (Node Editor / Material Graph): remains `not
+  started`. The spec slice does not promote it; the next
+  doc slice (node types) extends the contract.
+- M21 (Material Node Graph (Editor)): remains `not
+  started` (same rationale).
+
 ### 2026-04-28 — M19 (extension 6): preview dialog displays the rendered image
 
 Seventh slice of the Cinema 4D bridge. The preview dialog now
