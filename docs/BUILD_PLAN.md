@@ -2229,22 +2229,147 @@ implementation*, the same posture taken for `transmission` in
   three materials, no `spheres` block) still loads with
   `spheres.count = 0`.
 
+## Stage 10B.7 — parse lights
+
+**Scope of this slice (Stage 10B.7): add a lights schema mapper
+that reads the canonical §10 `type` / `name` / `color` /
+`intensity` fields onto `rr::scene::SceneLight` entries plus the
+type-specific `position` (for `point` + `area`) or `direction`
+(for `directional`) per §12 #8. Enforces §12 #7 (type is one of
+the four enumerators) and the type-specific required-field rules
+in §12 #8.** Meshes remain out of scope; `area_width` /
+`area_height` and the `SceneObject` `visible` / `transform`
+fields are deferred per the prompt scope.
+
+### What ships
+
+- `src/io/SceneLoader.cpp` — added `apply_light` (single entry)
+  and `apply_lights` (array driver). The single-entry mapper:
+  - Required `type` string, validated against the four §10
+    enumerators (`point` / `directional` / `area` /
+    `environment`); unknown types reject the file (§12 #7)
+    with the offending value quoted in the error.
+  - Optional `name`, `color` (each component `>= 0`),
+    `intensity` (`>= 0`).
+  - Type-specific required fields (§12 #8): `position` for
+    `point` + `area`; `direction` for `directional`. Errors
+    name the light index, the missing field, and the type so
+    authoring mistakes are easy to find.
+  - `direction` is normalised before storage (matching
+    `make_directional_light` behaviour). A zero-length input
+    falls back to `(0, -1, 0)` rather than producing NaNs.
+  - `area_width` / `area_height` stay at `Light` POD defaults
+    (area lights are still a §10 PLACEHOLDER and the prompt
+    excluded those fields). `SceneObject::visible` and
+    `transform` stay at defaults for the same reason.
+- `apply_lights` (array driver):
+  - Resets `scene.lights` and reserves the entry count.
+  - Walks entries through `apply_light`; the array-level
+    bookkeeping is deliberately thin since per-entry
+    validation already names the offending index.
+- `src/io/SceneLoader.cpp::parse` — wires `apply_lights` in
+  after `apply_spheres`. Only `meshes` remains syntax-checked
+  and dropped after this stage.
+- `src/main.cpp::run_scene_info` — prints light count and the
+  first light's fields under a `lights:` heading: `type`
+  (string-formatted via a small `fmt_light_type` lambda),
+  `name`, `color`, `intensity`, plus `position` / `direction`
+  conditional on the type so the output stays compact and
+  matches what the parser actually populated.
+- `scenes/test_lights.rrscene` — three-light fixture covering
+  every type the prompt scope reaches:
+  - `[0]` `point` light (warm fill at `[2.0, 1.5, -2.5]`,
+    intensity 30).
+  - `[1]` `directional` "key" (sun-like, with an
+    unnormalised input vector to demonstrate normalisation).
+  - `[2]` `environment` "sky" (cool ambient tint, no
+    direction or position).
+- `docs/RRSCENE_FORMAT.md` §10.1 — new status block listing
+  the implemented fields, the type-specific required-field
+  rules, the parser's normalisation + zero-length fallback
+  behaviour for `direction`, and the deferred fields
+  (`area_width`/`area_height`, `visible`, `transform`).
+
+### Naming-tension resolution
+
+None this stage. The user prompt's field names match the
+canonical §10 names verbatim (`type`, `name`, `position`,
+`direction`, `color`, `intensity`); no shorthand table needed.
+The "if point/area" / "if directional" qualifiers in the prompt
+match §12 #8's type-specific required-field rules exactly, so
+the parser's per-type branching is a direct translation of the
+spec.
+
+`area_width` / `area_height` are §10 v1.0 fields but the prompt
+explicitly omitted them (and area sampling is still a §10
+PLACEHOLDER); same partial-v1.0 posture as 10B.5 (`transmission`)
+and 10B.6 (`visible` / `transform`).
+
+### Hard-rule audit
+
+- Do not parse meshes yet — **yes**, no `apply_meshes` mapper;
+  the `meshes` array remains syntax-checked and dropped.
+- Do not render yet — **yes**, the only consumer of the parser
+  is `--scene-info`, which only prints. No GPU launch path is
+  reached.
+- No GPU changes — **yes**, no source under `src/gpu/` or
+  `src/cuda/` is touched. `rr::lighting::Light` is byte-
+  identical to Stage 10B.6; the host `Scene` container's
+  `lights` vector is the same type the GPU upload path
+  (`GpuScene::upload_lights`) already consumes from
+  `--render-direct-lighting`.
+- Must compile — **yes**, host-only build is clean under
+  `-Wall -Wextra -Wpedantic`, no warnings; `ctest` reports
+  3/3.
+
+### Verified at the CLI
+
+- `--scene-info scenes/test_lights.rrscene` prints
+  `lights.count = 3` and the `[0]` block matches the
+  fixture's `point` "fill" light byte-for-byte
+  (`color = [1.0, 0.85, 0.6]`, `intensity = 30`,
+  `position = [2.0, 1.5, -2.5]`).
+- `lights[0]` missing `type` → exit 1, "is missing required
+  'type'".
+- `type = "laser"` → exit 1, "must be one of \"point\",
+  \"directional\", \"area\", \"environment\" (got \"laser\")"
+  (§12 #7).
+- `type = "point"` without `position` → exit 1,
+  ".position is required for type \"point\"" (§12 #8).
+- `type = "directional"` without `direction` → exit 1,
+  ".direction is required for type \"directional\"".
+- `type = "area"` without `position` → exit 1,
+  ".position is required for type \"area\"".
+- `direction = [0, 0, 0]` for a directional light parses and
+  collapses to `[0, -1, 0]` (spec §10 fallback).
+- `direction = [3, 0, 4]` (unnormalised) parses and stores
+  `[0.6, 0, 0.8]` (length-1 unit vector).
+- `intensity = -1` → exit 1, "must be >= 0".
+- `color = [-1, 0, 0]` → exit 1, "components must be >= 0".
+- `type = "environment"` with no other fields parses with
+  defaults (`color = [1, 1, 1]`, `intensity = 1`).
+- The Stage 10B.6 fixture (`scenes/test_spheres.rrscene`,
+  three spheres, no `lights` block) still loads with
+  `lights.count = 0`.
+
 ## Next stage
 
-**Stage 10B.7 — parse meshes.** Scope:
+**Stage 10B.8 — parse meshes.** Scope:
 
 - Add `apply_meshes` schema reader: maps the §9 inline
   `vertices` + `triangles` arrays onto `rr::geometry::Mesh`
   data inside `rr::scene::SceneMesh`, validating per-vertex
-  required fields and per-triangle index ranges (§12 #6).
-- Extend `--scene-info` to print mesh count + the first mesh's
-  vertex / triangle counts.
+  required fields (`position`) and per-triangle index ranges
+  (§12 #6).
+- Extend `--scene-info` to print mesh count + the first
+  mesh's vertex / triangle counts.
 - Add `scenes/test_meshes.rrscene` fixture.
 
-Lights mapper comes in 10B.8; the `--render <file>` end-to-end
-wiring + writer (`SceneWriter::save`) + the deferred
-`transmission` / `visible` / `transform` fields join in the
-final 10B sub-stage.
+After 10B.8, every top-level v1.0 section has a mapper. The
+`--render <file>` end-to-end wiring, the writer
+(`SceneWriter::save`), and the deferred fields
+(`transmission` / `visible` / `transform` / `area_width` /
+`area_height`) join in the final 10B sub-stage.
 
 ## Constraints carried forward
 

@@ -223,6 +223,43 @@ int run_scene_info(const rr::core::Config& cfg) {
         Logger::info("      material_index  : "
                    + std::to_string(s.geometry.material_index));
     }
+
+    const auto& lts = result.scene.lights;
+    auto fmt_light_type = [](rr::lighting::LightType t) -> std::string {
+        switch (t) {
+            case rr::lighting::LightType::Point:       return "point";
+            case rr::lighting::LightType::Directional: return "directional";
+            case rr::lighting::LightType::Area:        return "area";
+            case rr::lighting::LightType::Environment: return "environment";
+        }
+        return "unknown";
+    };
+    Logger::info("  lights:");
+    Logger::info("    count             : " + std::to_string(lts.size()));
+    if (!lts.empty()) {
+        const auto& l = lts.front();
+        const bool has_position  =
+            (l.data.type == rr::lighting::LightType::Point
+          || l.data.type == rr::lighting::LightType::Area);
+        const bool has_direction =
+            (l.data.type == rr::lighting::LightType::Directional);
+        Logger::info("    [0]:");
+        Logger::info("      type            : " + fmt_light_type(l.data.type));
+        Logger::info("      name            : "
+                   + (l.object.name.empty() ? std::string("(unnamed)")
+                                            : l.object.name));
+        Logger::info("      color           : " + fmt_vec3(l.data.color));
+        Logger::info("      intensity       : "
+                   + std::to_string(l.data.intensity));
+        if (has_position) {
+            Logger::info("      position        : "
+                       + fmt_vec3(l.data.position));
+        }
+        if (has_direction) {
+            Logger::info("      direction       : "
+                       + fmt_vec3(l.data.direction));
+        }
+    }
     return 0;
 }
 
@@ -1013,7 +1050,7 @@ int main(int argc, char** argv) {
         case CommandLine::Action::Default:
             Logger::info(std::string(rr::core::kProjectName) + " "
                        + rr::core::kVersionString + " starting up.");
-            Logger::info("Stage 10B.6: parse spheres. "
+            Logger::info("Stage 10B.7: parse lights. "
                          "Try --scene-info <file>, --device-info, "
                          "--render-gradient, --render-rays, "
                          "--render-sphere, --render-relativistic, "

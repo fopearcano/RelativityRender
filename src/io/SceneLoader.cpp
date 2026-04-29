@@ -2,6 +2,7 @@
 
 #include "camera/Camera.h"
 #include "geometry/Sphere.h"
+#include "lighting/Light.h"
 #include "material/MaterialTypes.h"
 #include "math/Vec3.h"
 #include "relativity/RelativityParams.h"
@@ -1094,6 +1095,153 @@ bool apply_spheres(const JsonValue& arr,
     return true;
 }
 
+// Apply a single lights-array entry onto `out`. Stage 10B.7
+// surface: type (required, one of "point" / "directional" / "area"
+// / "environment"), name, color, intensity, plus type-specific
+// position (for point + area) or direction (for directional). The
+// `area_width` / `area_height` fields stay at their `Light` POD
+// defaults - area lights remain a §10 PLACEHOLDER and the prompt
+// scope did not list those fields. SceneObject's `visible` /
+// `transform` are likewise out of scope and stay defaulted.
+//
+// Direction-bearing lights normalise the input vector before
+// storing it (matching `make_directional_light` / `make_area_light`
+// behaviour); a zero-length direction falls back to (0, -1, 0)
+// rather than producing a NaN unit vector. Type-specific required
+// fields (§12 #8) are enforced; an unknown type rejects the file
+// per §12 #7.
+bool apply_light(const JsonValue& obj,
+                 rr::scene::SceneLight& out,
+                 std::string& err,
+                 const char* entry_label) {
+    if (obj.kind != JsonKind::Object) {
+        err = std::string(entry_label) + " must be a JSON object";
+        return false;
+    }
+
+    // type (required; §12 #7).
+    const auto* type_v = obj.find("type");
+    if (type_v == nullptr) {
+        err = std::string(entry_label) + " is missing required 'type'";
+        return false;
+    }
+    std::string type_str;
+    if (!to_string(*type_v, type_str, err,
+                   (std::string(entry_label) + ".type").c_str())) {
+        return false;
+    }
+    rr::lighting::LightType light_type;
+    if      (type_str == "point")       light_type = rr::lighting::LightType::Point;
+    else if (type_str == "directional") light_type = rr::lighting::LightType::Directional;
+    else if (type_str == "area")        light_type = rr::lighting::LightType::Area;
+    else if (type_str == "environment") light_type = rr::lighting::LightType::Environment;
+    else {
+        err = std::string(entry_label) + ".type must be one of "
+            + "\"point\", \"directional\", \"area\", \"environment\" "
+            + "(got \"" + type_str + "\")";
+        return false;
+    }
+    out.data.type = light_type;
+
+    // name (optional, default "").
+    if (const auto* v = obj.find("name")) {
+        if (!to_string(*v, out.object.name, err,
+                       (std::string(entry_label) + ".name").c_str())) {
+            return false;
+        }
+    }
+
+    // color (optional, default [1,1,1], each component >= 0).
+    if (const auto* v = obj.find("color")) {
+        const std::string field = std::string(entry_label) + ".color";
+        if (!to_vec3(*v, out.data.color, err, field.c_str())) return false;
+        if (out.data.color.x < 0.0f
+         || out.data.color.y < 0.0f
+         || out.data.color.z < 0.0f) {
+            err = field + " components must be >= 0";
+            return false;
+        }
+    }
+
+    // intensity (optional, default 1.0, >= 0).
+    if (const auto* v = obj.find("intensity")) {
+        if (!to_float(*v, out.data.intensity, err,
+                      (std::string(entry_label) + ".intensity").c_str())) {
+            return false;
+        }
+        if (out.data.intensity < 0.0f) {
+            err = std::string(entry_label) + ".intensity must be >= 0";
+            return false;
+        }
+    }
+
+    const bool needs_position  = (light_type == rr::lighting::LightType::Point
+                               || light_type == rr::lighting::LightType::Area);
+    const bool needs_direction = (light_type == rr::lighting::LightType::Directional);
+
+    // position - required for point + area; ignored otherwise.
+    if (needs_position) {
+        const auto* p_v = obj.find("position");
+        if (p_v == nullptr) {
+            err = std::string(entry_label) + ".position is required for type \""
+                + type_str + "\"";
+            return false;
+        }
+        if (!to_vec3(*p_v, out.data.position, err,
+                     (std::string(entry_label) + ".position").c_str())) {
+            return false;
+        }
+    }
+
+    // direction - required for directional; ignored otherwise.
+    if (needs_direction) {
+        const auto* d_v = obj.find("direction");
+        if (d_v == nullptr) {
+            err = std::string(entry_label) + ".direction is required for type \""
+                + type_str + "\"";
+            return false;
+        }
+        rr::math::Vec3 dir{0.0f, 0.0f, 0.0f};
+        if (!to_vec3(*d_v, dir, err,
+                     (std::string(entry_label) + ".direction").c_str())) {
+            return false;
+        }
+        const float len2 = dir.x*dir.x + dir.y*dir.y + dir.z*dir.z;
+        if (len2 == 0.0f) {
+            // Spec §10 says zero-length input falls back to (0,-1,0)
+            // rather than rejecting; matches make_directional_light.
+            out.data.direction = rr::math::Vec3{0.0f, -1.0f, 0.0f};
+        } else {
+            const float inv_len = 1.0f / std::sqrt(len2);
+            out.data.direction = rr::math::Vec3{dir.x * inv_len,
+                                                dir.y * inv_len,
+                                                dir.z * inv_len};
+        }
+    }
+
+    return true;
+}
+
+// Apply the `lights` JSON array onto `scene.lights`. Stage 10B.7
+// surface; per-entry validation runs through `apply_light`.
+bool apply_lights(const JsonValue& arr,
+                  std::vector<rr::scene::SceneLight>& out,
+                  std::string& err) {
+    if (arr.kind != JsonKind::Array) {
+        err = "'lights' must be a JSON array";
+        return false;
+    }
+    out.clear();
+    out.reserve(arr.arr.size());
+    for (std::size_t i = 0; i < arr.arr.size(); ++i) {
+        const std::string label = "lights[" + std::to_string(i) + "]";
+        rr::scene::SceneLight l;
+        if (!apply_light(arr.arr[i], l, err, label.c_str())) return false;
+        out.push_back(std::move(l));
+    }
+    return true;
+}
+
 // Slurp `path` into a string; returns false on read failure.
 bool read_text_file(const std::string& path, std::string& out,
                     std::string& err) {
@@ -1253,10 +1401,23 @@ LoadResult parse(const std::string& text) {
         }
     }
 
-    // Stage 10B.6 schema scope ends here. Other top-level keys
-    // (`meshes`, `lights`) are intentionally ignored - they were
+    // lights (optional). Stage 10B.7 surface: type / name /
+    // color / intensity plus type-specific position (point +
+    // area) or direction (directional). area_width / area_height
+    // remain at the Light POD defaults until area-light sampling
+    // ships with the path tracer.
+    if (const JsonValue* lt_v = root.find("lights")) {
+        std::string apply_err;
+        if (!apply_lights(*lt_v, result.scene.lights, apply_err)) {
+            result.error_message = apply_err;
+            return result;
+        }
+    }
+
+    // Stage 10B.7 schema scope ends here. The only remaining top-
+    // level key (`meshes`) is intentionally ignored - it was
     // syntax-checked by the JSON parser pass and will be mapped
-    // onto `scene` in follow-up sub-stages.
+    // onto `scene` in a follow-up sub-stage.
 
     result.ok = true;
     return result;

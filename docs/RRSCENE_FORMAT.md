@@ -555,6 +555,37 @@ falls back to `(0, -1, 0)`.
 | `area`        | **PLACEHOLDER**       | Uploaded; kernel currently skips. Real area-light sampling lands with the path tracer. |
 | `environment` | yes (basic)           | Treated as ambient `light_color` (no directional dependence); HDR env-maps are future. |
 
+### 10.1 Stage 10B.7 status notes
+
+The Stage 10B.7 parser implements `type` (required, validated
+against the four §10 enumerators), `name`, `color` (each
+component `>= 0`), `intensity` (`>= 0`), and the type-specific
+position / direction fields per §12 #8:
+
+- `point` and `area` require `position`. Missing `position` for
+  these types rejects the file.
+- `directional` requires `direction`. The parser normalises the
+  input vector before storing it (matching the
+  `make_directional_light` factory). A zero-length input
+  collapses to `(0, -1, 0)` rather than producing NaNs.
+- `environment` requires neither `position` nor `direction`.
+
+Out of scope for Stage 10B.7 (deferred until area-light sampling
+ships with the path tracer):
+
+- `area_width` / `area_height` for area lights. Both stay at
+  the `Light` POD defaults (`0.0`); a v1.0 file that authors
+  them is parsed by the JSON layer but the schema mapper does
+  not consult them. Per §12 #8, area lights without these
+  fields are degenerate today; the area-sampling stage will
+  enforce the rule once the kernel actually consumes them.
+- `visible` / `transform` on the `SceneObject` wrapper. Both
+  stay at their defaults (`visible = true`, identity
+  transform). Same partial-implementation posture as 10B.6
+  spheres.
+
+Tools that emit `.rrscene` files MUST emit canonical names only.
+
 ## 11. `transform` (used by spheres, meshes, lights)
 
 Maps to `rr::math::Transform`. Plain data; conversion to a 4×4
