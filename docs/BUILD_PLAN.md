@@ -6,7 +6,7 @@ records what landed, in which stage, and the next concrete step.
 
 ## Current state
 
-**Stages 1–10 + 6A + 6B — through GPU scene upload.** Skeleton C++20 executable; header-only RR_HD math
+**Stages 1–10 + 6A + 6B + 7A — through host-side mesh structures.** Skeleton C++20 executable; header-only RR_HD math
 library; host-side floating-point image + framebuffer system;
 backend-agnostic GPU device + memory layers; pinhole `Camera` + RR_HD
 `generate_camera_ray`; single-sphere intersection kernel; relativity
@@ -22,9 +22,11 @@ visualisation, relativistic single-sphere. `--device-info`,
 runs a four-β sweep (0.00, 0.25, 0.75, 0.95) and writes four named
 PPMs. 150 host-side test assertions across three ctest binaries pass.
 A new `rr::gpu::GpuScene` upload manager and a `k_render_scene`
-closest-hit kernel land at Stage 6B; `--render-scene` now uses
+closest-hit kernel landed at Stage 6B; `--render-scene` uses
 `rr::scene::Scene` end-to-end (host build → upload → GPU render →
-PPM). Five GPU kernels live now: UV gradient, camera-ray
+PPM). Stage 7A adds host-side `Triangle` / `Vertex` / `Mesh` with a
+local-space AABB; the GPU upload + triangle kernel are deferred to
+Stage 7B. Five GPU kernels live now: UV gradient, camera-ray
 visualisation, single-sphere visualisation, relativistic
 single-sphere, multi-sphere scene. **Six** GPU CLI actions are live:
 `--render-gradient`, `--render-rays`, `--render-sphere`,
@@ -74,6 +76,9 @@ lights, no path tracer, no server, no integrations.
 | `src/camera/Camera.cpp`    | Implementation; `look_at` re-orthogonalises the basis with a fallback when `up_hint` is parallel to `forward_`. |
 | `src/camera/CameraRay.h`   | Device-friendly `GpuCamera` POD (position / forward / up / right / `tan_half_vfov` / aspect) plus the `RR_HD generate_camera_ray(cam, x, y, w, h)` helper. Same code path runs on host (tests) and device (kernels). |
 | `src/geometry/Sphere.h`    | RR_HD POD `Sphere {center, radius, material_index}`. Trivial aggregate; passed by value to kernels. `material_index` defaults to -1 and is inert at this stage (the material system has not landed yet). |
+| `src/geometry/Triangle.h`  | RR_HD POD `Triangle {v0, v1, v2}` (uint32_t indices). Counter-clockwise winding when viewed from the front face, matching the convention `intersect_triangle` will use in Stage 7B. Layout-compatible with a flat `uint32_t[3*N]` index array. |
+| `src/geometry/Mesh.h`      | Host-side indexed triangle mesh. `vector<Vertex>` (position + normal + uv) + `vector<Triangle>` + `material_id` (defaults `-1`) + `math::Transform`. Helpers: `vertex_count`, `triangle_count`, `empty`, `clear`, `reserve`, `local_bounds() -> AABB`. AABB is local-space only at this stage; the world-space bounds (BVH, frustum cull) wait on a real consumer. |
+| `src/geometry/Mesh.cpp`    | Implementation. `local_bounds` runs a single linear pass over `vertices` and returns `{min, max, valid=false}` for an empty mesh so callers detect "no points" without sentinel values. |
 | `src/renderer/Hit.h`       | RR_HD POD `Hit {hit, t, position, normal, material_index, uv, bary_u, bary_v}`. The kernel only reads `hit` / `normal` at this stage; the remaining fields are populated by intersection routines for later stages (textures, materials, mesh barycentrics) and have safe defaults. |
 | `src/cuda/CudaIntersection.cuh` | RR_HD `intersect_sphere(ray, sphere, t_min, t_max) -> Hit`. Same code runs on host (tests) and device (kernel). Trimmed from the prototype's superset to sphere-only at this stage; triangle intersection joins the file in the mesh stage. |
 | `src/relativity/RelativityParams.h` | `Observer { Vec3 velocity = beta }` and `RelativityParams { enable_aberration / enable_doppler / enable_searchlight, doppler_color_strength, searchlight_strength, max_beta }`. The artist-facing toggles live here, separate from the kinematic `Observer`. Velocity is in c-units; `\|beta\| < 1` is the caller's invariant. |
@@ -1020,29 +1025,93 @@ byte-equivalent to the prototype's tested implementations
 (prior reuse audit classified them KEEP_AS_IS / KEEP_WITH_REFACTOR;
 this commit ships only the minimum surface the prompt asks for).
 
+### Stage 7A — Mesh structures (Module 12, host half)
+
+Status: implemented.
+
+The user is splitting master module 12 (Mesh system) the same way
+module 11 was split:
+
+- **Stage 7A (this slice)**: host-side `Triangle` / `Vertex` /
+  `Mesh` / `AABB`. No GPU upload, no kernel changes, no rendering
+  delta.
+- **Stage 7B (next slice)**: restore `intersect_triangle` in
+  `cuda/CudaIntersection.cuh`, add `cuda/CudaMesh.cuh` device
+  view, `gpu/GpuMesh.{h,cpp}` upload manager, extend `GpuScene` /
+  `CudaSceneView` with a single mesh slot, extend
+  `k_render_scene` with a triangle closest-hit loop, promote
+  `SceneMesh` from placeholder to real (carries
+  `rr::geometry::Mesh` data).
+
+Stage 7A ships:
+
+- `src/geometry/Triangle.h` (recovered byte-identical from
+  `prototype_v0`).
+- `src/geometry/Mesh.h` (prototype's `Vertex` + `Mesh` plus a new
+  `AABB` struct + `Mesh::local_bounds()` method - the user
+  explicitly asked for "bounds calculation if simple"; the
+  prototype shipped without one).
+- `src/geometry/Mesh.cpp` (clear / empty / reserve from the
+  prototype, plus the `local_bounds` impl - single linear pass
+  over vertices).
+
+Bounds scope: **local-space only** at this stage. The
+`Transform` POD doesn't commit to a 4x4 matrix conversion (Euler
+order, basis convention), so transforming each vertex would force
+that decision early. Local-space AABB is the simplest thing the
+user's "if simple" qualifier covers; world-space bounds (which a
+BVH or frustum cull would need) join when a real consumer
+appears.
+
+CMake change: `rr_geometry` is promoted from INTERFACE to STATIC
+because `Mesh.cpp` now ships real implementation. PUBLIC includes
++ PUBLIC link to `rr_math` are unchanged.
+
+Hard-rule audit (per the prompt):
+
+- No GPU upload yet - **yes**, no `GpuMesh.{h,cpp}` /
+  `CudaMesh.cuh` files exist.
+- No rendering changes - **yes**, `CudaTestKernel.cu`,
+  `CudaIntersection.cuh`, `CudaRenderer.{h,cu}`, and `main.cpp`
+  are byte-identical to Stage 6B.
+- No parser - **yes**, no `SceneLoader` / `SceneWriter` files
+  exist.
+- No server, no C4D - **yes**.
+- Must compile - **yes**, host-only build clean under
+  `-Wall -Wextra -Wpedantic`, no warnings; `librr_geometry.a` is
+  produced; ctest 3/3; every existing CLI action behaves
+  identically to Stage 6B.
+
+Stage 7A ships zero behavioural delta - it is a pure additive
+structural slice that prepares Stage 7B.
+
 ## Next stage
 
-**Stage 7 — Mesh system.** Master module 12. Scope: bring back the
-`Triangle` POD, `Mesh` host class, `intersect_triangle` (Möller-
-Trumbore — was deferred from Stage 8), `GpuMesh` upload manager,
-`CudaMeshView` device POD, and a single mesh slot on `Scene` /
-`GpuScene` / `CudaSceneView`. Extend `k_render_scene` with a
-triangle closest-hit loop that competes with the sphere loop on
-`t_max`.
+**Stage 7B — Mesh GPU upload + triangle kernel (Module 12, GPU
+half).** Scope: bring `rr::geometry::Mesh` to the device. The
+`k_render_scene` kernel grows a triangle closest-hit loop that
+competes with the sphere loop on `t_max`. `SceneMesh` is promoted
+from a placeholder shell to a real authoring entry.
 
 Deliverables (planned, NOT yet implemented):
 
-- `src/geometry/Triangle.h`, `src/geometry/Mesh.{h,cpp}`.
 - Restore `intersect_triangle` in
-  `src/cuda/CudaIntersection.cuh`.
-- `src/cuda/CudaMesh.cuh`, `src/gpu/GpuMesh.{h,cpp}`.
-- Extend `Scene` / `GpuScene` / `CudaSceneView` with a single mesh
-  slot; promote `SceneMesh` from placeholder to real (carries
-  `rr::geometry::Mesh` data).
-- Extend `k_render_scene` with the triangle loop.
-- `tests/mesh_tests.cpp`.
-- A `--render-mesh` CLI action or a flag that loads a built-in
-  cube / tetrahedron into the demo scene. **Still no scene file
+  `src/cuda/CudaIntersection.cuh` (Möller-Trumbore - was deferred
+  from the original Stage 8).
+- `src/cuda/CudaMesh.cuh` (device-side mesh view POD: vertex
+  pointer + triangle pointer + counts + `material_id`).
+- `src/gpu/GpuMesh.{h,cpp}` (move-only RAII upload of vertices +
+  triangles; `upload_from(const rr::geometry::Mesh&)`).
+- Extend `gpu/GpuScene` with a single mesh slot
+  (`upload_mesh(const rr::geometry::Mesh&)`).
+- Extend `cuda/CudaScene.cuh::CudaSceneView` with the mesh view.
+- Extend `k_render_scene` with the triangle loop after the sphere
+  loop, sharing `t_max`.
+- Promote `scene/Scene.h::SceneMesh` from placeholder
+  (`{SceneObject, source_path}`) to real (carries
+  `rr::geometry::Mesh data`).
+- A `--render-mesh` CLI action that loads a built-in cube /
+  tetrahedron into the demo scene. **Still no scene file
   format.**
 
 ## Constraints carried forward

@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.20)
 
 project(RelativityRender
     VERSION     0.1.0
-    DESCRIPTION "RelativityRender - GPU renderer platform (Stage 6B: GPU scene upload)"
+    DESCRIPTION "RelativityRender - GPU renderer platform (Stage 7A: mesh structures)"
     LANGUAGES   CXX
 )
 
@@ -23,7 +23,7 @@ option(RR_ENABLE_CUDA "Enable CUDA backend (requires CUDA Toolkit)"   OFF)
 
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
-message(STATUS "RelativityRender ${PROJECT_VERSION} (Stage 6B: GPU scene upload)")
+message(STATUS "RelativityRender ${PROJECT_VERSION} (Stage 7A: mesh structures)")
 
 message(STATUS "  Build type   : ${CMAKE_BUILD_TYPE}")
 message(STATUS "  C++ standard : ${CMAKE_CXX_STANDARD}")
@@ -94,13 +94,18 @@ target_include_directories(rr_camera PUBLIC src)
 target_link_libraries(rr_camera PUBLIC rr_math)
 rr_apply_warnings(rr_camera)
 
-# rr_geometry: header-only geometry primitives. Sphere is a trivial
-# aggregate POD (centre / radius / material_index) usable on both host
-# and device; kernels take it by value as a launch argument. The mesh
-# stage will promote rr_geometry to STATIC when Mesh.cpp lands.
-add_library(rr_geometry INTERFACE)
-target_include_directories(rr_geometry INTERFACE src)
-target_link_libraries(rr_geometry INTERFACE rr_math)
+# rr_geometry: geometry primitives.
+#
+# Stage 7A promotes this from INTERFACE to STATIC because Mesh.cpp
+# now ships real implementation (clear / empty / reserve /
+# local_bounds). Sphere / Triangle / Vertex / AABB stay header-only
+# and travel through the public include path.
+add_library(rr_geometry STATIC
+    src/geometry/Mesh.cpp
+)
+target_include_directories(rr_geometry PUBLIC src)
+target_link_libraries(rr_geometry PUBLIC rr_math)
+rr_apply_warnings(rr_geometry)
 
 # rr_relativity: header-only relativity math leaf.
 #
