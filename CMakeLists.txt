@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.20)
 
 project(RelativityRender
     VERSION     0.1.0
-    DESCRIPTION "RelativityRender - GPU renderer platform (Stage 10: relativistic GPU rendering)"
+    DESCRIPTION "RelativityRender - GPU renderer platform (Stage 6A: host scene structures)"
     LANGUAGES   CXX
 )
 
@@ -23,7 +23,7 @@ option(RR_ENABLE_CUDA "Enable CUDA backend (requires CUDA Toolkit)"   OFF)
 
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
-message(STATUS "RelativityRender ${PROJECT_VERSION} (Stage 10: relativistic GPU rendering)")
+message(STATUS "RelativityRender ${PROJECT_VERSION} (Stage 6A: host scene structures)")
 
 message(STATUS "  Build type   : ${CMAKE_BUILD_TYPE}")
 message(STATUS "  C++ standard : ${CMAKE_CXX_STANDARD}")
@@ -121,6 +121,22 @@ target_link_libraries(rr_geometry INTERFACE rr_math)
 add_library(rr_relativity INTERFACE)
 target_include_directories(rr_relativity INTERFACE src)
 target_link_libraries(rr_relativity INTERFACE rr_math)
+
+# rr_scene: host-side authoring scene container.
+#
+# Owns the camera, render settings, Observer + RelativityParams, the
+# real sphere list, and placeholder lists for meshes / materials /
+# lights (each populated as the corresponding master-order module
+# ships). The scene knows nothing about the GPU or the file format -
+# the GPU upload path (Stage 6B / master module 11) and the scene
+# loader (master module 15) consume it as input. PUBLIC-links every
+# type Scene names by value so consumers see complete types.
+add_library(rr_scene STATIC
+    src/scene/Scene.cpp
+)
+target_include_directories(rr_scene PUBLIC src)
+target_link_libraries(rr_scene PUBLIC rr_math rr_camera rr_geometry rr_relativity)
+rr_apply_warnings(rr_scene)
 
 # rr_gpu: backend-agnostic GPU device + memory + (Stage 6) kernel
 # launch layer.

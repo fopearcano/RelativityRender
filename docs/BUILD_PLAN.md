@@ -6,10 +6,8 @@ records what landed, in which stage, and the next concrete step.
 
 ## Current state
 
-**Stages 1–10 — Core app + math + image + GPU device + GPU buffer
-layer + CUDA kernel infrastructure + camera system + primitive GPU
-intersection + relativistic camera math + relativistic GPU
-rendering.** Skeleton C++20 executable; header-only RR_HD math
+**Stages 1–10 + 6A — through relativistic GPU rendering, plus
+host-side scene structures.** Skeleton C++20 executable; header-only RR_HD math
 library; host-side floating-point image + framebuffer system;
 backend-agnostic GPU device + memory layers; pinhole `Camera` + RR_HD
 `generate_camera_ray`; single-sphere intersection kernel; relativity
@@ -24,8 +22,10 @@ visualisation, relativistic single-sphere. `--device-info`,
 `--render-relativistic` actions are all live. The relativistic action
 runs a four-β sweep (0.00, 0.25, 0.75, 0.95) and writes four named
 PPMs. 150 host-side test assertions across three ctest binaries pass.
-No scene system, no materials, no lights, no path tracer, no server,
-no integrations.
+A new host-side `rr::scene::Scene` container exists in the tree as
+of Stage 6A, but is **not yet consumed** by the renderer (Stage 6B
+wires the GPU upload). No materials, no lights, no path tracer, no
+server, no integrations.
 
 ### Files in scope
 
@@ -74,6 +74,12 @@ no integrations.
 | `src/relativity/RelativityParams.h` | `Observer { Vec3 velocity = beta }` and `RelativityParams { enable_aberration / enable_doppler / enable_searchlight, doppler_color_strength, searchlight_strength, max_beta }`. The artist-facing toggles live here, separate from the kinematic `Observer`. Velocity is in c-units; `\|beta\| < 1` is the caller's invariant. |
 | `src/relativity/RelativityMath.h`   | RR_HD inline math leaf. Each function carries a `PHYSICAL` or `ARTISTIC APPROXIMATION` tag in its header. See "Stage 9 — function tags" below. |
 | `src/relativity/RelativityMath.cuh` | Thin re-export of `RelativityMath.h` for kernel translation units; future device-specific overrides (`rsqrtf`, `__fdividef`, fast-math intrinsics) land here without touching the host surface. |
+| `src/math/Transform.h`              | Plain-data local-to-parent transform: position + Euler-rotation-radians + scale + `identity()` static factory. Conversion to a 4x4 matrix is deferred to consumers. Brought across in Stage 6A so `scene/Transform.h` can alias it. |
+| `src/scene/Transform.h`             | Thin alias `using rr::scene::Transform = rr::math::Transform`. Preserved per the user's Stage 6A spec; the prior reuse audit had it `DELETE_LATER`, but it stays as long as the user-facing scene API names a `Transform` from inside the scene namespace. New scene-side code is welcome to use `rr::math::Transform` directly. |
+| `src/scene/RenderSettings.h`        | POD: `width`, `height`, `samples_per_pixel`, `max_depth`. Resolution lives here (output-surface concern) rather than on `Camera` (optical-config concern). The two trailing fields are stored faithfully but not consumed yet - the path tracer (master module 16) reads them. |
+| `src/scene/SceneObject.h`           | POD `{name, Transform, visible}`. Composed into the type-specific scene wrappers (`SceneSphere`, `SceneMesh`, `SceneLight`) so the GPU-upload paths can read fields directly. |
+| `src/scene/Scene.h`                 | The authoring-side container. Real fields: `Camera`, `RenderSettings`, `Observer`, `RelativityParams`, `vector<SceneSphere>`. Placeholder fields (Stage 6A scaffolding, populated as later master-order modules ship): `vector<SceneMesh>` (module 12), `vector<SceneMaterial>` (module 13), `vector<SceneLight>` (module 14). |
+| `src/scene/Scene.cpp`               | `Scene::clear()` resets every list and every default-constructible POD field. |
 
 Build:
 
@@ -829,26 +835,110 @@ expected to:
   significantly compressed forward in the frame, pronounced
   searchlight brightening (`D^4` scales rapidly past β=0.9).
 
+### Stage 6A — Host scene structures (Module 11, host half)
+
+Status: implemented.
+
+The user split master module 11 (GPU scene upload) into two slices:
+
+- **Stage 6A (this slice)**: host-side scene structures only. No
+  GPU work, no kernel changes, no behavioural delta.
+- **Stage 6B (next slice)**: `GpuScene` + `CudaSceneView` +
+  `k_render_scene` closest-hit kernel + `--render-scene` CLI
+  action. Consumes the structures from Stage 6A.
+
+Stage 6A ships:
+
+- `src/math/Transform.h` (recovered byte-identical from
+  `prototype_v0` - had been deliberately skipped at Stage 2 because
+  the user's Stage-2 file list did not include it, but Stage 6A's
+  `scene/Transform.h` alias requires it).
+- `src/scene/Transform.h` (alias to `rr::math::Transform`).
+- `src/scene/RenderSettings.h`.
+- `src/scene/SceneObject.h`.
+- `src/scene/Scene.{h,cpp}` (the container + `clear()`).
+
+`Scene` carries:
+
+- Real fields: `Camera`, `RenderSettings`, `Observer`,
+  `RelativityParams`, `vector<SceneSphere>` (using the existing
+  `rr::geometry::Sphere`).
+- Placeholder fields (each tagged with the master module that
+  fills it in): `vector<SceneMesh>` (module 12),
+  `vector<SceneMaterial>` (module 13), `vector<SceneLight>`
+  (module 14).
+
+The placeholder types are honest scaffolding, not "fake stubs of
+complete systems":
+
+- `SceneMesh { SceneObject object; std::string source_path; }`
+  carries authoring metadata; the geometry payload (vertices,
+  triangles, transform, material id) joins at module 12 along
+  with `rr::geometry::Mesh`.
+- `SceneMaterial { int id; std::string name; }` carries the
+  lookup id and human-readable name; the shading payload
+  (`MaterialParams`) joins at module 13.
+- `SceneLight { SceneObject object; }` carries authoring metadata;
+  the type discriminator + parameters join at module 14 along
+  with `rr::lighting::Light`.
+
+CMake additions:
+
+- New `rr_scene` STATIC library. PUBLIC-links `rr_math`,
+  `rr_camera`, `rr_geometry`, `rr_relativity` because `Scene`
+  exposes those types by value.
+- **Not** linked into `rr_gpu` or `RelativityRender` yet - the
+  rule was "must compile, no behavioural change". Stage 6B brings
+  the executable + `rr_gpu` consumers online.
+
+Hard-rule audit (per the prompt):
+
+- No scene parser yet - **yes**, no `SceneLoader` / `SceneWriter`
+  files exist.
+- No server, no C4D - **yes**.
+- No CPU rendering - **yes**, scene contains only data; no per-ray
+  / per-pixel logic added.
+- CUDA kernels unchanged - **yes**, `CudaTestKernel.cu`,
+  `CudaKernels.cuh`, `CudaRenderer.{h,cu}` are byte-identical to
+  Stage 10.
+- Must compile - **yes**, host-only build clean under
+  `-Wall -Wextra -Wpedantic`, no warnings; `librr_scene.a` is
+  produced; ctest 3/3 passes; `--device-info` /
+  `--render-gradient` / `--render-rays` / `--render-sphere` /
+  `--render-relativistic` behaviour identical to Stage 10.
+
+Naming exception called out: `scene/Transform.h` is the same
+back-compat shim the prior reuse audit classified
+`DELETE_LATER`. The user's Stage 6A spec named it explicitly, so
+it stays. New code under `src/scene/` is welcome to use
+`rr::math::Transform` directly - the alias is for legibility of
+the user-facing scene API, not a separate type.
+
 ## Next stage
 
-**Stage 11 — GPU scene upload.** Module 11 in the master order.
-Scope: introduce a host-side `Scene` container of multiple spheres
-+ camera + observer + params, plus a CUDA-side `CudaSceneView` POD,
-and wire a `k_render_scene` kernel that runs a closest-hit loop
-over the uploaded sphere array. The CPU uploads once per frame
-(or once per scene change); per-pixel work stays on the device.
+**Stage 6B — GPU scene upload (Module 11, GPU half).** Scope: bring
+the host-side `Scene` to the device. The kernel reads from a
+`CudaSceneView` POD that points into uploaded `GpuBuffer<Sphere>`
+storage, and the renderer's relativistic pipeline becomes a
+closest-hit loop over the uploaded sphere array.
 
 Deliverables (planned, NOT yet implemented):
 
-- `src/scene/Scene.{h,cpp}`     (host-side container)
-- `src/gpu/GpuScene.{h,cpp}`    (move-only RAII upload manager
-                                  over `GpuBuffer<Sphere>` etc.)
-- `src/cuda/CudaScene.cuh`      (device-side view POD)
-- A `k_render_scene` kernel + launcher.
-- `CudaRenderer::render_scene(scene, w, h)`.
-- A `--render-scene <path>` CLI action (still placeholder for the
-  scene loader; can use a hard-coded scene for the diagnostic in
-  the meantime).
+- `src/gpu/GpuScene.{h,cpp}` (move-only RAII upload manager;
+                                owns `GpuBuffer<Sphere>` plus
+                                by-value PODs for camera / observer
+                                / params).
+- `src/cuda/CudaScene.cuh`   (device-side view POD: raw device
+                                pointers + counts + per-frame PODs).
+- `k_render_scene` kernel + launcher in
+  `CudaTestKernel.cu` / `CudaKernels.cuh`. Same eight-step
+  relativistic pipeline as Stage 10, but the closest-hit step
+  loops over the uploaded sphere array.
+- `CudaRenderer::render_scene(const GpuScene&, int, int)`.
+- `--render-scene` CLI action that builds a hard-coded
+  multi-sphere scene in `main.cpp`, uploads it via `GpuScene`,
+  renders, and writes `output/gpu_scene.ppm`. The actual scene
+  file format / loader is master module 15 - not part of Stage 6B.
 
 ## Constraints carried forward
 
