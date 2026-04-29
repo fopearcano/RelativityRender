@@ -207,6 +207,22 @@ int run_scene_info(const rr::core::Config& cfg) {
         Logger::info("      specular        : "
                    + std::to_string(m.params.specular));
     }
+
+    const auto& sph = result.scene.spheres;
+    Logger::info("  spheres:");
+    Logger::info("    count             : " + std::to_string(sph.size()));
+    if (!sph.empty()) {
+        const auto& s = sph.front();
+        Logger::info("    [0]:");
+        Logger::info("      name            : "
+                   + (s.object.name.empty() ? std::string("(unnamed)")
+                                            : s.object.name));
+        Logger::info("      center          : " + fmt_vec3(s.geometry.center));
+        Logger::info("      radius          : "
+                   + std::to_string(s.geometry.radius));
+        Logger::info("      material_index  : "
+                   + std::to_string(s.geometry.material_index));
+    }
     return 0;
 }
 
@@ -997,7 +1013,7 @@ int main(int argc, char** argv) {
         case CommandLine::Action::Default:
             Logger::info(std::string(rr::core::kProjectName) + " "
                        + rr::core::kVersionString + " starting up.");
-            Logger::info("Stage 10B.5: parse materials. "
+            Logger::info("Stage 10B.6: parse spheres. "
                          "Try --scene-info <file>, --device-info, "
                          "--render-gradient, --render-rays, "
                          "--render-sphere, --render-relativistic, "

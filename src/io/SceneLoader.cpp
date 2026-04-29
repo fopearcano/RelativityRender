@@ -1,6 +1,7 @@
 #include "io/SceneLoader.h"
 
 #include "camera/Camera.h"
+#include "geometry/Sphere.h"
 #include "material/MaterialTypes.h"
 #include "math/Vec3.h"
 #include "relativity/RelativityParams.h"
@@ -976,6 +977,123 @@ bool apply_materials(const JsonValue& arr,
     return true;
 }
 
+// Apply a single spheres-array entry onto `out`. Validates radius
+// and material_index, populates `object.name` and the geometry POD
+// fields. Stage 10B.6 surface: name, center, radius, and the
+// material reference (`material_index` snake_case canonical or
+// `materialId` camelCase shorthand). `visible` and `transform`
+// are spec-§8 fields but the prompt scope explicitly excluded
+// them; they remain at their `SceneObject` defaults until a
+// follow-up sub-stage rounds them out.
+bool apply_sphere(const JsonValue& obj,
+                  std::size_t materials_count,
+                  rr::scene::SceneSphere& out,
+                  std::string& err,
+                  const char* entry_label) {
+    if (obj.kind != JsonKind::Object) {
+        err = std::string(entry_label) + " must be a JSON object";
+        return false;
+    }
+
+    // name (optional, default "").
+    if (const auto* v = obj.find("name")) {
+        if (!to_string(*v, out.object.name, err,
+                       (std::string(entry_label) + ".name").c_str())) {
+            return false;
+        }
+    }
+
+    // center (required, finite Vec3).
+    const auto* c_v = obj.find("center");
+    if (c_v == nullptr) {
+        err = std::string(entry_label) + " is missing required 'center'";
+        return false;
+    }
+    if (!to_vec3(*c_v, out.geometry.center, err,
+                 (std::string(entry_label) + ".center").c_str())) {
+        return false;
+    }
+
+    // radius (required, finite positive float).
+    const auto* r_v = obj.find("radius");
+    if (r_v == nullptr) {
+        err = std::string(entry_label) + " is missing required 'radius'";
+        return false;
+    }
+    if (!to_float(*r_v, out.geometry.radius, err,
+                  (std::string(entry_label) + ".radius").c_str())) {
+        return false;
+    }
+    if (!(out.geometry.radius > 0.0f)) {        // §12 #9
+        err = std::string(entry_label) + ".radius must be > 0";
+        return false;
+    }
+
+    // material_index / materialId (optional integer; -1 or in
+    // [0, materials_count)).
+    if (const auto* v = obj.find_or("material_index", "materialId")) {
+        if (v->kind != JsonKind::Number) {
+            err = std::string(entry_label)
+                + ".material_index must be an integer";
+            return false;
+        }
+        const double idx_d = v->n;
+        if (!std::isfinite(idx_d) || idx_d != std::floor(idx_d)) {
+            err = std::string(entry_label)
+                + ".material_index must be an integer";
+            return false;
+        }
+        const long long idx_ll = static_cast<long long>(idx_d);
+        if (idx_ll < -1
+         || idx_ll > static_cast<long long>(std::numeric_limits<int>::max())) {
+            err = std::string(entry_label)
+                + ".material_index must fit in an int and be >= -1";
+            return false;
+        }
+        const int idx = static_cast<int>(idx_ll);
+        if (idx >= 0
+         && static_cast<std::size_t>(idx) >= materials_count) {
+            // §12 #4: per-file we treat this as "reject file" so
+            // misauthored references surface immediately rather
+            // than silently rendering with the neutral default.
+            err = std::string(entry_label) + ".material_index ("
+                + std::to_string(idx)
+                + ") is out of range [0, " + std::to_string(materials_count)
+                + ")";
+            return false;
+        }
+        out.geometry.material_index = idx;
+    }
+    return true;
+}
+
+// Apply the `spheres` JSON array onto `scene.spheres`. Stage
+// 10B.6 surface: each entry's name / center / radius /
+// material_index (or materialId shorthand). Per-entry validation
+// runs through `apply_sphere`; the array driver only owns the
+// container reset + reserve and the labelling.
+bool apply_spheres(const JsonValue& arr,
+                   std::size_t materials_count,
+                   std::vector<rr::scene::SceneSphere>& out,
+                   std::string& err) {
+    if (arr.kind != JsonKind::Array) {
+        err = "'spheres' must be a JSON array";
+        return false;
+    }
+    out.clear();
+    out.reserve(arr.arr.size());
+    for (std::size_t i = 0; i < arr.arr.size(); ++i) {
+        const std::string label = "spheres[" + std::to_string(i) + "]";
+        rr::scene::SceneSphere s;
+        if (!apply_sphere(arr.arr[i], materials_count, s, err,
+                          label.c_str())) {
+            return false;
+        }
+        out.push_back(std::move(s));
+    }
+    return true;
+}
+
 // Slurp `path` into a string; returns false on read failure.
 bool read_text_file(const std::string& path, std::string& out,
                     std::string& err) {
@@ -1120,10 +1238,25 @@ LoadResult parse(const std::string& text) {
         }
     }
 
-    // Stage 10B.5 schema scope ends here. Other top-level keys
-    // (`spheres`, `meshes`, `lights`) are intentionally ignored -
-    // they were syntax-checked by the JSON parser pass and will
-    // be mapped onto `scene` in follow-up sub-stages.
+    // spheres (optional). Stage 10B.6 surface: name, center,
+    // radius, material_index (or materialId shorthand). The
+    // `materials_count` argument lets the per-entry validator
+    // enforce §12 #4 (material_index in range or -1) without
+    // re-reaching into the scene container.
+    if (const JsonValue* sph_v = root.find("spheres")) {
+        std::string apply_err;
+        if (!apply_spheres(*sph_v,
+                           result.scene.materials.size(),
+                           result.scene.spheres, apply_err)) {
+            result.error_message = apply_err;
+            return result;
+        }
+    }
+
+    // Stage 10B.6 schema scope ends here. Other top-level keys
+    // (`meshes`, `lights`) are intentionally ignored - they were
+    // syntax-checked by the JSON parser pass and will be mapped
+    // onto `scene` in follow-up sub-stages.
 
     result.ok = true;
     return result;

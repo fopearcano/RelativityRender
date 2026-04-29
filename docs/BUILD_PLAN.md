@@ -2114,25 +2114,137 @@ fields in v1.0 parsers).
 - The Stage 10B.4 fixture (no `materials` block) still loads
   with `materials.count = 0`.
 
+## Stage 10B.6 — parse spheres
+
+**Scope of this slice (Stage 10B.6): add a spheres schema mapper
+that reads the canonical §8 `name` / `center` / `radius` /
+`material_index` fields onto `rr::scene::SceneSphere` entries,
+with `materialId` accepted as a camelCase shorthand. Enforces
+the §12 #9 (`radius > 0`) and §12 #4 (`material_index` in `[-1,
+materials.size())`) cross-section rules.** Meshes and lights
+remain out of scope; `visible` and `transform` (also §8 v1.0
+fields) are deferred per the prompt scope.
+
+### What ships
+
+- `src/io/SceneLoader.cpp` — added `apply_sphere` (single
+  entry) and `apply_spheres` (array driver). The single-entry
+  mapper:
+  - Optional `name` → `SceneObject::name`.
+  - Required `center` (Vec3) and `radius` (float, validated
+    `> 0`) — both rejected with named-field errors when absent
+    so authoring mistakes are obvious.
+  - Optional material reference: `material_index` (canonical)
+    or `materialId` (camelCase shorthand) via `find_or`.
+    Validated as a finite integer (no fractional input
+    allowed), then range-checked against the already-parsed
+    `materials.size()` per §12 #4. Stage 10B.6 chooses the
+    "reject file" branch of §12 #4 rather than "reject sphere
+    and warn" — it's the strictest stance the spec licenses
+    and matches the Stage 10B.5 strictness for material `id`s.
+  - Stage 10B.6 explicitly skips `visible` and `transform`.
+    Both stay at the `SceneObject` defaults.
+- `apply_spheres` (array driver):
+  - Resets `scene.spheres` (the parser is the source of truth)
+    and reserves the entry count.
+  - Walks entries through `apply_sphere`, threading the
+    already-parsed `materials.size()` so per-entry validation
+    is self-contained.
+- `src/io/SceneLoader.cpp::parse` — wires `apply_spheres` in
+  after `apply_materials`. `materials.size()` is captured at
+  call time so the cross-reference uses the canonical count
+  for the same file. `meshes` and `lights` remain syntax-
+  checked and dropped.
+- `src/main.cpp::run_scene_info` — prints sphere count and the
+  first sphere's four fields under a `spheres:` heading. Empty
+  arrays still print `count : 0` and skip the per-sphere
+  block, so 10B.5-and-earlier fixtures remain readable.
+- `scenes/test_spheres.rrscene` — three-sphere fixture with
+  three materials:
+  - `[0]` "left" using the `materialId` shorthand → material 0.
+  - `[1]` "centre" using the canonical `material_index` →
+    material 1.
+  - `[2]` "ground-bulb" with no material reference (defaults
+    to `-1`).
+- `docs/RRSCENE_FORMAT.md` §8.1 — new shorthand table noting
+  `material_index` ↔ `materialId` synonymy. Documents the
+  Stage 10B.6 partial-implementation status of `visible` and
+  `transform` and the parser's per-rule choice for §12 #4 and
+  §12 #9.
+
+### Naming-tension resolution
+
+The user prompt listed `materialId` (camelCase); spec §8 uses
+`material_index` (snake_case). Same precedent as the 10B.5
+material-field shorthands and the 10B.2 `samples` /
+`samples_per_pixel` pattern: accept both via `find_or`, prefer
+the canonical name in lookups, document the synonymy in §8.1,
+and keep writers on the canonical form.
+
+The §8 `visible` and `transform` fields are in the v1.0 schema
+but the prompt explicitly omitted them. Per the master rule
+"Do only that scope. Do not silently add future systems", the
+parser does not yet read them. This is *partial v1.0
+implementation*, the same posture taken for `transmission` in
+10B.5.
+
+### Hard-rule audit
+
+- Do not parse meshes/lights yet — **yes**, no mapper for
+  `meshes` or `lights`; both remain syntax-checked and
+  dropped.
+- Do not render yet — **yes**, the only consumer of the parser
+  is `--scene-info`, which only prints. No GPU launch path is
+  reached.
+- No GPU changes unless existing scene structure requires no
+  changes — **yes**, no source under `src/gpu/` or `src/cuda/`
+  is touched. `rr::geometry::Sphere` is byte-identical to
+  Stage 10B.5; the parser writes to existing fields. The host
+  `Scene` container's `spheres` vector is the same type the
+  GPU upload path (`GpuScene::upload_spheres`) already
+  consumes from `--render-scene`.
+- Must compile — **yes**, host-only build is clean under
+  `-Wall -Wextra -Wpedantic`, no warnings; `ctest` reports
+  3/3.
+
+### Verified at the CLI
+
+- `--scene-info scenes/test_spheres.rrscene` prints
+  `spheres.count = 3` and the `[0]` block matches the
+  fixture's `left` sphere byte-for-byte
+  (`center = [-1.5, 0.2, -4.0]`, `radius = 0.7`,
+  `material_index = 0`).
+- `spheres[0]` missing `center` → exit 1, "is missing required
+  'center'".
+- `spheres[0]` missing `radius` → exit 1, "is missing required
+  'radius'".
+- `radius = 0` and `radius = -1` → exit 1, "must be > 0"
+  (§12 #9).
+- `materialId = 5` against a one-material file → exit 1, "is
+  out of range [0, 1)" (§12 #4).
+- `material_index = -1` (renderer's neutral fallback) accepted.
+- `materialId = 0.5` (fractional) → exit 1, "must be an
+  integer".
+- The Stage 10B.5 fixture (`scenes/test_materials.rrscene`,
+  three materials, no `spheres` block) still loads with
+  `spheres.count = 0`.
+
 ## Next stage
 
-**Stage 10B.6 — parse geometry.** Scope:
+**Stage 10B.7 — parse meshes.** Scope:
 
-- Add `apply_spheres` schema reader: maps the §8 `spheres`
-  array onto `rr::scene::SceneSphere` entries (`{object,
-  geometry}`), validating `radius > 0` and that
-  `material_index` is `-1` or in range.
 - Add `apply_meshes` schema reader: maps the §9 inline
   `vertices` + `triangles` arrays onto `rr::geometry::Mesh`
-  data inside `rr::scene::SceneMesh`. Index-range and
-  vertex-count validation per §12 #6.
-- Extend `--scene-info` to print sphere / mesh counts and a
-  brief first-entry summary.
-- Add `scenes/test_geometry.rrscene` fixture.
+  data inside `rr::scene::SceneMesh`, validating per-vertex
+  required fields and per-triangle index ranges (§12 #6).
+- Extend `--scene-info` to print mesh count + the first mesh's
+  vertex / triangle counts.
+- Add `scenes/test_meshes.rrscene` fixture.
 
-Lights mapper comes in 10B.7; the `--render <file>` end-to-end
+Lights mapper comes in 10B.8; the `--render <file>` end-to-end
 wiring + writer (`SceneWriter::save`) + the deferred
-`transmission` field join in the final 10B sub-stage.
+`transmission` / `visible` / `transform` fields join in the
+final 10B sub-stage.
 
 ## Constraints carried forward
 

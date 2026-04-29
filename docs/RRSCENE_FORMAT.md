@@ -382,6 +382,36 @@ to `center`; the kernel reads `center` as world-space. The
 authoring `transform` is preserved for forward compatibility with
 the upcoming relative-transform scene editor.
 
+### 8.1 Authoring shorthands (Stage 10B.6)
+
+| Canonical (snake_case) | Accepted shorthand (camelCase) |
+|------------------------|--------------------------------|
+| `material_index`       | `materialId`                   |
+
+`materialId` is an exact synonym; the parser stores the value into
+`Sphere::material_index` either way. Spheres parsed from a file
+that omits the reference get the default `-1` (renderer falls back
+to neutral defaults).
+
+Stage 10B.6 status notes:
+
+- The Stage 10B.6 parser implements `name`, `center`, `radius`,
+  and the material reference. `visible` and `transform` (also §8
+  v1.0 fields) are parsed by the JSON layer but not yet
+  consulted by the schema mapper; both stay at their
+  `SceneObject` defaults (`visible = true`, identity transform).
+  This is partial v1.0 implementation, rounded out in a
+  follow-up sub-stage.
+- Cross-section validation is enforced where the in-scope
+  fields supply the inputs: §12 #9 (`radius > 0`) and §12 #4
+  (`material_index` is `-1` or in `[0, materials.size())`); the
+  v1 parser implementation chooses "reject file" rather than
+  "reject sphere, load rest, warn" so authoring mistakes
+  surface immediately at the CLI rather than silently swapping
+  in the neutral default.
+
+Tools that emit `.rrscene` files MUST emit canonical snake_case.
+
 ## 9. `meshes`
 
 Each entry maps to `rr::scene::SceneMesh` (currently a placeholder
