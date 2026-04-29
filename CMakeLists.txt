@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.20)
 
 project(RelativityRender
     VERSION     0.1.0
-    DESCRIPTION "RelativityRender - GPU renderer platform (Stage 3: image / framebuffer)"
+    DESCRIPTION "RelativityRender - GPU renderer platform (Stage 4: CUDA device layer)"
     LANGUAGES   CXX
 )
 
@@ -18,15 +18,30 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
         Debug Release RelWithDebInfo MinSizeRel)
 endif()
 
-option(RR_BUILD_TESTS "Build tests" ON)
+option(RR_BUILD_TESTS "Build tests"                                    ON)
+option(RR_ENABLE_CUDA "Enable CUDA backend (requires CUDA Toolkit)"   OFF)
 
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
-message(STATUS "RelativityRender ${PROJECT_VERSION} (Stage 3: image / framebuffer)")
+message(STATUS "RelativityRender ${PROJECT_VERSION} (Stage 4: CUDA device layer)")
 
 message(STATUS "  Build type   : ${CMAKE_BUILD_TYPE}")
 message(STATUS "  C++ standard : ${CMAKE_CXX_STANDARD}")
 message(STATUS "  Build tests  : ${RR_BUILD_TESTS}")
+message(STATUS "  CUDA backend : ${RR_ENABLE_CUDA}")
+
+# Optional CUDA toolchain. Only required when RR_ENABLE_CUDA is ON.
+# Stage 4 only needs the CUDA Runtime headers + libcudart for device
+# enumeration; no .cu files are compiled here, so we deliberately do
+# NOT call enable_language(CUDA). That comes back when Stage 5 (CUDA
+# framebuffer / kernel infrastructure) introduces the first kernel.
+# When RR_ENABLE_CUDA is OFF the host build configures cleanly with
+# no CUDA on the system - the GPU layer reports backend "(none)"
+# and an empty device list at runtime.
+if(RR_ENABLE_CUDA)
+    find_package(CUDAToolkit REQUIRED)
+    message(STATUS "  CUDA Toolkit : ${CUDAToolkit_VERSION}")
+endif()
 
 # Centralised warning flags. Every target goes through this so warnings
 # can't drift per target.
@@ -59,7 +74,30 @@ target_include_directories(rr_image PUBLIC src)
 target_link_libraries(rr_image PUBLIC rr_math)
 rr_apply_warnings(rr_image)
 
-# Main executable. Stage 1 surface (no math/image dependency yet).
+# rr_gpu: backend-agnostic GPU device layer. The CUDA backend
+# (src/cuda/CudaContext.cpp) is added to this library only when
+# RR_ENABLE_CUDA is ON; otherwise the layer compiles with no backend
+# and reports the absence honestly at runtime.
+add_library(rr_gpu STATIC
+    src/gpu/GpuDevice.cpp
+)
+target_include_directories(rr_gpu PUBLIC src)
+rr_apply_warnings(rr_gpu)
+
+if(RR_ENABLE_CUDA)
+    # CudaContext.cpp is plain C++ - it #includes <cuda_runtime.h> and
+    # calls cudaGetDeviceCount / cudaGetDeviceProperties, no kernels.
+    # Compiles with the regular C++ compiler; only the cudart runtime
+    # library is linked.
+    target_sources(rr_gpu PRIVATE src/cuda/CudaContext.cpp)
+    # PUBLIC: targets linking rr_gpu (RelativityRender) gate
+    # CUDA-specific call sites on the same RR_HAS_CUDA macro.
+    target_compile_definitions(rr_gpu PUBLIC RR_HAS_CUDA)
+    target_link_libraries(rr_gpu PRIVATE CUDA::cudart)
+endif()
+
+# Main executable. Stage 4 surface: now links rr_gpu so --device-info
+# can enumerate visible CUDA devices.
 add_executable(RelativityRender
     src/main.cpp
     src/core/Logger.cpp
@@ -67,6 +105,7 @@ add_executable(RelativityRender
     src/core/CommandLine.cpp
 )
 target_include_directories(RelativityRender PRIVATE src)
+target_link_libraries(RelativityRender PRIVATE rr_gpu)
 rr_apply_warnings(RelativityRender)
 
 # Tests. The project does not yet have a third-party test framework;

@@ -1,18 +1,48 @@
 // RelativityRender entry point.
 //
-// Stage 1 (Core app) scope: parse command-line flags and dispatch a
-// stage-appropriate response. No GPU, no rendering, no scene system,
-// no server. Subsequent stages (math library, image / framebuffer,
-// GPU device layer, ...) layer real capability on top of this
-// skeleton in the order documented in
-// `RELATIVITYRENDER_CLAUDE_MASTER_INSTRUCTIONS.txt`.
+// Stage 4 scope: parse command-line flags and dispatch a
+// stage-appropriate response. `--device-info` now enumerates visible
+// CUDA devices via `rr::gpu::enumerate_devices` (Module 6 of the
+// master order). Still no rendering, no kernels, no scene system,
+// no server.
 
 #include "core/CommandLine.h"
 #include "core/Logger.h"
 #include "core/Version.h"
+#include "gpu/GpuDevice.h"
 
 #include <iostream>
 #include <string>
+
+namespace {
+
+void report_device_info() {
+    using rr::core::Logger;
+
+    Logger::info(std::string("GPU backend: ") + rr::gpu::gpu_backend_name());
+
+    const auto devices = rr::gpu::enumerate_devices();
+    if (devices.empty()) {
+        Logger::info("No CUDA-capable devices visible. "
+                     "Rebuild with -DRR_ENABLE_CUDA=ON on a host with the "
+                     "CUDA Toolkit and a CUDA-capable GPU to enable device "
+                     "queries.");
+        return;
+    }
+
+    Logger::info(std::to_string(devices.size())
+                 + (devices.size() == 1 ? " device:" : " devices:"));
+    for (const auto& d : devices) {
+        const std::string line =
+            "  [" + std::to_string(d.index) + "] " + d.name
+          + " (sm_"  + d.compute_capability_string()
+          + ", "     + d.total_memory_human()
+          + ", "     + std::to_string(d.multiprocessor_count) + " SMs)";
+        Logger::info(line);
+    }
+}
+
+}  // namespace
 
 int main(int argc, char** argv) {
     using rr::core::CommandLine;
@@ -30,7 +60,7 @@ int main(int argc, char** argv) {
             return 0;
 
         case CommandLine::Action::DeviceInfo:
-            Logger::info("GPU device info not implemented yet");
+            report_device_info();
             return 0;
 
         case CommandLine::Action::Render:
@@ -45,8 +75,9 @@ int main(int argc, char** argv) {
         case CommandLine::Action::Default:
             Logger::info(std::string(rr::core::kProjectName) + " "
                        + rr::core::kVersionString + " starting up.");
-            Logger::info("Stage 1: core application skeleton. "
-                         "No GPU, no renderer, no scene yet.");
+            Logger::info("Stage 4: CUDA device layer. "
+                         "Try --device-info; rendering arrives in a "
+                         "later stage.");
             return 0;
     }
     return 0;

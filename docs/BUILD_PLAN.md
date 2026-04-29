@@ -6,13 +6,16 @@ records what landed, in which stage, and the next concrete step.
 
 ## Current state
 
-**Stages 1–3 — Core app + math library + image / framebuffer.**
-Skeleton C++20 executable with logger, version constants, application
-config, command-line handling; a header-only RR_HD math library
-covering Vec2 / Vec3 / Vec4 / Mat4; and a host-side floating-point
-image + framebuffer system with PPM writer. 131 host-side test
-assertions across two ctest binaries pass. No GPU, no rendering, no
-scene system, no server, no integrations.
+**Stages 1–4 — Core app + math + image + GPU device layer.**
+Skeleton C++20 executable; header-only RR_HD math library;
+host-side floating-point image + framebuffer system; backend-agnostic
+GPU device layer with optional CUDA backend that enumerates visible
+devices via `cudaGetDeviceCount` / `cudaGetDeviceProperties`. The
+`--device-info` CLI flag now reports a real backend status and (when
+CUDA is compiled in and devices are present) per-device name, compute
+capability, total VRAM, and SM count. 131 host-side test assertions
+across two ctest binaries pass. No rendering, no kernels, no scene
+system, no server, no integrations.
 
 ### Files in scope
 
@@ -39,13 +42,26 @@ scene system, no server, no integrations.
 | `src/image/Framebuffer.h`  | Thin owning wrapper that pairs an `Image` with the renderer-target lifecycle. Forwards `width` / `height` / `format` / `clear` / `resize` / `save_ppm` to its color image. |
 | `src/image/Framebuffer.cpp`| Implementation; one-line forwards. |
 | `tests/image_tests.cpp`    | Stand-alone executable: 70 automated assertions on `Image` + `Framebuffer` + 1 manual debug gradient saved to `output/image_test.ppm`. |
+| `src/gpu/GpuDevice.h`      | Backend-agnostic `GpuDevice` POD (index, name, compute capability major/minor, total VRAM bytes, multiprocessor count) plus `compute_capability_string()` / `total_memory_human()` helpers. Free functions `gpu_backend_available()` / `gpu_backend_name()` / `enumerate_devices()`. |
+| `src/gpu/GpuDevice.cpp`    | Implementation; delegates `enumerate_devices()` to `rr::cuda::query_devices()` when `RR_HAS_CUDA` is defined, returns an empty list otherwise. |
+| `src/cuda/CudaContext.h`   | CUDA-only header. Declares `query_devices()` returning `std::vector<gpu::GpuDevice>`. Compiled into the build only when `RR_ENABLE_CUDA=ON`. |
+| `src/cuda/CudaContext.cpp` | Plain C++ (no kernels). Iterates `cudaGetDeviceCount` + `cudaGetDeviceProperties` and clears sticky errors on early-exit paths so a later CUDA call does not observe a stale flag. |
 
 Build:
 
 ```sh
+# Host-only build (no CUDA Toolkit needed; --device-info reports
+# backend "(none)").
 cmake -S . -B build
 cmake --build build -j
 ctest --test-dir build --output-on-failure
+
+# CUDA-enabled build (requires CUDA Toolkit + a CUDA-capable GPU
+# host; --device-info enumerates visible devices).
+cmake -S . -B build-cuda -DRR_ENABLE_CUDA=ON
+cmake --build build-cuda -j
+
+# Run modes:
 build/bin/RelativityRender                          # default startup banner
 build/bin/RelativityRender --help
 build/bin/RelativityRender --version
@@ -208,33 +224,93 @@ ray tracing, no per-ray work.
 No new external dependencies. No GPU, no rendering, no scene parser,
 no server, no C4D — same as Stages 1.x and 2.
 
+### Stage 4 — CUDA device layer
+
+Status: implemented.
+
+- Recovered four files from `prototype_v0` (audited clean):
+  `src/gpu/GpuDevice.{h,cpp}` and `src/cuda/CudaContext.{h,cpp}`.
+- Backend-agnostic surface in `rr::gpu::`. The CUDA-specific
+  enumeration sits behind the `RR_HAS_CUDA` capability macro: when
+  defined, `enumerate_devices()` calls `rr::cuda::query_devices()`;
+  otherwise it returns an empty list and `gpu_backend_name()` returns
+  `"(none)"`.
+- `CudaContext.cpp` is **plain C++** (no `__global__`, no `<<<...>>>`),
+  so Stage 4 deliberately does NOT call `enable_language(CUDA)`. The
+  CUDA Runtime headers + `libcudart` are pulled in through
+  `find_package(CUDAToolkit)`. `enable_language(CUDA)` arrives in
+  Stage 5 (CUDA framebuffer / kernel infrastructure) when the first
+  `.cu` kernel lands.
+- `--device-info` now calls `report_device_info()` in `main.cpp`
+  which:
+    1. logs `GPU backend: <CUDA|(none)>`
+    2. enumerates devices and either logs each one as
+       `[i] <name> (sm_<MAJOR.MINOR>, <MiB> MiB, <N> SMs)`
+    3. or, when no devices are visible, prints an actionable
+       `"rebuild with -DRR_ENABLE_CUDA=ON"` message.
+- CMake additions:
+    - `option(RR_ENABLE_CUDA ...)` (OFF by default)
+    - `find_package(CUDAToolkit REQUIRED)` gated on it
+    - `rr_gpu` STATIC library (always built; PUBLIC includes `src/`)
+    - When CUDA is ON: `target_sources(rr_gpu PRIVATE
+      src/cuda/CudaContext.cpp)`,
+      `target_compile_definitions(rr_gpu PUBLIC RR_HAS_CUDA)`,
+      `target_link_libraries(rr_gpu PRIVATE CUDA::cudart)`
+    - `RelativityRender` PRIVATE-links `rr_gpu`.
+
+Verified:
+
+- Host-only build (`RR_ENABLE_CUDA=OFF`, default): clean under
+  `-Wall -Wextra -Wpedantic`. `ctest` reports `2/2 passed`.
+  `RelativityRender --device-info` prints
+  `GPU backend: (none)` followed by the rebuild hint, exit 0.
+- CUDA-enabled configure (`-DRR_ENABLE_CUDA=ON`) on a host **without**
+  the CUDA Toolkit fails immediately at `find_package(CUDAToolkit)`
+  with `Could not find nvcc, please set CUDAToolkit_ROOT.` — the
+  honest, actionable error we want.
+- CUDA-enabled build on a host **with** the Toolkit: the kept code
+  (`CudaContext.cpp`) is byte-identical to the prototype's tested
+  code; it iterates `cudaGetDeviceCount` + `cudaGetDeviceProperties`
+  and populates `GpuDevice` PODs that `--device-info` prints.
+  Runtime verification needs a GPU host.
+
+CPU role in this module: orchestration / device query only — exactly
+the master rules' allowed list.
+
+No new external dependencies beyond the optional CUDA Toolkit. No
+rendering, no CUDA framebuffer, no kernels, no scene parser, no
+server, no C4D.
+
 ## Next stage
 
-**Stage 4 — GPU device layer.** Module 6 in the master order. Scope:
-backend-agnostic GPU device description + a CUDA backend that
-enumerates visible devices via `cudaGetDeviceCount` /
-`cudaGetDeviceProperties`. The CUDA backend is opt-in via
-`RR_ENABLE_CUDA=ON`; with it OFF the layer compiles cleanly and
-reports "no backend" honestly.
+**Stage 5 — CUDA framebuffer / kernel infrastructure.** Module 7 in
+the master order. Scope: a move-only RAII GPU memory wrapper plus a
+trivial diagnostic kernel (UV gradient) wired through the existing
+`Image` / `Framebuffer` types. This is when `enable_language(CUDA)`
+lands and the first `.cu` translation unit appears.
 
 Deliverables (planned, NOT yet implemented):
 
-- `src/gpu/GpuDevice.{h,cpp}`   (POD + `enumerate_devices()`)
-- `src/gpu/GpuBuffer.{h,cpp}`   (move-only RAII wrapper for device
-                                  memory; works in both modes)
-- `src/cuda/CudaContext.{h,cpp}`(CUDA enumeration; only compiled in
-                                  when `RR_ENABLE_CUDA=ON`)
-- `tests/gpu_tests.cpp`          (assertions: backend availability is
-                                  consistent with backend name; empty
-                                  buffer state; honest failure when
-                                  no backend is compiled in)
-- CMake additions: an optional `RR_ENABLE_CUDA` cache option,
-  `find_package(CUDAToolkit)` gated on it, and an `rr_gpu` static
-  library that conditionally adds the CUDA backend translation units
-  and propagates the `RR_HAS_CUDA` capability macro.
-
-Promotes `--device-info` from "not implemented yet" to a real
-backend report (or honest "(none)" when CUDA is OFF).
+- `src/gpu/GpuBuffer.{h,cpp}`         (move-only RAII; allocates via
+                                        a backend-dispatched
+                                        `gpu_alloc` / `gpu_free`)
+- `src/cuda/CudaBuffer.{h,cpp}`       (byte-level CUDA backend for the
+                                        above; thin wrappers over
+                                        `cudaMalloc` / `cudaFree` /
+                                        `cudaMemcpy`)
+- `src/cuda/CudaGradientKernel.cu`    (one `__global__` kernel writing
+                                        an Rgba32F UV gradient)
+- `src/cuda/CudaRenderer.{h,cu}`      (thin host-side launcher that
+                                        allocates a `GpuBuffer<float>`,
+                                        runs the kernel, downloads
+                                        into an `rr::image::Image`)
+- `tests/gpu_tests.cpp`               (default-state, zero-alloc,
+                                        honest-failure-when-no-backend,
+                                        move-only properties)
+- A new CLI mode (e.g. `--render-gradient WxH OUT.ppm`) that runs the
+  GPU kernel end-to-end and saves the PPM. This is **kernel
+  infrastructure**, not a renderer; the path tracer and relativistic
+  perception are still many stages away.
 
 ## Constraints carried forward
 
