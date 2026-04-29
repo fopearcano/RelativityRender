@@ -8,14 +8,15 @@
 // parameters directly (small PODs that fit in the launch-argument
 // buffer) and a device pointer + count for the sphere array.
 //
-// Future entity types (light buffers, texture views) join this
-// struct so the kernel signature does not change with every new
-// module. Stage 8B extends the view with the materials array;
-// multi-mesh + light + texture support is a future slice.
+// Future entity types (texture views) join this struct so the
+// kernel signature does not change with every new module. Stage 9B
+// extends the view with the lights array; multi-mesh + texture
+// support is a future slice.
 
 #include "camera/CameraRay.h"
 #include "cuda/CudaMesh.cuh"
 #include "geometry/Sphere.h"
+#include "lighting/Light.h"
 #include "material/MaterialTypes.h"
 #include "relativity/RelativityParams.h"
 
@@ -43,6 +44,15 @@ struct CudaSceneView {
     // means "no materials uploaded - everything uses the default".
     const rr::material::MaterialParams* materials      = nullptr;
     int                                 material_count = 0;
+
+    // Light array. Iterated per hit (Stage 9B reads it without
+    // shadow-ray visibility tests; shadows land later). `nullptr`
+    // + `light_count == 0` is allowed and means "no lights
+    // uploaded - the kernel falls through to the facing-ratio
+    // shade for backwards compatibility with the unlit
+    // diagnostics".
+    const rr::lighting::Light*        lights        = nullptr;
+    int                               light_count   = 0;
 };
 
 }

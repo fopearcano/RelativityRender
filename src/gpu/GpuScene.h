@@ -5,6 +5,7 @@
 #include "geometry/Sphere.h"
 #include "gpu/GpuBuffer.h"
 #include "gpu/GpuMesh.h"
+#include "lighting/Light.h"
 #include "material/MaterialTypes.h"
 #include "relativity/RelativityParams.h"
 
@@ -83,6 +84,12 @@ public:
     [[nodiscard]] bool upload_materials(const rr::material::MaterialParams* host,
                                         std::size_t                         count);
 
+    // Upload `count` `Light` PODs from a contiguous host array. The
+    // kernel iterates the array per hit. Same backend-honest
+    // semantics as `upload_materials`.
+    [[nodiscard]] bool upload_lights(const rr::lighting::Light* host,
+                                     std::size_t                count);
+
     // Free every device allocation owned by this scene. Does NOT
     // touch the host snapshots (camera / observer / params) - call
     // `clear()` for the full reset.
@@ -115,6 +122,12 @@ public:
     }
     [[nodiscard]] std::size_t material_count() const noexcept { return material_count_; }
 
+    // Device pointer + count for the uploaded lights array.
+    [[nodiscard]] const rr::lighting::Light* device_lights() const noexcept {
+        return lights_.device_ptr();
+    }
+    [[nodiscard]] std::size_t light_count() const noexcept { return light_count_; }
+
     [[nodiscard]] bool has_camera()     const noexcept { return has_camera_; }
     [[nodiscard]] bool has_relativity() const noexcept { return has_relativity_; }
 
@@ -130,6 +143,9 @@ private:
 
     GpuBuffer<rr::material::MaterialParams> materials_{};
     std::size_t                             material_count_ = 0;
+
+    GpuBuffer<rr::lighting::Light>    lights_{};
+    std::size_t                       light_count_    = 0;
 
     bool                              has_camera_     = false;
     bool                              has_relativity_ = false;

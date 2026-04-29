@@ -50,7 +50,7 @@ bool set_action(CommandLine::Action& current, CommandLine::Action target,
                 "--render-rays / --render-sphere / "
                 "--render-relativistic / --render-scene / "
                 "--render-triangle / --render-mesh-scene / "
-                "--render-material-scene)";
+                "--render-material-scene / --render-direct-lighting)";
         return false;
     }
     current = target;
@@ -139,6 +139,12 @@ CommandLine::ParseResult CommandLine::parse(int argc, char** argv) {
                 r.action = Action::Error;
                 return r;
             }
+        } else if (a == "--render-direct-lighting") {
+            if (!set_action(r.action, Action::RenderDirectLighting,
+                            r.error_message)) {
+                r.action = Action::Error;
+                return r;
+            }
         } else if (a == "--output") {
             if (!take_value(argc, argv, i, a, value, r.error_message)) {
                 r.action = Action::Error;
@@ -186,7 +192,8 @@ CommandLine::ParseResult CommandLine::parse(int argc, char** argv) {
      || r.action == Action::RenderScene
      || r.action == Action::RenderTriangle
      || r.action == Action::RenderMeshScene
-     || r.action == Action::RenderMaterialScene) {
+     || r.action == Action::RenderMaterialScene
+     || r.action == Action::RenderDirectLighting) {
         if (auto err = r.config.validate(); !err.empty()) {
             r.action        = Action::Error;
             r.error_message = std::move(err);
@@ -233,6 +240,17 @@ std::string CommandLine::usage(std::string_view argv0) {
                                   "scene with per-object materials\n"
        << "                        uploaded to the GPU "
                                   "(requires CUDA).\n"
+       << "  --render-direct-lighting\n"
+       << "                        Render the multi-sphere + quad "
+                                  "scene with materials AND lights\n"
+       << "                        uploaded; the kernel evaluates "
+                                  "direct lighting (point +\n"
+       << "                        directional, no shadows) plus an "
+                                  "environment ambient,\n"
+       << "                        with emission and the relativistic "
+                                  "Doppler / searchlight\n"
+       << "                        pipeline applied on top "
+                                  "(requires CUDA).\n"
        << "  --output <path>       Write the rendered image to <path>.\n"
        << "                        Default for --render-gradient is "
                                   "output/gpu_gradient.ppm;\n"
@@ -247,7 +265,9 @@ std::string CommandLine::usage(std::string_view argv0) {
        << "                        default for --render-mesh-scene is "
                                   "output/gpu_mesh_scene.ppm;\n"
        << "                        default for --render-material-scene is "
-                                  "output/gpu_material_scene.ppm.\n"
+                                  "output/gpu_material_scene.ppm;\n"
+       << "                        default for --render-direct-lighting is "
+                                  "output/gpu_direct_lighting.ppm.\n"
        << "                        Ignored for --render-relativistic.\n"
        << "  --width  <int>        Render width in pixels "
                                   "(default 1280).\n"

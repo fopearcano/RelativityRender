@@ -12,11 +12,14 @@
 #include "cuda/CudaIntersection.cuh"
 #include "cuda/CudaKernels.cuh"
 #include "cuda/CudaScene.cuh"
+#include "lighting/Light.h"
 #include "material/MaterialTypes.h"
 #include "relativity/RelativityMath.cuh"
 
 #include "math/Vec3.h"
 #include "renderer/Hit.h"
+
+#include <cmath>  // sqrtf for the point-light distance / falloff
 
 namespace rr::cuda {
 
@@ -333,14 +336,18 @@ __global__ void k_render_scene(float* pixels, int width, int height,
 
     // 4. Base shade.
     //    Hit:  read MaterialParams from scene.materials[best.material_index]
-    //          if in range, else fall back to the neutral default
-    //          (the same defaults as MaterialParams's defaulted ctor:
-    //          baseColor = (0.8, 0.8, 0.8), no emission). Apply a
-    //          simple facing-ratio attenuation so geometry remains
-    //          discernible without a real BSDF, and add the emissive
-    //          contribution unconditionally (back-faces of emissive
-    //          materials still glow).
-    //    Miss: vertical sky gradient.
+    //          if in range, else fall back to the neutral default.
+    //          Then either:
+    //            (a) evaluate direct lighting from scene.lights when
+    //                light_count > 0 (point + directional contributions
+    //                summed without shadows; environment lights
+    //                contribute as ambient; emission added on top), OR
+    //            (b) fall through to the Stage 8B facing-ratio shade
+    //                when no lights are uploaded, so the unlit demos
+    //                (--render-scene / --render-mesh-scene /
+    //                --render-material-scene) still produce visible
+    //                output.
+    //    Miss: vertical sky gradient (unchanged).
     Vec3 color;
     if (best.hit) {
         rr::math::Vec3 albedo   = rr::math::Vec3{0.8f, 0.8f, 0.8f};
@@ -354,17 +361,75 @@ __global__ void k_render_scene(float* pixels, int width, int height,
             emission = mat.emissionColor * mat.emissionStrength;
         }
 
-        // Facing-ratio attenuation `max(0, N · -rd)` with a small
-        // ambient floor so back-facing or grazing-angle pixels are
-        // not pitch black. This is a viewing-angle attenuation,
-        // not a BSDF; the path tracer (master module 16) replaces
-        // it with real Lambertian + light-aware shading.
-        const float ndotv   = rr::math::dot(best.normal, -ray.direction);
-        const float facing  = ndotv > 0.0f ? ndotv : 0.0f;
-        constexpr float kAmbient = 0.15f;
-        const float shade   = kAmbient + (1.0f - kAmbient) * facing;
+        if (scene.light_count > 0 && scene.lights != nullptr) {
+            // Direct lighting evaluation. No shadows yet (Stage 9B
+            // explicitly defers visibility tests); each light's
+            // contribution is added unconditionally.
+            Vec3 direct  = Vec3{0.0f, 0.0f, 0.0f};
+            Vec3 ambient = Vec3{0.0f, 0.0f, 0.0f};
+            bool has_env = false;
 
-        color = albedo * shade + emission;
+            for (int li = 0; li < scene.light_count; ++li) {
+                const rr::lighting::Light& L = scene.lights[li];
+                const Vec3 light_color = L.color * L.intensity;
+
+                switch (L.type) {
+                    case rr::lighting::LightType::Directional: {
+                        // Photons travel along `L.direction`; "to-light"
+                        // is its negation.
+                        const Vec3  to_light = -L.direction;
+                        const float ndotl    = rr::math::dot(best.normal,
+                                                             to_light);
+                        const float lambert  = ndotl > 0.0f ? ndotl : 0.0f;
+                        direct = direct + light_color * lambert;
+                        break;
+                    }
+                    case rr::lighting::LightType::Point: {
+                        const Vec3  delta = L.position - best.position;
+                        const float d2    = rr::math::dot(delta, delta);
+                        // Inverse-square falloff with an epsilon
+                        // floor so pixels near the singular point
+                        // do not blow up.
+                        const float falloff_inv = (d2 > 1.0e-4f) ? d2 : 1.0e-4f;
+                        const float dist        = sqrtf(falloff_inv);
+                        const Vec3  to_light    = delta * (1.0f / dist);
+                        const float ndotl       = rr::math::dot(best.normal,
+                                                                to_light);
+                        const float lambert     = ndotl > 0.0f ? ndotl : 0.0f;
+                        direct = direct + light_color * (lambert / falloff_inv);
+                        break;
+                    }
+                    case rr::lighting::LightType::Environment: {
+                        ambient = ambient + light_color;
+                        has_env = true;
+                        break;
+                    }
+                    case rr::lighting::LightType::Area:
+                        // PLACEHOLDER. Real area-light sampling
+                        // joins the path tracer; ignored at this
+                        // stage.
+                        break;
+                }
+            }
+
+            // Implicit ambient floor when no Environment light is
+            // present, so a scene with only point / directional
+            // lights does not collapse to black at glancing angles.
+            if (!has_env) {
+                ambient = ambient + Vec3{0.05f, 0.05f, 0.05f};
+            }
+
+            color = albedo * (direct + ambient) + emission;
+        } else {
+            // No lights uploaded: keep the Stage 8B facing-ratio
+            // shade so existing unlit CLI actions still produce a
+            // recognisable image.
+            const float ndotv   = rr::math::dot(best.normal, -ray.direction);
+            const float facing  = ndotv > 0.0f ? ndotv : 0.0f;
+            constexpr float kAmbient = 0.15f;
+            const float shade   = kAmbient + (1.0f - kAmbient) * facing;
+            color = albedo * shade + emission;
+        }
     } else {
         const float t = 0.5f * (ray.direction.y + 1.0f);
         color = Vec3{(1.0f - t) * 1.0f + t * 0.5f,

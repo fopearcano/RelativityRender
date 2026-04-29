@@ -45,6 +45,15 @@ namespace rr::core {
 //                           the GPU; the kernel reads
 //                           `materials[Hit::material_index]` for
 //                           the base colour. Requires CUDA.
+//   --render-direct-lighting
+//                           Render the multi-sphere + quad scene
+//                           with materials AND lights uploaded;
+//                           the kernel evaluates direct lighting
+//                           (point + directional, no shadows)
+//                           plus an environment ambient. Emission
+//                           and the relativistic Doppler /
+//                           searchlight pipeline are applied on
+//                           top. Requires CUDA.
 //   --output <path>         Write the rendered image to <path>.
 //                           Default for --render-gradient is
 //                           "output/gpu_gradient.ppm";
@@ -59,7 +68,9 @@ namespace rr::core {
 //                           default for --render-mesh-scene is
 //                           "output/gpu_mesh_scene.ppm";
 //                           default for --render-material-scene is
-//                           "output/gpu_material_scene.ppm".
+//                           "output/gpu_material_scene.ppm";
+//                           default for --render-direct-lighting is
+//                           "output/gpu_direct_lighting.ppm".
 //                           Ignored for --render-relativistic.
 //   --width  <int>          Render width in pixels  (default 1280).
 //   --height <int>          Render height in pixels (default 720).
@@ -67,9 +78,10 @@ namespace rr::core {
 // Action flags (--help / --version / --device-info / --render /
 // --render-gradient / --render-rays / --render-sphere /
 // --render-relativistic / --render-scene / --render-triangle /
-// --render-mesh-scene / --render-material-scene) are mutually
-// exclusive; combining them is a parse error. The remaining flags
-// configure `Config` and are accepted regardless of action.
+// --render-mesh-scene / --render-material-scene /
+// --render-direct-lighting) are mutually exclusive; combining them
+// is a parse error. The remaining flags configure `Config` and are
+// accepted regardless of action.
 
 class CommandLine {
 public:
@@ -87,6 +99,7 @@ public:
         RenderTriangle,
         RenderMeshScene,
         RenderMaterialScene,
+        RenderDirectLighting,
         Error,          // parse failure; see `error_message`
     };
 

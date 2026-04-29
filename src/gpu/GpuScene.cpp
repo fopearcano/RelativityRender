@@ -68,6 +68,27 @@ bool GpuScene::upload_materials(const rr::material::MaterialParams* host,
     return true;
 }
 
+bool GpuScene::upload_lights(const rr::lighting::Light* host,
+                             std::size_t                count) {
+    if (count == 0) {
+        lights_.reset();
+        light_count_ = 0;
+        return true;
+    }
+    if (host == nullptr) {
+        lights_.reset();
+        light_count_ = 0;
+        return false;
+    }
+    if (!lights_.upload(host, count)) {
+        lights_.reset();
+        light_count_ = 0;
+        return false;
+    }
+    light_count_ = count;
+    return true;
+}
+
 void GpuScene::reset_device() noexcept {
     spheres_.reset();
     sphere_count_ = 0;
@@ -78,6 +99,8 @@ void GpuScene::reset_device() noexcept {
     mesh_ = GpuMesh{};
     materials_.reset();
     material_count_ = 0;
+    lights_.reset();
+    light_count_ = 0;
 }
 
 void GpuScene::clear() noexcept {

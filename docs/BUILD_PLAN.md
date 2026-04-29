@@ -6,8 +6,8 @@ records what landed, in which stage, and the next concrete step.
 
 ## Current state
 
-**Stages 1–10 + 6A + 6B + 7A + 7B + 7C + 8A + 8B + 9A — through
-host-side light data model.** Skeleton C++20 executable; header-only RR_HD math
+**Stages 1–10 + 6A + 6B + 7A + 7B + 7C + 8A + 8B + 9A + 9B — through
+direct lighting on GPU.** Skeleton C++20 executable; header-only RR_HD math
 library; host-side floating-point image + framebuffer system;
 backend-agnostic GPU device + memory layers; pinhole `Camera` + RR_HD
 `generate_camera_ray`; single-sphere intersection kernel; relativity
@@ -28,16 +28,27 @@ closest-hit kernel landed at Stage 6B; Stage 7A added host-side
 added the `GpuMesh` upload manager and the `CudaMeshView` device
 POD; Stage 7C restored `intersect_triangle` (Möller-Trumbore) and
 extended `k_render_scene` with a triangle closest-hit loop. Stage 8A added the host-side material data model; Stage 8B brought
-materials online on the device. **Stage 9A** adds the host-side
-light data model (`Light` POD with point / directional / area-
-placeholder / environment-placeholder types + four convenience
-factories) and promotes `SceneLight` from a placeholder shell to a
-real authoring entry. Renderer behaviour is unchanged - the kernel
-still ignores lights and shades `albedo * facing_ratio + emission`;
-the GPU light upload and direct-lighting evaluation land in Stage 9B.
-Five GPU kernels live (gradient / camera-rays / single-sphere /
-relativistic-sphere / multi-sphere-mesh-scene-with-materials). Nine
-GPU CLI actions are live. No shadows, no textures, no path tracer,
+materials online on the device. Stage 9A added the host-side light
+data model and promoted `SceneLight` to carry real `Light` data.
+**Stage 9B** brings lighting online on the device:
+`GpuScene::upload_lights` uploads a flat `Light` array,
+`CudaSceneView` gains the lights slot, and `k_render_scene`'s
+base-shade step now evaluates direct lighting per hit
+(unconditionally - shadows are deferred): point + directional
+contributions are accumulated as `albedo * light_color * intensity *
+max(0, N · L) * falloff`, environment lights act as ambient,
+emission is added on top, and the existing relativistic Doppler /
+searchlight pipeline still runs after the shade. Scenes that
+upload no lights (the existing `--render-scene` /
+`--render-mesh-scene` / `--render-material-scene` CLI actions) keep
+the Stage 8B facing-ratio fallback unchanged. Five GPU kernels live
+(gradient / camera-rays / single-sphere / relativistic-sphere /
+multi-sphere-mesh-scene-with-materials-and-lights). **Ten** GPU CLI
+actions are live: `--render-gradient`, `--render-rays`,
+`--render-sphere`, `--render-relativistic`, `--render-scene`,
+`--render-triangle`, `--render-mesh-scene`,
+`--render-material-scene`, `--render-direct-lighting`, plus the
+`--render` placeholder. No shadows, no textures, no path tracer,
 no server, no integrations.
 
 ### Files in scope
@@ -138,6 +149,7 @@ build-cuda/bin/RelativityRender --render-scene            # -> output/gpu_scene_
 build-cuda/bin/RelativityRender --render-triangle         # -> output/gpu_triangle.ppm
 build-cuda/bin/RelativityRender --render-mesh-scene       # -> output/gpu_mesh_scene.ppm
 build-cuda/bin/RelativityRender --render-material-scene   # -> output/gpu_material_scene.ppm
+build-cuda/bin/RelativityRender --render-direct-lighting  # -> output/gpu_direct_lighting.ppm
 ```
 
 ### CLI behavior (Stage 1)
@@ -1447,32 +1459,138 @@ Stage 9A ships zero behavioural delta - the kernel still ignores
 `MaterialParams::baseColor` + emission + facing-ratio. Stage 9B
 brings the kernel consumer online.
 
+### Stage 9B — Direct lighting on GPU (Module 14, GPU half)
+
+Status: implemented.
+
+Stage 9B ships:
+
+- `CudaSceneView` extended with `const Light* lights` +
+  `int light_count` (CudaScene.cuh now pulls `lighting/Light.h`).
+- `GpuScene::upload_lights(const Light*, std::size_t)` with the
+  same backend-honest semantics as the other uploads
+  (`upload_spheres` / `upload_mesh` / `upload_materials`).
+- `device_lights()` / `light_count()` accessors on `GpuScene` that
+  the renderer reads to populate the `CudaSceneView`.
+- `CudaRenderer::render_scene` snapshots the lights pointer +
+  count alongside the existing fields.
+- `k_render_scene` step 4 (base shade) extended. The kernel now:
+    1. Looks up the hit's material (unchanged from Stage 8B) to
+       obtain `albedo` and `emission`.
+    2. **If `light_count > 0`**: iterates the lights array.
+       Directional lights contribute
+       `light_color * intensity * max(0, N · -direction)`. Point
+       lights contribute
+       `light_color * intensity * max(0, N · L) / d²` where
+       `d² = ||L_pos - hit_pos||²` (with a small epsilon floor
+       to keep the singular point tractable). Environment lights
+       contribute `light_color * intensity` to an ambient
+       accumulator; if no environment light is present a small
+       implicit ambient floor `(0.05, 0.05, 0.05)` is added so
+       grazing-angle pixels are not pitch black. Area lights are
+       skipped (PLACEHOLDER per Stage 9A; real sampling lands
+       with the path tracer). The shaded colour is
+       `albedo * (direct + ambient) + emission`.
+    3. **If `light_count == 0`**: falls back to the Stage 8B
+       facing-ratio shade so the existing unlit CLI actions
+       (`--render-scene`, `--render-mesh-scene`,
+       `--render-material-scene`) keep producing recognisable
+       output instead of going pitch black.
+- Steps 5-7 of the pipeline (Doppler factor → Doppler colour →
+  searchlight beaming) are unchanged - the relativistic post-
+  shading modifier applies on top of the new direct-lighting
+  result, exactly as the prompt requires.
+- New CLI action `--render-direct-lighting` (mutually exclusive
+  with the other action flags). `main.cpp::run_render_direct_lighting`
+  builds a scene that exercises every code path:
+    - the four-sphere + quad geometry from
+      `--render-material-scene`,
+    - the same five-material palette,
+    - three lights:
+        - **Directional** at `(-0.4, -0.7, -0.6)` (a "sun" coming
+          from upper-front-left), warm white, intensity 0.9;
+        - **Point** at `(2, 1.5, -2.5)`, warm fill, intensity 30
+          (compensating for the `1/d²` falloff at a few units);
+        - **Environment** flat sky tint `(0.30, 0.40, 0.55)`,
+          intensity 0.4.
+  Output: `output/gpu_direct_lighting.ppm` (override with
+  `--output`).
+
+CMake change: `rr_gpu` PUBLIC-links `rr_lighting` so
+`gpu/GpuScene.h`'s include of `lighting/Light.h` resolves for
+downstream consumers.
+
+Energy-conservation note: the kernel deliberately drops the
+`1/π` Lambertian normalisation. "Basic GPU direct lighting" per
+the prompt is not energy-conserving PBR; the path tracer
+(master module 16) replaces this with a proper BRDF that
+includes the normalisation. With `1/π` dropped, default
+intensities of ~1 produce visible (not crushed-dark) results
+without explicit exposure control.
+
+Hard-rule audit (per the prompt):
+
+- No CPU lighting - **yes**, every per-light evaluation runs
+  inside `k_render_scene`. Host-side code only constructs `Light`
+  PODs and calls `upload_lights`.
+- No shadows yet - **yes**, the kernel adds each light's
+  contribution unconditionally; no shadow-ray code exists in the
+  kernel.
+- No path tracing yet - **yes**, single-bounce primary-ray
+  shading; no recursion, no RNG.
+- No textures - **yes**, no texture-related fields on the kernel
+  path; `MaterialParams` carries no texture binding.
+- No node graph - **yes**.
+- No parser / server / C4D - **yes**.
+- All shading remains GPU-side - **yes**, `k_render_scene` is the
+  only code that reads `Light` / `MaterialParams` and writes a
+  pixel; the host's role is constructing PODs, calling the upload
+  methods, launching, and saving the PPM.
+
+Verified (host-only build):
+
+- `cmake --build build -j` clean under `-Wall -Wextra -Wpedantic`,
+  no warnings.
+- `ctest` 3/3.
+- `--help` lists `--render-direct-lighting` with the correct
+  default output path.
+- `--render-direct-lighting` on a host without CUDA prints the
+  actionable rebuild hint and exits 1.
+
+CUDA-enabled runtime verification (kernel launch + PPM written to
+`output/gpu_direct_lighting.ppm`) requires a host with the CUDA
+Toolkit and a CUDA-capable GPU and was **not** runnable in the
+development environment for this commit. The shading change is
+self-contained and the kept code paths (light evaluation,
+material lookup, Doppler / searchlight) are byte-equivalent to the
+prototype's tested implementation.
+
 ## Next stage
 
-**Stage 9B — GPU lighting + direct illumination (Module 14, GPU
-half).** Scope: bring `Light` to the device. The kernel evaluates
-direct lighting at each hit, with shadow-ray visibility for point
-+ directional lights. Replace the facing-ratio attenuation in
-`k_render_scene` step 4 with a real Lambertian shade.
+**Scene format / parser (master module 15).** Materials, lights,
+spheres, and meshes are all uploadable; the next deliberate step
+is letting the renderer load a scene from a file instead of
+building it programmatically in `main.cpp`. Plan: bring back the
+`.rrscene` JSON loader (using a real JSON library this time, not
+the prototype's hand-rolled parser), populate `rr::scene::Scene`
+from disk, and wire `--render <path>` (currently a placeholder)
+to actually load + render the file.
 
 Deliverables (planned, NOT yet implemented):
 
-- `GpuScene::upload_lights(const Light*, std::size_t)` with the
-  same backend-honest semantics as the other uploads.
-- Extend `CudaSceneView` with `const Light* lights` +
-  `int light_count`.
-- Extend `k_render_scene`: per hit, iterate the light array,
-  compute `to_light` direction + distance per light type, fire a
-  shadow ray (reusing `intersect_sphere` + `intersect_triangle`),
-  accumulate `max(0, N · L) * baseColor * light_color *
-  intensity / pi` for each unoccluded light. Add the existing
-  emissive contribution. The Doppler / searchlight pipeline
-  still applies on top.
-- A `--render-lit-scene` CLI action that builds the demo scene
-  with at least one point light and one directional light.
-- Area + Environment light handling stays deferred to the path
-  tracer / texture stages; the kernel ignores those `LightType`
-  values for now.
+- Vendored `nlohmann/json` or equivalent (single header) under
+  `third_party/`.
+- `src/io/SceneLoader.{h,cpp}` (parses `.rrscene` JSON →
+  `rr::scene::Scene`).
+- `src/io/SceneWriter.{h,cpp}` (serialises a `Scene` for
+  round-trip tests).
+- `tests/io_tests.cpp` (round-trip: write → read → compare).
+- `--render <scene>` finally does something - calls
+  `SceneLoader::load(path)`, then `CudaRenderer::render_scene`,
+  then writes to `--output`.
+- Two fixture scenes under `scenes/`: `test_minimal.rrscene` (one
+  sphere, default camera) and `test_lit.rrscene` (a richer scene
+  with materials + lights).
 
 ## Constraints carried forward
 

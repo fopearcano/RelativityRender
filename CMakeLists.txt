@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.20)
 
 project(RelativityRender
     VERSION     0.1.0
-    DESCRIPTION "RelativityRender - GPU renderer platform (Stage 9A: light data model)"
+    DESCRIPTION "RelativityRender - GPU renderer platform (Stage 9B: direct lighting on GPU)"
     LANGUAGES   CXX
 )
 
@@ -23,7 +23,7 @@ option(RR_ENABLE_CUDA "Enable CUDA backend (requires CUDA Toolkit)"   OFF)
 
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
-message(STATUS "RelativityRender ${PROJECT_VERSION} (Stage 9A: light data model)")
+message(STATUS "RelativityRender ${PROJECT_VERSION} (Stage 9B: direct lighting on GPU)")
 
 message(STATUS "  Build type   : ${CMAKE_BUILD_TYPE}")
 message(STATUS "  C++ standard : ${CMAKE_CXX_STANDARD}")
@@ -206,9 +206,9 @@ add_library(rr_gpu STATIC
 )
 target_include_directories(rr_gpu PUBLIC src)
 # rr_gpu's GpuScene exposes Camera / Observer / RelativityParams /
-# Sphere / MaterialParams by value; PUBLIC-link those modules so
-# consumers see the complete types via gpu/GpuScene.h.
-target_link_libraries(rr_gpu PUBLIC rr_camera rr_relativity rr_geometry rr_material)
+# Sphere / MaterialParams / Light by value; PUBLIC-link those
+# modules so consumers see the complete types via gpu/GpuScene.h.
+target_link_libraries(rr_gpu PUBLIC rr_camera rr_relativity rr_geometry rr_material rr_lighting)
 rr_apply_warnings(rr_gpu)
 
 if(RR_ENABLE_CUDA)

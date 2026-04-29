@@ -19,6 +19,7 @@
     #include "geometry/Sphere.h"
     #include "geometry/Triangle.h"
     #include "gpu/GpuScene.h"
+    #include "lighting/Light.h"
     #include "material/Material.h"
     #include "material/MaterialTypes.h"
     #include "math/Vec3.h"
@@ -672,6 +673,163 @@ int run_render_material_scene(const rr::core::Config& cfg) {
 #endif
 }
 
+// `--render-direct-lighting` dispatch. Builds the multi-sphere +
+// quad scene with materials AND lights, uploads everything, and
+// runs the GPU direct-lighting path in `k_render_scene`. The
+// kernel evaluates point + directional contributions
+// unconditionally (no shadows) and treats environment lights as
+// ambient. Emission, Doppler colour, and searchlight beaming
+// apply on top. Demonstrates the full Stage 9B pipeline.
+int run_render_direct_lighting(const rr::core::Config& cfg) {
+    const std::string out_path = cfg.output_path.empty()
+        ? std::string("output/gpu_direct_lighting.ppm")
+        : cfg.output_path;
+
+#ifndef RR_HAS_CUDA
+    (void)cfg;
+    rr::core::Logger::error("--render-direct-lighting requires CUDA. "
+                            "Rebuild with -DRR_ENABLE_CUDA=ON on a host "
+                            "with the CUDA Toolkit and a CUDA-capable "
+                            "GPU.");
+    return 1;
+#else
+    rr::scene::Scene scene;
+    scene.render_settings.width  = cfg.width;
+    scene.render_settings.height = cfg.height;
+    scene.camera.set_aspect(static_cast<float>(cfg.width)
+                          / static_cast<float>(cfg.height));
+
+    // Materials. Same five-material palette as --render-material-scene.
+    auto red       = rr::material::Material::make_diffuse(
+        rr::math::Vec3{0.85f, 0.20f, 0.20f});
+    auto green     = rr::material::Material::make_diffuse(
+        rr::math::Vec3{0.20f, 0.80f, 0.30f});
+    auto blue      = rr::material::Material::make_diffuse(
+        rr::math::Vec3{0.20f, 0.30f, 0.90f});
+    auto emissive  = rr::material::Material::make_emissive(
+        rr::math::Vec3{1.0f, 0.85f, 0.35f}, /*strength=*/2.0f);
+    auto neutral   = rr::material::Material::make_diffuse(
+        rr::math::Vec3{0.65f, 0.65f, 0.65f});
+    scene.materials.push_back({0, "red",      red.params()});
+    scene.materials.push_back({1, "green",    green.params()});
+    scene.materials.push_back({2, "blue",     blue.params()});
+    scene.materials.push_back({3, "emissive", emissive.params()});
+    scene.materials.push_back({4, "neutral",  neutral.params()});
+
+    // Spheres + quad: same layout as --render-material-scene.
+    const auto add_sphere = [&](float cx, float cy, float cz, float r,
+                                int mat, const char* name) {
+        rr::scene::SceneSphere s;
+        s.object.name = name;
+        s.geometry    = rr::geometry::Sphere{
+            rr::math::Vec3{cx, cy, cz}, r, mat};
+        scene.spheres.push_back(s);
+    };
+    add_sphere(-1.5f,  0.2f, -4.0f, 0.7f, 0, "left");
+    add_sphere( 0.0f, -0.1f, -3.5f, 0.8f, 1, "centre");
+    add_sphere( 1.5f,  0.2f, -4.0f, 0.7f, 2, "right");
+    add_sphere( 0.0f, -1.4f, -5.0f, 1.0f, 3, "ground-bulb");
+
+    rr::geometry::Mesh quad;
+    quad.vertices.push_back({rr::math::Vec3{-3.0f, -3.0f, -6.0f},
+                             rr::math::Vec3{0.0f, 0.0f, 1.0f},
+                             rr::math::Vec2{0.0f, 0.0f}});
+    quad.vertices.push_back({rr::math::Vec3{ 3.0f, -3.0f, -6.0f},
+                             rr::math::Vec3{0.0f, 0.0f, 1.0f},
+                             rr::math::Vec2{1.0f, 0.0f}});
+    quad.vertices.push_back({rr::math::Vec3{ 3.0f,  3.0f, -6.0f},
+                             rr::math::Vec3{0.0f, 0.0f, 1.0f},
+                             rr::math::Vec2{1.0f, 1.0f}});
+    quad.vertices.push_back({rr::math::Vec3{-3.0f,  3.0f, -6.0f},
+                             rr::math::Vec3{0.0f, 0.0f, 1.0f},
+                             rr::math::Vec2{0.0f, 1.0f}});
+    quad.triangles.push_back({0, 1, 2});
+    quad.triangles.push_back({0, 2, 3});
+    quad.material_id = 4;
+
+    // Lights. Three samples to demonstrate every code path:
+    //   1. Directional - "sun" coming from upper-front-left.
+    //   2. Point       - warm fill light to the upper right
+    //                    (intensity > 1 to compensate for 1/d^2).
+    //   3. Environment - cool-blue flat ambient tint.
+    scene.lights.push_back({{}, rr::lighting::make_directional_light(
+        rr::math::Vec3{-0.4f, -0.7f, -0.6f},
+        rr::math::Vec3{1.0f, 0.95f, 0.85f},
+        /*intensity=*/0.9f)});
+    scene.lights.push_back({{}, rr::lighting::make_point_light(
+        rr::math::Vec3{2.0f, 1.5f, -2.5f},
+        rr::math::Vec3{1.0f, 0.85f, 0.6f},
+        /*intensity=*/30.0f)});
+    scene.lights.push_back({{}, rr::lighting::make_environment_light(
+        rr::math::Vec3{0.30f, 0.40f, 0.55f},
+        /*intensity=*/0.4f)});
+
+    // Pull host PODs out of the scene wrappers for the GPU upload.
+    std::vector<rr::geometry::Sphere> sphere_pods;
+    sphere_pods.reserve(scene.spheres.size());
+    for (const auto& s : scene.spheres) {
+        if (s.object.visible) sphere_pods.push_back(s.geometry);
+    }
+    std::vector<rr::material::MaterialParams> material_pods;
+    material_pods.reserve(scene.materials.size());
+    for (const auto& m : scene.materials) material_pods.push_back(m.params);
+    std::vector<rr::lighting::Light> light_pods;
+    light_pods.reserve(scene.lights.size());
+    for (const auto& l : scene.lights) {
+        if (l.object.visible) light_pods.push_back(l.data);
+    }
+
+    rr::gpu::GpuScene gpu_scene;
+    if (!gpu_scene.upload_camera(scene.camera)) {
+        rr::core::Logger::error("direct-lighting failed: upload_camera");
+        return 1;
+    }
+    if (!gpu_scene.upload_relativity(scene.observer, scene.relativity)) {
+        rr::core::Logger::error("direct-lighting failed: upload_relativity");
+        return 1;
+    }
+    if (!gpu_scene.upload_spheres(sphere_pods.data(), sphere_pods.size())) {
+        rr::core::Logger::error("direct-lighting failed: upload_spheres");
+        return 1;
+    }
+    if (!gpu_scene.upload_mesh(quad)) {
+        rr::core::Logger::error("direct-lighting failed: upload_mesh");
+        return 1;
+    }
+    if (!gpu_scene.upload_materials(material_pods.data(),
+                                    material_pods.size())) {
+        rr::core::Logger::error("direct-lighting failed: upload_materials");
+        return 1;
+    }
+    if (!gpu_scene.upload_lights(light_pods.data(), light_pods.size())) {
+        rr::core::Logger::error("direct-lighting failed: upload_lights");
+        return 1;
+    }
+
+    auto r = rr::cuda::CudaRenderer::render_scene(gpu_scene,
+                                                  cfg.width, cfg.height);
+    if (!r.ok) {
+        rr::core::Logger::error("direct-lighting render failed: " + r.message);
+        return 1;
+    }
+
+    rr::core::Logger::info("direct-lighting: "
+                         + std::to_string(sphere_pods.size())
+                         + " sphere(s) + "
+                         + std::to_string(quad.triangle_count())
+                         + " tri(s) + "
+                         + std::to_string(material_pods.size())
+                         + " material(s) + "
+                         + std::to_string(light_pods.size())
+                         + " light(s) uploaded, "
+                         + std::to_string(cfg.width) + "x"
+                         + std::to_string(cfg.height) + " framebuffer");
+
+    return save_image_or_error(r.image, out_path, "GPU direct lighting",
+                               cfg.width, cfg.height) ? 0 : 1;
+#endif
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -721,6 +879,9 @@ int main(int argc, char** argv) {
         case CommandLine::Action::RenderMaterialScene:
             return run_render_material_scene(result.config);
 
+        case CommandLine::Action::RenderDirectLighting:
+            return run_render_direct_lighting(result.config);
+
         case CommandLine::Action::Error:
             Logger::error(result.error_message);
             std::cerr << CommandLine::usage(argv[0]);
@@ -729,12 +890,13 @@ int main(int argc, char** argv) {
         case CommandLine::Action::Default:
             Logger::info(std::string(rr::core::kProjectName) + " "
                        + rr::core::kVersionString + " starting up.");
-            Logger::info("Stage 8B: GPU material shading. "
+            Logger::info("Stage 9B: direct lighting on GPU. "
                          "Try --device-info, --render-gradient, "
                          "--render-rays, --render-sphere, "
                          "--render-relativistic, --render-scene, "
                          "--render-triangle, --render-mesh-scene, "
-                         "or --render-material-scene.");
+                         "--render-material-scene, "
+                         "or --render-direct-lighting.");
             return 0;
     }
     return 0;
