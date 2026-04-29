@@ -1885,21 +1885,146 @@ emit `target`, never `forward`.
   still parses without a `camera` block and yields the camera's
   default basis.
 
+## Stage 10B.4 — parse relativity
+
+**Scope of this slice (Stage 10B.4): add a relativity schema
+mapper that reads the canonical §6 `observer_velocity` /
+`enable_*` / `*_strength` / `max_beta` fields *and* the
+user-shorthand authoring style from the prompt
+(`enabled` / `betaVelocity` + `velocityDirection` /
+`aberrationStrength` / `dopplerStrength` /
+`searchlightStrength`), then enforces the §12 #2 cross-section
+rule (`|observer_velocity| < max_beta < 1`).** Materials,
+geometry, and lights remain out of scope.
+
+### What ships
+
+- `src/io/SceneLoader.cpp` — added `to_bool` helper and the
+  `apply_relativity` mapper. The mapper:
+  - Reads canonical fields first: `observer_velocity` (Vec3),
+    `enable_aberration` / `enable_doppler` /
+    `enable_searchlight` (bools), `doppler_color_strength`,
+    `searchlight_strength`, `max_beta` (floats with `>= 0`
+    validation; `max_beta` further validated `0 < max_beta <
+    1`).
+  - Then applies shorthands as overrides (consistent with the
+    10B.3 `forward`-wins-over-`target` precedence policy):
+    - `betaVelocity` + `velocityDirection` (both required
+      together; one without the other is rejected) →
+      `observer_velocity = normalize(direction) * beta`.
+    - `dopplerStrength` → `doppler_color_strength`.
+    - `searchlightStrength` → `searchlight_strength`.
+    - `aberrationStrength` → collapsed onto
+      `enable_aberration` (`> 0` ⇒ true, `== 0` ⇒ false).
+      Documented in `RRSCENE_FORMAT.md` §6.1 as a host-side
+      precision loss because the kernel only reads the bool
+      today.
+    - `enabled = false` forces all three `enable_*` flags off
+      as a master gate (no-op when `true`).
+  - Enforces §12 #2 cross-section validation after all
+    shorthands resolve: rejects `|observer_velocity| >= 1` and
+    `|observer_velocity| >= max_beta` with distinct messages
+    so the artist can tell which guard tripped.
+- `src/io/SceneLoader.cpp::parse` — wires the relativity mapper
+  in after `apply_camera`. Other top-level keys (`materials` /
+  `spheres` / `meshes` / `lights`) are still parsed for
+  syntactic validity and dropped.
+- `src/main.cpp::run_scene_info` — prints the parsed relativity
+  state under a `relativity:` heading: the full
+  `observer_velocity` Vec3, its scalar `|beta|`, the three
+  `enable_*` bools, both strength floats, and `max_beta`. Also
+  added an explicit `<cmath>` include so `std::sqrt` is
+  unambiguous on every host build.
+- `scenes/test_relativity.rrscene` — fixture exercising every
+  shorthand (`enabled` / `betaVelocity` / `velocityDirection` /
+  `aberrationStrength` / `dopplerStrength` /
+  `searchlightStrength`) on a 640×360 framebuffer with no
+  camera or render-settings overrides.
+- `docs/RRSCENE_FORMAT.md` §6.1 — new shorthand table covering
+  all five user-prompt fields, with the precedence rule, the
+  `betaVelocity` ↔ `velocityDirection` pairing requirement, the
+  `aberrationStrength` precision-loss caveat, and the master-
+  gate semantics. Writers must still emit canonical names.
+
+### Naming-tension resolution
+
+Stage 10B.4's prompt listed six relativity fields; only three
+have direct canonical equivalents (`dopplerStrength` ↔
+`doppler_color_strength`, `searchlightStrength` ↔
+`searchlight_strength`, and the implicit equivalence between
+`enabled` and the three `enable_*` flags). The other three need
+deliberate handling:
+
+- `betaVelocity` + `velocityDirection` is a polar-form
+  factorisation of the canonical `observer_velocity` Vec3; the
+  parser composes them at apply-time and stores only the
+  Vec3, so downstream code reads exactly what it always read.
+- `aberrationStrength` would naturally map to a host-side
+  `aberration_strength` float, but no such field exists on
+  `RelativityParams` today and the rule "No GPU changes"
+  forbids growing the POD that flows through
+  `GpuScene::upload_relativity` / `CudaSceneView` /
+  `k_render_scene`. The parser instead collapses the float
+  onto the existing `enable_aberration` bool as a 0-or-non-zero
+  gate. When a future stage actually grows `RelativityParams`,
+  the mapper turns into a single field assignment.
+- `enabled` has no canonical analogue because the canonical
+  schema already has three independent gates. It is recorded
+  as a one-way master switch (false ⇒ all off) rather than a
+  bidirectional toggle.
+
+### Hard-rule audit
+
+- Do not parse materials/geometry/lights yet — **yes**, no
+  mapper for those sections exists; they remain syntax-checked
+  and dropped.
+- Do not render yet — **yes**, the only consumer of the parser
+  is `--scene-info`, which only prints. No GPU launch path is
+  reached.
+- No GPU changes — **yes**, no source under `src/gpu/` or
+  `src/cuda/` is touched, no field added to `RelativityParams`,
+  the upload payload size is byte-identical to Stage 10B.3.
+- Must compile — **yes**, host-only build is clean under
+  `-Wall -Wextra -Wpedantic`, no warnings; `ctest` reports 3/3.
+
+### Verified at the CLI
+
+- `--scene-info scenes/test_relativity.rrscene` prints
+  `observer_velocity = [0, 0, -0.75]` (composed from
+  `betaVelocity = 0.75` + `velocityDirection = [0, 0, -1]`),
+  `|beta| = 0.75`, all three `enable_*` true,
+  `doppler_color_strength = 0.8`,
+  `searchlight_strength = 0.6`, `max_beta = 0.999999`.
+- `enabled: false` with a non-zero velocity preserves the
+  velocity but forces all three `enable_*` flags false.
+- `betaVelocity = 1.5` → exit 1, "|v| >= 1 (must be < 1 in
+  c-units)".
+- `betaVelocity = 0.6` with `max_beta = 0.5` → exit 1, "|v| >=
+  max_beta (must be strictly less than max_beta)".
+- Authoring `betaVelocity` without `velocityDirection` (or vice
+  versa) → exit 1, "betaVelocity and velocityDirection must be
+  authored together".
+- `aberrationStrength: 0` → `enable_aberration = false`.
+- A canonical-form fixture (full §6 schema with no shorthands)
+  parses identically.
+- Stage 10B.3's `scenes/test_camera.rrscene` (no `relativity`
+  block) still loads with default observer + relativity state.
+
 ## Next stage
 
-**Stage 10B.4 — parse relativity.** Scope:
+**Stage 10B.5 — parse materials.** Scope:
 
-- Add `apply_relativity` schema reader: maps the §6 `relativity`
-  block onto `rr::relativity::Observer` and
-  `rr::relativity::RelativityParams`, enforcing the
-  `length(observer_velocity) < max_beta < 1` cross-section rule
-  from §12.
-- Extend `--scene-info` to print the parsed observer velocity +
-  relativity toggles.
-- Add `scenes/test_relativity.rrscene` fixture.
+- Add `apply_materials` schema reader: maps the §7 `materials`
+  array onto `rr::scene::SceneMaterial` entries (`{id, name,
+  params}`), enforcing the §12 #3 unique-id rule and per-field
+  range validation (`base_color >= 0`, `roughness/metallic/
+  specular/transmission` in `[0,1]`, `emission_strength >= 0`).
+- Extend `--scene-info` to print the parsed material count + a
+  one-line summary per material.
+- Add `scenes/test_materials.rrscene` fixture.
 
-Materials / spheres / meshes / lights mappers come in 10B.5 and
-10B.6; the `--render <file>` end-to-end wiring + writer
+Spheres / meshes / lights mappers come in 10B.6 and 10B.7; the
+`--render <file>` end-to-end wiring + writer
 (`SceneWriter::save`) join in the final 10B sub-stage.
 
 ## Constraints carried forward

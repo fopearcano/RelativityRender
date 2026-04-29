@@ -2,6 +2,7 @@
 
 #include "camera/Camera.h"
 #include "math/Vec3.h"
+#include "relativity/RelativityParams.h"
 
 #include <cctype>
 #include <cmath>
@@ -469,6 +470,16 @@ bool to_string(const JsonValue& v, std::string& out, std::string& err,
     return true;
 }
 
+bool to_bool(const JsonValue& v, bool& out, std::string& err,
+             const char* field) {
+    if (v.kind != JsonKind::Bool) {
+        err = std::string("field '") + field + "' must be a boolean";
+        return false;
+    }
+    out = v.b;
+    return true;
+}
+
 // Convert a JSON Number to float. Numbers that round-trip via double
 // are accepted; non-finite values (NaN / inf cannot legally appear
 // in JSON, but we double-check after the cast) are rejected.
@@ -654,6 +665,181 @@ bool apply_camera(const JsonValue& obj,
     return true;
 }
 
+// Apply the `relativity` block onto `observer` + `params`. Stage
+// 10B.4 surface accepts both the canonical spec form (§6 of
+// RRSCENE_FORMAT.md) and the user-shorthand authoring style:
+//
+//   canonical                   shorthand
+//   --------                    ---------
+//   observer_velocity (Vec3)    betaVelocity (float, scalar speed)
+//                             + velocityDirection (Vec3, direction)
+//   enable_aberration (bool)    aberrationStrength (float; 0 == off)
+//   doppler_color_strength      dopplerStrength
+//   searchlight_strength        searchlightStrength
+//   (no canonical equivalent)   enabled (master gate; false zeroes
+//                                        all three enable_* flags)
+//
+// Shorthands win when both forms are present, matching the
+// 10B.3 precedence policy. The cross-section validation rule from
+// §12 #2 (`length(observer_velocity) < max_beta < 1`) is enforced.
+//
+// Note: the host `RelativityParams` has no float aberration
+// strength field today (the kernel reads `enable_aberration` as a
+// boolean), so `aberrationStrength` is mapped onto the boolean as
+// a 0-or-non-zero gate. When a future stage adds a real
+// `aberration_strength` field this mapper grows a single line; the
+// shorthand contract is documented in RRSCENE_FORMAT.md §6.1.
+bool apply_relativity(const JsonValue& obj,
+                      rr::relativity::Observer& observer,
+                      rr::relativity::RelativityParams& params,
+                      std::string& err) {
+    if (obj.kind != JsonKind::Object) {
+        err = "'relativity' must be a JSON object";
+        return false;
+    }
+
+    // ----- canonical fields first -----
+
+    if (const auto* v = obj.find("observer_velocity")) {
+        if (!to_vec3(*v, observer.velocity, err,
+                     "relativity.observer_velocity")) return false;
+    }
+    if (const auto* v = obj.find("enable_aberration")) {
+        if (!to_bool(*v, params.enable_aberration, err,
+                     "relativity.enable_aberration")) return false;
+    }
+    if (const auto* v = obj.find("enable_doppler")) {
+        if (!to_bool(*v, params.enable_doppler, err,
+                     "relativity.enable_doppler")) return false;
+    }
+    if (const auto* v = obj.find("enable_searchlight")) {
+        if (!to_bool(*v, params.enable_searchlight, err,
+                     "relativity.enable_searchlight")) return false;
+    }
+    if (const auto* v = obj.find("doppler_color_strength")) {
+        if (!to_float(*v, params.doppler_color_strength, err,
+                      "relativity.doppler_color_strength")) return false;
+        if (params.doppler_color_strength < 0.0f) {
+            err = "relativity.doppler_color_strength must be >= 0";
+            return false;
+        }
+    }
+    if (const auto* v = obj.find("searchlight_strength")) {
+        if (!to_float(*v, params.searchlight_strength, err,
+                      "relativity.searchlight_strength")) return false;
+        if (params.searchlight_strength < 0.0f) {
+            err = "relativity.searchlight_strength must be >= 0";
+            return false;
+        }
+    }
+    if (const auto* v = obj.find("max_beta")) {
+        if (!to_float(*v, params.max_beta, err,
+                      "relativity.max_beta")) return false;
+        if (!(params.max_beta > 0.0f && params.max_beta < 1.0f)) {
+            err = "relativity.max_beta must satisfy 0 < max_beta < 1";
+            return false;
+        }
+    }
+
+    // ----- shorthands (override canonical when present) -----
+
+    // betaVelocity + velocityDirection -> observer.velocity. Both
+    // must be authored together; one without the other is
+    // ambiguous (no implicit "default direction" - the spec is
+    // silent and we'd rather reject than guess).
+    const JsonValue* beta_v = obj.find("betaVelocity");
+    const JsonValue* dir_v  = obj.find("velocityDirection");
+    if (beta_v != nullptr || dir_v != nullptr) {
+        if (beta_v == nullptr || dir_v == nullptr) {
+            err = "relativity.betaVelocity and relativity."
+                  "velocityDirection must be authored together";
+            return false;
+        }
+        float beta = 0.0f;
+        if (!to_float(*beta_v, beta, err,
+                      "relativity.betaVelocity")) return false;
+        if (beta < 0.0f) {
+            err = "relativity.betaVelocity must be >= 0";
+            return false;
+        }
+        rr::math::Vec3 dir{0.0f, 0.0f, 0.0f};
+        if (!to_vec3(*dir_v, dir, err,
+                     "relativity.velocityDirection")) return false;
+        const float dlen2 = dir.x*dir.x + dir.y*dir.y + dir.z*dir.z;
+        if (dlen2 == 0.0f) {
+            err = "relativity.velocityDirection must be a non-zero vector";
+            return false;
+        }
+        const float inv_len = 1.0f / std::sqrt(dlen2);
+        observer.velocity = rr::math::Vec3{dir.x * inv_len * beta,
+                                           dir.y * inv_len * beta,
+                                           dir.z * inv_len * beta};
+    }
+
+    if (const auto* v = obj.find("dopplerStrength")) {
+        if (!to_float(*v, params.doppler_color_strength, err,
+                      "relativity.dopplerStrength")) return false;
+        if (params.doppler_color_strength < 0.0f) {
+            err = "relativity.dopplerStrength must be >= 0";
+            return false;
+        }
+    }
+    if (const auto* v = obj.find("searchlightStrength")) {
+        if (!to_float(*v, params.searchlight_strength, err,
+                      "relativity.searchlightStrength")) return false;
+        if (params.searchlight_strength < 0.0f) {
+            err = "relativity.searchlightStrength must be >= 0";
+            return false;
+        }
+    }
+    if (const auto* v = obj.find("aberrationStrength")) {
+        // No host-side float home today; collapse to the boolean
+        // gate that the kernel actually reads. Any positive value
+        // enables aberration; zero disables it.
+        float strength = 0.0f;
+        if (!to_float(*v, strength, err,
+                      "relativity.aberrationStrength")) return false;
+        if (strength < 0.0f) {
+            err = "relativity.aberrationStrength must be >= 0";
+            return false;
+        }
+        params.enable_aberration = (strength > 0.0f);
+    }
+
+    // Master gate. When false, all three per-effect enable flags
+    // are forced off. When true (default), no-op - per-effect
+    // flags retain whatever the canonical / shorthand inputs set.
+    if (const auto* v = obj.find("enabled")) {
+        bool enabled = true;
+        if (!to_bool(*v, enabled, err,
+                     "relativity.enabled")) return false;
+        if (!enabled) {
+            params.enable_aberration  = false;
+            params.enable_doppler     = false;
+            params.enable_searchlight = false;
+        }
+    }
+
+    // ----- cross-section validation (RRSCENE_FORMAT.md §12 #2) -----
+
+    {
+        const auto& v = observer.velocity;
+        const float speed2 = v.x*v.x + v.y*v.y + v.z*v.z;
+        if (speed2 >= 1.0f) {
+            err = "relativity.observer_velocity has |v| >= 1 "
+                  "(must be < 1 in c-units)";
+            return false;
+        }
+        if (speed2 >= params.max_beta * params.max_beta) {
+            err = "relativity.observer_velocity has |v| >= max_beta "
+                  "(must be strictly less than max_beta)";
+            return false;
+        }
+    }
+
+    return true;
+}
+
 // Slurp `path` into a string; returns false on read failure.
 bool read_text_file(const std::string& path, std::string& out,
                     std::string& err) {
@@ -772,9 +958,22 @@ LoadResult parse(const std::string& text) {
         }
     }
 
-    // Stage 10B.3 schema scope ends here. Other top-level keys
-    // (`relativity`, `materials`, `spheres`, `meshes`, `lights`)
-    // are intentionally ignored - they were syntax-checked by the
+    // relativity (optional). Stage 10B.4 surface: observer
+    // velocity (canonical Vec3 OR betaVelocity + velocityDirection
+    // shorthand) + per-effect enables/strengths + master `enabled`
+    // gate + max_beta with the §12 #2 cross-section validation.
+    if (const JsonValue* rel_v = root.find("relativity")) {
+        std::string apply_err;
+        if (!apply_relativity(*rel_v, result.scene.observer,
+                              result.scene.relativity, apply_err)) {
+            result.error_message = apply_err;
+            return result;
+        }
+    }
+
+    // Stage 10B.4 schema scope ends here. Other top-level keys
+    // (`materials`, `spheres`, `meshes`, `lights`) are
+    // intentionally ignored - they were syntax-checked by the
     // JSON parser pass and will be mapped onto `scene` in
     // follow-up sub-stages.
 

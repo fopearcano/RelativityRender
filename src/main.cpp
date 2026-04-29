@@ -32,6 +32,7 @@
 
 #include "image/Image.h"
 
+#include <cmath>
 #include <filesystem>
 #include <iostream>
 #include <string>
@@ -159,6 +160,31 @@ int run_scene_info(const rr::core::Config& cfg) {
                + std::to_string(cam.vertical_fov_degrees()));
     Logger::info("    aspect            : "
                + std::to_string(cam.aspect()));
+
+    const auto& obs = result.scene.observer;
+    const auto& rp  = result.scene.relativity;
+    const float beta_speed = std::sqrt(obs.velocity.x * obs.velocity.x
+                                     + obs.velocity.y * obs.velocity.y
+                                     + obs.velocity.z * obs.velocity.z);
+    auto fmt_bool = [](bool b) -> std::string {
+        return b ? "true" : "false";
+    };
+
+    Logger::info("  relativity:");
+    Logger::info("    observer_velocity     : " + fmt_vec3(obs.velocity));
+    Logger::info("    |beta|                : " + std::to_string(beta_speed));
+    Logger::info("    enable_aberration     : "
+               + fmt_bool(rp.enable_aberration));
+    Logger::info("    enable_doppler        : "
+               + fmt_bool(rp.enable_doppler));
+    Logger::info("    enable_searchlight    : "
+               + fmt_bool(rp.enable_searchlight));
+    Logger::info("    doppler_color_strength: "
+               + std::to_string(rp.doppler_color_strength));
+    Logger::info("    searchlight_strength  : "
+               + std::to_string(rp.searchlight_strength));
+    Logger::info("    max_beta              : "
+               + std::to_string(rp.max_beta));
     return 0;
 }
 
@@ -949,7 +975,7 @@ int main(int argc, char** argv) {
         case CommandLine::Action::Default:
             Logger::info(std::string(rr::core::kProjectName) + " "
                        + rr::core::kVersionString + " starting up.");
-            Logger::info("Stage 10B.3: parse camera. "
+            Logger::info("Stage 10B.4: parse relativity. "
                          "Try --scene-info <file>, --device-info, "
                          "--render-gradient, --render-rays, "
                          "--render-sphere, --render-relativistic, "

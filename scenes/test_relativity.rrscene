@@ -1,0 +1,17 @@
+{
+  "version": "1.0.0",
+
+  "render_settings": {
+    "width":  640,
+    "height": 360
+  },
+
+  "relativity": {
+    "enabled":             true,
+    "betaVelocity":        0.75,
+    "velocityDirection":   [0.0, 0.0, -1.0],
+    "aberrationStrength":  1.0,
+    "dopplerStrength":     0.8,
+    "searchlightStrength": 0.6
+  }
+}

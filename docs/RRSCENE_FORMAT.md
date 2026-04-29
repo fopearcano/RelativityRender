@@ -237,6 +237,46 @@ runtime, but the parser MUST reject files where
 `length(observer_velocity) >= 1`. That value is not physical and
 indicates an authoring or unit error.
 
+### 6.1 Authoring shorthands (Stage 10B.4)
+
+Like §4.1 / §5.1, the `relativity` block accepts a few authoring
+shorthands as exact synonyms (or composable equivalents) for the
+canonical fields:
+
+| Canonical                     | Accepted shorthand                        |
+|-------------------------------|-------------------------------------------|
+| `observer_velocity` (Vec3)    | `betaVelocity` (float, scalar speed) **+** `velocityDirection` (Vec3, direction) |
+| `enable_aberration` (bool)    | `aberrationStrength` (float, `0` ⇒ off, `> 0` ⇒ on) |
+| `doppler_color_strength`      | `dopplerStrength`                         |
+| `searchlight_strength`        | `searchlightStrength`                     |
+| (no canonical equivalent)     | `enabled` (master gate; `false` zeroes all three `enable_*` flags) |
+
+Shorthands win when both forms are present, matching the §5.1
+precedence policy. Notes:
+
+- `betaVelocity` + `velocityDirection` are **paired**: authoring
+  one without the other is an error. The parser computes
+  `observer_velocity = normalize(velocityDirection) *
+  betaVelocity`. A zero-length `velocityDirection` is rejected.
+- `aberrationStrength` collapses onto the `enable_aberration`
+  boolean today because the host `RelativityParams` has no float
+  aberration-strength field; the kernel only reads the bool.
+  Files that need a fractional aberration response should depend
+  on a future schema version.
+- `dopplerStrength` and `searchlightStrength` are exact synonyms
+  for the canonical `*_strength` fields; no information is lost.
+- `enabled` is a one-way master gate: `false` forces all three
+  per-effect flags off; `true` (the default) leaves them at
+  whatever the canonical / shorthand inputs set. There is no
+  canonical equivalent because the per-effect flags already
+  encode three independent gates.
+
+The cross-section validation rule from §12 #2
+(`length(observer_velocity) < max_beta < 1`) is enforced after
+all shorthands have been resolved into canonical fields.
+
+Tools that emit `.rrscene` files MUST emit canonical names only.
+
 ## 7. `materials`
 
 Each entry maps to `rr::scene::SceneMaterial { id, name, params }`,
