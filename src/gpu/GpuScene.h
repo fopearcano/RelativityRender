@@ -5,6 +5,7 @@
 #include "geometry/Sphere.h"
 #include "gpu/GpuBuffer.h"
 #include "gpu/GpuMesh.h"
+#include "material/MaterialTypes.h"
 #include "relativity/RelativityParams.h"
 
 #include <cstddef>
@@ -73,6 +74,15 @@ public:
     // diagnostics.
     [[nodiscard]] bool upload_mesh(const rr::geometry::Mesh& mesh);
 
+    // Upload `count` `MaterialParams` PODs from a contiguous host
+    // array. Sphere `material_index` and Mesh `material_id` index
+    // into this array on the device. `count == 0` clears the buffer
+    // and is always a success; non-empty uploads require a working
+    // GPU backend. On failure the count is reset to zero so the
+    // kernel never sees a stale pointer.
+    [[nodiscard]] bool upload_materials(const rr::material::MaterialParams* host,
+                                        std::size_t                         count);
+
     // Free every device allocation owned by this scene. Does NOT
     // touch the host snapshots (camera / observer / params) - call
     // `clear()` for the full reset.
@@ -98,6 +108,13 @@ public:
     // `CudaMeshView`.
     [[nodiscard]] const GpuMesh& mesh() const noexcept { return mesh_; }
 
+    // Device pointer + count for the uploaded materials array.
+    // Both are nullptr / 0 when no upload has happened.
+    [[nodiscard]] const rr::material::MaterialParams* device_materials() const noexcept {
+        return materials_.device_ptr();
+    }
+    [[nodiscard]] std::size_t material_count() const noexcept { return material_count_; }
+
     [[nodiscard]] bool has_camera()     const noexcept { return has_camera_; }
     [[nodiscard]] bool has_relativity() const noexcept { return has_relativity_; }
 
@@ -110,6 +127,9 @@ private:
     std::size_t                       sphere_count_   = 0;
 
     GpuMesh                           mesh_{};
+
+    GpuBuffer<rr::material::MaterialParams> materials_{};
+    std::size_t                             material_count_ = 0;
 
     bool                              has_camera_     = false;
     bool                              has_relativity_ = false;

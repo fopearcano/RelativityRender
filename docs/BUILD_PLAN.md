@@ -6,8 +6,8 @@ records what landed, in which stage, and the next concrete step.
 
 ## Current state
 
-**Stages 1–10 + 6A + 6B + 7A + 7B + 7C + 8A — through material data
-model.** Skeleton C++20 executable; header-only RR_HD math
+**Stages 1–10 + 6A + 6B + 7A + 7B + 7C + 8A + 8B — through GPU
+material shading.** Skeleton C++20 executable; header-only RR_HD math
 library; host-side floating-point image + framebuffer system;
 backend-agnostic GPU device + memory layers; pinhole `Camera` + RR_HD
 `generate_camera_ray`; single-sphere intersection kernel; relativity
@@ -27,16 +27,21 @@ closest-hit kernel landed at Stage 6B; Stage 7A added host-side
 `Triangle`/`Vertex`/`Mesh` with a local-space AABB; Stage 7B
 added the `GpuMesh` upload manager and the `CudaMeshView` device
 POD; Stage 7C restored `intersect_triangle` (Möller-Trumbore) and
-extended `k_render_scene` with a triangle closest-hit loop. **Stage
-8A** adds the host-side material data model (`MaterialParams` POD +
-`Material` wrapper with diffuse / emissive / metal presets) and
-promotes `SceneMaterial` from a placeholder shell to a real
-authoring entry. Renderer behaviour is unchanged - the kernel still
-shades normal-as-color; the material upload + kernel lookup land in
-Stage 8B. Five GPU kernels live now (gradient / camera-rays /
-single-sphere / relativistic-sphere / multi-sphere-mesh-scene).
-**Eight** GPU CLI actions are live. No textures, no lights, no path
-tracer, no server, no integrations.
+extended `k_render_scene` with a triangle closest-hit loop. Stage 8A added the host-side material data model.
+**Stage 8B** brings materials online on the device:
+`GpuScene::upload_materials` sends a flat `MaterialParams` array to
+the GPU, `CudaSceneView` gains the materials slot, and
+`k_render_scene`'s base-shade step now reads
+`materials[Hit::material_index]` for the diffuse colour and adds
+`emissionColor * emissionStrength` on top. The Doppler / searchlight
+pipeline still applies after shading. Five GPU kernels live
+(gradient / camera-rays / single-sphere / relativistic-sphere /
+multi-sphere-mesh-scene-with-materials). **Nine** GPU CLI actions are
+live: `--render-gradient`, `--render-rays`, `--render-sphere`,
+`--render-relativistic`, `--render-scene`, `--render-triangle`,
+`--render-mesh-scene`, `--render-material-scene`, plus the `--render`
+placeholder for the still-pending scene parser. No textures, no
+lights, no path tracer, no server, no integrations.
 
 ### Files in scope
 
@@ -120,18 +125,19 @@ cmake -S . -B build-cuda -DRR_ENABLE_CUDA=ON
 cmake --build build-cuda -j
 
 # Run modes:
-build/bin/RelativityRender                            # startup banner
+build/bin/RelativityRender                                # startup banner
 build/bin/RelativityRender --help
 build/bin/RelativityRender --version
 build/bin/RelativityRender --device-info
 build/bin/RelativityRender --render scene.rrscene --output out.png --width 1920 --height 1080  # placeholder
-build-cuda/bin/RelativityRender --render-gradient     # -> output/gpu_gradient.ppm
-build-cuda/bin/RelativityRender --render-rays         # -> output/gpu_camera_rays.ppm
-build-cuda/bin/RelativityRender --render-sphere       # -> output/gpu_sphere.ppm
-build-cuda/bin/RelativityRender --render-relativistic # -> output/sphere_beta_{000,025,075,095}.ppm
-build-cuda/bin/RelativityRender --render-scene        # -> output/gpu_scene_spheres.ppm
-build-cuda/bin/RelativityRender --render-triangle     # -> output/gpu_triangle.ppm
-build-cuda/bin/RelativityRender --render-mesh-scene   # -> output/gpu_mesh_scene.ppm
+build-cuda/bin/RelativityRender --render-gradient         # -> output/gpu_gradient.ppm
+build-cuda/bin/RelativityRender --render-rays             # -> output/gpu_camera_rays.ppm
+build-cuda/bin/RelativityRender --render-sphere           # -> output/gpu_sphere.ppm
+build-cuda/bin/RelativityRender --render-relativistic     # -> output/sphere_beta_{000,025,075,095}.ppm
+build-cuda/bin/RelativityRender --render-scene            # -> output/gpu_scene_spheres.ppm
+build-cuda/bin/RelativityRender --render-triangle         # -> output/gpu_triangle.ppm
+build-cuda/bin/RelativityRender --render-mesh-scene       # -> output/gpu_mesh_scene.ppm
+build-cuda/bin/RelativityRender --render-material-scene   # -> output/gpu_material_scene.ppm
 ```
 
 ### CLI behavior (Stage 1)
@@ -1277,30 +1283,122 @@ Stage 8A ships zero behavioural delta - the kernel still ignores
 `Hit::material_index` and shades normal-as-color. Stage 8B brings
 the kernel consumer online.
 
+### Stage 8B — GPU material shading (Module 13, GPU half)
+
+Status: implemented.
+
+Stage 8B ships:
+
+- `CudaSceneView` extended with `const MaterialParams* materials` +
+  `int material_count` (CudaScene.cuh now pulls
+  `material/MaterialTypes.h`).
+- `GpuScene::upload_materials(const MaterialParams* host, size_t
+  count)` with the same backend-honest semantics as
+  `upload_spheres` / `upload_mesh`: zero-count clears, non-zero
+  needs a working backend, count resets to zero on any failure
+  path.
+- `device_materials()` / `material_count()` accessors on
+  `GpuScene` that the renderer reads to populate the
+  `CudaSceneView`.
+- `CudaRenderer::render_scene` snapshots the materials pointer +
+  count alongside the existing camera / observer / params /
+  spheres / mesh fields.
+- `k_render_scene` step 4 (base shade) replaced. The kernel now
+  reads `scene.materials[Hit::material_index]` when the index is
+  in range; otherwise it falls back to a neutral default
+  `MaterialParams` (matches `MaterialParams`'s default ctor).
+  Shading is `albedo * shade + emission` where `shade` is a
+  facing-ratio attenuation `max(0, N · -rd)` with a 0.15 ambient
+  floor, and `emission = emissionColor * emissionStrength` is
+  added unconditionally so back-faces of emissive materials still
+  glow. The miss path is unchanged (vertical sky gradient).
+- The Doppler / searchlight pipeline (steps 5-7) still applies on
+  top of the new shaded colour, so material colours are
+  Doppler-shifted and searchlight-boosted under non-zero
+  observer velocity exactly as the existing pipeline expects.
+- New CLI action `--render-material-scene` (mutually exclusive
+  with the other action flags). `main.cpp::run_render_material_scene`:
+    1. builds a five-material palette (red / green / blue diffuse,
+       a yellow emissive at strength 2, a neutral grey),
+    2. assigns the four spheres to materials 0..3 and the
+       background quad to material 4,
+    3. uploads camera / relativity / spheres / mesh / materials
+       via the five `GpuScene::upload_*` calls,
+    4. invokes `CudaRenderer::render_scene`,
+    5. saves to `output/gpu_material_scene.ppm` (or `--output`).
+
+CMake change: `rr_gpu` PUBLIC-links `rr_material` so
+`gpu/GpuScene.h`'s include of `material/MaterialTypes.h` resolves
+for downstream consumers.
+
+Shading rationale: facing-ratio with an ambient floor is *not* a
+BSDF and *not* Lambertian (which needs a direct light direction);
+it is a viewing-angle attenuation that keeps geometry discernible
+without committing to a real BRDF. The path tracer (master module
+16) replaces it with proper light-aware shading. This matches the
+prompt's "diffuse/simple shading" bound and "no advanced BSDF" /
+"no path tracing" constraints.
+
+Hard-rule audit (per the prompt):
+
+- No textures - **yes**, no `base_color_texture_id` field on
+  `MaterialParams`, no texture-related kernel paths.
+- No node graph - **yes**, no graph types or operators.
+- No path tracing - **yes**, single-bounce primary-ray shading
+  only; no recursion, no RNG.
+- No advanced BSDF - **yes**, the kernel reads `baseColor` +
+  `emissionColor` + `emissionStrength` only; `roughness` /
+  `metallic` / `specular` / `transmission` are uploaded but
+  unused. They are populated for forward compatibility with the
+  path tracer.
+- No parser / server / C4D - **yes**.
+- All shading remains GPU-side - **yes**, `k_render_scene` is the
+  only code that reads a `MaterialParams` and writes a pixel; the
+  host's only role is constructing PODs, calling the upload
+  methods, launching the kernel, and saving the PPM.
+
+Verified (host-only build):
+
+- `cmake --build build -j` clean under `-Wall -Wextra -Wpedantic`,
+  no warnings; `librr_gpu.a` re-links with the new
+  `upload_materials` impl; ctest 3/3.
+- `--help` lists `--render-material-scene` with the correct
+  default output path.
+- Host-only `--render-material-scene` prints the actionable
+  rebuild hint and exits 1.
+
+CUDA-enabled runtime verification (kernel launch + PPM written to
+`output/gpu_material_scene.ppm`) requires a host with the CUDA
+Toolkit and a CUDA-capable GPU and was **not** runnable in the
+development environment for this commit. The shading change is
+small and self-contained; on a GPU host the four spheres render in
+their assigned colours (red / green / blue / yellow-emissive) on a
+neutral-grey quad, with the facing-ratio falloff giving them a
+3D-looking shade.
+
 ## Next stage
 
-**Stage 8B — GPU material upload + kernel lookup (Module 13, GPU
-half).** Scope: bring `MaterialParams` to the device. The kernel
-reads `scene.materials[Hit::material_index]` for the base colour
-(replacing the normal-as-color diagnostic).
+**Lighting (master module 14).** With materials in place, the
+next deliberate step is direct lighting. Plan: extend
+`CudaSceneView` with a `Light*` array + count, add at least one
+light type (point or directional), evaluate direct lighting at
+each hit (visibility test via shadow ray reusing
+`intersect_sphere` / `intersect_triangle`), and replace the
+facing-ratio attenuation with a proper Lambertian shade
+`max(0, N · L) * baseColor * light_color / pi` plus an emissive
+contribution.
 
 Deliverables (planned, NOT yet implemented):
 
-- `GpuScene::upload_materials(const MaterialParams*, std::size_t)`
-  with the same backend-honest semantics as `upload_spheres` /
-  `upload_mesh`.
-- Extend `CudaSceneView` with `const MaterialParams* materials` +
-  `int material_count`.
-- Extend `k_render_scene` to read the hit material at step 4
-  (base shade): when `Hit::material_index` is in range and
-  `scene.material_count > 0`, use
-  `scene.materials[Hit::material_index].baseColor` (plus
-  emissive contribution where `emissionStrength > 0`); otherwise
-  fall through to the existing normal-as-color diagnostic. The
-  Doppler / searchlight pipeline still applies on top.
-- A `--render-materials` CLI action that builds a small scene
-  with several differently-coloured materials assigned to
-  spheres and meshes.
+- `src/lighting/Light.{h,cpp}` (RR_HD POD; point / directional;
+  area + environment placeholders deferred).
+- Promote `SceneLight` from placeholder to real (carries
+  `rr::lighting::Light`).
+- `GpuScene::upload_lights` + accessors.
+- Extend `CudaSceneView` with the lights array + count.
+- Extend `k_render_scene` step 4 to evaluate direct lighting per
+  hit, with a shadow ray visibility test.
+- A `--render-lit-scene` CLI action.
 
 ## Constraints carried forward
 

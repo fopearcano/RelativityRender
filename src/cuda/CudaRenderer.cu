@@ -154,6 +154,11 @@ CudaRenderer::Result CudaRenderer::render_scene(const rr::gpu::GpuScene& scene,
     view.mesh.material_id    = m.material_id();
     view.mesh.transform      = m.transform();
 
+    // Materials array. Empty (`material_count == 0`) means the
+    // kernel falls through to its neutral-default fallback.
+    view.materials      = scene.device_materials();
+    view.material_count = static_cast<int>(scene.material_count());
+
     return run_kernel_render(width, height,
         [view](float* device_pixels, int w, int h) {
             launch_render_scene(device_pixels, w, h, view, /*stream=*/nullptr);

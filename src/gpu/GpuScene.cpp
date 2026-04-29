@@ -47,6 +47,27 @@ bool GpuScene::upload_mesh(const rr::geometry::Mesh& mesh) {
     return mesh_.upload_from(mesh);
 }
 
+bool GpuScene::upload_materials(const rr::material::MaterialParams* host,
+                                std::size_t                         count) {
+    if (count == 0) {
+        materials_.reset();
+        material_count_ = 0;
+        return true;
+    }
+    if (host == nullptr) {
+        materials_.reset();
+        material_count_ = 0;
+        return false;
+    }
+    if (!materials_.upload(host, count)) {
+        materials_.reset();
+        material_count_ = 0;
+        return false;
+    }
+    material_count_ = count;
+    return true;
+}
+
 void GpuScene::reset_device() noexcept {
     spheres_.reset();
     sphere_count_ = 0;
@@ -55,6 +76,8 @@ void GpuScene::reset_device() noexcept {
     // constructed instance is the safest equivalent and avoids
     // partial state.
     mesh_ = GpuMesh{};
+    materials_.reset();
+    material_count_ = 0;
 }
 
 void GpuScene::clear() noexcept {

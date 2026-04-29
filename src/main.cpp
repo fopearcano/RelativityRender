@@ -19,6 +19,8 @@
     #include "geometry/Sphere.h"
     #include "geometry/Triangle.h"
     #include "gpu/GpuScene.h"
+    #include "material/Material.h"
+    #include "material/MaterialTypes.h"
     #include "math/Vec3.h"
     #include "relativity/RelativityParams.h"
     #include "scene/Scene.h"
@@ -532,6 +534,144 @@ int run_render_mesh_scene(const rr::core::Config& cfg) {
 #endif
 }
 
+// `--render-material-scene` dispatch. Builds the multi-sphere demo
+// + a triangle-quad backdrop, assigns per-object materials, uploads
+// everything (camera, relativity, spheres, mesh, materials), and
+// renders. The kernel reads `materials[Hit::material_index]` for
+// the base colour at hit time. Demonstrates the full Stage 8B
+// pipeline: material upload + kernel lookup + emission contribution
+// + the Doppler / searchlight pipeline still applied on top.
+int run_render_material_scene(const rr::core::Config& cfg) {
+    const std::string out_path = cfg.output_path.empty()
+        ? std::string("output/gpu_material_scene.ppm")
+        : cfg.output_path;
+
+#ifndef RR_HAS_CUDA
+    (void)cfg;
+    rr::core::Logger::error("--render-material-scene requires CUDA. Rebuild "
+                            "with -DRR_ENABLE_CUDA=ON on a host with the "
+                            "CUDA Toolkit and a CUDA-capable GPU.");
+    return 1;
+#else
+    rr::scene::Scene scene;
+    scene.render_settings.width  = cfg.width;
+    scene.render_settings.height = cfg.height;
+    scene.camera.set_aspect(static_cast<float>(cfg.width)
+                          / static_cast<float>(cfg.height));
+
+    // Five-material palette. Indices match SceneSphere /
+    // SceneMesh material_index assignments below.
+    auto red       = rr::material::Material::make_diffuse(
+        rr::math::Vec3{0.85f, 0.20f, 0.20f});
+    auto green     = rr::material::Material::make_diffuse(
+        rr::math::Vec3{0.20f, 0.80f, 0.30f});
+    auto blue      = rr::material::Material::make_diffuse(
+        rr::math::Vec3{0.20f, 0.30f, 0.90f});
+    auto emissive  = rr::material::Material::make_emissive(
+        rr::math::Vec3{1.0f, 0.85f, 0.35f}, /*strength=*/2.0f);
+    auto neutral   = rr::material::Material::make_diffuse(
+        rr::math::Vec3{0.65f, 0.65f, 0.65f});
+
+    scene.materials.push_back({0, "red",     red.params()});
+    scene.materials.push_back({1, "green",   green.params()});
+    scene.materials.push_back({2, "blue",    blue.params()});
+    scene.materials.push_back({3, "emissive",emissive.params()});
+    scene.materials.push_back({4, "neutral", neutral.params()});
+
+    // Spheres - same layout as build_demo_scene's, with material
+    // indices pointing into the palette above.
+    const auto add_sphere = [&](float cx, float cy, float cz, float r,
+                                int mat, const char* name) {
+        rr::scene::SceneSphere s;
+        s.object.name = name;
+        s.geometry    = rr::geometry::Sphere{
+            rr::math::Vec3{cx, cy, cz}, r, mat};
+        scene.spheres.push_back(s);
+    };
+    add_sphere(-1.5f,  0.2f, -4.0f, 0.7f, 0, "left");        // red
+    add_sphere( 0.0f, -0.1f, -3.5f, 0.8f, 1, "centre");      // green
+    add_sphere( 1.5f,  0.2f, -4.0f, 0.7f, 2, "right");       // blue
+    add_sphere( 0.0f, -1.4f, -5.0f, 1.0f, 3, "ground-bulb"); // emissive
+
+    // Background quad with the neutral material.
+    rr::geometry::Mesh quad;
+    quad.vertices.push_back({rr::math::Vec3{-3.0f, -3.0f, -6.0f},
+                             rr::math::Vec3{0.0f, 0.0f, 1.0f},
+                             rr::math::Vec2{0.0f, 0.0f}});
+    quad.vertices.push_back({rr::math::Vec3{ 3.0f, -3.0f, -6.0f},
+                             rr::math::Vec3{0.0f, 0.0f, 1.0f},
+                             rr::math::Vec2{1.0f, 0.0f}});
+    quad.vertices.push_back({rr::math::Vec3{ 3.0f,  3.0f, -6.0f},
+                             rr::math::Vec3{0.0f, 0.0f, 1.0f},
+                             rr::math::Vec2{1.0f, 1.0f}});
+    quad.vertices.push_back({rr::math::Vec3{-3.0f,  3.0f, -6.0f},
+                             rr::math::Vec3{0.0f, 0.0f, 1.0f},
+                             rr::math::Vec2{0.0f, 1.0f}});
+    quad.triangles.push_back({0, 1, 2});
+    quad.triangles.push_back({0, 2, 3});
+    quad.material_id = 4;  // neutral
+
+    // Pull Sphere PODs out of the SceneSphere wrappers (filtering
+    // invisible) for the GPU upload.
+    std::vector<rr::geometry::Sphere> sphere_pods;
+    sphere_pods.reserve(scene.spheres.size());
+    for (const auto& s : scene.spheres) {
+        if (s.object.visible) sphere_pods.push_back(s.geometry);
+    }
+
+    // Materials: flat MaterialParams array indexed by SceneMaterial
+    // position (the same convention the kernel uses).
+    std::vector<rr::material::MaterialParams> material_pods;
+    material_pods.reserve(scene.materials.size());
+    for (const auto& m : scene.materials) {
+        material_pods.push_back(m.params);
+    }
+
+    rr::gpu::GpuScene gpu_scene;
+    if (!gpu_scene.upload_camera(scene.camera)) {
+        rr::core::Logger::error("material-scene render failed: upload_camera");
+        return 1;
+    }
+    if (!gpu_scene.upload_relativity(scene.observer, scene.relativity)) {
+        rr::core::Logger::error("material-scene render failed: upload_relativity");
+        return 1;
+    }
+    if (!gpu_scene.upload_spheres(sphere_pods.data(), sphere_pods.size())) {
+        rr::core::Logger::error("material-scene render failed: upload_spheres");
+        return 1;
+    }
+    if (!gpu_scene.upload_mesh(quad)) {
+        rr::core::Logger::error("material-scene render failed: upload_mesh");
+        return 1;
+    }
+    if (!gpu_scene.upload_materials(material_pods.data(),
+                                    material_pods.size())) {
+        rr::core::Logger::error("material-scene render failed: upload_materials");
+        return 1;
+    }
+
+    auto r = rr::cuda::CudaRenderer::render_scene(gpu_scene,
+                                                  cfg.width, cfg.height);
+    if (!r.ok) {
+        rr::core::Logger::error("material-scene render failed: " + r.message);
+        return 1;
+    }
+
+    rr::core::Logger::info("material-scene: "
+                         + std::to_string(sphere_pods.size())
+                         + " sphere(s) + "
+                         + std::to_string(quad.triangle_count())
+                         + " tri(s) + "
+                         + std::to_string(material_pods.size())
+                         + " material(s) uploaded, "
+                         + std::to_string(cfg.width) + "x"
+                         + std::to_string(cfg.height) + " framebuffer");
+
+    return save_image_or_error(r.image, out_path, "GPU material scene",
+                               cfg.width, cfg.height) ? 0 : 1;
+#endif
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -578,6 +718,9 @@ int main(int argc, char** argv) {
         case CommandLine::Action::RenderMeshScene:
             return run_render_mesh_scene(result.config);
 
+        case CommandLine::Action::RenderMaterialScene:
+            return run_render_material_scene(result.config);
+
         case CommandLine::Action::Error:
             Logger::error(result.error_message);
             std::cerr << CommandLine::usage(argv[0]);
@@ -586,11 +729,12 @@ int main(int argc, char** argv) {
         case CommandLine::Action::Default:
             Logger::info(std::string(rr::core::kProjectName) + " "
                        + rr::core::kVersionString + " starting up.");
-            Logger::info("Stage 7C: CUDA triangle intersection. "
+            Logger::info("Stage 8B: GPU material shading. "
                          "Try --device-info, --render-gradient, "
                          "--render-rays, --render-sphere, "
                          "--render-relativistic, --render-scene, "
-                         "--render-triangle, or --render-mesh-scene.");
+                         "--render-triangle, --render-mesh-scene, "
+                         "or --render-material-scene.");
             return 0;
     }
     return 0;

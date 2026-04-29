@@ -12,6 +12,7 @@
 #include "cuda/CudaIntersection.cuh"
 #include "cuda/CudaKernels.cuh"
 #include "cuda/CudaScene.cuh"
+#include "material/MaterialTypes.h"
 #include "relativity/RelativityMath.cuh"
 
 #include "math/Vec3.h"
@@ -331,11 +332,39 @@ __global__ void k_render_scene(float* pixels, int width, int height,
     }
 
     // 4. Base shade.
+    //    Hit:  read MaterialParams from scene.materials[best.material_index]
+    //          if in range, else fall back to the neutral default
+    //          (the same defaults as MaterialParams's defaulted ctor:
+    //          baseColor = (0.8, 0.8, 0.8), no emission). Apply a
+    //          simple facing-ratio attenuation so geometry remains
+    //          discernible without a real BSDF, and add the emissive
+    //          contribution unconditionally (back-faces of emissive
+    //          materials still glow).
+    //    Miss: vertical sky gradient.
     Vec3 color;
     if (best.hit) {
-        color = Vec3{0.5f * best.normal.x + 0.5f,
-                     0.5f * best.normal.y + 0.5f,
-                     0.5f * best.normal.z + 0.5f};
+        rr::math::Vec3 albedo   = rr::math::Vec3{0.8f, 0.8f, 0.8f};
+        rr::math::Vec3 emission = rr::math::Vec3{0.0f, 0.0f, 0.0f};
+
+        if (best.material_index >= 0
+         && best.material_index < scene.material_count
+         && scene.materials != nullptr) {
+            const auto& mat = scene.materials[best.material_index];
+            albedo   = mat.baseColor;
+            emission = mat.emissionColor * mat.emissionStrength;
+        }
+
+        // Facing-ratio attenuation `max(0, N · -rd)` with a small
+        // ambient floor so back-facing or grazing-angle pixels are
+        // not pitch black. This is a viewing-angle attenuation,
+        // not a BSDF; the path tracer (master module 16) replaces
+        // it with real Lambertian + light-aware shading.
+        const float ndotv   = rr::math::dot(best.normal, -ray.direction);
+        const float facing  = ndotv > 0.0f ? ndotv : 0.0f;
+        constexpr float kAmbient = 0.15f;
+        const float shade   = kAmbient + (1.0f - kAmbient) * facing;
+
+        color = albedo * shade + emission;
     } else {
         const float t = 0.5f * (ray.direction.y + 1.0f);
         color = Vec3{(1.0f - t) * 1.0f + t * 0.5f,
