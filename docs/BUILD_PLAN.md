@@ -6,8 +6,8 @@ records what landed, in which stage, and the next concrete step.
 
 ## Current state
 
-**Stages 1–10 + 6A + 6B + 7A + 7B + 7C — through GPU triangle
-intersection.** Skeleton C++20 executable; header-only RR_HD math
+**Stages 1–10 + 6A + 6B + 7A + 7B + 7C + 8A — through material data
+model.** Skeleton C++20 executable; header-only RR_HD math
 library; host-side floating-point image + framebuffer system;
 backend-agnostic GPU device + memory layers; pinhole `Camera` + RR_HD
 `generate_camera_ray`; single-sphere intersection kernel; relativity
@@ -26,18 +26,17 @@ A new `rr::gpu::GpuScene` upload manager and a `k_render_scene`
 closest-hit kernel landed at Stage 6B; Stage 7A added host-side
 `Triangle`/`Vertex`/`Mesh` with a local-space AABB; Stage 7B
 added the `GpuMesh` upload manager and the `CudaMeshView` device
-POD; **Stage 7C** restores `intersect_triangle` (Möller-Trumbore),
-slots a `CudaMeshView` into `CudaSceneView`, and extends the
-existing `k_render_scene` kernel with a triangle closest-hit loop
-that competes with the sphere loop on `t_max`. Five GPU kernels
-live now: UV gradient, camera-ray visualisation, single-sphere
-visualisation, relativistic single-sphere, multi-sphere/mesh
-scene. **Eight** GPU CLI actions are live: `--render-gradient`,
-`--render-rays`, `--render-sphere`, `--render-relativistic`,
-`--render-scene`, `--render-triangle`, `--render-mesh-scene`, plus
-the `--render` placeholder for the still-pending scene parser. No
-materials beyond the inert `material_id` placeholder, no lights, no
-path tracer, no server, no integrations.
+POD; Stage 7C restored `intersect_triangle` (Möller-Trumbore) and
+extended `k_render_scene` with a triangle closest-hit loop. **Stage
+8A** adds the host-side material data model (`MaterialParams` POD +
+`Material` wrapper with diffuse / emissive / metal presets) and
+promotes `SceneMaterial` from a placeholder shell to a real
+authoring entry. Renderer behaviour is unchanged - the kernel still
+shades normal-as-color; the material upload + kernel lookup land in
+Stage 8B. Five GPU kernels live now (gradient / camera-rays /
+single-sphere / relativistic-sphere / multi-sphere-mesh-scene).
+**Eight** GPU CLI actions are live. No textures, no lights, no path
+tracer, no server, no integrations.
 
 ### Files in scope
 
@@ -87,6 +86,10 @@ path tracer, no server, no integrations.
 | `src/cuda/CudaMesh.cuh`    | Device-side `CudaMeshView` POD: `Vertex*` + `Triangle*` device pointers, vertex / triangle counts, `material_id`, and a `math::Transform` (currently unused by the kernel - vertex positions are read as-is from the buffer; per-vertex transform comes alongside the material system). |
 | `src/gpu/GpuMesh.h`        | Move-only host-side owner of one mesh's GPU resources. Owns `GpuBuffer<Vertex>` + `GpuBuffer<Triangle>` plus per-mesh metadata (material id + transform). Three explicit upload methods: `upload_vertices`, `upload_triangles`, `set_metadata`; `upload_from(const rr::geometry::Mesh&)` is the convenience used by `GpuScene::upload_mesh`. |
 | `src/gpu/GpuMesh.cpp`      | Implementation. Backend-honest: zero-count uploads always succeed; non-zero uploads require a working GPU backend and reset the count to zero on any failure. Metadata is host-only and always safe to write. |
+| `src/material/MaterialTypes.h` | RR_HD POD `MaterialParams { baseColor, emissionColor, emissionStrength, roughness, metallic, specular, transmission }`. CamelCase field names follow PBR / DCC convention (the documented exception alongside the relativity layer). `transmission` is a placeholder slot reserved for the eventual glass / refraction BSDF; nothing reads it yet. The texture binding field (`base_color_texture_id` in the prototype) is deliberately omitted; it returns at the texture stage. |
+| `src/material/Material.h`  | Host-side wrapper: optional `name` plus a `MaterialParams` POD, plus three convenience presets (`make_diffuse`, `make_emissive`, `make_metal`). |
+| `src/material/Material.cpp`| Implementation; presets pre-populate `MaterialParams` to sensible PBR-correct values. |
+| `src/cuda/CudaMaterial.cuh`| Thin re-export of `MaterialTypes.h` for kernel TUs. Future device-specific overrides (packed-field POD, fast-math intrinsics, BSDF helpers) land here without touching the host surface. |
 | `src/renderer/Hit.h`       | RR_HD POD `Hit {hit, t, position, normal, material_index, uv, bary_u, bary_v}`. The kernel only reads `hit` / `normal` at this stage; the remaining fields are populated by intersection routines for later stages (textures, materials, mesh barycentrics) and have safe defaults. |
 | `src/cuda/CudaIntersection.cuh` | RR_HD `intersect_sphere(ray, sphere, t_min, t_max) -> Hit`. Same code runs on host (tests) and device (kernel). Trimmed from the prototype's superset to sphere-only at this stage; triangle intersection joins the file in the mesh stage. |
 | `src/relativity/RelativityParams.h` | `Observer { Vec3 velocity = beta }` and `RelativityParams { enable_aberration / enable_doppler / enable_searchlight, doppler_color_strength, searchlight_strength, max_beta }`. The artist-facing toggles live here, separate from the kinematic `Observer`. Velocity is in c-units; `\|beta\| < 1` is the caller's invariant. |
@@ -1206,29 +1209,98 @@ byte-equivalent to the prototype's tested implementations
 (`intersect_triangle` and the kernel's mesh-loop body match
 prototype_v0 verbatim).
 
+### Stage 8A — Material data model (Module 13, host half)
+
+Status: implemented.
+
+The user is splitting master module 13 (Material system) the same
+way modules 11 and 12 were split:
+
+- **Stage 8A (this slice)**: host-side material data model. No GPU
+  upload, no kernel changes, no rendering delta.
+- **Stage 8B (next slice)**: `GpuScene::upload_materials`, extend
+  `CudaSceneView` with the materials array + count, extend
+  `k_render_scene` to read `scene.materials[Hit::material_index]`
+  for the base colour (replacing the normal-as-color diagnostic
+  on hit), demo CLI action.
+
+Stage 8A ships:
+
+- `src/material/MaterialTypes.h` (the seven fields the user named
+  plus the `transmission` placeholder; the prototype's
+  `base_color_texture_id` field is omitted because the texture
+  system has not landed).
+- `src/material/Material.h` and `Material.cpp` (host-side wrapper
+  with diffuse / emissive / metal presets).
+- `src/cuda/CudaMaterial.cuh` (thin re-export of `MaterialTypes.h`
+  for kernel TUs).
+- `src/scene/Scene.h::SceneMaterial` promoted from placeholder
+  `{int id, std::string name}` to real `{int id, std::string name,
+  MaterialParams params}`. Sphere `material_index` and Mesh
+  `material_id` now have a real array to index into; no kernel
+  reads them yet.
+
+Naming exception called out: `MaterialParams` field names are
+camelCase (`baseColor`, `emissionColor`, `emissionStrength`,
+`roughness`, `metallic`, `specular`, `transmission`) per PBR / DCC
+convention. This matches the user's prompt verbatim and is
+documented inside `MaterialTypes.h`. The codebase's snake_case
+default still applies elsewhere; material + relativity are the two
+documented exceptions.
+
+CMake additions:
+
+- New `rr_material` STATIC library (`Material.cpp`, PUBLIC-links
+  `rr_math`).
+- `rr_scene` PUBLIC-links `rr_material` because `SceneMaterial`
+  exposes `MaterialParams` by value.
+- `RelativityRender` PRIVATE-links `rr_material` so future code
+  in `main.cpp` can construct `Material` instances.
+
+Hard-rule audit (per the prompt):
+
+- No node graph - **yes**, no graph types or operators in this
+  slice.
+- No textures - **yes**, the `base_color_texture_id` slot from
+  the prototype is omitted; no texture-related fields on
+  `MaterialParams`.
+- No path tracing - **yes**, kernel surface is byte-identical to
+  Stage 7C.
+- No C4D - **yes**.
+- Must compile - **yes**, host-only build clean under
+  `-Wall -Wextra -Wpedantic`, no warnings; `librr_material.a`
+  produced; `librr_scene.a` re-links cleanly with the promoted
+  `SceneMaterial`; ctest 3/3; every existing CLI action behaves
+  identically to Stage 7C.
+
+Stage 8A ships zero behavioural delta - the kernel still ignores
+`Hit::material_index` and shades normal-as-color. Stage 8B brings
+the kernel consumer online.
+
 ## Next stage
 
-**Materials (master module 13).** The `material_id` field already
-flows through `Sphere → Hit`, `Mesh → Hit`, and survives the
-kernel's closest-hit logic; the kernel just doesn't read it yet
-because there is no material array. Stage 8's job is to add one.
+**Stage 8B — GPU material upload + kernel lookup (Module 13, GPU
+half).** Scope: bring `MaterialParams` to the device. The kernel
+reads `scene.materials[Hit::material_index]` for the base colour
+(replacing the normal-as-color diagnostic).
 
 Deliverables (planned, NOT yet implemented):
 
-- `src/material/MaterialTypes.h` (RR_HD POD: `albedo`, `emission`).
-- `src/material/Material.{h,cpp}` (host-side wrapper).
-- Promote `SceneMaterial` from placeholder to real (carries
-  `rr::material::MaterialParams`).
-- `GpuScene::upload_materials(const MaterialParams*, count)` +
-  device pointer / count exposed through `CudaSceneView`.
-- Extend `k_render_scene` to read the hit material from
-  `scene.materials[Hit::material_index]` and use it as base
-  colour (replacing the normal-as-color diagnostic). Out-of-range
-  ids fall back to a neutral default. The Doppler / searchlight
-  pipeline still applies on top.
-- `tests/material_tests.cpp`.
-- A `--render-materials` action that promotes the demo scene's
-  spheres + mesh to differently-coloured materials.
+- `GpuScene::upload_materials(const MaterialParams*, std::size_t)`
+  with the same backend-honest semantics as `upload_spheres` /
+  `upload_mesh`.
+- Extend `CudaSceneView` with `const MaterialParams* materials` +
+  `int material_count`.
+- Extend `k_render_scene` to read the hit material at step 4
+  (base shade): when `Hit::material_index` is in range and
+  `scene.material_count > 0`, use
+  `scene.materials[Hit::material_index].baseColor` (plus
+  emissive contribution where `emissionStrength > 0`); otherwise
+  fall through to the existing normal-as-color diagnostic. The
+  Doppler / searchlight pipeline still applies on top.
+- A `--render-materials` CLI action that builds a small scene
+  with several differently-coloured materials assigned to
+  spheres and meshes.
 
 ## Constraints carried forward
 

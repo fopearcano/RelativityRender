@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.20)
 
 project(RelativityRender
     VERSION     0.1.0
-    DESCRIPTION "RelativityRender - GPU renderer platform (Stage 7C: CUDA triangle intersection)"
+    DESCRIPTION "RelativityRender - GPU renderer platform (Stage 8A: material data model)"
     LANGUAGES   CXX
 )
 
@@ -23,7 +23,7 @@ option(RR_ENABLE_CUDA "Enable CUDA backend (requires CUDA Toolkit)"   OFF)
 
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
-message(STATUS "RelativityRender ${PROJECT_VERSION} (Stage 7C: CUDA triangle intersection)")
+message(STATUS "RelativityRender ${PROJECT_VERSION} (Stage 8A: material data model)")
 
 message(STATUS "  Build type   : ${CMAKE_BUILD_TYPE}")
 message(STATUS "  C++ standard : ${CMAKE_CXX_STANDARD}")
@@ -107,6 +107,20 @@ target_include_directories(rr_geometry PUBLIC src)
 target_link_libraries(rr_geometry PUBLIC rr_math)
 rr_apply_warnings(rr_geometry)
 
+# rr_material: PBR material data model (Stage 8A). Host-side
+# `MaterialParams` POD + `Material` wrapper class with diffuse /
+# emissive / metal presets. The BSDF interface, parameter validation,
+# and texture / node-graph wiring live in their own master-order
+# modules; this is the foundation those modules populate. The same
+# `MaterialParams` POD will be the launch-arg form for the eventual
+# GPU BSDF (`CudaMaterial.cuh` is a thin re-export today).
+add_library(rr_material STATIC
+    src/material/Material.cpp
+)
+target_include_directories(rr_material PUBLIC src)
+target_link_libraries(rr_material PUBLIC rr_math)
+rr_apply_warnings(rr_material)
+
 # rr_relativity: header-only relativity math leaf.
 #
 #   RelativityParams.h - Observer (3-velocity in c-units) and
@@ -140,7 +154,7 @@ add_library(rr_scene STATIC
     src/scene/Scene.cpp
 )
 target_include_directories(rr_scene PUBLIC src)
-target_link_libraries(rr_scene PUBLIC rr_math rr_camera rr_geometry rr_relativity)
+target_link_libraries(rr_scene PUBLIC rr_math rr_camera rr_geometry rr_relativity rr_material)
 rr_apply_warnings(rr_scene)
 
 # rr_gpu: backend-agnostic GPU device + memory + (Stage 6) kernel
@@ -222,7 +236,7 @@ add_executable(RelativityRender
 )
 target_include_directories(RelativityRender PRIVATE src)
 target_link_libraries(RelativityRender PRIVATE
-    rr_gpu rr_image rr_camera rr_geometry rr_relativity rr_scene)
+    rr_gpu rr_image rr_camera rr_geometry rr_relativity rr_material rr_scene)
 rr_apply_warnings(RelativityRender)
 
 # Tests. The project does not yet have a third-party test framework;

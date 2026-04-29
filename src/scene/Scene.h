@@ -2,6 +2,7 @@
 
 #include "camera/Camera.h"
 #include "geometry/Sphere.h"
+#include "material/MaterialTypes.h"
 #include "relativity/RelativityParams.h"
 #include "scene/RenderSettings.h"
 #include "scene/SceneObject.h"
@@ -58,16 +59,19 @@ struct SceneMesh {
 
 // Material entry.
 //
-// Stage 6A scaffolding: only the lookup id and a human-readable
-// name are present. The shading payload (`MaterialParams` -
-// albedo / emission / roughness / ...) joins at master module 13,
-// which introduces `rr::material::MaterialParams`.
+// Stage 8A promotes this from a placeholder shell (`{id, name}`) to
+// a real authoring entry that carries the device-friendly
+// `MaterialParams` POD. Sphere `material_index` and Mesh
+// `material_id` reference into the scene's `materials` array; the
+// kernel reads `materials[Hit::material_index]` once a material
+// upload lands (Stage 8B).
 //
 // `id == -1` is reserved for "the renderer's neutral default" -
 // the same fallback an unmatched lookup uses.
 struct SceneMaterial {
-    int         id = -1;
-    std::string name;
+    int                          id = -1;
+    std::string                  name;
+    rr::material::MaterialParams params;
 };
 
 // Light entry.
