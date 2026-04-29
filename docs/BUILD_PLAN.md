@@ -6,16 +6,17 @@ records what landed, in which stage, and the next concrete step.
 
 ## Current state
 
-**Stages 1–4 — Core app + math + image + GPU device layer.**
-Skeleton C++20 executable; header-only RR_HD math library;
-host-side floating-point image + framebuffer system; backend-agnostic
-GPU device layer with optional CUDA backend that enumerates visible
-devices via `cudaGetDeviceCount` / `cudaGetDeviceProperties`. The
-`--device-info` CLI flag now reports a real backend status and (when
-CUDA is compiled in and devices are present) per-device name, compute
-capability, total VRAM, and SM count. 131 host-side test assertions
-across two ctest binaries pass. No rendering, no kernels, no scene
-system, no server, no integrations.
+**Stages 1–5 — Core app + math + image + GPU device + GPU buffer layer.**
+Skeleton C++20 executable; header-only RR_HD math library; host-side
+floating-point image + framebuffer system; backend-agnostic GPU
+device layer with optional CUDA backend that enumerates visible
+devices; backend-agnostic GPU memory layer (`GpuBuffer<T>`) with
+move-only RAII ownership, byte-level CUDA backend
+(`cudaMalloc` / `cudaFree` / `cudaMemcpy`), and per-call error
+checking. `--device-info` reports a real backend status and per-device
+info when CUDA is compiled in and a GPU is visible. 131 + 19 = 150
+host-side test assertions across three ctest binaries pass. No
+rendering, no kernels, no scene system, no server, no integrations.
 
 ### Files in scope
 
@@ -46,6 +47,11 @@ system, no server, no integrations.
 | `src/gpu/GpuDevice.cpp`    | Implementation; delegates `enumerate_devices()` to `rr::cuda::query_devices()` when `RR_HAS_CUDA` is defined, returns an empty list otherwise. |
 | `src/cuda/CudaContext.h`   | CUDA-only header. Declares `query_devices()` returning `std::vector<gpu::GpuDevice>`. Compiled into the build only when `RR_ENABLE_CUDA=ON`. |
 | `src/cuda/CudaContext.cpp` | Plain C++ (no kernels). Iterates `cudaGetDeviceCount` + `cudaGetDeviceProperties` and clears sticky errors on early-exit paths so a later CUDA call does not observe a stale flag. |
+| `src/gpu/GpuBuffer.h`      | Header-only `GpuBuffer<T>` template. Move-only RAII; `T` static-asserted trivially copyable. Surface: `allocate(count)`, `upload(host, count)`, `download(host, count)`, `reset()`, `empty()`, `size()`, `size_in_bytes()`, `device_ptr()`. Plus `rr::gpu::detail::gpu_alloc / gpu_free / gpu_copy_h2d / gpu_copy_d2h` byte-level dispatch. |
+| `src/gpu/GpuBuffer.cpp`    | Implementation of the byte-level dispatch. Forwards to `rr::cuda::cuda_*` when `RR_HAS_CUDA` is defined; returns `nullptr` / `false` honestly otherwise. |
+| `src/cuda/CudaBuffer.h`    | CUDA backend declarations for the four byte-level primitives. CUDA-Runtime-free header so callers (including header-only template consumers) do not need the toolchain on their include path. |
+| `src/cuda/CudaBuffer.cpp`  | Plain C++ (no kernels). Implements `cuda_alloc` / `cuda_free` / `cuda_copy_h2d` / `cuda_copy_d2h`. Each call inspects the `cudaError_t` return; on failure it clears the sticky last-error flag and returns `nullptr` / `false`. |
+| `tests/gpu_tests.cpp`      | Stand-alone executable; 19 host-only assertions (default state, zero-alloc no-op, move-only traits, move ctor / assign on empty buffers, honest failure when no backend, backend-name vs availability consistency). When CUDA is on and a device is visible, 10 more assertions run end-to-end: 8-float upload / download / verify, resize via re-upload to a smaller count, oversized-download bounds check. |
 
 Build:
 
@@ -281,34 +287,77 @@ No new external dependencies beyond the optional CUDA Toolkit. No
 rendering, no CUDA framebuffer, no kernels, no scene parser, no
 server, no C4D.
 
+### Stage 5 — GPU buffer layer
+
+Status: implemented.
+
+- Recovered four files from `prototype_v0` (audited clean):
+  `src/gpu/GpuBuffer.{h,cpp}` and `src/cuda/CudaBuffer.{h,cpp}`.
+- `GpuBuffer<T>` is the typed move-only RAII handle; it forwards to
+  byte-level primitives in `rr::gpu::detail::` (`gpu_alloc`,
+  `gpu_free`, `gpu_copy_h2d`, `gpu_copy_d2h`). When `RR_HAS_CUDA` is
+  defined those forward to the CUDA backend in `rr::cuda::`; otherwise
+  they return `nullptr` / `false` honestly so the host build stays
+  buildable and `GpuBuffer<T>` surfaces failure without crashing.
+- The CUDA backend (`CudaBuffer.cpp`) is plain C++ - it includes
+  `<cuda_runtime.h>` and calls `cudaMalloc` / `cudaFree` /
+  `cudaMemcpy`. Stage 5 still does NOT call `enable_language(CUDA)`
+  because there are no `.cu` files yet; that comes when the first
+  kernel lands in a later stage.
+- Each CUDA call inspects the `cudaError_t` return. On failure the
+  sticky last-error flag is cleared (`cudaGetLastError`) so a later
+  real CUDA call does not observe a stale error state.
+- Added `tests/gpu_tests.cpp`. 19 host-only assertions cover default
+  state, zero-allocate no-op, move-only `static_assert` traits, move
+  construction / assignment on empty buffers, honest failure when no
+  backend is compiled in, and backend-name vs availability
+  consistency. When CUDA is on and a device is visible, 10 more
+  assertions run end-to-end - the user's "small validation path":
+  upload an array of 8 floats, download it, verify each value matches;
+  re-upload a smaller count to exercise the resize path; verify
+  oversized-download is rejected without writing past the destination.
+- CMake additions:
+    - `rr_gpu` STATIC library now contains
+      `src/gpu/GpuDevice.cpp` + `src/gpu/GpuBuffer.cpp` always.
+    - When `RR_ENABLE_CUDA=ON`: also includes
+      `src/cuda/CudaContext.cpp` + `src/cuda/CudaBuffer.cpp`,
+      defines `RR_HAS_CUDA` PUBLIC, links `CUDA::cudart` PRIVATE.
+    - `gpu_tests` test target wired through `add_test`.
+
+Verified (host-only):
+
+- `cmake --build build -j` clean under `-Wall -Wextra -Wpedantic`.
+- `ctest --test-dir build` reports `3/3 passed`.
+- `gpu_tests` directly: `19 / 19 passed` and prints
+  `gpu_tests: float round-trip skipped (no CUDA backend / no device).`,
+  exit 0.
+- `--device-info` still reports `(none)` honestly.
+
+CPU role in this module: orchestration / memory management only - no
+per-pixel work, no per-ray work. The byte-level copy path is exactly
+what the master engineering rules permit ("upload data to GPU",
+"receive framebuffers").
+
+No new external dependencies beyond the optional CUDA Toolkit. No
+rendering, no kernels, no scene parser, no server, no C4D.
+
 ## Next stage
 
-**Stage 5 — CUDA framebuffer / kernel infrastructure.** Module 7 in
-the master order. Scope: a move-only RAII GPU memory wrapper plus a
-trivial diagnostic kernel (UV gradient) wired through the existing
-`Image` / `Framebuffer` types. This is when `enable_language(CUDA)`
-lands and the first `.cu` translation unit appears.
+**Stage 6 — CUDA kernel infrastructure.** Module 7 in the master
+order, second half. Scope: introduce the first `.cu` translation
+unit (a trivial UV-gradient diagnostic kernel) plus a host-side
+launcher that allocates a `GpuBuffer<float>`, runs the kernel,
+downloads into an `rr::image::Image`, and saves PPM. This is when
+`enable_language(CUDA)` lands.
 
 Deliverables (planned, NOT yet implemented):
 
-- `src/gpu/GpuBuffer.{h,cpp}`         (move-only RAII; allocates via
-                                        a backend-dispatched
-                                        `gpu_alloc` / `gpu_free`)
-- `src/cuda/CudaBuffer.{h,cpp}`       (byte-level CUDA backend for the
-                                        above; thin wrappers over
-                                        `cudaMalloc` / `cudaFree` /
-                                        `cudaMemcpy`)
-- `src/cuda/CudaGradientKernel.cu`    (one `__global__` kernel writing
-                                        an Rgba32F UV gradient)
-- `src/cuda/CudaRenderer.{h,cu}`      (thin host-side launcher that
-                                        allocates a `GpuBuffer<float>`,
-                                        runs the kernel, downloads
-                                        into an `rr::image::Image`)
-- `tests/gpu_tests.cpp`               (default-state, zero-alloc,
-                                        honest-failure-when-no-backend,
-                                        move-only properties)
-- A new CLI mode (e.g. `--render-gradient WxH OUT.ppm`) that runs the
-  GPU kernel end-to-end and saves the PPM. This is **kernel
+- `src/cuda/CudaGradientKernel.cu` (one `__global__` kernel writing
+                                     an Rgba32F UV gradient)
+- `src/cuda/CudaRenderer.{h,cu}`    (thin host-side launcher; uses
+                                     `GpuBuffer<float>` from Stage 5)
+- A new CLI mode (e.g. `--render-gradient WxH OUT.ppm`) that runs
+  the GPU kernel end-to-end and saves the PPM. This is **kernel
   infrastructure**, not a renderer; the path tracer and relativistic
   perception are still many stages away.
 
