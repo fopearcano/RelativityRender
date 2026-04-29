@@ -1,83 +1,56 @@
 # RelativityRender
 
 A serious GPU renderer platform with a unique relativistic camera /
-perception model.
-
-RelativityRender is CUDA/OptiX-first, designed around GPU path tracing
+perception model. CUDA / OptiX-first, designed around GPU path tracing
 and ray-level relativistic perception (aberration, Doppler color
 shift, searchlight beaming).
 
 ## Status
 
-This is **`relativity-core-v1`** — the rewrite branch. Day-1 capability:
+**Stage 1 — Core app.** The repository currently contains only the
+skeleton C++20 application: an executable that prints its version and
+a startup line. No GPU, no renderer, no scene system, no server.
+Subsequent stages add capability in the order documented in
+[`RELATIVITYRENDER_CLAUDE_MASTER_INSTRUCTIONS.txt`](RELATIVITYRENDER_CLAUDE_MASTER_INSTRUCTIONS.txt).
 
-- CUDA detection (enumerate visible CUDA devices, or honestly report
-  no backend).
-- A single GPU diagnostic kernel that renders a UV gradient and saves
-  it as PPM.
-
-That is the entire intended capability of day-1. Everything else is
-deferred to dedicated slices listed in
-[`docs/REWRITE_STATUS.md`](docs/REWRITE_STATUS.md).
-
-The earlier prototype is preserved on the `prototype_v0` git tag and
-should be treated as a frozen reference, not as in-progress work.
+The current and next concrete steps live in
+[`docs/BUILD_PLAN.md`](docs/BUILD_PLAN.md).
 
 ## Build
-
-Host-only (always works, no CUDA needed):
 
 ```sh
 cmake -S . -B build
 cmake --build build -j
-ctest --test-dir build --output-on-failure
-build/bin/RelativityRender --detect
+build/bin/RelativityRender
 ```
 
-CUDA-enabled (requires CUDA Toolkit + a CUDA-capable GPU):
+Expected output:
 
-```sh
-cmake -S . -B build -DRR_ENABLE_CUDA=ON
-cmake --build build -j
-build/bin/RelativityRender --detect
-build/bin/RelativityRender --render-gradient 256x256 gradient.ppm
+```
+[HH:MM:SS.mmm] [INFO] RelativityRender 0.1.0 starting up.
+[HH:MM:SS.mmm] [INFO] Stage 1: core application skeleton. No GPU, no renderer, no scene yet.
 ```
 
 ## Documentation
 
-1. [`RELATIVITYRENDER_CLAUDE_MASTER_INSTRUCTIONS.txt`](RELATIVITYRENDER_CLAUDE_MASTER_INSTRUCTIONS.txt) — top-level rules.
-2. [`docs/REWRITE_STATUS.md`](docs/REWRITE_STATUS.md) — what is reused, rewritten, discarded; slice roadmap.
-3. [`docs/PROTOTYPE_REUSE_AUDIT.md`](docs/PROTOTYPE_REUSE_AUDIT.md) — per-file decision table from the prototype audit.
-4. [`docs/REUSE_PLAN.md`](docs/REUSE_PLAN.md) — migration strategy and minimum-safe starting point.
-5. [`docs/MASTER_ARCHITECTURE.md`](docs/MASTER_ARCHITECTURE.md) — long-term layered architecture.
-6. [`docs/MILESTONE_ROADMAP.md`](docs/MILESTONE_ROADMAP.md) — long-term milestones.
-7. [`docs/DEVELOPMENT_RULES.md`](docs/DEVELOPMENT_RULES.md) — engineering, dependency, GPU, process rules.
+1. [`RELATIVITYRENDER_CLAUDE_MASTER_INSTRUCTIONS.txt`](RELATIVITYRENDER_CLAUDE_MASTER_INSTRUCTIONS.txt) — top-level rules and stage order.
+2. [`docs/BUILD_PLAN.md`](docs/BUILD_PLAN.md) — current build state and next concrete step.
+3. [`docs/MASTER_ARCHITECTURE.md`](docs/MASTER_ARCHITECTURE.md) — long-term layered architecture.
+4. [`docs/MILESTONE_ROADMAP.md`](docs/MILESTONE_ROADMAP.md) — long-term milestones.
+5. [`docs/DEVELOPMENT_RULES.md`](docs/DEVELOPMENT_RULES.md) — engineering, dependency, GPU, process rules.
 
 ## Layout
 
 ```
 RelativityRender/
-  CMakeLists.txt            # ~120 lines, per-module helpers
-  README.md
-  docs/                     # foundational docs + audit + status
+  CMakeLists.txt                           # ~40 lines, one executable
+  README.md                                # this file
+  RELATIVITYRENDER_CLAUDE_MASTER_INSTRUCTIONS.txt
+  docs/                                    # rules, roadmap, architecture, build plan
   src/
-    core/                   # Logger, Version (only)
-    math/                   # Vec*, Mat4, Transform, MathUtils (RR_HD)
-    image/                  # Image, Color
-    gpu/                    # GpuBuffer<T>, GpuDevice
-    cuda/                   # CudaContext, CudaBuffer, CudaRenderer (gradient), CudaGradientKernel.cu
-    scene/                  # scaffold (empty)
-    geometry/               # scaffold (empty)
-    material/               # scaffold (empty)
-    lighting/               # scaffold (empty)
-    camera/                 # scaffold (empty)
-    relativity/             # scaffold (empty)
-    renderer/               # scaffold (empty)
-    io/                     # scaffold (empty)
-    server/                 # scaffold (empty)
-  tests/                    # math_tests, image_tests, gpu_tests
-  integrations/c4d/         # scaffold (empty)
+    main.cpp
+    core/
+      Logger.h
+      Logger.cpp
+      Version.h
 ```
-
-The renderer core (everything in `src/`) MUST NOT depend on UI or
-Cinema 4D. See `docs/REWRITE_STATUS.md` for the slice roadmap.
