@@ -2010,22 +2010,129 @@ deliberate handling:
 - Stage 10B.3's `scenes/test_camera.rrscene` (no `relativity`
   block) still loads with default observer + relativity state.
 
+## Stage 10B.5 — parse materials
+
+**Scope of this slice (Stage 10B.5): add a materials schema mapper
+that reads the canonical §7 `id` / `name` / `base_color` /
+`emission_color` / `emission_strength` / `roughness` / `metallic`
+/ `specular` fields onto `rr::scene::SceneMaterial` entries, with
+the §1 camelCase shorthands (`baseColor`, `emissionColor`,
+`emissionStrength`) accepted as synonyms. Enforces the §12 #3
+unique-`id` rule.** Geometry and lights remain out of scope;
+`transmission` is intentionally deferred until its consuming BSDF
+ships.
+
+### What ships
+
+- `src/io/SceneLoader.cpp` — added `apply_material` (single
+  entry) and `apply_materials` (array). The single-entry mapper:
+  - Requires `id` (non-negative integer, validated as a finite
+    JSON number with no fractional part). `name` is optional and
+    defaults to the empty string.
+  - Reads `base_color` / `emission_color` (Vec3, each component
+    `>= 0`) and `emission_strength` (float `>= 0`), each
+    accepting the camelCase shorthand (`baseColor`,
+    `emissionColor`, `emissionStrength`).
+  - Reads `roughness` / `metallic` / `specular` (floats clamped
+    to `[0, 1]`) via a small lambda-shaped helper so the three
+    shape-identical fields share validation.
+  - Stage 10B.5 explicitly skips `transmission`. That field
+    stays at its `MaterialParams` default until the BSDF stage
+    that consumes it ships.
+- `apply_materials` (array driver):
+  - Parses the JSON array, populating `scene.materials` from
+    scratch (clears + reserves; the parser is the source of
+    truth).
+  - Enforces the §12 #3 unique-id rule via an
+    `unordered_map<int, size_t>`; the duplicate error names both
+    colliding indices so the artist can find them.
+- `src/io/SceneLoader.cpp::parse` — wires `apply_materials` in
+  after `apply_relativity`. Other top-level keys (`spheres` /
+  `meshes` / `lights`) remain syntax-checked and dropped.
+- `src/main.cpp::run_scene_info` — prints the parsed material
+  count and the first material's eight fields under a
+  `materials:` heading. Empty arrays still print
+  `count : 0` and skip the per-material block, so the existing
+  10B.4-and-earlier fixtures remain readable.
+- `scenes/test_materials.rrscene` — three-material fixture:
+  - `[0]` red diffuse (camelCase shorthand throughout).
+  - `[1]` warm emitter (non-zero emission + strength).
+  - `[2]` polished steel (no emission fields - exercises the
+    "every PBR knob optional except id" path).
+- `docs/RRSCENE_FORMAT.md` §7.1 — new shorthand table noting
+  that `base_color`/`emission_color`/`emission_strength` accept
+  the camelCase form as exact synonyms (consistent with the §1
+  general rule). Documents the Stage 10B.5 status of
+  `transmission` (parsed by the JSON layer but never consulted
+  by the schema mapper).
+
+### Naming-tension resolution
+
+The user prompt listed camelCase field names; the spec §7
+canonical form is snake_case. The §1 general rule already
+licenses camelCase in the C++ types as a documented exception,
+so accepting both directions in the parser is a small policy
+extension rather than a new shorthand category. `find_or` does
+the same job it did for `samples_per_pixel` / `samples` and
+`output_path` / `output` in 10B.2.
+
+`transmission` is a v1.0 schema field but the user prompt
+explicitly omitted it. Per the master rule "Do only that scope.
+Do not silently add future systems", the parser does not yet
+read it. This is *partial v1.0 implementation* (rounded out in a
+follow-up), not §14 forward compatibility (which is about v1.x
+fields in v1.0 parsers).
+
+### Hard-rule audit
+
+- Do not parse geometry/lights yet — **yes**, no mapper for
+  `spheres` / `meshes` / `lights`; those blocks remain syntax-
+  checked and dropped.
+- Do not render yet — **yes**, the only consumer of the parser
+  is `--scene-info`, which only prints. No GPU launch path is
+  reached.
+- No GPU changes — **yes**, no source under `src/gpu/` or
+  `src/cuda/` is touched. `MaterialParams` is byte-identical to
+  Stage 10B.4 (the parser writes to existing fields).
+- Must compile — **yes**, host-only build is clean under
+  `-Wall -Wextra -Wpedantic`, no warnings; `ctest` reports 3/3.
+
+### Verified at the CLI
+
+- `--scene-info scenes/test_materials.rrscene` prints
+  `count : 3` and the `[0]` block matches the fixture's
+  red-diffuse values byte-for-byte.
+- A canonical snake_case fixture (`base_color`,
+  `emission_strength`) parses identically to the camelCase
+  shorthand fixture.
+- `materials[0]` missing `id` → exit 1, "is missing required
+  'id'".
+- Duplicate ids (`[{"id":0},{"id":1},{"id":0}]`) → exit 1,
+  "materials[2].id (0) collides with materials[0].id".
+- `roughness: 1.5` → exit 1, "must be in [0, 1]".
+- `baseColor: [-0.1, 0, 0]` → exit 1, "components must be >= 0".
+- The Stage 10B.4 fixture (no `materials` block) still loads
+  with `materials.count = 0`.
+
 ## Next stage
 
-**Stage 10B.5 — parse materials.** Scope:
+**Stage 10B.6 — parse geometry.** Scope:
 
-- Add `apply_materials` schema reader: maps the §7 `materials`
-  array onto `rr::scene::SceneMaterial` entries (`{id, name,
-  params}`), enforcing the §12 #3 unique-id rule and per-field
-  range validation (`base_color >= 0`, `roughness/metallic/
-  specular/transmission` in `[0,1]`, `emission_strength >= 0`).
-- Extend `--scene-info` to print the parsed material count + a
-  one-line summary per material.
-- Add `scenes/test_materials.rrscene` fixture.
+- Add `apply_spheres` schema reader: maps the §8 `spheres`
+  array onto `rr::scene::SceneSphere` entries (`{object,
+  geometry}`), validating `radius > 0` and that
+  `material_index` is `-1` or in range.
+- Add `apply_meshes` schema reader: maps the §9 inline
+  `vertices` + `triangles` arrays onto `rr::geometry::Mesh`
+  data inside `rr::scene::SceneMesh`. Index-range and
+  vertex-count validation per §12 #6.
+- Extend `--scene-info` to print sphere / mesh counts and a
+  brief first-entry summary.
+- Add `scenes/test_geometry.rrscene` fixture.
 
-Spheres / meshes / lights mappers come in 10B.6 and 10B.7; the
-`--render <file>` end-to-end wiring + writer
-(`SceneWriter::save`) join in the final 10B sub-stage.
+Lights mapper comes in 10B.7; the `--render <file>` end-to-end
+wiring + writer (`SceneWriter::save`) + the deferred
+`transmission` field join in the final 10B sub-stage.
 
 ## Constraints carried forward
 

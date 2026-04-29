@@ -1,6 +1,7 @@
 #include "io/SceneLoader.h"
 
 #include "camera/Camera.h"
+#include "material/MaterialTypes.h"
 #include "math/Vec3.h"
 #include "relativity/RelativityParams.h"
 
@@ -11,6 +12,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <memory>
 #include <sstream>
 #include <string>
@@ -840,6 +842,140 @@ bool apply_relativity(const JsonValue& obj,
     return true;
 }
 
+// Apply a single materials-array entry onto `out`. Validates id /
+// per-channel ranges, accepts both canonical snake_case and the
+// `MaterialParams` C++-camelCase aliases (`baseColor`,
+// `emissionColor`, `emissionStrength`). The canonical form per
+// RRSCENE_FORMAT.md §7 is snake_case; camelCase is accepted as an
+// authoring shorthand because it matches the C++ field names
+// directly. Stage 10B.5 explicitly skips `transmission`; it
+// remains at the MaterialParams default until a follow-up stage.
+bool apply_material(const JsonValue& obj,
+                    rr::scene::SceneMaterial& out,
+                    std::string& err,
+                    const char* entry_label) {
+    if (obj.kind != JsonKind::Object) {
+        err = std::string(entry_label) + " must be a JSON object";
+        return false;
+    }
+
+    // id (required, non-negative).
+    const auto* id_v = obj.find("id");
+    if (id_v == nullptr) {
+        err = std::string(entry_label) + " is missing required 'id'";
+        return false;
+    }
+    if (id_v->kind != JsonKind::Number) {
+        err = std::string(entry_label) + ".id must be an integer";
+        return false;
+    }
+    const double id_d = id_v->n;
+    if (!std::isfinite(id_d) || id_d != std::floor(id_d)
+     || id_d < 0.0
+     || id_d > static_cast<double>(std::numeric_limits<int>::max())) {
+        err = std::string(entry_label) + ".id must be a non-negative integer";
+        return false;
+    }
+    out.id = static_cast<int>(id_d);
+
+    // name (optional, default "").
+    if (const auto* v = obj.find("name")) {
+        if (!to_string(*v, out.name, err,
+                       (std::string(entry_label) + ".name").c_str())) {
+            return false;
+        }
+    }
+
+    auto& p = out.params;
+
+    // base_color / baseColor (Vec3, each component >= 0).
+    if (const auto* v = obj.find_or("base_color", "baseColor")) {
+        rr::math::Vec3 c{0.8f, 0.8f, 0.8f};
+        const std::string field = std::string(entry_label) + ".base_color";
+        if (!to_vec3(*v, c, err, field.c_str())) return false;
+        if (c.x < 0.0f || c.y < 0.0f || c.z < 0.0f) {
+            err = field + " components must be >= 0";
+            return false;
+        }
+        p.baseColor = c;
+    }
+
+    // emission_color / emissionColor (Vec3, each component >= 0).
+    if (const auto* v = obj.find_or("emission_color", "emissionColor")) {
+        rr::math::Vec3 c{0.0f, 0.0f, 0.0f};
+        const std::string field = std::string(entry_label) + ".emission_color";
+        if (!to_vec3(*v, c, err, field.c_str())) return false;
+        if (c.x < 0.0f || c.y < 0.0f || c.z < 0.0f) {
+            err = field + " components must be >= 0";
+            return false;
+        }
+        p.emissionColor = c;
+    }
+
+    // emission_strength / emissionStrength (float, >= 0).
+    if (const auto* v = obj.find_or("emission_strength", "emissionStrength")) {
+        const std::string field =
+            std::string(entry_label) + ".emission_strength";
+        if (!to_float(*v, p.emissionStrength, err, field.c_str())) return false;
+        if (p.emissionStrength < 0.0f) {
+            err = field + " must be >= 0";
+            return false;
+        }
+    }
+
+    // roughness / metallic / specular - each a float in [0, 1].
+    auto read_unit_scalar = [&](const char* key, float& dst) -> bool {
+        if (const auto* v = obj.find(key)) {
+            const std::string field = std::string(entry_label) + "." + key;
+            if (!to_float(*v, dst, err, field.c_str())) return false;
+            if (!(dst >= 0.0f && dst <= 1.0f)) {
+                err = field + " must be in [0, 1]";
+                return false;
+            }
+        }
+        return true;
+    };
+    if (!read_unit_scalar("roughness", p.roughness)) return false;
+    if (!read_unit_scalar("metallic",  p.metallic))  return false;
+    if (!read_unit_scalar("specular",  p.specular))  return false;
+
+    return true;
+}
+
+// Apply the `materials` JSON array onto `scene.materials`. Stage
+// 10B.5 surface: id / name / baseColor / emissionColor /
+// emissionStrength / roughness / metallic / specular. Enforces the
+// §12 #3 unique-id rule. `transmission` is intentionally not read
+// here - that placeholder field on MaterialParams gets a mapper
+// when its consuming BSDF stage lands.
+bool apply_materials(const JsonValue& arr,
+                     std::vector<rr::scene::SceneMaterial>& out,
+                     std::string& err) {
+    if (arr.kind != JsonKind::Array) {
+        err = "'materials' must be a JSON array";
+        return false;
+    }
+    out.clear();
+    out.reserve(arr.arr.size());
+    std::unordered_map<int, std::size_t> seen_ids;
+
+    for (std::size_t i = 0; i < arr.arr.size(); ++i) {
+        const std::string label = "materials[" + std::to_string(i) + "]";
+        rr::scene::SceneMaterial m;
+        if (!apply_material(arr.arr[i], m, err, label.c_str())) return false;
+
+        const auto inserted = seen_ids.emplace(m.id, i);
+        if (!inserted.second) {
+            err = label + ".id (" + std::to_string(m.id)
+                + ") collides with materials["
+                + std::to_string(inserted.first->second) + "].id";
+            return false;
+        }
+        out.push_back(std::move(m));
+    }
+    return true;
+}
+
 // Slurp `path` into a string; returns false on read failure.
 bool read_text_file(const std::string& path, std::string& out,
                     std::string& err) {
@@ -971,11 +1107,23 @@ LoadResult parse(const std::string& text) {
         }
     }
 
-    // Stage 10B.4 schema scope ends here. Other top-level keys
-    // (`materials`, `spheres`, `meshes`, `lights`) are
-    // intentionally ignored - they were syntax-checked by the
-    // JSON parser pass and will be mapped onto `scene` in
-    // follow-up sub-stages.
+    // materials (optional). Stage 10B.5 surface: id, name,
+    // base_color / emission_color / emission_strength (snake_case
+    // canonical or camelCase shorthand) plus roughness / metallic /
+    // specular. Enforces §12 #3 unique-id. `transmission` is
+    // skipped until its consuming BSDF stage lands.
+    if (const JsonValue* mats_v = root.find("materials")) {
+        std::string apply_err;
+        if (!apply_materials(*mats_v, result.scene.materials, apply_err)) {
+            result.error_message = apply_err;
+            return result;
+        }
+    }
+
+    // Stage 10B.5 schema scope ends here. Other top-level keys
+    // (`spheres`, `meshes`, `lights`) are intentionally ignored -
+    // they were syntax-checked by the JSON parser pass and will
+    // be mapped onto `scene` in follow-up sub-stages.
 
     result.ok = true;
     return result;

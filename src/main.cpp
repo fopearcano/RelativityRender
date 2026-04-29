@@ -185,6 +185,28 @@ int run_scene_info(const rr::core::Config& cfg) {
                + std::to_string(rp.searchlight_strength));
     Logger::info("    max_beta              : "
                + std::to_string(rp.max_beta));
+
+    const auto& mats = result.scene.materials;
+    Logger::info("  materials:");
+    Logger::info("    count             : " + std::to_string(mats.size()));
+    if (!mats.empty()) {
+        const auto& m = mats.front();
+        Logger::info("    [0]:");
+        Logger::info("      id              : " + std::to_string(m.id));
+        Logger::info("      name            : "
+                   + (m.name.empty() ? std::string("(unnamed)") : m.name));
+        Logger::info("      baseColor       : " + fmt_vec3(m.params.baseColor));
+        Logger::info("      emissionColor   : "
+                   + fmt_vec3(m.params.emissionColor));
+        Logger::info("      emissionStrength: "
+                   + std::to_string(m.params.emissionStrength));
+        Logger::info("      roughness       : "
+                   + std::to_string(m.params.roughness));
+        Logger::info("      metallic        : "
+                   + std::to_string(m.params.metallic));
+        Logger::info("      specular        : "
+                   + std::to_string(m.params.specular));
+    }
     return 0;
 }
 
@@ -975,7 +997,7 @@ int main(int argc, char** argv) {
         case CommandLine::Action::Default:
             Logger::info(std::string(rr::core::kProjectName) + " "
                        + rr::core::kVersionString + " starting up.");
-            Logger::info("Stage 10B.4: parse relativity. "
+            Logger::info("Stage 10B.5: parse materials. "
                          "Try --scene-info <file>, --device-info, "
                          "--render-gradient, --render-rays, "
                          "--render-sphere, --render-relativistic, "

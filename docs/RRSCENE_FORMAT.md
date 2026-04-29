@@ -320,6 +320,37 @@ the `id`.
 `transmission` is reserved for the future glass / refraction BSDF;
 the kernel does not read it today.
 
+### 7.1 Authoring shorthands (Stage 10B.5)
+
+The three compound names accept the C++-style camelCase form as
+exact synonyms for the canonical snake_case (per §1's general
+rule that "the parser converts JSON `base_color` → C++
+`baseColor`"). When both are present in the same entry, the
+result is the same; the parser still does not allow conflicting
+duplicates of the same logical field within one material.
+
+| Canonical (snake_case) | Accepted shorthand (camelCase) |
+|------------------------|--------------------------------|
+| `base_color`           | `baseColor`                    |
+| `emission_color`       | `emissionColor`                |
+| `emission_strength`    | `emissionStrength`             |
+
+The single-word fields (`id`, `name`, `roughness`, `metallic`,
+`specular`, `transmission`) have no shorthand; their canonical
+spelling is the only form.
+
+Stage 10B.5 status notes:
+
+- The Stage 10B.5 parser implements every field listed in §7
+  except `transmission`. That placeholder stays at its
+  `MaterialParams` default (`0.0`) until the BSDF stage that
+  consumes it ships. Until then a `transmission` value
+  authored in the file is parsed by the JSON layer but never
+  consulted by the schema mapper - this is a v1.0 parser
+  rounding out incrementally, not §14 forward compatibility.
+
+Tools that emit `.rrscene` files MUST emit canonical snake_case.
+
 ## 8. `spheres`
 
 Each entry maps to `rr::scene::SceneSphere { object, geometry }`.

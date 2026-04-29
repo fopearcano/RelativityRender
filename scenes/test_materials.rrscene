@@ -1,0 +1,39 @@
+{
+  "version": "1.0.0",
+
+  "render_settings": {
+    "width":  640,
+    "height": 360
+  },
+
+  "materials": [
+    {
+      "id":               0,
+      "name":             "red diffuse",
+      "baseColor":        [0.85, 0.20, 0.20],
+      "emissionColor":    [0.0, 0.0, 0.0],
+      "emissionStrength": 0.0,
+      "roughness":        0.7,
+      "metallic":         0.0,
+      "specular":         0.5
+    },
+    {
+      "id":               1,
+      "name":             "warm emitter",
+      "baseColor":        [0.10, 0.10, 0.10],
+      "emissionColor":    [1.00, 0.85, 0.35],
+      "emissionStrength": 2.0,
+      "roughness":        1.0,
+      "metallic":         0.0,
+      "specular":         0.5
+    },
+    {
+      "id":               2,
+      "name":             "polished steel",
+      "baseColor":        [0.78, 0.78, 0.80],
+      "roughness":        0.15,
+      "metallic":         1.0,
+      "specular":         0.5
+    }
+  ]
+}
