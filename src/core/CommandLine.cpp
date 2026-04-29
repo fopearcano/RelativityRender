@@ -46,7 +46,8 @@ bool set_action(CommandLine::Action& current, CommandLine::Action target,
                 std::string& error) {
     if (current != CommandLine::Action::Default) {
         error = "cannot combine action flags (--help / --version / "
-                "--device-info / --render / --render-gradient)";
+                "--device-info / --render / --render-gradient / "
+                "--render-rays)";
         return false;
     }
     current = target;
@@ -93,6 +94,12 @@ CommandLine::ParseResult CommandLine::parse(int argc, char** argv) {
                 r.action = Action::Error;
                 return r;
             }
+        } else if (a == "--render-rays") {
+            if (!set_action(r.action, Action::RenderRays,
+                            r.error_message)) {
+                r.action = Action::Error;
+                return r;
+            }
         } else if (a == "--output") {
             if (!take_value(argc, argv, i, a, value, r.error_message)) {
                 r.action = Action::Error;
@@ -133,7 +140,8 @@ CommandLine::ParseResult CommandLine::parse(int argc, char** argv) {
     // not fail on, e.g., a defaulted dimension being misconfigured.
     if (r.action == Action::Default
      || r.action == Action::Render
-     || r.action == Action::RenderGradient) {
+     || r.action == Action::RenderGradient
+     || r.action == Action::RenderRays) {
         if (auto err = r.config.validate(); !err.empty()) {
             r.action        = Action::Error;
             r.error_message = std::move(err);
@@ -155,9 +163,14 @@ std::string CommandLine::usage(std::string_view argv0) {
                                   "scene file (placeholder).\n"
        << "  --render-gradient     Run the GPU UV-gradient diagnostic "
                                   "and save it (requires CUDA).\n"
+       << "  --render-rays         Run the GPU camera-ray "
+                                  "visualisation and save it "
+                                  "(requires CUDA).\n"
        << "  --output <path>       Write the rendered image to <path>.\n"
        << "                        Default for --render-gradient is "
-                                  "output/gpu_gradient.ppm.\n"
+                                  "output/gpu_gradient.ppm;\n"
+       << "                        default for --render-rays     is "
+                                  "output/gpu_camera_rays.ppm.\n"
        << "  --width  <int>        Render width in pixels "
                                   "(default 1280).\n"
        << "  --height <int>        Render height in pixels "

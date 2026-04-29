@@ -9,9 +9,12 @@
 // callers gate use of this class on the `RR_HAS_CUDA` macro that the
 // `rr_gpu` library propagates publicly when CUDA is enabled.
 //
-// Stage 6 surface: a single GPU diagnostic - a UV-gradient render.
-// Real renderers (scene render, path trace, AOV pack, relativistic
-// perception) come back in later stages on top of this scaffold.
+// Stage 7 surface: two GPU diagnostics - a UV-gradient render and a
+// camera-ray-direction visualisation. Real renderers (scene render,
+// path trace, AOV pack, relativistic perception) come back in later
+// stages on top of this scaffold.
+
+namespace rr::camera { class Camera; }
 
 namespace rr::cuda {
 
@@ -28,6 +31,15 @@ public:
     // per-pixel write happens on the device; the host only allocates,
     // launches, and downloads.
     [[nodiscard]] static Result render_gradient(int width, int height);
+
+    // Render a camera-ray-direction visualisation: for each pixel,
+    // the GPU generates the primary pinhole ray from `camera` (via
+    // the same RR_HD `generate_camera_ray` host tests use) and
+    // encodes the direction as RGB. All ray generation happens on
+    // the GPU; the host only snapshots the camera into a `GpuCamera`
+    // POD, launches, and downloads.
+    [[nodiscard]] static Result render_camera_rays(const rr::camera::Camera& camera,
+                                                   int width, int height);
 };
 
 }

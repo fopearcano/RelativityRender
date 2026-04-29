@@ -18,16 +18,21 @@ namespace rr::core {
 //                           later stage).
 //   --render-gradient       Run the GPU UV-gradient diagnostic and
 //                           save it to <output>. Requires CUDA.
+//   --render-rays           Run the GPU camera-ray-direction
+//                           visualisation and save it to <output>.
+//                           Requires CUDA.
 //   --output <path>         Write the rendered image to <path>.
 //                           Default for --render-gradient is
-//                           "output/gpu_gradient.ppm".
+//                           "output/gpu_gradient.ppm";
+//                           default for --render-rays     is
+//                           "output/gpu_camera_rays.ppm".
 //   --width  <int>          Render width in pixels  (default 1280).
 //   --height <int>          Render height in pixels (default 720).
 //
 // Action flags (--help / --version / --device-info / --render /
-// --render-gradient) are mutually exclusive; combining them is a
-// parse error. The remaining flags configure `Config` and are
-// accepted regardless of action.
+// --render-gradient / --render-rays) are mutually exclusive;
+// combining them is a parse error. The remaining flags configure
+// `Config` and are accepted regardless of action.
 
 class CommandLine {
 public:
@@ -38,6 +43,7 @@ public:
         DeviceInfo,
         Render,
         RenderGradient,
+        RenderRays,
         Error,          // parse failure; see `error_message`
     };
 

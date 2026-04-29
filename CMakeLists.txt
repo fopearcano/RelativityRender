@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.20)
 
 project(RelativityRender
     VERSION     0.1.0
-    DESCRIPTION "RelativityRender - GPU renderer platform (Stage 6: CUDA kernel infrastructure)"
+    DESCRIPTION "RelativityRender - GPU renderer platform (Stage 7: camera system)"
     LANGUAGES   CXX
 )
 
@@ -23,7 +23,7 @@ option(RR_ENABLE_CUDA "Enable CUDA backend (requires CUDA Toolkit)"   OFF)
 
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
-message(STATUS "RelativityRender ${PROJECT_VERSION} (Stage 6: CUDA kernel infrastructure)")
+message(STATUS "RelativityRender ${PROJECT_VERSION} (Stage 7: camera system)")
 
 message(STATUS "  Build type   : ${CMAKE_BUILD_TYPE}")
 message(STATUS "  C++ standard : ${CMAKE_CXX_STANDARD}")
@@ -83,6 +83,17 @@ target_include_directories(rr_image PUBLIC src)
 target_link_libraries(rr_image PUBLIC rr_math)
 rr_apply_warnings(rr_image)
 
+# rr_camera: host-side perspective camera + the device-friendly
+# `GpuCamera` POD and the `RR_HD generate_camera_ray` helper. The
+# device-side helper lives header-only in `camera/CameraRay.h` so the
+# same code runs on host (tests) and device (kernels).
+add_library(rr_camera STATIC
+    src/camera/Camera.cpp
+)
+target_include_directories(rr_camera PUBLIC src)
+target_link_libraries(rr_camera PUBLIC rr_math)
+rr_apply_warnings(rr_camera)
+
 # rr_gpu: backend-agnostic GPU device + memory + (Stage 6) kernel
 # launch layer.
 #
@@ -127,15 +138,20 @@ if(RR_ENABLE_CUDA)
     # PUBLIC: targets linking rr_gpu (RelativityRender, gpu_tests) gate
     # CUDA-specific call sites on the same RR_HAS_CUDA macro.
     target_compile_definitions(rr_gpu PUBLIC RR_HAS_CUDA)
-    target_link_libraries(rr_gpu PUBLIC  rr_image)
+    # rr_image is part of rr_gpu's public ABI when CUDA is on
+    # (CudaRenderer::Result carries an Image by value); rr_camera is
+    # too because CudaRenderer::render_camera_rays takes a Camera by
+    # const ref and CudaTestKernel.cu calls generate_camera_ray.
+    target_link_libraries(rr_gpu PUBLIC  rr_image rr_camera)
     target_link_libraries(rr_gpu PRIVATE CUDA::cudart)
     set_target_properties(rr_gpu PROPERTIES POSITION_INDEPENDENT_CODE ON)
 endif()
 
-# Main executable. Stage 6 surface: links rr_gpu (and, via PUBLIC link
-# when CUDA is on, rr_image) so --device-info enumerates devices and
-# --render-gradient produces a real GPU-driven PPM. Always links
-# rr_image so the host build still has a path to save images later.
+# Main executable. Stage 7 surface: --device-info / --render-gradient
+# / --render-rays. Always links rr_image and rr_camera so the host
+# build still has access to the image + camera modules even when
+# CUDA is off (rr_gpu's PUBLIC link to those is only active under
+# RR_ENABLE_CUDA).
 add_executable(RelativityRender
     src/main.cpp
     src/core/Logger.cpp
@@ -143,7 +159,7 @@ add_executable(RelativityRender
     src/core/CommandLine.cpp
 )
 target_include_directories(RelativityRender PRIVATE src)
-target_link_libraries(RelativityRender PRIVATE rr_gpu rr_image)
+target_link_libraries(RelativityRender PRIVATE rr_gpu rr_image rr_camera)
 rr_apply_warnings(RelativityRender)
 
 # Tests. The project does not yet have a third-party test framework;

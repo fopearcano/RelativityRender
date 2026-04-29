@@ -6,17 +6,19 @@ records what landed, in which stage, and the next concrete step.
 
 ## Current state
 
-**Stages 1–6 — Core app + math + image + GPU device + GPU buffer layer
-+ CUDA kernel infrastructure.** Skeleton C++20 executable; header-only
-RR_HD math library; host-side floating-point image + framebuffer
-system; backend-agnostic GPU device + memory layers; first GPU kernel
-on the device — a UV-gradient diagnostic — wired through
-`CudaRenderer::render_gradient` and exposed via the `--render-gradient`
-CLI action. `--device-info` reports a real backend status and
-per-device info; `--render-gradient` (when CUDA is compiled in and a
-GPU is visible) launches the kernel, downloads the framebuffer, and
-saves a PPM. 150 host-side test assertions across three ctest binaries
-pass. No scene system, no path tracer, no server, no integrations.
+**Stages 1–7 — Core app + math + image + GPU device + GPU buffer layer
++ CUDA kernel infrastructure + camera system.** Skeleton C++20
+executable; header-only RR_HD math library; host-side floating-point
+image + framebuffer system; backend-agnostic GPU device + memory
+layers; two GPU kernels on the device (UV gradient + camera-ray
+direction visualisation) wired through `CudaRenderer::render_gradient`
+and `render_camera_rays`; pinhole `Camera` host class with a
+device-friendly `GpuCamera` POD and the RR_HD `generate_camera_ray`
+helper that runs identically on host (tests) and device (kernels).
+`--device-info`, `--render-gradient`, and `--render-rays` actions are
+all live. 150 host-side test assertions across three ctest binaries
+pass. No scene system, no geometry intersection, no relativity, no
+server, no integrations.
 
 ### Files in scope
 
@@ -55,7 +57,10 @@ pass. No scene system, no path tracer, no server, no integrations.
 | `src/cuda/CudaKernels.cuh` | Host-callable launcher declarations shared across `.cu` translation units. Pulls in `<cuda_runtime.h>`; only safe to include from `.cu`. Currently declares `launch_gradient_rgba32f`. |
 | `src/cuda/CudaTestKernel.cu` | First `__global__` kernel (`k_gradient_rgba32f`) plus its launcher. One thread per pixel; row-major Rgba32F output `(R=u, G=v, B=0, A=1)`. No host pixel loop. |
 | `src/cuda/CudaRenderer.h`  | Host-side, CUDA-Runtime-free header. Static `render_gradient(int w, int h)` returning a `Result {ok, image, message}`. |
-| `src/cuda/CudaRenderer.cu` | Host-side scaffold: allocate `GpuBuffer<float>` of `w*h*4` floats, launch the gradient kernel, drain CUDA errors, `cudaDeviceSynchronize`, download into an `rr::image::Image(Rgba32F)`. The CPU never iterates over pixels. |
+| `src/cuda/CudaRenderer.cu` | Host-side scaffold: allocate `GpuBuffer<float>` of `w*h*4` floats, launch the kernel, drain CUDA errors, `cudaDeviceSynchronize`, download into an `rr::image::Image(Rgba32F)`. Used by both `render_gradient` and `render_camera_rays`. The CPU never iterates over pixels. |
+| `src/camera/Camera.h`      | Host-side perspective `Camera` class: position, look-at, vfov, aspect, clip range, basis vectors. Exposes `to_gpu()` snapshotting into `GpuCamera`. |
+| `src/camera/Camera.cpp`    | Implementation; `look_at` re-orthogonalises the basis with a fallback when `up_hint` is parallel to `forward_`. |
+| `src/camera/CameraRay.h`   | Device-friendly `GpuCamera` POD (position / forward / up / right / `tan_half_vfov` / aspect) plus the `RR_HD generate_camera_ray(cam, x, y, w, h)` helper. Same code path runs on host (tests) and device (kernels). |
 
 Build:
 
@@ -77,8 +82,8 @@ build/bin/RelativityRender --help
 build/bin/RelativityRender --version
 build/bin/RelativityRender --device-info
 build/bin/RelativityRender --render scene.rrscene --output out.png --width 1920 --height 1080  # placeholder
-build-cuda/bin/RelativityRender --render-gradient   # GPU kernel -> output/gpu_gradient.ppm
-build-cuda/bin/RelativityRender --render-gradient --width 64 --height 64 --output mygrad.ppm
+build-cuda/bin/RelativityRender --render-gradient   # -> output/gpu_gradient.ppm
+build-cuda/bin/RelativityRender --render-rays       # -> output/gpu_camera_rays.ppm
 ```
 
 ### CLI behavior (Stage 1)
@@ -413,26 +418,108 @@ Hard-rule audit:
   `launch_gradient_rgba32f` / `cudaDeviceSynchronize` / `download`.
 - No ray tracing, no scene system, no C4D — yes.
 
+### Stage 7 — Camera system
+
+Status: implemented.
+
+- Recovered three files from `prototype_v0` byte-identical (audited
+  clean, KEEP_AS_IS): `src/camera/Camera.{h,cpp}` and
+  `src/camera/CameraRay.h`.
+- `Camera` is a pinhole host class with position, look-at,
+  vertical-FOV (degrees / radians), aspect, clip range. `look_at`
+  re-orthogonalises the basis and falls back to a sensible axis when
+  `up_hint` is parallel to `forward`.
+- `CameraRay.h` defines:
+    - `CameraRay` (origin + direction)
+    - `GpuCamera` POD (position / forward / up / right /
+      `tan_half_vfov` / aspect) - kernel launch argument
+    - `RR_HD generate_camera_ray(cam, x, y, w, h)` - same code path
+      compiled into host tests and into the device kernel.
+- New `__global__ void k_camera_rays_visualize(float*, int, int,
+  rr::camera::GpuCamera)` in `CudaTestKernel.cu`. One thread per
+  pixel: calls `generate_camera_ray`, encodes the (already-normalised)
+  direction as RGB via `0.5*dir + 0.5`, writes Rgba32F. Host code
+  never touches per-pixel state.
+- `launch_camera_rays_visualize` declared in `CudaKernels.cuh`,
+  defined in `CudaTestKernel.cu`.
+- `CudaRenderer::render_camera_rays(const Camera&, int, int)` added.
+  Uses the same `run_kernel_render` template scaffold as
+  `render_gradient` (allocate `GpuBuffer<float>`, launch, drain
+  errors, sync, download).
+- New CLI action `--render-rays` (mutually exclusive with the other
+  action flags). `main.cpp::run_render_camera_rays`:
+    1. Constructs a default `Camera` (origin, looking down −Z, +Y up,
+       45° vfov - the default `Camera()` ctor).
+    2. Sets aspect = `width / height`.
+    3. Calls `CudaRenderer::render_camera_rays(cam, w, h)`.
+    4. Saves the resulting `Image` to `output/gpu_camera_rays.ppm`
+       (or `--output` if specified). Creates the parent directory if
+       missing; reports the absolute path.
+  When CUDA is OFF the action prints an actionable error and exits 1.
+- `main.cpp` now factors the "create dir + save_ppm + log absolute
+  path" step into a single `save_image_or_error` helper used by both
+  `run_render_gradient` and `run_render_camera_rays`. The helper is
+  gated on `RR_HAS_CUDA` because both call sites are.
+- CMake additions:
+    - New `rr_camera` STATIC library (`Camera.cpp`, PUBLIC-links
+      `rr_math`).
+    - `rr_gpu` PUBLIC-links `rr_camera` when CUDA is on
+      (`CudaRenderer::render_camera_rays` takes `Camera` by const
+      ref; `CudaTestKernel.cu` calls `generate_camera_ray`).
+    - `RelativityRender` PRIVATE-links `rr_camera` so
+      `run_render_camera_rays` can construct one in host-only builds.
+
+Hard-rule audit (per the prompt):
+
+- All ray generation must happen on GPU - **yes**. Only the
+  `__global__ k_camera_rays_visualize` kernel calls
+  `generate_camera_ray`. The host never executes that helper.
+- CPU only creates camera parameters, launches kernel, receives
+  framebuffer - **yes**. Host work is limited to `Camera`
+  construction, `Camera::to_gpu()`, kernel launch, sync, and
+  `GpuBuffer::download`.
+- No sphere intersection - **yes**.
+- No scene system, no relativity, no C4D - **yes**.
+
+Verified (host-only build):
+
+- `cmake --build build -j` clean under `-Wall -Wextra -Wpedantic`,
+  no warnings.
+- `ctest --test-dir build` reports `3/3 passed`.
+- `--help` lists `--render-rays`.
+- `--render-rays` on a host without CUDA prints the actionable
+  `--render-rays requires CUDA. Rebuild with -DRR_ENABLE_CUDA=ON…`
+  and exits 1.
+- `--render-rays` on a CUDA host: kept code path is byte-identical
+  to the prototype's tested `render_camera_rays`; runtime
+  verification requires a GPU host and was not runnable in the
+  development environment for this commit.
+
+No new external dependencies. No `tests/camera_tests.cpp` in this
+commit - the user's Stage 7 prompt did not ask for one. It can be
+added in a follow-up if explicit unit coverage of `Camera::look_at`,
+the basis re-orthogonalisation, and `generate_camera_ray` is wanted
+on the host before geometry stages start consuming the camera.
+
 ## Next stage
 
-**Stage 7 — Camera system.** Module 8 in the master order. Scope:
-host-side pinhole `Camera` + a device-friendly `GpuCamera` POD plus
-a `RR_HD generate_camera_ray` helper used by both host tests and a
-new GPU kernel that writes ray-direction-coloured pixels (the
-sanity check before geometry intersection lands in the next stage).
+**Stage 8 — GPU primitive intersection.** Module 9 in the master
+order. Scope: a `Sphere` POD plus a kernel that intersects each
+camera ray against a single sphere on the GPU and shades hits using
+the surface normal. The CPU never iterates over rays - it only
+uploads the camera + sphere POD as launch arguments.
 
 Deliverables (planned, NOT yet implemented):
 
-- `src/camera/Camera.{h,cpp}`   (host class with look-at, fov,
-                                  aspect, clip range, `to_gpu()`)
-- `src/camera/CameraRay.h`      (RR_HD `GpuCamera` POD +
-                                  `generate_camera_ray`)
-- A new launcher in `CudaKernels.cuh` and a kernel in
-  `CudaTestKernel.cu` that writes `(0.5*dir + 0.5)` per pixel.
-- `CudaRenderer::render_camera_rays(camera, w, h)`.
-- `tests/camera_tests.cpp`.
-- A new CLI sub-mode (likely `--render-rays`) for the kernel
-  diagnostic.
+- `src/geometry/Sphere.h`           (RR_HD POD + `intersect`)
+- `src/cuda/CudaIntersection.cuh`   (RR_HD inline ray-sphere test)
+- A `k_sphere_visualize` kernel that does ray-gen + intersection +
+  shading entirely on the device.
+- `launch_sphere_visualize` in `CudaKernels.cuh` /
+  `CudaTestKernel.cu`.
+- `CudaRenderer::render_sphere(camera, sphere, w, h)`.
+- A `--render-sphere` CLI action that writes to
+  `output/gpu_sphere.ppm`.
 
 ## Constraints carried forward
 

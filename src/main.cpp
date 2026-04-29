@@ -1,10 +1,12 @@
 // RelativityRender entry point.
 //
-// Stage 6 scope: parse command-line flags and dispatch a
+// Stage 7 scope: parse command-line flags and dispatch a
 // stage-appropriate response. `--device-info` enumerates CUDA devices
 // (Module 6 of the master order); `--render-gradient` launches the
-// GPU UV-gradient diagnostic kernel (Module 7) and saves a PPM. No
-// scene system, no path tracer, no server, no C4D.
+// GPU UV-gradient diagnostic kernel (Module 7) and saves a PPM;
+// `--render-rays` launches the GPU camera-ray-direction visualisation
+// (Module 8) and saves a PPM. No scene system, no path tracer, no
+// relativity, no server, no C4D.
 
 #include "core/CommandLine.h"
 #include "core/Config.h"
@@ -13,12 +15,16 @@
 #include "gpu/GpuDevice.h"
 
 #ifdef RR_HAS_CUDA
+    #include "camera/Camera.h"
     #include "cuda/CudaRenderer.h"
 #endif
+
+#include "image/Image.h"
 
 #include <filesystem>
 #include <iostream>
 #include <string>
+#include <string_view>
 #include <system_error>
 
 namespace {
@@ -49,34 +55,20 @@ void report_device_info() {
     }
 }
 
-// `--render-gradient` dispatch. Width / height come from Config (the
-// CLI's --width / --height knobs); output path defaults to
-// "output/gpu_gradient.ppm" but is overridden by --output.
-//
-// Returns the process exit code: 0 on success, 1 on any failure.
-int run_render_gradient(const rr::core::Config& cfg) {
+#ifdef RR_HAS_CUDA
+// Create the parent directory of `out_path` (if any), save the image
+// there, and log the absolute path on success. Returns true on
+// success. Only used by the GPU render dispatches, so it is gated on
+// the same RR_HAS_CUDA macro to avoid a `defined but not used`
+// warning under host-only builds.
+bool save_image_or_error(const rr::image::Image& img,
+                         const std::string&      out_path,
+                         std::string_view        label,
+                         int                     width,
+                         int                     height) {
     using rr::core::Logger;
-
-    const std::string out_path = cfg.output_path.empty()
-        ? std::string("output/gpu_gradient.ppm")
-        : cfg.output_path;
-
-#ifndef RR_HAS_CUDA
-    (void)cfg;
-    Logger::error("--render-gradient requires CUDA. Rebuild with "
-                  "-DRR_ENABLE_CUDA=ON on a host with the CUDA Toolkit "
-                  "and a CUDA-capable GPU.");
-    return 1;
-#else
-    auto r = rr::cuda::CudaRenderer::render_gradient(cfg.width, cfg.height);
-    if (!r.ok) {
-        Logger::error("gradient render failed: " + r.message);
-        return 1;
-    }
-
-    // Make sure the output directory exists before writing. Image's
-    // save_ppm does not create parent directories.
     namespace fs = std::filesystem;
+
     const fs::path out_fs = out_path;
     if (out_fs.has_parent_path()) {
         std::error_code ec;
@@ -85,22 +77,78 @@ int run_render_gradient(const rr::core::Config& cfg) {
             Logger::error("could not create output directory '"
                         + out_fs.parent_path().string() + "': "
                         + ec.message());
-            return 1;
+            return false;
         }
     }
 
-    if (!r.image.save_ppm(out_fs)) {
+    if (!img.save_ppm(out_fs)) {
         Logger::error("could not write PPM: " + out_path);
-        return 1;
+        return false;
     }
 
     std::error_code ec;
     const fs::path  abs = fs::absolute(out_fs, ec);
-    Logger::info("wrote GPU gradient: "
+    Logger::info(std::string("wrote ") + std::string(label) + ": "
                + (ec ? out_path : abs.string())
-               + " (" + std::to_string(cfg.width) + "x"
-               + std::to_string(cfg.height) + ", RGBA32F)");
-    return 0;
+               + " (" + std::to_string(width) + "x"
+               + std::to_string(height) + ", RGBA32F)");
+    return true;
+}
+#endif  // RR_HAS_CUDA
+
+// `--render-gradient` dispatch. Width/height come from Config; output
+// path defaults to "output/gpu_gradient.ppm" when --output is unset.
+int run_render_gradient(const rr::core::Config& cfg) {
+    const std::string out_path = cfg.output_path.empty()
+        ? std::string("output/gpu_gradient.ppm")
+        : cfg.output_path;
+
+#ifndef RR_HAS_CUDA
+    (void)cfg;
+    rr::core::Logger::error("--render-gradient requires CUDA. Rebuild with "
+                            "-DRR_ENABLE_CUDA=ON on a host with the CUDA "
+                            "Toolkit and a CUDA-capable GPU.");
+    return 1;
+#else
+    auto r = rr::cuda::CudaRenderer::render_gradient(cfg.width, cfg.height);
+    if (!r.ok) {
+        rr::core::Logger::error("gradient render failed: " + r.message);
+        return 1;
+    }
+    return save_image_or_error(r.image, out_path, "GPU gradient",
+                               cfg.width, cfg.height) ? 0 : 1;
+#endif
+}
+
+// `--render-rays` dispatch. Sets up a sensible default camera (origin,
+// looking down -Z, aspect derived from the framebuffer size, 45 deg
+// vfov), runs the GPU camera-ray-direction visualisation, and writes
+// the PPM. The CPU only constructs the camera POD and snapshots it
+// via Camera::to_gpu(); every per-pixel ray-gen step happens inside
+// the kernel.
+int run_render_camera_rays(const rr::core::Config& cfg) {
+    const std::string out_path = cfg.output_path.empty()
+        ? std::string("output/gpu_camera_rays.ppm")
+        : cfg.output_path;
+
+#ifndef RR_HAS_CUDA
+    (void)cfg;
+    rr::core::Logger::error("--render-rays requires CUDA. Rebuild with "
+                            "-DRR_ENABLE_CUDA=ON on a host with the CUDA "
+                            "Toolkit and a CUDA-capable GPU.");
+    return 1;
+#else
+    rr::camera::Camera cam;
+    cam.set_aspect(static_cast<float>(cfg.width)
+                 / static_cast<float>(cfg.height));
+
+    auto r = rr::cuda::CudaRenderer::render_camera_rays(cam, cfg.width, cfg.height);
+    if (!r.ok) {
+        rr::core::Logger::error("camera-ray render failed: " + r.message);
+        return 1;
+    }
+    return save_image_or_error(r.image, out_path, "GPU camera rays",
+                               cfg.width, cfg.height) ? 0 : 1;
 #endif
 }
 
@@ -132,6 +180,9 @@ int main(int argc, char** argv) {
         case CommandLine::Action::RenderGradient:
             return run_render_gradient(result.config);
 
+        case CommandLine::Action::RenderRays:
+            return run_render_camera_rays(result.config);
+
         case CommandLine::Action::Error:
             Logger::error(result.error_message);
             std::cerr << CommandLine::usage(argv[0]);
@@ -140,8 +191,9 @@ int main(int argc, char** argv) {
         case CommandLine::Action::Default:
             Logger::info(std::string(rr::core::kProjectName) + " "
                        + rr::core::kVersionString + " starting up.");
-            Logger::info("Stage 6: CUDA kernel infrastructure. "
-                         "Try --device-info or --render-gradient.");
+            Logger::info("Stage 7: camera system. "
+                         "Try --device-info, --render-gradient, "
+                         "or --render-rays.");
             return 0;
     }
     return 0;
