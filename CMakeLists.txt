@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.20)
 
 project(RelativityRender
     VERSION     0.1.0
-    DESCRIPTION "RelativityRender - GPU renderer platform (Stage 6A: host scene structures)"
+    DESCRIPTION "RelativityRender - GPU renderer platform (Stage 6B: GPU scene upload)"
     LANGUAGES   CXX
 )
 
@@ -23,7 +23,7 @@ option(RR_ENABLE_CUDA "Enable CUDA backend (requires CUDA Toolkit)"   OFF)
 
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
-message(STATUS "RelativityRender ${PROJECT_VERSION} (Stage 6A: host scene structures)")
+message(STATUS "RelativityRender ${PROJECT_VERSION} (Stage 6B: GPU scene upload)")
 
 message(STATUS "  Build type   : ${CMAKE_BUILD_TYPE}")
 message(STATUS "  C++ standard : ${CMAKE_CXX_STANDARD}")
@@ -168,8 +168,13 @@ rr_apply_warnings(rr_scene)
 add_library(rr_gpu STATIC
     src/gpu/GpuDevice.cpp
     src/gpu/GpuBuffer.cpp
+    src/gpu/GpuScene.cpp
 )
 target_include_directories(rr_gpu PUBLIC src)
+# rr_gpu's GpuScene exposes Camera / Observer / RelativityParams /
+# Sphere by value; PUBLIC-link those modules so consumers see the
+# complete types via gpu/GpuScene.h.
+target_link_libraries(rr_gpu PUBLIC rr_camera rr_relativity rr_geometry)
 rr_apply_warnings(rr_gpu)
 
 if(RR_ENABLE_CUDA)
@@ -198,11 +203,11 @@ if(RR_ENABLE_CUDA)
     set_target_properties(rr_gpu PROPERTIES POSITION_INDEPENDENT_CODE ON)
 endif()
 
-# Main executable. Stage 10 surface: --device-info / --render-gradient
-# / --render-rays / --render-sphere / --render-relativistic. Always
-# links rr_image, rr_camera, rr_geometry, and rr_relativity so the
-# host build still has access to those modules even when CUDA is off
-# (rr_gpu's PUBLIC link to them is only active under RR_ENABLE_CUDA).
+# Main executable. Stage 6B surface: --device-info / --render-gradient
+# / --render-rays / --render-sphere / --render-relativistic /
+# --render-scene. Links rr_scene now that --render-scene constructs
+# a Scene + iterates its SceneSphere wrappers; the rest of the
+# library list stays the same.
 add_executable(RelativityRender
     src/main.cpp
     src/core/Logger.cpp
@@ -211,7 +216,7 @@ add_executable(RelativityRender
 )
 target_include_directories(RelativityRender PRIVATE src)
 target_link_libraries(RelativityRender PRIVATE
-    rr_gpu rr_image rr_camera rr_geometry rr_relativity)
+    rr_gpu rr_image rr_camera rr_geometry rr_relativity rr_scene)
 rr_apply_warnings(RelativityRender)
 
 # Tests. The project does not yet have a third-party test framework;

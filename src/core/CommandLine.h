@@ -30,22 +30,27 @@ namespace rr::core {
 //                           write the four PPMs into output/.
 //                           --output is ignored for this action.
 //                           Requires CUDA.
+//   --render-scene          Render a built-in multi-sphere scene
+//                           via the GpuScene upload path and save
+//                           it to <output>. Requires CUDA.
 //   --output <path>         Write the rendered image to <path>.
 //                           Default for --render-gradient is
 //                           "output/gpu_gradient.ppm";
 //                           default for --render-rays     is
 //                           "output/gpu_camera_rays.ppm";
 //                           default for --render-sphere   is
-//                           "output/gpu_sphere.ppm".
+//                           "output/gpu_sphere.ppm";
+//                           default for --render-scene    is
+//                           "output/gpu_scene_spheres.ppm".
 //                           Ignored for --render-relativistic.
 //   --width  <int>          Render width in pixels  (default 1280).
 //   --height <int>          Render height in pixels (default 720).
 //
 // Action flags (--help / --version / --device-info / --render /
 // --render-gradient / --render-rays / --render-sphere /
-// --render-relativistic) are mutually exclusive; combining them is a
-// parse error. The remaining flags configure `Config` and are
-// accepted regardless of action.
+// --render-relativistic / --render-scene) are mutually exclusive;
+// combining them is a parse error. The remaining flags configure
+// `Config` and are accepted regardless of action.
 
 class CommandLine {
 public:
@@ -59,6 +64,7 @@ public:
         RenderRays,
         RenderSphere,
         RenderRelativistic,
+        RenderScene,
         Error,          // parse failure; see `error_message`
     };
 

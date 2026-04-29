@@ -1,14 +1,10 @@
 // RelativityRender entry point.
 //
-// Stage 10 scope: parse command-line flags and dispatch a
-// stage-appropriate response. `--device-info` enumerates CUDA
-// devices; `--render-gradient` runs the GPU UV-gradient diagnostic;
-// `--render-rays` runs the GPU camera-ray visualisation;
-// `--render-sphere` runs the GPU single-sphere intersection
-// diagnostic; `--render-relativistic` runs the relativistic
-// single-sphere pipeline at four observer speeds (beta = 0.00, 0.25,
-// 0.75, 0.95) and writes the four PPMs into output/. No scene
-// system, no path tracer, no materials, no lights, no server, no C4D.
+// Stage 6B scope: every prior CLI action plus `--render-scene`,
+// which builds a built-in multi-sphere `Scene`, uploads it via
+// `GpuScene`, and runs the GPU closest-hit kernel that loops over
+// the uploaded sphere array. No scene parser yet, no materials, no
+// lights, no path tracer, no server, no C4D.
 
 #include "core/CommandLine.h"
 #include "core/Config.h"
@@ -20,8 +16,12 @@
     #include "camera/Camera.h"
     #include "cuda/CudaRenderer.h"
     #include "geometry/Sphere.h"
+    #include "gpu/GpuScene.h"
     #include "math/Vec3.h"
     #include "relativity/RelativityParams.h"
+    #include "scene/Scene.h"
+
+    #include <vector>
 #endif
 
 #include "image/Image.h"
@@ -198,6 +198,40 @@ int run_render_sphere(const rr::core::Config& cfg) {
 #endif
 }
 
+#ifdef RR_HAS_CUDA
+// Build the built-in multi-sphere demo scene used by `--render-scene`.
+// Three spheres in a row at z = -4, slight stagger in y so the
+// closest-hit logic has something non-trivial to do. Camera is the
+// default (origin, -Z forward). β = 0 (no relativistic perception
+// effects) so the result isolates the GpuScene upload + closest-hit
+// loop from the relativity pipeline.
+rr::scene::Scene build_demo_scene(int width, int height) {
+    rr::scene::Scene scene;
+    scene.render_settings.width  = width;
+    scene.render_settings.height = height;
+
+    scene.camera.set_aspect(static_cast<float>(width)
+                          / static_cast<float>(height));
+
+    // Three foreground spheres + one larger background sphere so the
+    // closest-hit loop visibly resolves overlap.
+    const auto add = [&](float cx, float cy, float cz, float r,
+                         const char* name) {
+        rr::scene::SceneSphere s;
+        s.object.name = name;
+        s.geometry    = rr::geometry::Sphere{
+            rr::math::Vec3{cx, cy, cz}, r, /*material_index=*/-1};
+        scene.spheres.push_back(s);
+    };
+    add(-1.5f,  0.2f, -4.0f, 0.7f, "left");
+    add( 0.0f, -0.1f, -3.5f, 0.8f, "centre");
+    add( 1.5f,  0.2f, -4.0f, 0.7f, "right");
+    add( 0.0f, -1.4f, -5.0f, 1.0f, "ground-bulb");
+
+    return scene;
+}
+#endif  // RR_HAS_CUDA
+
 // `--render-relativistic` dispatch. Runs the relativistic single-sphere
 // pipeline at four observer speeds (beta = 0.00, 0.25, 0.75, 0.95) and
 // writes four named PPMs into output/. The observer moves along the
@@ -268,6 +302,66 @@ int run_render_relativistic(const rr::core::Config& cfg) {
 #endif
 }
 
+// `--render-scene` dispatch. Builds the built-in multi-sphere demo
+// scene, uploads it via GpuScene, runs the GPU closest-hit kernel,
+// and writes the PPM. The CPU's only contribution is constructing
+// the Scene + upload calls + image saving; ray-gen, intersection,
+// and shading all run on the device.
+int run_render_scene(const rr::core::Config& cfg) {
+    const std::string out_path = cfg.output_path.empty()
+        ? std::string("output/gpu_scene_spheres.ppm")
+        : cfg.output_path;
+
+#ifndef RR_HAS_CUDA
+    (void)cfg;
+    rr::core::Logger::error("--render-scene requires CUDA. Rebuild with "
+                            "-DRR_ENABLE_CUDA=ON on a host with the CUDA "
+                            "Toolkit and a CUDA-capable GPU.");
+    return 1;
+#else
+    const auto scene = build_demo_scene(cfg.width, cfg.height);
+
+    // Pull `rr::geometry::Sphere` PODs out of the scene's
+    // `SceneSphere` wrappers, dropping any entries marked invisible.
+    std::vector<rr::geometry::Sphere> sphere_pods;
+    sphere_pods.reserve(scene.spheres.size());
+    for (const auto& s : scene.spheres) {
+        if (s.object.visible) sphere_pods.push_back(s.geometry);
+    }
+
+    rr::gpu::GpuScene gpu_scene;
+    if (!gpu_scene.upload_camera(scene.camera)) {
+        rr::core::Logger::error("scene render failed: upload_camera");
+        return 1;
+    }
+    if (!gpu_scene.upload_relativity(scene.observer, scene.relativity)) {
+        rr::core::Logger::error("scene render failed: upload_relativity");
+        return 1;
+    }
+    if (!gpu_scene.upload_spheres(sphere_pods.data(), sphere_pods.size())) {
+        rr::core::Logger::error("scene render failed: upload_spheres "
+                                "(no GPU backend or device allocation "
+                                "failed)");
+        return 1;
+    }
+
+    auto r = rr::cuda::CudaRenderer::render_scene(gpu_scene,
+                                                  cfg.width, cfg.height);
+    if (!r.ok) {
+        rr::core::Logger::error("scene render failed: " + r.message);
+        return 1;
+    }
+
+    rr::core::Logger::info("scene: " + std::to_string(sphere_pods.size())
+                         + " sphere(s) uploaded, "
+                         + std::to_string(cfg.width) + "x"
+                         + std::to_string(cfg.height) + " framebuffer");
+
+    return save_image_or_error(r.image, out_path, "GPU scene",
+                               cfg.width, cfg.height) ? 0 : 1;
+#endif
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -305,6 +399,9 @@ int main(int argc, char** argv) {
         case CommandLine::Action::RenderRelativistic:
             return run_render_relativistic(result.config);
 
+        case CommandLine::Action::RenderScene:
+            return run_render_scene(result.config);
+
         case CommandLine::Action::Error:
             Logger::error(result.error_message);
             std::cerr << CommandLine::usage(argv[0]);
@@ -313,10 +410,10 @@ int main(int argc, char** argv) {
         case CommandLine::Action::Default:
             Logger::info(std::string(rr::core::kProjectName) + " "
                        + rr::core::kVersionString + " starting up.");
-            Logger::info("Stage 10: relativistic GPU rendering. "
+            Logger::info("Stage 6B: GPU scene upload. "
                          "Try --device-info, --render-gradient, "
-                         "--render-rays, --render-sphere, or "
-                         "--render-relativistic.");
+                         "--render-rays, --render-sphere, "
+                         "--render-relativistic, or --render-scene.");
             return 0;
     }
     return 0;

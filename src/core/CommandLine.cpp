@@ -48,7 +48,7 @@ bool set_action(CommandLine::Action& current, CommandLine::Action target,
         error = "cannot combine action flags (--help / --version / "
                 "--device-info / --render / --render-gradient / "
                 "--render-rays / --render-sphere / "
-                "--render-relativistic)";
+                "--render-relativistic / --render-scene)";
         return false;
     }
     current = target;
@@ -113,6 +113,12 @@ CommandLine::ParseResult CommandLine::parse(int argc, char** argv) {
                 r.action = Action::Error;
                 return r;
             }
+        } else if (a == "--render-scene") {
+            if (!set_action(r.action, Action::RenderScene,
+                            r.error_message)) {
+                r.action = Action::Error;
+                return r;
+            }
         } else if (a == "--output") {
             if (!take_value(argc, argv, i, a, value, r.error_message)) {
                 r.action = Action::Error;
@@ -156,7 +162,8 @@ CommandLine::ParseResult CommandLine::parse(int argc, char** argv) {
      || r.action == Action::RenderGradient
      || r.action == Action::RenderRays
      || r.action == Action::RenderSphere
-     || r.action == Action::RenderRelativistic) {
+     || r.action == Action::RenderRelativistic
+     || r.action == Action::RenderScene) {
         if (auto err = r.config.validate(); !err.empty()) {
             r.action        = Action::Error;
             r.error_message = std::move(err);
@@ -189,13 +196,18 @@ std::string CommandLine::usage(std::string_view argv0) {
        << "                        speeds (beta = 0.00, 0.25, 0.75, "
                                   "0.95) and write the four PPMs\n"
        << "                        into output/. Requires CUDA.\n"
+       << "  --render-scene        Render a built-in multi-sphere scene "
+                                  "via the GpuScene upload\n"
+       << "                        path (requires CUDA).\n"
        << "  --output <path>       Write the rendered image to <path>.\n"
        << "                        Default for --render-gradient is "
                                   "output/gpu_gradient.ppm;\n"
        << "                        default for --render-rays     is "
                                   "output/gpu_camera_rays.ppm;\n"
        << "                        default for --render-sphere   is "
-                                  "output/gpu_sphere.ppm.\n"
+                                  "output/gpu_sphere.ppm;\n"
+       << "                        default for --render-scene    is "
+                                  "output/gpu_scene_spheres.ppm.\n"
        << "                        Ignored for --render-relativistic.\n"
        << "  --width  <int>        Render width in pixels "
                                   "(default 1280).\n"

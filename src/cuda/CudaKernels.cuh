@@ -4,8 +4,9 @@
 // `.cu` translation units in the CUDA backend. This header pulls in
 // `<cuda_runtime.h>`, so it is only safe to include from `.cu` files.
 
-#include "camera/CameraRay.h"  // GpuCamera + RR_HD generate_camera_ray
-#include "geometry/Sphere.h"   // Sphere POD passed by value to launchers
+#include "camera/CameraRay.h"     // GpuCamera + RR_HD generate_camera_ray
+#include "cuda/CudaScene.cuh"     // CudaSceneView (passed by value to k_render_scene)
+#include "geometry/Sphere.h"      // Sphere POD passed by value to single-sphere launchers
 #include "relativity/RelativityParams.h"  // Observer + RelativityParams PODs
 
 #include <cuda_runtime.h>
@@ -71,5 +72,16 @@ void launch_sphere_relativistic(float* device_pixels, int width, int height,
                                 rr::relativity::RelativityParams params,
                                 rr::geometry::Sphere            sphere,
                                 cudaStream_t                    stream = 0);
+
+// Host-callable launcher for the multi-sphere scene-render kernel.
+// Defined in CudaTestKernel.cu. Per pixel the device runs the full
+// relativistic pipeline (aberration -> closest-hit loop over the
+// uploaded sphere array -> base shade -> Doppler colour ->
+// searchlight beaming) and writes Rgba32F. The CPU never touches
+// per-ray state; the launch argument `scene` carries the camera /
+// observer / params plus a device pointer + count for the spheres.
+void launch_render_scene(float* device_pixels, int width, int height,
+                         CudaSceneView scene,
+                         cudaStream_t  stream = 0);
 
 }

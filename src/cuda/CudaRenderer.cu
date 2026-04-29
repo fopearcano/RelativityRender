@@ -2,8 +2,10 @@
 
 #include "camera/Camera.h"
 #include "cuda/CudaKernels.cuh"
+#include "cuda/CudaScene.cuh"
 #include "geometry/Sphere.h"
 #include "gpu/GpuBuffer.h"
+#include "gpu/GpuScene.h"
 #include "image/Image.h"
 #include "relativity/RelativityParams.h"
 
@@ -127,6 +129,24 @@ CudaRenderer::Result CudaRenderer::render_relativistic_sphere(
             launch_sphere_relativistic(device_pixels, w, h,
                                        cam, obs, par, sphere,
                                        /*stream=*/nullptr);
+        });
+}
+
+CudaRenderer::Result CudaRenderer::render_scene(const rr::gpu::GpuScene& scene,
+                                                int width, int height) {
+    // Snapshot the GpuScene's host-resident state into a launch-arg
+    // POD. The sphere device pointer / count are read off the
+    // GpuScene; no copy of the device buffer happens here.
+    rr::cuda::CudaSceneView view;
+    view.camera        = scene.gpu_camera();
+    view.observer      = scene.observer();
+    view.params        = scene.params();
+    view.spheres       = scene.device_spheres();
+    view.sphere_count  = static_cast<int>(scene.sphere_count());
+
+    return run_kernel_render(width, height,
+        [view](float* device_pixels, int w, int h) {
+            launch_render_scene(device_pixels, w, h, view, /*stream=*/nullptr);
         });
 }
 

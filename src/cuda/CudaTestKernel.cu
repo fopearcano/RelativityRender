@@ -7,12 +7,15 @@
 //   - k_camera_rays_visualize  (Stage 7)
 //   - k_sphere_visualize       (Stage 8)
 //   - k_sphere_relativistic    (Stage 10)
+//   - k_render_scene           (Stage 6B - multi-sphere over CudaSceneView)
 
 #include "cuda/CudaIntersection.cuh"
 #include "cuda/CudaKernels.cuh"
+#include "cuda/CudaScene.cuh"
 #include "relativity/RelativityMath.cuh"
 
 #include "math/Vec3.h"
+#include "renderer/Hit.h"
 
 namespace rr::cuda {
 
@@ -262,6 +265,101 @@ void launch_sphere_relativistic(float* device_pixels, int width, int height,
 
     k_sphere_relativistic<<<grid, block, 0, stream>>>(
         device_pixels, width, height, cam, observer, params, sphere);
+}
+
+// ---------- Stage 6B: multi-sphere scene render ------------------
+
+namespace {
+
+// One thread = one pixel. Same eight-step relativistic pipeline as
+// k_sphere_relativistic, but the closest-hit step is a loop over
+// the uploaded sphere array instead of a single primitive. The
+// per-frame state (camera, observer, params) and the device pointer
+// + count for the sphere array travel together inside `scene`,
+// passed by value as the launch argument.
+__global__ void k_render_scene(float* pixels, int width, int height,
+                               rr::cuda::CudaSceneView scene) {
+    const int x = blockIdx.x * blockDim.x + threadIdx.x;
+    const int y = blockIdx.y * blockDim.y + threadIdx.y;
+    if (x >= width || y >= height) return;
+
+    using rr::math::Vec3;
+
+    // 1. Camera ray.
+    auto ray = rr::camera::generate_camera_ray(scene.camera,
+                                               x, y, width, height);
+
+    // 2. Aberration in the observer's frame.
+    if (scene.params.enable_aberration) {
+        ray.direction = rr::relativity::aberrateDirection(
+            scene.observer.velocity, ray.direction);
+    }
+
+    // 3. Closest-hit loop. `t_max` tightens as candidates are
+    //    accepted so each later sphere only needs to beat the
+    //    running best.
+    rr::renderer::Hit best;
+    float             t_max = 1.0e30f;
+    for (int i = 0; i < scene.sphere_count; ++i) {
+        const auto h = rr::cuda::intersect_sphere(ray, scene.spheres[i],
+                                                  /*t_min=*/0.0f, t_max);
+        if (h.hit) {
+            best  = h;
+            t_max = h.t;
+        }
+    }
+
+    // 4. Base shade.
+    Vec3 color;
+    if (best.hit) {
+        color = Vec3{0.5f * best.normal.x + 0.5f,
+                     0.5f * best.normal.y + 0.5f,
+                     0.5f * best.normal.z + 0.5f};
+    } else {
+        const float t = 0.5f * (ray.direction.y + 1.0f);
+        color = Vec3{(1.0f - t) * 1.0f + t * 0.5f,
+                     (1.0f - t) * 1.0f + t * 0.7f,
+                     (1.0f - t) * 1.0f + t * 1.0f};
+    }
+
+    // 5. Doppler factor for the (possibly aberrated) ray direction.
+    const float D = rr::relativity::dopplerFactor(scene.observer.velocity,
+                                                  ray.direction);
+
+    // 6. Doppler colour shift.
+    if (scene.params.enable_doppler) {
+        color = rr::relativity::applyDopplerColor(
+            color, D, scene.params.doppler_color_strength);
+    }
+
+    // 7. Searchlight / beaming.
+    if (scene.params.enable_searchlight) {
+        const float D4    = rr::relativity::searchlightFactor(D);
+        const float scale = 1.0f + (D4 - 1.0f) * scene.params.searchlight_strength;
+        color = color * scale;
+    }
+
+    // 8. Framebuffer write.
+    const int idx = (y * width + x) * 4;
+    pixels[idx + 0] = color.x;
+    pixels[idx + 1] = color.y;
+    pixels[idx + 2] = color.z;
+    pixels[idx + 3] = 1.0f;
+}
+
+}  // namespace
+
+void launch_render_scene(float* device_pixels, int width, int height,
+                         rr::cuda::CudaSceneView scene,
+                         cudaStream_t            stream) {
+    if (!device_pixels || width <= 0 || height <= 0) return;
+
+    const dim3 block(16, 16);
+    const dim3 grid((width  + block.x - 1) / block.x,
+                    (height + block.y - 1) / block.y);
+
+    k_render_scene<<<grid, block, 0, stream>>>(
+        device_pixels, width, height, scene);
 }
 
 }  // namespace rr::cuda

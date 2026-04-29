@@ -9,15 +9,16 @@
 // callers gate use of this class on the `RR_HAS_CUDA` macro that the
 // `rr_gpu` library propagates publicly when CUDA is enabled.
 //
-// Stage 10 surface: four GPU diagnostics - a UV-gradient render, a
+// Stage 6B surface: five GPU diagnostics - a UV-gradient render, a
 // camera-ray-direction visualisation, a single-sphere intersection
-// diagnostic, and a relativistic single-sphere render that runs
-// aberration / Doppler-colour / searchlight on the device. The full
-// renderer (scene render, path trace, AOV pack) comes back in later
-// stages on top of this scaffold.
+// diagnostic, a relativistic single-sphere render, and a multi-sphere
+// scene render that runs the full relativistic pipeline over an
+// uploaded `GpuScene`. The full renderer (path trace, AOV pack)
+// comes back in later stages on top of this scaffold.
 
 namespace rr::camera   { class  Camera; }
 namespace rr::geometry { struct Sphere; }
+namespace rr::gpu      { class  GpuScene; }
 
 namespace rr::relativity {
 struct Observer;
@@ -71,6 +72,24 @@ public:
         const rr::relativity::RelativityParams& params,
         const rr::geometry::Sphere&           sphere,
         int width, int height);
+
+    // Render an uploaded multi-sphere scene with the full
+    // relativistic perception pipeline. The kernel runs a closest-hit
+    // loop over the spheres in `scene` and writes the framebuffer.
+    // Camera / observer / params travel inside `scene` as host PODs;
+    // the sphere array is read from the device pointer + count
+    // `scene` exposes through `device_spheres()` / `sphere_count()`.
+    // The host never touches per-pixel state.
+    //
+    // Pre-conditions:
+    //   - `scene.has_camera()` is true (otherwise the kernel reads
+    //     a default-constructed GpuCamera, which projects from the
+    //     origin with zero FOV - the result is uninformative but
+    //     not crashy).
+    //   - `scene.sphere_count() == 0` is allowed; the kernel falls
+    //     through to the sky-gradient miss path for every pixel.
+    [[nodiscard]] static Result render_scene(const rr::gpu::GpuScene& scene,
+                                             int width, int height);
 };
 
 }

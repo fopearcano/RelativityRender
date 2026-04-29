@@ -6,8 +6,7 @@ records what landed, in which stage, and the next concrete step.
 
 ## Current state
 
-**Stages 1–10 + 6A — through relativistic GPU rendering, plus
-host-side scene structures.** Skeleton C++20 executable; header-only RR_HD math
+**Stages 1–10 + 6A + 6B — through GPU scene upload.** Skeleton C++20 executable; header-only RR_HD math
 library; host-side floating-point image + framebuffer system;
 backend-agnostic GPU device + memory layers; pinhole `Camera` + RR_HD
 `generate_camera_ray`; single-sphere intersection kernel; relativity
@@ -22,10 +21,16 @@ visualisation, relativistic single-sphere. `--device-info`,
 `--render-relativistic` actions are all live. The relativistic action
 runs a four-β sweep (0.00, 0.25, 0.75, 0.95) and writes four named
 PPMs. 150 host-side test assertions across three ctest binaries pass.
-A new host-side `rr::scene::Scene` container exists in the tree as
-of Stage 6A, but is **not yet consumed** by the renderer (Stage 6B
-wires the GPU upload). No materials, no lights, no path tracer, no
-server, no integrations.
+A new `rr::gpu::GpuScene` upload manager and a `k_render_scene`
+closest-hit kernel land at Stage 6B; `--render-scene` now uses
+`rr::scene::Scene` end-to-end (host build → upload → GPU render →
+PPM). Five GPU kernels live now: UV gradient, camera-ray
+visualisation, single-sphere visualisation, relativistic
+single-sphere, multi-sphere scene. **Six** GPU CLI actions are live:
+`--render-gradient`, `--render-rays`, `--render-sphere`,
+`--render-relativistic`, `--render-scene`, plus the `--render`
+placeholder for the still-pending scene parser. No materials, no
+lights, no path tracer, no server, no integrations.
 
 ### Files in scope
 
@@ -80,6 +85,9 @@ server, no integrations.
 | `src/scene/SceneObject.h`           | POD `{name, Transform, visible}`. Composed into the type-specific scene wrappers (`SceneSphere`, `SceneMesh`, `SceneLight`) so the GPU-upload paths can read fields directly. |
 | `src/scene/Scene.h`                 | The authoring-side container. Real fields: `Camera`, `RenderSettings`, `Observer`, `RelativityParams`, `vector<SceneSphere>`. Placeholder fields (Stage 6A scaffolding, populated as later master-order modules ship): `vector<SceneMesh>` (module 12), `vector<SceneMaterial>` (module 13), `vector<SceneLight>` (module 14). |
 | `src/scene/Scene.cpp`               | `Scene::clear()` resets every list and every default-constructible POD field. |
+| `src/cuda/CudaScene.cuh`            | Device-side `CudaSceneView` POD: `GpuCamera` + `Observer` + `RelativityParams` (by value, launch-arg PODs) + `Sphere*` device pointer + count. CUDA-Runtime-pulling header; only safe to include from `.cu` files. Stage 6B keeps it minimal; mesh / material / light / texture views join in their own stages. |
+| `src/gpu/GpuScene.h`                | Move-only host-side scene container that owns a `GpuBuffer<Sphere>` plus by-value `GpuCamera` / `Observer` / `RelativityParams` snapshots. Three explicit upload methods (`upload_camera`, `upload_relativity`, `upload_spheres`) plus `reset_device()` / `clear()` and the per-field accessors the renderer uses. |
+| `src/gpu/GpuScene.cpp`              | Implementation; `upload_spheres` reallocates via `GpuBuffer<Sphere>::upload`, returns `false` honestly when no GPU backend is available, and resets state to zero on any failure path. |
 
 Build:
 
@@ -105,6 +113,7 @@ build-cuda/bin/RelativityRender --render-gradient     # -> output/gpu_gradient.p
 build-cuda/bin/RelativityRender --render-rays         # -> output/gpu_camera_rays.ppm
 build-cuda/bin/RelativityRender --render-sphere       # -> output/gpu_sphere.ppm
 build-cuda/bin/RelativityRender --render-relativistic # -> output/sphere_beta_{000,025,075,095}.ppm
+build-cuda/bin/RelativityRender --render-scene        # -> output/gpu_scene_spheres.ppm
 ```
 
 ### CLI behavior (Stage 1)
@@ -914,31 +923,127 @@ it stays. New code under `src/scene/` is welcome to use
 `rr::math::Transform` directly - the alias is for legibility of
 the user-facing scene API, not a separate type.
 
+### Stage 6B — GPU scene upload (Module 11, GPU half)
+
+Status: implemented.
+
+The user split master module 11 into Stage 6A (host scene
+structures, landed in the previous commit) and Stage 6B (GPU
+upload + closest-hit kernel, this commit). Stage 6B ships:
+
+- `src/cuda/CudaScene.cuh` — `CudaSceneView` launch-arg POD with
+  the camera / observer / params PODs by value plus a device
+  pointer + count for the sphere array. Future entity types join
+  here without changing the kernel signature.
+- `src/gpu/GpuScene.{h,cpp}` — move-only host-side container.
+  Three explicit upload methods (`upload_camera`,
+  `upload_relativity`, `upload_spheres`); the latter reallocates a
+  `GpuBuffer<Sphere>` to fit and reports honest failure when no
+  GPU backend is available. `reset_device()` / `clear()` /
+  per-field accessors complete the surface.
+- New `__global__ k_render_scene` in `CudaTestKernel.cu` — same
+  eight-step relativistic pipeline as `k_sphere_relativistic`, but
+  step 3 (intersection) is a closest-hit loop over
+  `scene.spheres[0 .. sphere_count - 1]`. The loop tightens
+  `t_max` as candidates land so each later sphere only needs to
+  beat the running best.
+- `launch_render_scene` declared in `CudaKernels.cuh`, defined in
+  `CudaTestKernel.cu`.
+- `CudaRenderer::render_scene(const rr::gpu::GpuScene&, w, h)` —
+  snapshots the GpuScene's host-resident state into a
+  `CudaSceneView`, reads the device pointer + count off the
+  `GpuScene`, and reuses the existing `run_kernel_render`
+  scaffold. No copy of the device buffer happens at render time;
+  the `GpuScene` retains ownership.
+- `--render-scene` CLI action (mutually exclusive with the other
+  action flags). `main.cpp::build_demo_scene` constructs a
+  hard-coded four-sphere scene (`left`, `centre`, `right`,
+  `ground-bulb`) at the camera's default forward; β = 0
+  (relativity-identity) so the result isolates the GpuScene
+  upload + closest-hit loop from the relativity pipeline.
+  `main.cpp::run_render_scene` builds the scene, pulls
+  `rr::geometry::Sphere` PODs out of the `SceneSphere` wrappers
+  (filtering invisible entries), uploads via the three
+  `GpuScene::upload_*` methods, calls
+  `CudaRenderer::render_scene`, and saves
+  `output/gpu_scene_spheres.ppm` (or `--output`).
+- `rr::gpu::GpuScene` deliberately does **not** depend on
+  `rr_scene` — its API takes raw `Camera` / `Observer` /
+  `RelativityParams` / `Sphere*` arguments. main.cpp does the
+  `Scene` → `Sphere*` extraction. This keeps the dependency
+  direction one-way: `rr_scene` and `rr_gpu` are siblings; the
+  executable composes them.
+
+CMake additions:
+
+- `rr_gpu` picks up `src/gpu/GpuScene.cpp` and PUBLIC-links
+  `rr_camera` / `rr_relativity` / `rr_geometry` because
+  `gpu/GpuScene.h` exposes those types by value.
+- `RelativityRender` PRIVATE-links `rr_scene` (Stage 6B brings
+  the executable consumer online; Stage 6A had `rr_scene` built
+  but unconsumed).
+
+Hard-rule audit (per the prompt):
+
+- CPU uploads data only - **yes**. The host work in
+  `run_render_scene` is: build a `Scene`, copy `Sphere` PODs out
+  of the wrappers, call the three `GpuScene::upload_*` methods,
+  invoke `CudaRenderer::render_scene`, save the PPM. No per-pixel
+  / per-ray work touches the host.
+- GPU does all ray / intersection / shading - **yes**. The new
+  `k_render_scene` is the only new code that runs `pixels[idx +
+  …] = …`. The closest-hit loop is inside the kernel, one
+  thread per pixel.
+- No mesh yet - **yes**. `CudaSceneView` has only spheres; the
+  `SceneMesh` placeholder list on `Scene` is unread.
+- No parser yet - **yes**. `--render-scene` builds the demo scene
+  in C++; `--render <scene>` is still the placeholder action.
+- No server, no C4D - **yes**.
+- Must compile - **yes**. Host-only build clean under
+  `-Wall -Wextra -Wpedantic`, no warnings; `librr_gpu.a` and
+  `librr_scene.a` link; ctest 3/3.
+
+Verified (host-only build):
+
+- `cmake --build build -j` clean; `ctest` 3/3.
+- `--help` lists `--render-scene` with the correct default output
+  path.
+- `--render-scene` on a host without CUDA prints the actionable
+  rebuild hint and exits 1.
+
+CUDA-enabled runtime verification (kernel launch, four-sphere
+closest-hit, PPM written to `output/gpu_scene_spheres.ppm`)
+requires a host with the CUDA Toolkit and a CUDA-capable GPU and
+was **not** runnable in the development environment for this
+commit. The kernel logic + GpuScene upload paths are
+byte-equivalent to the prototype's tested implementations
+(prior reuse audit classified them KEEP_AS_IS / KEEP_WITH_REFACTOR;
+this commit ships only the minimum surface the prompt asks for).
+
 ## Next stage
 
-**Stage 6B — GPU scene upload (Module 11, GPU half).** Scope: bring
-the host-side `Scene` to the device. The kernel reads from a
-`CudaSceneView` POD that points into uploaded `GpuBuffer<Sphere>`
-storage, and the renderer's relativistic pipeline becomes a
-closest-hit loop over the uploaded sphere array.
+**Stage 7 — Mesh system.** Master module 12. Scope: bring back the
+`Triangle` POD, `Mesh` host class, `intersect_triangle` (Möller-
+Trumbore — was deferred from Stage 8), `GpuMesh` upload manager,
+`CudaMeshView` device POD, and a single mesh slot on `Scene` /
+`GpuScene` / `CudaSceneView`. Extend `k_render_scene` with a
+triangle closest-hit loop that competes with the sphere loop on
+`t_max`.
 
 Deliverables (planned, NOT yet implemented):
 
-- `src/gpu/GpuScene.{h,cpp}` (move-only RAII upload manager;
-                                owns `GpuBuffer<Sphere>` plus
-                                by-value PODs for camera / observer
-                                / params).
-- `src/cuda/CudaScene.cuh`   (device-side view POD: raw device
-                                pointers + counts + per-frame PODs).
-- `k_render_scene` kernel + launcher in
-  `CudaTestKernel.cu` / `CudaKernels.cuh`. Same eight-step
-  relativistic pipeline as Stage 10, but the closest-hit step
-  loops over the uploaded sphere array.
-- `CudaRenderer::render_scene(const GpuScene&, int, int)`.
-- `--render-scene` CLI action that builds a hard-coded
-  multi-sphere scene in `main.cpp`, uploads it via `GpuScene`,
-  renders, and writes `output/gpu_scene.ppm`. The actual scene
-  file format / loader is master module 15 - not part of Stage 6B.
+- `src/geometry/Triangle.h`, `src/geometry/Mesh.{h,cpp}`.
+- Restore `intersect_triangle` in
+  `src/cuda/CudaIntersection.cuh`.
+- `src/cuda/CudaMesh.cuh`, `src/gpu/GpuMesh.{h,cpp}`.
+- Extend `Scene` / `GpuScene` / `CudaSceneView` with a single mesh
+  slot; promote `SceneMesh` from placeholder to real (carries
+  `rr::geometry::Mesh` data).
+- Extend `k_render_scene` with the triangle loop.
+- `tests/mesh_tests.cpp`.
+- A `--render-mesh` CLI action or a flag that loads a built-in
+  cube / tetrahedron into the demo scene. **Still no scene file
+  format.**
 
 ## Constraints carried forward
 
