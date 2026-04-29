@@ -11,6 +11,7 @@
 #include "core/Logger.h"
 #include "core/Version.h"
 #include "gpu/GpuDevice.h"
+#include "io/SceneLoader.h"
 
 #ifdef RR_HAS_CUDA
     #include "camera/Camera.h"
@@ -105,6 +106,44 @@ bool save_image_or_error(const rr::image::Image& img,
     return true;
 }
 #endif  // RR_HAS_CUDA
+
+// `--scene-info` dispatch. Loads `cfg.scene_path` via the Stage
+// 10B.2 scene parser, prints the version + render settings, and
+// exits. No render, no GPU - this works whether or not CUDA is
+// compiled in. Returns 0 on parse success, non-zero otherwise.
+int run_scene_info(const rr::core::Config& cfg) {
+    using rr::core::Logger;
+
+    if (cfg.scene_path.empty()) {
+        Logger::error("--scene-info requires a file path");
+        return 2;
+    }
+
+    const auto result = rr::io::load(cfg.scene_path);
+    if (!result.ok) {
+        std::string msg = "scene load failed: " + result.error_message;
+        if (result.error_line > 0) {
+            msg += " (line " + std::to_string(result.error_line)
+                +  ", column " + std::to_string(result.error_column) + ")";
+        }
+        Logger::error(msg);
+        return 1;
+    }
+
+    const auto& rs = result.scene.render_settings;
+    Logger::info("scene file: " + cfg.scene_path);
+    Logger::info("  version           : " + result.version);
+    Logger::info("  width             : " + std::to_string(rs.width));
+    Logger::info("  height            : " + std::to_string(rs.height));
+    Logger::info("  samples_per_pixel : "
+               + std::to_string(rs.samples_per_pixel));
+    Logger::info("  max_depth         : " + std::to_string(rs.max_depth));
+    Logger::info("  output_path       : "
+               + (rs.output_path.empty()
+                    ? std::string("(none)")
+                    : rs.output_path));
+    return 0;
+}
 
 // `--render-gradient` dispatch. Width/height come from Config; output
 // path defaults to "output/gpu_gradient.ppm" when --output is unset.
@@ -855,6 +894,9 @@ int main(int argc, char** argv) {
             Logger::info("render command received");
             return 0;
 
+        case CommandLine::Action::SceneInfo:
+            return run_scene_info(result.config);
+
         case CommandLine::Action::RenderGradient:
             return run_render_gradient(result.config);
 
@@ -890,11 +932,12 @@ int main(int argc, char** argv) {
         case CommandLine::Action::Default:
             Logger::info(std::string(rr::core::kProjectName) + " "
                        + rr::core::kVersionString + " starting up.");
-            Logger::info("Stage 9B: direct lighting on GPU. "
-                         "Try --device-info, --render-gradient, "
-                         "--render-rays, --render-sphere, "
-                         "--render-relativistic, --render-scene, "
-                         "--render-triangle, --render-mesh-scene, "
+            Logger::info("Stage 10B.2: parse render settings. "
+                         "Try --scene-info <file>, --device-info, "
+                         "--render-gradient, --render-rays, "
+                         "--render-sphere, --render-relativistic, "
+                         "--render-scene, --render-triangle, "
+                         "--render-mesh-scene, "
                          "--render-material-scene, "
                          "or --render-direct-lighting.");
             return 0;

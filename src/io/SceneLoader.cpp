@@ -1,9 +1,543 @@
 #include "io/SceneLoader.h"
 
+#include <cctype>
+#include <cstdint>
+#include <cstdio>
+#include <cstdlib>
 #include <filesystem>
+#include <fstream>
+#include <memory>
+#include <sstream>
+#include <string>
 #include <system_error>
+#include <unordered_map>
+#include <vector>
 
 namespace rr::io {
+
+// =====================================================================
+// Stage 10B.2 - JSON value tree, tokeniser, parser, schema mapper.
+// =====================================================================
+//
+// Hand-rolled per the JSON-strategy decision recorded in Stage 10B.1
+// (see docs/BUILD_PLAN.md). The pipeline is:
+//
+//   text -> tokeniser -> recursive-descent parser -> JsonValue tree
+//        -> schema mapper -> rr::scene::Scene fields
+//
+// Stage 10B.2 schema scope is intentionally narrow: only the
+// top-level `version` field and the `render_settings` block are
+// mapped. Other top-level keys (`camera`, `relativity`, ...) are
+// parsed for syntactic validity, then ignored. Follow-up sub-stages
+// add the remaining mappers without touching the parser layer.
+
+namespace {
+
+// --- JSON value tree -------------------------------------------------
+
+enum class JsonKind {
+    Null,
+    Bool,
+    Number,
+    String,
+    Array,
+    Object,
+};
+
+struct JsonValue {
+    JsonKind                                                  kind = JsonKind::Null;
+    bool                                                      b    = false;
+    double                                                    n    = 0.0;
+    std::string                                               s;
+    std::vector<JsonValue>                                    arr;
+    // Object: insertion-ordered key/value pairs. We keep a vector
+    // (not a map) so the order is stable for diagnostics and so
+    // duplicate keys are observable - the schema mapper picks the
+    // *last* occurrence (standard JSON convention).
+    std::vector<std::pair<std::string, JsonValue>>            obj;
+
+    [[nodiscard]] const JsonValue* find(const std::string& key) const {
+        const JsonValue* hit = nullptr;
+        for (const auto& kv : obj) {
+            if (kv.first == key) hit = &kv.second;
+        }
+        return hit;
+    }
+
+    // Look up `key` and fall back to `alias` (used to accept the
+    // user's shorthand `samples` for `samples_per_pixel`,
+    // `output` for `output_path`, `render` for `render_settings`).
+    [[nodiscard]] const JsonValue* find_or(const std::string& key,
+                                           const std::string& alias) const {
+        if (const auto* v = find(key))   return v;
+        if (const auto* v = find(alias)) return v;
+        return nullptr;
+    }
+};
+
+// --- Parse error type -----------------------------------------------
+
+struct ParseError {
+    std::string message;
+    int         line   = 1;  // 1-based
+    int         column = 1;  // 1-based
+};
+
+// --- Tokeniser + recursive-descent parser ---------------------------
+//
+// Position-tracking single-pass parser. No separate token stream -
+// `Parser::peek_*` / `Parser::consume_*` work directly off the
+// source text. RFC-8259 JSON, with one v1 deviation: we follow the
+// `RRSCENE_FORMAT.md` §15 stance that comments are not allowed.
+
+class Parser {
+public:
+    explicit Parser(const std::string& text) : text_(text) {}
+
+    // Top-level entry: parse a single JSON value followed by
+    // optional whitespace + EOF.
+    bool parse_document(JsonValue& out, ParseError& err) {
+        skip_ws();
+        if (!parse_value(out, err)) return false;
+        skip_ws();
+        if (!at_end()) {
+            err = make_error("trailing content after top-level JSON value");
+            return false;
+        }
+        return true;
+    }
+
+private:
+    const std::string& text_;
+    std::size_t        pos_  = 0;
+    int                line_ = 1;
+    int                col_  = 1;
+
+    [[nodiscard]] bool at_end() const { return pos_ >= text_.size(); }
+
+    [[nodiscard]] char peek() const {
+        return at_end() ? '\0' : text_[pos_];
+    }
+
+    void advance() {
+        if (at_end()) return;
+        const char c = text_[pos_++];
+        if (c == '\n') { ++line_; col_ = 1; }
+        else           { ++col_; }
+    }
+
+    [[nodiscard]] ParseError make_error(std::string msg) const {
+        return ParseError{std::move(msg), line_, col_};
+    }
+
+    void skip_ws() {
+        while (!at_end()) {
+            const char c = text_[pos_];
+            if (c == ' ' || c == '\t' || c == '\r' || c == '\n') {
+                advance();
+            } else {
+                break;
+            }
+        }
+    }
+
+    bool match_literal(const char* lit) {
+        const std::size_t n = std::char_traits<char>::length(lit);
+        if (pos_ + n > text_.size()) return false;
+        for (std::size_t i = 0; i < n; ++i) {
+            if (text_[pos_ + i] != lit[i]) return false;
+        }
+        for (std::size_t i = 0; i < n; ++i) advance();
+        return true;
+    }
+
+    bool parse_value(JsonValue& out, ParseError& err) {
+        skip_ws();
+        if (at_end()) {
+            err = make_error("unexpected end of input, expected JSON value");
+            return false;
+        }
+
+        const char c = peek();
+        switch (c) {
+            case '{': return parse_object(out, err);
+            case '[': return parse_array(out, err);
+            case '"': return parse_string_value(out, err);
+            case 't':
+            case 'f': return parse_bool(out, err);
+            case 'n': return parse_null(out, err);
+            default:
+                if (c == '-' || (c >= '0' && c <= '9')) {
+                    return parse_number(out, err);
+                }
+                err = make_error(std::string("unexpected character '")
+                               + c + "', expected JSON value");
+                return false;
+        }
+    }
+
+    bool parse_object(JsonValue& out, ParseError& err) {
+        out = JsonValue{};
+        out.kind = JsonKind::Object;
+        advance();          // consume '{'
+        skip_ws();
+        if (peek() == '}') { advance(); return true; }
+
+        for (;;) {
+            skip_ws();
+            if (peek() != '"') {
+                err = make_error("expected string key in object");
+                return false;
+            }
+            std::string key;
+            if (!parse_string_literal(key, err)) return false;
+
+            skip_ws();
+            if (peek() != ':') {
+                err = make_error("expected ':' after object key");
+                return false;
+            }
+            advance();      // consume ':'
+
+            JsonValue value;
+            if (!parse_value(value, err)) return false;
+            out.obj.emplace_back(std::move(key), std::move(value));
+
+            skip_ws();
+            const char nxt = peek();
+            if (nxt == ',') { advance(); continue; }
+            if (nxt == '}') { advance(); return true; }
+
+            err = make_error("expected ',' or '}' in object");
+            return false;
+        }
+    }
+
+    bool parse_array(JsonValue& out, ParseError& err) {
+        out = JsonValue{};
+        out.kind = JsonKind::Array;
+        advance();          // consume '['
+        skip_ws();
+        if (peek() == ']') { advance(); return true; }
+
+        for (;;) {
+            JsonValue value;
+            if (!parse_value(value, err)) return false;
+            out.arr.push_back(std::move(value));
+
+            skip_ws();
+            const char nxt = peek();
+            if (nxt == ',') { advance(); continue; }
+            if (nxt == ']') { advance(); return true; }
+
+            err = make_error("expected ',' or ']' in array");
+            return false;
+        }
+    }
+
+    bool parse_string_value(JsonValue& out, ParseError& err) {
+        out = JsonValue{};
+        out.kind = JsonKind::String;
+        return parse_string_literal(out.s, err);
+    }
+
+    // Reads a JSON string literal (opening quote already not yet
+    // consumed) into `dst`, handling the standard JSON escapes:
+    // \" \\ \/ \b \f \n \r \t \uXXXX. Surrogate pairs are decoded
+    // to UTF-8.
+    bool parse_string_literal(std::string& dst, ParseError& err) {
+        dst.clear();
+        if (peek() != '"') {
+            err = make_error("expected '\"' to start string");
+            return false;
+        }
+        advance();          // consume opening '"'
+
+        for (;;) {
+            if (at_end()) {
+                err = make_error("unterminated string");
+                return false;
+            }
+            const char c = peek();
+            if (c == '"') { advance(); return true; }
+            if (c == '\\') {
+                advance();
+                if (at_end()) {
+                    err = make_error("unterminated escape sequence");
+                    return false;
+                }
+                const char esc = peek();
+                advance();
+                switch (esc) {
+                    case '"':  dst.push_back('"');  break;
+                    case '\\': dst.push_back('\\'); break;
+                    case '/':  dst.push_back('/');  break;
+                    case 'b':  dst.push_back('\b'); break;
+                    case 'f':  dst.push_back('\f'); break;
+                    case 'n':  dst.push_back('\n'); break;
+                    case 'r':  dst.push_back('\r'); break;
+                    case 't':  dst.push_back('\t'); break;
+                    case 'u': {
+                        std::uint32_t cp = 0;
+                        if (!parse_hex4(cp, err)) return false;
+                        // Surrogate-pair handling.
+                        if (cp >= 0xD800 && cp <= 0xDBFF) {
+                            if (peek() != '\\') {
+                                err = make_error("expected low surrogate "
+                                                 "after high surrogate");
+                                return false;
+                            }
+                            advance();
+                            if (peek() != 'u') {
+                                err = make_error("expected '\\u' for low "
+                                                 "surrogate");
+                                return false;
+                            }
+                            advance();
+                            std::uint32_t low = 0;
+                            if (!parse_hex4(low, err)) return false;
+                            if (low < 0xDC00 || low > 0xDFFF) {
+                                err = make_error("invalid low surrogate");
+                                return false;
+                            }
+                            cp = 0x10000 + ((cp - 0xD800) << 10)
+                                         + (low - 0xDC00);
+                        }
+                        encode_utf8(cp, dst);
+                        break;
+                    }
+                    default:
+                        err = make_error(std::string("invalid escape '\\")
+                                       + esc + "'");
+                        return false;
+                }
+            } else {
+                // Reject raw control characters per RFC 8259.
+                if (static_cast<unsigned char>(c) < 0x20) {
+                    err = make_error("unescaped control character in string");
+                    return false;
+                }
+                dst.push_back(c);
+                advance();
+            }
+        }
+    }
+
+    bool parse_hex4(std::uint32_t& out, ParseError& err) {
+        out = 0;
+        for (int i = 0; i < 4; ++i) {
+            if (at_end()) {
+                err = make_error("truncated \\u escape");
+                return false;
+            }
+            const char c = peek();
+            std::uint32_t digit = 0;
+            if      (c >= '0' && c <= '9') digit = c - '0';
+            else if (c >= 'a' && c <= 'f') digit = 10 + (c - 'a');
+            else if (c >= 'A' && c <= 'F') digit = 10 + (c - 'A');
+            else {
+                err = make_error("invalid hex digit in \\u escape");
+                return false;
+            }
+            out = (out << 4) | digit;
+            advance();
+        }
+        return true;
+    }
+
+    static void encode_utf8(std::uint32_t cp, std::string& dst) {
+        if (cp <= 0x7F) {
+            dst.push_back(static_cast<char>(cp));
+        } else if (cp <= 0x7FF) {
+            dst.push_back(static_cast<char>(0xC0 | (cp >> 6)));
+            dst.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+        } else if (cp <= 0xFFFF) {
+            dst.push_back(static_cast<char>(0xE0 | (cp >> 12)));
+            dst.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
+            dst.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+        } else {
+            dst.push_back(static_cast<char>(0xF0 | (cp >> 18)));
+            dst.push_back(static_cast<char>(0x80 | ((cp >> 12) & 0x3F)));
+            dst.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
+            dst.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+        }
+    }
+
+    bool parse_bool(JsonValue& out, ParseError& err) {
+        out = JsonValue{};
+        out.kind = JsonKind::Bool;
+        if (match_literal("true"))  { out.b = true;  return true; }
+        if (match_literal("false")) { out.b = false; return true; }
+        err = make_error("expected 'true' or 'false'");
+        return false;
+    }
+
+    bool parse_null(JsonValue& out, ParseError& err) {
+        out = JsonValue{};
+        out.kind = JsonKind::Null;
+        if (match_literal("null")) return true;
+        err = make_error("expected 'null'");
+        return false;
+    }
+
+    // RFC-8259 number grammar:
+    //   '-'? ( '0' | [1-9][0-9]* ) ( '.' [0-9]+ )? ( [eE] [+-]? [0-9]+ )?
+    bool parse_number(JsonValue& out, ParseError& err) {
+        out = JsonValue{};
+        out.kind = JsonKind::Number;
+        const std::size_t start = pos_;
+
+        if (peek() == '-') advance();
+
+        if (peek() == '0') {
+            advance();
+        } else if (peek() >= '1' && peek() <= '9') {
+            while (peek() >= '0' && peek() <= '9') advance();
+        } else {
+            err = make_error("invalid number: missing integer part");
+            return false;
+        }
+
+        if (peek() == '.') {
+            advance();
+            if (!(peek() >= '0' && peek() <= '9')) {
+                err = make_error("invalid number: missing fraction digits");
+                return false;
+            }
+            while (peek() >= '0' && peek() <= '9') advance();
+        }
+
+        if (peek() == 'e' || peek() == 'E') {
+            advance();
+            if (peek() == '+' || peek() == '-') advance();
+            if (!(peek() >= '0' && peek() <= '9')) {
+                err = make_error("invalid number: missing exponent digits");
+                return false;
+            }
+            while (peek() >= '0' && peek() <= '9') advance();
+        }
+
+        const std::string lit = text_.substr(start, pos_ - start);
+        char*       end_ptr  = nullptr;
+        const double v       = std::strtod(lit.c_str(), &end_ptr);
+        if (end_ptr != lit.c_str() + lit.size()) {
+            err = make_error("invalid number literal: " + lit);
+            return false;
+        }
+        out.n = v;
+        return true;
+    }
+};
+
+// --- Schema mapper helpers ------------------------------------------
+
+// Convert a JSON Number to int with range / integer-ness checks.
+// Returns false (and populates `err`) if the value is not an integer
+// in [INT_MIN, INT_MAX].
+bool to_int(const JsonValue& v, int& out, std::string& err,
+            const char* field) {
+    if (v.kind != JsonKind::Number) {
+        err = std::string("field '") + field + "' must be an integer";
+        return false;
+    }
+    const double n = v.n;
+    if (n < -2147483648.0 || n > 2147483647.0) {
+        err = std::string("field '") + field + "' out of int range";
+        return false;
+    }
+    const auto rounded = static_cast<int>(n);
+    if (static_cast<double>(rounded) != n) {
+        err = std::string("field '") + field
+            + "' must be an integer (got fractional value)";
+        return false;
+    }
+    out = rounded;
+    return true;
+}
+
+bool to_string(const JsonValue& v, std::string& out, std::string& err,
+               const char* field) {
+    if (v.kind != JsonKind::String) {
+        err = std::string("field '") + field + "' must be a string";
+        return false;
+    }
+    out = v.s;
+    return true;
+}
+
+// Apply an entry from the `render_settings` block onto `rs`.
+// Accepts the canonical spec names (`width`, `height`,
+// `samples_per_pixel`, `max_depth`) and the user-shorthand aliases
+// (`samples`, `output`, `output_path`). Returns false on validation
+// failure and populates `err`.
+bool apply_render_settings(const JsonValue& obj,
+                           rr::scene::RenderSettings& rs,
+                           std::string& err) {
+    if (obj.kind != JsonKind::Object) {
+        err = "'render_settings' must be a JSON object";
+        return false;
+    }
+
+    if (const auto* v = obj.find("width")) {
+        if (!to_int(*v, rs.width, err, "render_settings.width")) return false;
+        if (rs.width <= 0) {
+            err = "render_settings.width must be > 0";
+            return false;
+        }
+    }
+    if (const auto* v = obj.find("height")) {
+        if (!to_int(*v, rs.height, err, "render_settings.height")) return false;
+        if (rs.height <= 0) {
+            err = "render_settings.height must be > 0";
+            return false;
+        }
+    }
+    if (const auto* v = obj.find_or("samples_per_pixel", "samples")) {
+        if (!to_int(*v, rs.samples_per_pixel, err,
+                    "render_settings.samples_per_pixel")) return false;
+        if (rs.samples_per_pixel < 1) {
+            err = "render_settings.samples_per_pixel must be >= 1";
+            return false;
+        }
+    }
+    if (const auto* v = obj.find("max_depth")) {
+        if (!to_int(*v, rs.max_depth, err,
+                    "render_settings.max_depth")) return false;
+        if (rs.max_depth < 1) {
+            err = "render_settings.max_depth must be >= 1";
+            return false;
+        }
+    }
+    if (const auto* v = obj.find_or("output_path", "output")) {
+        if (!to_string(*v, rs.output_path, err,
+                       "render_settings.output_path")) return false;
+    }
+    return true;
+}
+
+// Slurp `path` into a string; returns false on read failure.
+bool read_text_file(const std::string& path, std::string& out,
+                    std::string& err) {
+    std::ifstream in(path, std::ios::binary);
+    if (!in) {
+        err = "could not open scene file: " + path;
+        return false;
+    }
+    std::ostringstream ss;
+    ss << in.rdbuf();
+    if (in.bad()) {
+        err = "I/O error reading scene file: " + path;
+        return false;
+    }
+    out = ss.str();
+    return true;
+}
+
+}  // namespace
+
+// =====================================================================
+// Public API
+// =====================================================================
 
 bool sceneFileExists(const std::string& path) {
     std::error_code ec;
@@ -17,6 +551,102 @@ bool sceneFileExists(const std::string& path) {
     if (!std::filesystem::exists(p, ec) || ec) return false;
     if (!std::filesystem::is_regular_file(p, ec) || ec) return false;
     return true;
+}
+
+LoadResult parse(const std::string& text) {
+    LoadResult result;
+
+    JsonValue  root;
+    ParseError pe;
+    Parser     parser(text);
+    if (!parser.parse_document(root, pe)) {
+        result.error_message = "JSON parse error: " + pe.message;
+        result.error_line    = pe.line;
+        result.error_column  = pe.column;
+        return result;
+    }
+
+    if (root.kind != JsonKind::Object) {
+        result.error_message =
+            "top-level value must be a JSON object (got " +
+            std::string(root.kind == JsonKind::Array  ? "array"  :
+                        root.kind == JsonKind::String ? "string" :
+                        root.kind == JsonKind::Number ? "number" :
+                        root.kind == JsonKind::Bool   ? "bool"   :
+                                                        "null")
+            + ")";
+        return result;
+    }
+
+    // version (required)
+    const JsonValue* version_v = root.find("version");
+    if (version_v == nullptr) {
+        result.error_message = "missing required top-level 'version' field";
+        return result;
+    }
+    if (version_v->kind != JsonKind::String) {
+        result.error_message = "'version' must be a string";
+        return result;
+    }
+    result.version = version_v->s;
+
+    // Major-version gate. v1 parser accepts only "1.x.y". We compare
+    // by the leading numeric run before the first '.' rather than
+    // doing full SemVer parsing - the scene format is closed and
+    // tracks one major version at a time.
+    {
+        const std::string& vs = result.version;
+        std::string major_str;
+        std::size_t i = 0;
+        while (i < vs.size() && vs[i] >= '0' && vs[i] <= '9') {
+            major_str.push_back(vs[i]);
+            ++i;
+        }
+        if (major_str.empty() || major_str != "1") {
+            result.error_message =
+                "unsupported scene version '" + vs +
+                "' (this build accepts major version 1)";
+            return result;
+        }
+    }
+
+    // render_settings (optional). Accept `render` as an alias for
+    // the user-shorthand authoring style.
+    if (const JsonValue* rs_v = root.find_or("render_settings", "render")) {
+        std::string apply_err;
+        if (!apply_render_settings(*rs_v, result.scene.render_settings,
+                                   apply_err)) {
+            result.error_message = apply_err;
+            return result;
+        }
+    }
+
+    // Stage 10B.2 schema scope ends here. Other top-level keys
+    // (`camera`, `relativity`, `materials`, `spheres`, `meshes`,
+    // `lights`) are intentionally ignored - they were syntax-
+    // checked by the JSON parser pass and will be mapped onto
+    // `scene` in follow-up sub-stages.
+
+    result.ok = true;
+    return result;
+}
+
+LoadResult load(const std::string& path) {
+    LoadResult result;
+
+    if (!sceneFileExists(path)) {
+        result.error_message = "scene file does not exist: " + path;
+        return result;
+    }
+
+    std::string text;
+    std::string read_err;
+    if (!read_text_file(path, text, read_err)) {
+        result.error_message = read_err;
+        return result;
+    }
+
+    return parse(text);
 }
 
 }  // namespace rr::io

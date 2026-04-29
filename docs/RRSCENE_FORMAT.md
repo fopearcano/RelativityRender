@@ -109,20 +109,45 @@ Maps to `rr::scene::RenderSettings`.
   "width":             1280,
   "height":            720,
   "samples_per_pixel": 1,
-  "max_depth":         1
+  "max_depth":         1,
+  "output_path":       ""
 }
 ```
 
-| Key                | Type | Required? | Default | Validation                    |
-|--------------------|------|:---------:|--------:|-------------------------------|
-| `width`            | int  | no        |    1280 | `> 0`                         |
-| `height`           | int  | no        |     720 | `> 0`                         |
-| `samples_per_pixel`| int  | no        |       1 | `>= 1` (path tracer reads it) |
-| `max_depth`        | int  | no        |       1 | `>= 1` (path tracer reads it) |
+| Key                | Type   | Required? | Default | Validation                    |
+|--------------------|--------|:---------:|--------:|-------------------------------|
+| `width`            | int    | no        |    1280 | `> 0`                         |
+| `height`           | int    | no        |     720 | `> 0`                         |
+| `samples_per_pixel`| int    | no        |       1 | `>= 1` (path tracer reads it) |
+| `max_depth`        | int    | no        |       1 | `>= 1` (path tracer reads it) |
+| `output_path`      | string | no        |    `""` | UTF-8; empty == no default    |
 
 `samples_per_pixel` and `max_depth` are stored faithfully but are
 not consumed by the Stage 9B kernel; the path tracer (master
 module 16) reads them.
+
+`output_path` is informational metadata authored into the file: an
+optional default destination for the rendered image. The CLI's
+`--output` flag (or each render command's hard-coded default)
+takes precedence; tools that want to honour the authored path
+should consult `RenderSettings::output_path` and apply it when no
+explicit `--output` is passed.
+
+### 4.1 Authoring shorthands (Stage 10B.2)
+
+The parser accepts these shorthand keys for convenience and
+treats them as exact synonyms for the canonical names above:
+
+| Canonical name      | Accepted shorthand | Notes                               |
+|---------------------|--------------------|-------------------------------------|
+| `render_settings`   | `render`           | Top-level section name              |
+| `samples_per_pixel` | `samples`          | Inside the section object           |
+| `output_path`       | `output`           | Inside the section object           |
+
+Files SHOULD use the canonical names; tools that emit `.rrscene`
+files (the writer in `SceneWriter.cpp`) MUST emit the canonical
+forms only. Shorthands exist to make hand-authored files less
+verbose; they are not part of the wire format guarantees.
 
 ## 5. `camera`
 

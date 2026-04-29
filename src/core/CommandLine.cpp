@@ -46,8 +46,8 @@ bool set_action(CommandLine::Action& current, CommandLine::Action target,
                 std::string& error) {
     if (current != CommandLine::Action::Default) {
         error = "cannot combine action flags (--help / --version / "
-                "--device-info / --render / --render-gradient / "
-                "--render-rays / --render-sphere / "
+                "--device-info / --render / --scene-info / "
+                "--render-gradient / --render-rays / --render-sphere / "
                 "--render-relativistic / --render-scene / "
                 "--render-triangle / --render-mesh-scene / "
                 "--render-material-scene / --render-direct-lighting)";
@@ -83,6 +83,16 @@ CommandLine::ParseResult CommandLine::parse(int argc, char** argv) {
             }
         } else if (a == "--render") {
             if (!set_action(r.action, Action::Render, r.error_message)) {
+                r.action = Action::Error;
+                return r;
+            }
+            if (!take_value(argc, argv, i, a, value, r.error_message)) {
+                r.action = Action::Error;
+                return r;
+            }
+            r.config.scene_path.assign(value);
+        } else if (a == "--scene-info") {
+            if (!set_action(r.action, Action::SceneInfo, r.error_message)) {
                 r.action = Action::Error;
                 return r;
             }
@@ -185,6 +195,7 @@ CommandLine::ParseResult CommandLine::parse(int argc, char** argv) {
     // not fail on, e.g., a defaulted dimension being misconfigured.
     if (r.action == Action::Default
      || r.action == Action::Render
+     || r.action == Action::SceneInfo
      || r.action == Action::RenderGradient
      || r.action == Action::RenderRays
      || r.action == Action::RenderSphere
@@ -213,6 +224,9 @@ std::string CommandLine::usage(std::string_view argv0) {
        << "  --device-info         Print GPU device info.\n"
        << "  --render <scene>      Run the renderer on the given "
                                   "scene file (placeholder).\n"
+       << "  --scene-info <file>   Load a .rrscene file, print the "
+                                  "parsed render settings, and exit.\n"
+       << "                        No render. Works without CUDA.\n"
        << "  --render-gradient     Run the GPU UV-gradient diagnostic "
                                   "and save it (requires CUDA).\n"
        << "  --render-rays         Run the GPU camera-ray "

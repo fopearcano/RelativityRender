@@ -16,6 +16,12 @@ namespace rr::core {
 //   --render <scene>        Run the renderer on the given scene file
 //                           (placeholder; scene loading lands in a
 //                           later stage).
+//   --scene-info <file>     Load a `.rrscene` file, print the parsed
+//                           render settings (version + width/height
+//                           + samples_per_pixel + max_depth +
+//                           output_path), and exit. No render. Pure
+//                           host code; works without CUDA. Stage
+//                           10B.2 surface.
 //   --render-gradient       Run the GPU UV-gradient diagnostic and
 //                           save it to <output>. Requires CUDA.
 //   --render-rays           Run the GPU camera-ray-direction
@@ -76,7 +82,7 @@ namespace rr::core {
 //   --height <int>          Render height in pixels (default 720).
 //
 // Action flags (--help / --version / --device-info / --render /
-// --render-gradient / --render-rays / --render-sphere /
+// --scene-info / --render-gradient / --render-rays / --render-sphere /
 // --render-relativistic / --render-scene / --render-triangle /
 // --render-mesh-scene / --render-material-scene /
 // --render-direct-lighting) are mutually exclusive; combining them
@@ -91,6 +97,7 @@ public:
         Version,
         DeviceInfo,
         Render,
+        SceneInfo,
         RenderGradient,
         RenderRays,
         RenderSphere,

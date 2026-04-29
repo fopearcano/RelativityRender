@@ -1676,29 +1676,145 @@ against the v1.0 spec, then wires `--render <scene>` in
 `main.cpp` to call `SceneLoader::load(...)` followed by the
 existing `GpuScene::upload_*` chain.
 
+## Stage 10B.2 — parse render settings
+
+**Scope of this slice (Stage 10B.2): hand-rolled JSON parser +
+top-level `version` + `render_settings` schema mapper, wired into
+a new `--scene-info <file>` CLI action.** Camera, relativity,
+materials, spheres, meshes, and lights are intentionally out of
+scope; the parser accepts them as arbitrary JSON for syntactic
+validation and then drops them.
+
+### What ships
+
+- `src/scene/RenderSettings.h` — added `std::string output_path`
+  field. Empty by default; populated by the parser when the file
+  authors `output_path` (or its alias `output`).
+- `src/io/SceneLoader.h` — added `LoadResult` (carries `ok`,
+  `scene`, `version`, `error_message`, `error_line`,
+  `error_column`) and the two entry points
+  `LoadResult load(const std::string& path)` /
+  `LoadResult parse(const std::string& text)`. The
+  `sceneFileExists` helper from Stage 10B.1 stays put.
+- `src/io/SceneLoader.cpp` — full hand-rolled implementation:
+  - `JsonValue` tagged-variant tree (`Null` / `Bool` / `Number`
+    / `String` / `Array` / `Object`) with insertion-ordered
+    object key/value pairs and a `find` / `find_or` lookup pair
+    that supports the alias shorthands.
+  - `Parser` — single-pass recursive-descent tokeniser+parser
+    over a `std::string`. Tracks 1-based line/column for
+    diagnostics. Implements the full RFC-8259 grammar:
+    objects, arrays, strings (with `\uXXXX` and surrogate-pair
+    decoding to UTF-8), numbers (int / fraction / exponent),
+    `true` / `false` / `null`. Rejects unescaped control
+    characters and trailing content.
+  - `apply_render_settings` schema mapper: reads `width`,
+    `height`, `samples_per_pixel` (alias: `samples`),
+    `max_depth`, `output_path` (alias: `output`) onto an
+    `rr::scene::RenderSettings` and validates ranges (`width >
+    0`, `height > 0`, `samples_per_pixel >= 1`, `max_depth >=
+    1`).
+  - `parse(text)`: parses the document, requires a top-level
+    JSON object, requires the `version` field, gates on major
+    version `1.x.y`, then applies `render_settings` (or its
+    alias `render`) if present. Other top-level keys are
+    syntax-checked and dropped.
+  - `load(path)`: existence check + `std::ifstream` slurp +
+    delegate to `parse(text)`.
+- `src/core/CommandLine.{h,cpp}` — added the `SceneInfo` action
+  and the `--scene-info <file>` flag. Mutually exclusive with
+  every other action flag, same as the existing actions.
+  Updated `--help` text and the action-conflict error message.
+- `src/main.cpp` — added `run_scene_info(cfg)`: calls
+  `rr::io::load(cfg.scene_path)`, prints the parsed version +
+  every `RenderSettings` field (with `(none)` for an empty
+  `output_path`), and returns `0` on success or `1` on parse
+  failure (with line/column attached when the parser populates
+  them). Wired into the `main()` switch. Bumped the default-
+  action hint message to mention `--scene-info`.
+- `CMakeLists.txt` — `RelativityRender` now PRIVATE-links
+  `rr_io` (added at the end of the existing list). The status
+  line bumps to "Stage 10B.2: parse render settings".
+- `scenes/test_render_settings.rrscene` — small fixture
+  exercising every `render_settings` field (640×360, samples=4,
+  max_depth=2, `output_path = "output/test_render_settings.ppm"`)
+  with the canonical key names.
+- `docs/RRSCENE_FORMAT.md` — §4 addendum: `output_path` listed in
+  the field table; new §4.1 documenting the three accepted
+  authoring shorthands (`render`, `samples`, `output`) as exact
+  synonyms for the canonical names. Tools that emit `.rrscene`
+  files MUST emit canonical names only; shorthands are an
+  authoring convenience.
+
+### Naming-tension resolution
+
+The Stage 10B.2 prompt listed `render.width` / `render.height` /
+`render.samples` / `render.output`; the Stage 10A spec uses
+`render_settings.{width, height, samples_per_pixel, max_depth}`
+and had no `output_path` field. Resolution:
+
+- The parser accepts both the canonical spec names and the
+  prompt's shorthand. `find_or` looks up the canonical key
+  first, then the alias.
+- `output_path` is added to `RenderSettings` as a new optional
+  field rather than re-purposing the existing `Config.output_path`
+  (which is the CLI knob). Two paths exist for two
+  responsibilities: scene-authored default (`RenderSettings`) and
+  per-invocation override (`Config`).
+- The format spec gets the §4 addendum + §4.1 shorthand table so
+  the contract reflects what the parser actually accepts.
+
+### Hard-rule audit
+
+- Do not parse camera yet — **yes**, no camera mapper exists; a
+  `camera` block is parsed for syntactic validity and dropped.
+- Do not render yet — **yes**, `--scene-info` only loads + prints;
+  no GPU scene is built, no kernel is launched.
+- No GPU changes — **yes**, no file under `src/gpu/` or
+  `src/cuda/` is touched. `rr_gpu`'s sources, headers, and
+  link list are byte-identical to Stage 10B.1.
+- Must compile — **yes**, host-only build is clean under
+  `-Wall -Wextra -Wpedantic`, no warnings, no new third-party
+  dependencies. `ctest` reports 3/3.
+
+### Verified at the CLI
+
+- `--scene-info scenes/test_render_settings.rrscene` prints
+  version `1.0.0` + the five fields exactly as authored.
+- Shorthand fixture (`render` / `samples` / `output`) loads
+  identically to canonical names.
+- Missing file → exit 1, "scene file does not exist".
+- `version: "2.0.0"` → exit 1, "unsupported scene version
+  '2.0.0' (this build accepts major version 1)".
+- `width: 0` → exit 1, "render_settings.width must be > 0".
+- Truncated JSON → exit 1, "JSON parse error: ... (line N,
+  column M)".
+- Files containing non-render-settings keys (e.g. `camera`) are
+  parsed without error and the section is silently dropped, as
+  intended for this slice.
+
 ## Next stage
 
-**Stage 10B.2 — `.rrscene` parser implementation.** Scope:
+**Stage 10B.3 — camera + relativity mappers.** Scope:
 
-- Add the `LoadResult` struct + `SceneLoader::load(path)` /
-  `SceneLoader::parse(text)` to `SceneLoader.h`.
-- Implement the JSON tokeniser + recursive-descent value-tree
-  parser in `SceneLoader.cpp` (private helpers in an anonymous
-  namespace).
-- Implement the schema mapper that projects the value tree onto
-  `rr::scene::Scene`, enforcing every cross-section validation
-  rule from `RRSCENE_FORMAT.md` §12.
-- Add the `WriteResult` struct + `SceneWriter::save(path,
-  scene)` / `serialize(scene)` for the round-trip path.
-- Wire `--render <path>` in `main.cpp` to: call
-  `SceneLoader::load`, build a `GpuScene` from the loaded scene,
-  call `CudaRenderer::render_scene`, save to `--output`.
-- Add `tests/io_tests.cpp` exercising round-trip + each
-  validation rule.
-- Ship two fixture scenes under `scenes/`:
-  `test_minimal.rrscene` (one sphere, default camera) and
-  `test_lit.rrscene` (a richer scene matching the Stage 9B
-  `--render-direct-lighting` demo).
+- Add `apply_camera` schema reader: maps the §5 `camera` block
+  onto `rr::camera::Camera` via `look_at` + `set_vertical_fov_degrees`
+  + `set_clip_range` + `set_aspect(width / height)` from the
+  already-populated `RenderSettings`.
+- Add `apply_relativity` schema reader: maps the §6
+  `relativity` block onto `rr::relativity::Observer` +
+  `rr::relativity::RelativityParams`, enforcing the
+  `length(observer_velocity) < max_beta < 1` cross-section rule
+  from §12.
+- Extend the test fixture (`scenes/test_render_settings.rrscene`
+  → split into `test_minimal.rrscene` + `test_render_settings.rrscene`,
+  or add a second fixture) so `--scene-info` can also print the
+  parsed camera + observer state.
+- Still no GPU upload; still no `--render <file>` wiring.
+
+Materials / spheres / meshes / lights mappers come in 10B.4 and
+10B.5; the `--render <file>` wiring + writer (`SceneWriter::save`)
+join in the final 10B sub-stage.
 
 ## Constraints carried forward
 
