@@ -5,6 +5,7 @@
 // `<cuda_runtime.h>`, so it is only safe to include from `.cu` files.
 
 #include "camera/CameraRay.h"  // GpuCamera + RR_HD generate_camera_ray
+#include "geometry/Sphere.h"   // Sphere POD passed by value to launchers
 
 #include <cuda_runtime.h>
 
@@ -33,5 +34,16 @@ void launch_gradient_rgba32f(float* device_pixels, int width, int height,
 void launch_camera_rays_visualize(float* device_pixels, int width, int height,
                                   rr::camera::GpuCamera cam,
                                   cudaStream_t stream = 0);
+
+// Host-callable launcher for the sphere-intersection kernel. Defined
+// in CudaTestKernel.cu. For each pixel: generate the primary ray on
+// the device, intersect against `sphere`, and write either a
+// normal-as-color shade (`0.5*n + 0.5`) on hit or a simple vertical
+// sky gradient on miss. The CPU never touches per-pixel state - it
+// only uploads the camera + sphere PODs as launch arguments.
+void launch_sphere_visualize(float* device_pixels, int width, int height,
+                             rr::camera::GpuCamera   cam,
+                             rr::geometry::Sphere    sphere,
+                             cudaStream_t            stream = 0);
 
 }

@@ -9,12 +9,14 @@
 // callers gate use of this class on the `RR_HAS_CUDA` macro that the
 // `rr_gpu` library propagates publicly when CUDA is enabled.
 //
-// Stage 7 surface: two GPU diagnostics - a UV-gradient render and a
-// camera-ray-direction visualisation. Real renderers (scene render,
-// path trace, AOV pack, relativistic perception) come back in later
-// stages on top of this scaffold.
+// Stage 8 surface: three GPU diagnostics - a UV-gradient render, a
+// camera-ray-direction visualisation, and a single-sphere intersection
+// diagnostic. Real renderers (scene render, path trace, AOV pack,
+// relativistic perception) come back in later stages on top of this
+// scaffold.
 
-namespace rr::camera { class Camera; }
+namespace rr::camera   { class Camera; }
+namespace rr::geometry { struct Sphere; }
 
 namespace rr::cuda {
 
@@ -40,6 +42,16 @@ public:
     // POD, launches, and downloads.
     [[nodiscard]] static Result render_camera_rays(const rr::camera::Camera& camera,
                                                    int width, int height);
+
+    // Render a single-sphere intersection diagnostic: per pixel the
+    // GPU generates the primary ray, intersects against `sphere`,
+    // shades hits with `0.5*n + 0.5` and misses with a simple sky
+    // gradient. All ray-gen + intersection + shading happens on the
+    // device; the host only uploads the camera + sphere PODs as
+    // launch arguments, launches, and downloads.
+    [[nodiscard]] static Result render_sphere(const rr::camera::Camera&   camera,
+                                              const rr::geometry::Sphere& sphere,
+                                              int width, int height);
 };
 
 }

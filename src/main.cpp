@@ -1,12 +1,12 @@
 // RelativityRender entry point.
 //
-// Stage 7 scope: parse command-line flags and dispatch a
+// Stage 8 scope: parse command-line flags and dispatch a
 // stage-appropriate response. `--device-info` enumerates CUDA devices
-// (Module 6 of the master order); `--render-gradient` launches the
-// GPU UV-gradient diagnostic kernel (Module 7) and saves a PPM;
-// `--render-rays` launches the GPU camera-ray-direction visualisation
-// (Module 8) and saves a PPM. No scene system, no path tracer, no
-// relativity, no server, no C4D.
+// (Module 6 of the master order); `--render-gradient` runs the GPU
+// UV-gradient diagnostic; `--render-rays` runs the GPU camera-ray
+// visualisation; `--render-sphere` runs the GPU single-sphere
+// intersection diagnostic (Module 9). No scene system, no path
+// tracer, no materials, no lights, no relativity, no server, no C4D.
 
 #include "core/CommandLine.h"
 #include "core/Config.h"
@@ -17,6 +17,8 @@
 #ifdef RR_HAS_CUDA
     #include "camera/Camera.h"
     #include "cuda/CudaRenderer.h"
+    #include "geometry/Sphere.h"
+    #include "math/Vec3.h"
 #endif
 
 #include "image/Image.h"
@@ -152,6 +154,47 @@ int run_render_camera_rays(const rr::core::Config& cfg) {
 #endif
 }
 
+// `--render-sphere` dispatch. Sets up a default camera + a single
+// sphere centred 3 units in front of the camera with radius 1, runs
+// the GPU intersection kernel, and writes the PPM. The CPU only
+// constructs the camera + sphere PODs as launch arguments; every
+// per-pixel ray-gen + intersection + shading step runs on the GPU.
+int run_render_sphere(const rr::core::Config& cfg) {
+    const std::string out_path = cfg.output_path.empty()
+        ? std::string("output/gpu_sphere.ppm")
+        : cfg.output_path;
+
+#ifndef RR_HAS_CUDA
+    (void)cfg;
+    rr::core::Logger::error("--render-sphere requires CUDA. Rebuild with "
+                            "-DRR_ENABLE_CUDA=ON on a host with the CUDA "
+                            "Toolkit and a CUDA-capable GPU.");
+    return 1;
+#else
+    rr::camera::Camera cam;
+    cam.set_aspect(static_cast<float>(cfg.width)
+                 / static_cast<float>(cfg.height));
+
+    // Centre the sphere along the camera's default forward direction
+    // (-Z), 3 units away, radius 1. Aggregate-init form keeps this
+    // legible at a glance.
+    const rr::geometry::Sphere sphere{
+        rr::math::Vec3{0.0f, 0.0f, -3.0f},
+        1.0f,
+        /*material_index=*/-1
+    };
+
+    auto r = rr::cuda::CudaRenderer::render_sphere(cam, sphere,
+                                                   cfg.width, cfg.height);
+    if (!r.ok) {
+        rr::core::Logger::error("sphere render failed: " + r.message);
+        return 1;
+    }
+    return save_image_or_error(r.image, out_path, "GPU sphere",
+                               cfg.width, cfg.height) ? 0 : 1;
+#endif
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -183,6 +226,9 @@ int main(int argc, char** argv) {
         case CommandLine::Action::RenderRays:
             return run_render_camera_rays(result.config);
 
+        case CommandLine::Action::RenderSphere:
+            return run_render_sphere(result.config);
+
         case CommandLine::Action::Error:
             Logger::error(result.error_message);
             std::cerr << CommandLine::usage(argv[0]);
@@ -191,9 +237,9 @@ int main(int argc, char** argv) {
         case CommandLine::Action::Default:
             Logger::info(std::string(rr::core::kProjectName) + " "
                        + rr::core::kVersionString + " starting up.");
-            Logger::info("Stage 7: camera system. "
+            Logger::info("Stage 8: primitive GPU rendering. "
                          "Try --device-info, --render-gradient, "
-                         "or --render-rays.");
+                         "--render-rays, or --render-sphere.");
             return 0;
     }
     return 0;

@@ -47,7 +47,7 @@ bool set_action(CommandLine::Action& current, CommandLine::Action target,
     if (current != CommandLine::Action::Default) {
         error = "cannot combine action flags (--help / --version / "
                 "--device-info / --render / --render-gradient / "
-                "--render-rays)";
+                "--render-rays / --render-sphere)";
         return false;
     }
     current = target;
@@ -100,6 +100,12 @@ CommandLine::ParseResult CommandLine::parse(int argc, char** argv) {
                 r.action = Action::Error;
                 return r;
             }
+        } else if (a == "--render-sphere") {
+            if (!set_action(r.action, Action::RenderSphere,
+                            r.error_message)) {
+                r.action = Action::Error;
+                return r;
+            }
         } else if (a == "--output") {
             if (!take_value(argc, argv, i, a, value, r.error_message)) {
                 r.action = Action::Error;
@@ -141,7 +147,8 @@ CommandLine::ParseResult CommandLine::parse(int argc, char** argv) {
     if (r.action == Action::Default
      || r.action == Action::Render
      || r.action == Action::RenderGradient
-     || r.action == Action::RenderRays) {
+     || r.action == Action::RenderRays
+     || r.action == Action::RenderSphere) {
         if (auto err = r.config.validate(); !err.empty()) {
             r.action        = Action::Error;
             r.error_message = std::move(err);
@@ -166,11 +173,16 @@ std::string CommandLine::usage(std::string_view argv0) {
        << "  --render-rays         Run the GPU camera-ray "
                                   "visualisation and save it "
                                   "(requires CUDA).\n"
+       << "  --render-sphere       Run the GPU single-sphere "
+                                  "intersection diagnostic "
+                                  "(requires CUDA).\n"
        << "  --output <path>       Write the rendered image to <path>.\n"
        << "                        Default for --render-gradient is "
                                   "output/gpu_gradient.ppm;\n"
        << "                        default for --render-rays     is "
-                                  "output/gpu_camera_rays.ppm.\n"
+                                  "output/gpu_camera_rays.ppm;\n"
+       << "                        default for --render-sphere   is "
+                                  "output/gpu_sphere.ppm.\n"
        << "  --width  <int>        Render width in pixels "
                                   "(default 1280).\n"
        << "  --height <int>        Render height in pixels "

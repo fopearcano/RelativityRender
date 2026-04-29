@@ -6,19 +6,19 @@ records what landed, in which stage, and the next concrete step.
 
 ## Current state
 
-**Stages 1–7 — Core app + math + image + GPU device + GPU buffer layer
-+ CUDA kernel infrastructure + camera system.** Skeleton C++20
-executable; header-only RR_HD math library; host-side floating-point
-image + framebuffer system; backend-agnostic GPU device + memory
-layers; two GPU kernels on the device (UV gradient + camera-ray
-direction visualisation) wired through `CudaRenderer::render_gradient`
-and `render_camera_rays`; pinhole `Camera` host class with a
-device-friendly `GpuCamera` POD and the RR_HD `generate_camera_ray`
-helper that runs identically on host (tests) and device (kernels).
-`--device-info`, `--render-gradient`, and `--render-rays` actions are
-all live. 150 host-side test assertions across three ctest binaries
-pass. No scene system, no geometry intersection, no relativity, no
-server, no integrations.
+**Stages 1–8 — Core app + math + image + GPU device + GPU buffer layer
++ CUDA kernel infrastructure + camera system + primitive GPU
+intersection.** Skeleton C++20 executable; header-only RR_HD math
+library; host-side floating-point image + framebuffer system;
+backend-agnostic GPU device + memory layers; pinhole `Camera` + RR_HD
+`generate_camera_ray`; first real GPU ray-primitive intersection — a
+single-sphere kernel that ray-gens, intersects, and shades on the
+device, with a sky-gradient miss path. Three GPU kernels live now:
+UV gradient, camera-ray visualisation, single-sphere visualisation.
+`--device-info`, `--render-gradient`, `--render-rays`, and
+`--render-sphere` actions are all live. 150 host-side test assertions
+across three ctest binaries pass. No scene system, no materials, no
+lights, no path tracer, no relativity, no server, no integrations.
 
 ### Files in scope
 
@@ -61,6 +61,9 @@ server, no integrations.
 | `src/camera/Camera.h`      | Host-side perspective `Camera` class: position, look-at, vfov, aspect, clip range, basis vectors. Exposes `to_gpu()` snapshotting into `GpuCamera`. |
 | `src/camera/Camera.cpp`    | Implementation; `look_at` re-orthogonalises the basis with a fallback when `up_hint` is parallel to `forward_`. |
 | `src/camera/CameraRay.h`   | Device-friendly `GpuCamera` POD (position / forward / up / right / `tan_half_vfov` / aspect) plus the `RR_HD generate_camera_ray(cam, x, y, w, h)` helper. Same code path runs on host (tests) and device (kernels). |
+| `src/geometry/Sphere.h`    | RR_HD POD `Sphere {center, radius, material_index}`. Trivial aggregate; passed by value to kernels. `material_index` defaults to -1 and is inert at this stage (the material system has not landed yet). |
+| `src/renderer/Hit.h`       | RR_HD POD `Hit {hit, t, position, normal, material_index, uv, bary_u, bary_v}`. The kernel only reads `hit` / `normal` at this stage; the remaining fields are populated by intersection routines for later stages (textures, materials, mesh barycentrics) and have safe defaults. |
+| `src/cuda/CudaIntersection.cuh` | RR_HD `intersect_sphere(ray, sphere, t_min, t_max) -> Hit`. Same code runs on host (tests) and device (kernel). Trimmed from the prototype's superset to sphere-only at this stage; triangle intersection joins the file in the mesh stage. |
 
 Build:
 
@@ -84,6 +87,7 @@ build/bin/RelativityRender --device-info
 build/bin/RelativityRender --render scene.rrscene --output out.png --width 1920 --height 1080  # placeholder
 build-cuda/bin/RelativityRender --render-gradient   # -> output/gpu_gradient.ppm
 build-cuda/bin/RelativityRender --render-rays       # -> output/gpu_camera_rays.ppm
+build-cuda/bin/RelativityRender --render-sphere     # -> output/gpu_sphere.ppm
 ```
 
 ### CLI behavior (Stage 1)
@@ -501,25 +505,108 @@ added in a follow-up if explicit unit coverage of `Camera::look_at`,
 the basis re-orthogonalisation, and `generate_camera_ray` is wanted
 on the host before geometry stages start consuming the camera.
 
+### Stage 8 — Primitive GPU rendering
+
+Status: implemented.
+
+- Recovered two files from `prototype_v0` byte-identical (audited
+  clean): `src/geometry/Sphere.h` and `src/renderer/Hit.h`.
+- Wrote a trimmed `src/cuda/CudaIntersection.cuh` containing only
+  `RR_HD intersect_sphere`. The prototype's version also defined
+  `intersect_triangle`; that joins the file in the mesh stage to
+  avoid overbuilding here.
+- `intersect_sphere` populates `Hit.normal` (outward unit normal),
+  `Hit.position`, `Hit.t`, and `Hit.uv` (spherical mapping). The
+  kernel only reads `hit` / `normal` at this stage; the other fields
+  are populated upfront so the intersection routine is reusable when
+  texture / material stages start consuming them.
+- New `__global__ void k_sphere_visualize(float*, int, int,
+  GpuCamera, Sphere)` in `CudaTestKernel.cu`. One thread per pixel:
+    1. Generate the primary ray on the device via
+       `generate_camera_ray`.
+    2. Intersect against `sphere` via `intersect_sphere`.
+    3. On hit: shade with `0.5 * normal + 0.5` (normal-as-color
+       diagnostic - reveals geometry without committing to a
+       material system).
+    4. On miss: lerp from white at the horizon to a soft blue
+       overhead (`(1-t)*white + t*sky_blue` with `t = 0.5*(dy+1)`)
+       so the image does not collapse outside the sphere.
+    5. Write Rgba32F.
+- `launch_sphere_visualize` declared in `CudaKernels.cuh`, defined
+  in `CudaTestKernel.cu`. The launcher takes `GpuCamera` and
+  `Sphere` PODs by value as launch arguments.
+- `CudaRenderer::render_sphere(const Camera&, const Sphere&, int,
+  int)` added; reuses the same `run_kernel_render` template scaffold
+  as the gradient and camera-ray entries. Validates `radius > 0`
+  before launch.
+- New CLI action `--render-sphere` (mutually exclusive with the
+  other action flags). `main.cpp::run_render_sphere` constructs:
+    - `Camera` (default ctor: at origin, looking down -Z, +Y up,
+      45 deg vfov, aspect set from width/height).
+    - `Sphere{Vec3{0, 0, -3}, 1.0f, -1}` (centered along the
+      camera's default forward, 3 units away, radius 1, no
+      material).
+    Output path defaults to `output/gpu_sphere.ppm`. Creates the
+    parent directory if missing; reports the absolute path.
+- CMake additions:
+    - New `rr_geometry` INTERFACE library (header-only at this
+      stage; promotes to STATIC when `Mesh.cpp` lands). Publishes
+      `src/` as include path; PUBLIC-links `rr_math`.
+    - `rr_gpu` PUBLIC-links `rr_geometry` when CUDA is on
+      (CudaRenderer::render_sphere takes Sphere by const ref;
+      CudaTestKernel.cu reads its fields).
+    - `RelativityRender` always PRIVATE-links `rr_geometry` so
+      `run_render_sphere` can construct one in host-only builds.
+
+Hard-rule audit (per the prompt):
+
+- All ray generation on GPU - **yes**. Only the
+  `__global__ k_sphere_visualize` kernel calls
+  `generate_camera_ray`; the host never executes it.
+- No CPU per-ray / per-pixel rendering - **yes**. Host work is
+  limited to `Camera` + `Sphere` construction, `Camera::to_gpu()`,
+  kernel launch, `cudaDeviceSynchronize`, and `GpuBuffer::download`.
+- No scene system, no materials, no lights, no C4D - **yes**. The
+  inert `material_index` field on `Sphere` / `Hit` is just an
+  integer with default `-1`; no material code is referenced.
+
+Verified (host-only build):
+
+- `cmake --build build -j` clean under `-Wall -Wextra -Wpedantic`,
+  no warnings.
+- `ctest --test-dir build` reports `3/3 passed`.
+- `--help` lists `--render-sphere`.
+- `--render-sphere` on a host without CUDA prints the actionable
+  rebuild hint and exits 1.
+
+CUDA-enabled runtime verification (kernel launch + PPM written to
+`output/gpu_sphere.ppm`) requires a host with the CUDA Toolkit and
+a CUDA-capable GPU and was **not** runnable in the development
+environment for this commit. The kept `intersect_sphere` math is
+byte-identical to the prototype's tested implementation.
+
 ## Next stage
 
-**Stage 8 — GPU primitive intersection.** Module 9 in the master
-order. Scope: a `Sphere` POD plus a kernel that intersects each
-camera ray against a single sphere on the GPU and shades hits using
-the surface normal. The CPU never iterates over rays - it only
-uploads the camera + sphere POD as launch arguments.
+**Stage 9 — Relativistic camera model.** Module 10 in the master
+order. Scope: introduce the relativity primitives (`Observer`,
+`RelativityParams`, RR_HD aberration / Doppler / searchlight math)
+and wire them into the existing single-sphere kernel so the GPU
+shows the visible effect of moving the camera at relativistic
+velocity. This is the project's signature feature; everything up to
+this point has been ground-laying.
 
 Deliverables (planned, NOT yet implemented):
 
-- `src/geometry/Sphere.h`           (RR_HD POD + `intersect`)
-- `src/cuda/CudaIntersection.cuh`   (RR_HD inline ray-sphere test)
-- A `k_sphere_visualize` kernel that does ray-gen + intersection +
-  shading entirely on the device.
-- `launch_sphere_visualize` in `CudaKernels.cuh` /
-  `CudaTestKernel.cu`.
-- `CudaRenderer::render_sphere(camera, sphere, w, h)`.
-- A `--render-sphere` CLI action that writes to
-  `output/gpu_sphere.ppm`.
+- `src/relativity/RelativityParams.h` (Observer + RelativityParams
+                                        PODs; |beta| < 1 invariant)
+- `src/relativity/RelativityMath.h`   (RR_HD aberration / Doppler /
+                                        beaming primitives)
+- `src/relativity/RelativityMath.cuh` (thin .cu re-export)
+- A relativistic-sphere kernel + launcher.
+- `CudaRenderer::render_relativistic_sphere(camera, observer,
+                                              params, sphere, w, h)`.
+- A `--render-relativistic` CLI action writing to
+  `output/gpu_relativistic_sphere.ppm`.
 
 ## Constraints carried forward
 

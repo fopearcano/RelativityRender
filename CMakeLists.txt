@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.20)
 
 project(RelativityRender
     VERSION     0.1.0
-    DESCRIPTION "RelativityRender - GPU renderer platform (Stage 7: camera system)"
+    DESCRIPTION "RelativityRender - GPU renderer platform (Stage 8: primitive GPU rendering)"
     LANGUAGES   CXX
 )
 
@@ -23,7 +23,7 @@ option(RR_ENABLE_CUDA "Enable CUDA backend (requires CUDA Toolkit)"   OFF)
 
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
-message(STATUS "RelativityRender ${PROJECT_VERSION} (Stage 7: camera system)")
+message(STATUS "RelativityRender ${PROJECT_VERSION} (Stage 8: primitive GPU rendering)")
 
 message(STATUS "  Build type   : ${CMAKE_BUILD_TYPE}")
 message(STATUS "  C++ standard : ${CMAKE_CXX_STANDARD}")
@@ -94,6 +94,14 @@ target_include_directories(rr_camera PUBLIC src)
 target_link_libraries(rr_camera PUBLIC rr_math)
 rr_apply_warnings(rr_camera)
 
+# rr_geometry: header-only geometry primitives. Sphere is a trivial
+# aggregate POD (centre / radius / material_index) usable on both host
+# and device; kernels take it by value as a launch argument. The mesh
+# stage will promote rr_geometry to STATIC when Mesh.cpp lands.
+add_library(rr_geometry INTERFACE)
+target_include_directories(rr_geometry INTERFACE src)
+target_link_libraries(rr_geometry INTERFACE rr_math)
+
 # rr_gpu: backend-agnostic GPU device + memory + (Stage 6) kernel
 # launch layer.
 #
@@ -142,16 +150,19 @@ if(RR_ENABLE_CUDA)
     # (CudaRenderer::Result carries an Image by value); rr_camera is
     # too because CudaRenderer::render_camera_rays takes a Camera by
     # const ref and CudaTestKernel.cu calls generate_camera_ray.
-    target_link_libraries(rr_gpu PUBLIC  rr_image rr_camera)
+    # rr_geometry joins for the sphere-intersection diagnostic;
+    # CudaRenderer::render_sphere takes a Sphere by const ref and
+    # the kernel reads its fields.
+    target_link_libraries(rr_gpu PUBLIC  rr_image rr_camera rr_geometry)
     target_link_libraries(rr_gpu PRIVATE CUDA::cudart)
     set_target_properties(rr_gpu PROPERTIES POSITION_INDEPENDENT_CODE ON)
 endif()
 
-# Main executable. Stage 7 surface: --device-info / --render-gradient
-# / --render-rays. Always links rr_image and rr_camera so the host
-# build still has access to the image + camera modules even when
-# CUDA is off (rr_gpu's PUBLIC link to those is only active under
-# RR_ENABLE_CUDA).
+# Main executable. Stage 8 surface: --device-info / --render-gradient
+# / --render-rays / --render-sphere. Always links rr_image, rr_camera,
+# and rr_geometry so the host build still has access to those modules
+# even when CUDA is off (rr_gpu's PUBLIC link to them is only active
+# under RR_ENABLE_CUDA).
 add_executable(RelativityRender
     src/main.cpp
     src/core/Logger.cpp
@@ -159,7 +170,8 @@ add_executable(RelativityRender
     src/core/CommandLine.cpp
 )
 target_include_directories(RelativityRender PRIVATE src)
-target_link_libraries(RelativityRender PRIVATE rr_gpu rr_image rr_camera)
+target_link_libraries(RelativityRender PRIVATE
+    rr_gpu rr_image rr_camera rr_geometry)
 rr_apply_warnings(RelativityRender)
 
 # Tests. The project does not yet have a third-party test framework;
