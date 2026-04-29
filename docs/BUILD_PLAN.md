@@ -6,19 +6,23 @@ records what landed, in which stage, and the next concrete step.
 
 ## Current state
 
-**Stages 1–8 — Core app + math + image + GPU device + GPU buffer layer
+**Stages 1–9 — Core app + math + image + GPU device + GPU buffer layer
 + CUDA kernel infrastructure + camera system + primitive GPU
-intersection.** Skeleton C++20 executable; header-only RR_HD math
-library; host-side floating-point image + framebuffer system;
-backend-agnostic GPU device + memory layers; pinhole `Camera` + RR_HD
-`generate_camera_ray`; first real GPU ray-primitive intersection — a
-single-sphere kernel that ray-gens, intersects, and shades on the
-device, with a sky-gradient miss path. Three GPU kernels live now:
-UV gradient, camera-ray visualisation, single-sphere visualisation.
-`--device-info`, `--render-gradient`, `--render-rays`, and
-`--render-sphere` actions are all live. 150 host-side test assertions
-across three ctest binaries pass. No scene system, no materials, no
-lights, no path tracer, no relativity, no server, no integrations.
+intersection + relativistic camera math.** Skeleton C++20 executable;
+header-only RR_HD math library; host-side floating-point image +
+framebuffer system; backend-agnostic GPU device + memory layers;
+pinhole `Camera` + RR_HD `generate_camera_ray`; single-sphere
+intersection kernel; **and the relativity-math leaf
+(`Observer`, `RelativityParams`, `clampBeta` / `gamma` /
+`lorentzContraction` / `dopplerFactor` / `searchlightFactor` /
+`aberrateDirection` / `applyDopplerColor`) is now in the tree as a
+header-only RR_HD library — but not yet wired into any kernel.**
+Three GPU kernels live: UV gradient, camera-ray visualisation,
+single-sphere visualisation. `--device-info`, `--render-gradient`,
+`--render-rays`, and `--render-sphere` actions are all live. 150
+host-side test assertions across three ctest binaries pass. No scene
+system, no materials, no lights, no path tracer, no server, no
+integrations.
 
 ### Files in scope
 
@@ -64,6 +68,9 @@ lights, no path tracer, no relativity, no server, no integrations.
 | `src/geometry/Sphere.h`    | RR_HD POD `Sphere {center, radius, material_index}`. Trivial aggregate; passed by value to kernels. `material_index` defaults to -1 and is inert at this stage (the material system has not landed yet). |
 | `src/renderer/Hit.h`       | RR_HD POD `Hit {hit, t, position, normal, material_index, uv, bary_u, bary_v}`. The kernel only reads `hit` / `normal` at this stage; the remaining fields are populated by intersection routines for later stages (textures, materials, mesh barycentrics) and have safe defaults. |
 | `src/cuda/CudaIntersection.cuh` | RR_HD `intersect_sphere(ray, sphere, t_min, t_max) -> Hit`. Same code runs on host (tests) and device (kernel). Trimmed from the prototype's superset to sphere-only at this stage; triangle intersection joins the file in the mesh stage. |
+| `src/relativity/RelativityParams.h` | `Observer { Vec3 velocity = beta }` and `RelativityParams { enable_aberration / enable_doppler / enable_searchlight, doppler_color_strength, searchlight_strength, max_beta }`. The artist-facing toggles live here, separate from the kinematic `Observer`. Velocity is in c-units; `\|beta\| < 1` is the caller's invariant. |
+| `src/relativity/RelativityMath.h`   | RR_HD inline math leaf. Each function carries a `PHYSICAL` or `ARTISTIC APPROXIMATION` tag in its header. See "Stage 9 — function tags" below. |
+| `src/relativity/RelativityMath.cuh` | Thin re-export of `RelativityMath.h` for kernel translation units; future device-specific overrides (`rsqrtf`, `__fdividef`, fast-math intrinsics) land here without touching the host surface. |
 
 Build:
 
@@ -585,28 +592,108 @@ a CUDA-capable GPU and was **not** runnable in the development
 environment for this commit. The kept `intersect_sphere` math is
 byte-identical to the prototype's tested implementation.
 
+### Stage 9 — Relativistic camera math (math leaf only)
+
+Status: implemented (math layer only; no renderer integration).
+
+- Recovered three files byte-identical from `prototype_v0` (audited
+  clean):
+    - `src/relativity/RelativityParams.h`
+    - `src/relativity/RelativityMath.h`
+    - `src/relativity/RelativityMath.cuh`
+- Function naming: deliberately camelCase (`clampBeta`, `gamma`,
+  `lorentzContraction`, `dopplerFactor`, `searchlightFactor`,
+  `aberrateDirection`, `applyDopplerColor`). The codebase
+  convention elsewhere is snake_case (`Logger::info`,
+  `Camera::set_position`, `intersect_sphere`); the relativity layer
+  is an intentional exception that matches the prompt's spec
+  verbatim. Documenting this here so a future audit pass does not
+  silently rename them.
+- Stability around |beta| → 1 is enforced structurally:
+    - `clampBeta(beta_mag, max_beta)` folds negatives to magnitude,
+      clamps `max_beta` to `0.999999f`, then clamps the input to
+      `max_beta`. So `gamma` and `lorentzContraction` always see
+      `|beta| <= 0.999999`, keeping `1 - beta^2` >= ~2e-6.
+    - `gamma` carries a numerical safety net (`if (denom <= 0.0f)
+      return 1/sqrt(1e-12)`) for callers who skip `clampBeta`.
+    - `lorentzContraction` returns 0 on `radicand <= 0` instead of
+      NaN.
+    - `dopplerFactor` / `aberrateDirection` short-circuit when the
+      denominator collapses (epsilon checks at 1e-12 / 1e-24).
+    - `applyDopplerColor` clamps `D` to `>= 1e-6` before `log` and
+      clamps the scaled mix factor into `[-1, +1]`.
+- Stage 9 is **math-only**. The kernels in `CudaTestKernel.cu` are
+  unchanged; `CudaRenderer` is unchanged; `main.cpp` is unchanged;
+  no new CLI action. The next stage wires this leaf into a
+  relativistic kernel.
+- CMake addition: a new header-only `rr_relativity` INTERFACE
+  library that PUBLIC-links `rr_math`. Nothing links it yet; it is
+  ready for the next stage to pick up.
+
+#### Function tags
+
+Tags are copied from the function-level docstrings in
+`RelativityMath.h`:
+
+| Function              | Tag                       | Notes                                            |
+|-----------------------|---------------------------|--------------------------------------------------|
+| `clampBeta`           | PHYSICAL                  | Defensive clamp: `\|beta\| <= max_beta <= 0.999999`. |
+| `gamma`               | PHYSICAL                  | `1 / sqrt(1 - beta^2)`. Caller clamps first.     |
+| `lorentzContraction`  | PHYSICAL                  | `sqrt(1 - beta^2)` = `1/gamma`.                  |
+| `dopplerFactor`       | PHYSICAL                  | `D = 1 / [gamma * (1 - beta . dir)]`.            |
+| `searchlightFactor`   | PHYSICAL                  | Bolometric `D^4` (per-frequency form is `D^3`; the renderer chooses). |
+| `aberrateDirection`   | PHYSICAL                  | Vector form of the textbook angle relation; renormalises output. |
+| `applyDopplerColor`   | ARTISTIC APPROXIMATION    | Placeholder until a spectral pipeline lands. `tanh(0.5 log D) * strength` -> mix toward warm/cool tints. |
+
+Hard-rule audit (per the prompt):
+
+- Beta clamped safely below 1 - **yes** (`clampBeta` caps at
+  `0.999999f`).
+- Functions stable near beta 0.999 - **yes** (epsilons guard
+  every potentially-degenerate divide; `gamma(0.999999) ~ 707`,
+  finite).
+- PHYSICAL vs ARTISTIC documented - **yes**, both in the file
+  header and per-function. Six PHYSICAL, one ARTISTIC.
+- No renderer integration yet - **yes**, only the math leaf and a
+  header-only CMake target ship.
+- All per-ray usage GPU-compatible - **yes**, every function is
+  `RR_HD inline` and uses cross-target intrinsics from `<cmath>`.
+- No scene system, no C4D - **yes**.
+
+Verified (host-only build):
+
+- `cmake --build build -j` clean under `-Wall -Wextra -Wpedantic`,
+  no warnings.
+- `ctest` 3/3.
+- Behaviour of the existing CLI actions is unchanged (Stage 9 ships
+  no behavioural delta).
+
+CUDA-enabled compile path: the relativity headers are RR_HD inline
+and are **not** included by any `.cu` translation unit yet, so the
+CUDA build still compiles only the existing kernels. Wiring the
+relativity math into a kernel is the next stage's job.
+
 ## Next stage
 
-**Stage 9 — Relativistic camera model.** Module 10 in the master
-order. Scope: introduce the relativity primitives (`Observer`,
-`RelativityParams`, RR_HD aberration / Doppler / searchlight math)
-and wire them into the existing single-sphere kernel so the GPU
-shows the visible effect of moving the camera at relativistic
-velocity. This is the project's signature feature; everything up to
-this point has been ground-laying.
+**Stage 10 — Relativistic kernel.** Module 10 in the master order
+(integration half - the math half landed in this stage). Scope:
+extend the existing single-sphere kernel with aberration before
+intersection, Doppler colour after shading, and searchlight beaming
+after that. The CPU only uploads the existing `Camera` + `Sphere`
+plus the new `Observer` + `RelativityParams` PODs as launch
+arguments; every per-ray relativistic step runs on the device.
 
 Deliverables (planned, NOT yet implemented):
 
-- `src/relativity/RelativityParams.h` (Observer + RelativityParams
-                                        PODs; |beta| < 1 invariant)
-- `src/relativity/RelativityMath.h`   (RR_HD aberration / Doppler /
-                                        beaming primitives)
-- `src/relativity/RelativityMath.cuh` (thin .cu re-export)
-- A relativistic-sphere kernel + launcher.
+- A `__global__ k_sphere_relativistic` kernel + launcher.
 - `CudaRenderer::render_relativistic_sphere(camera, observer,
                                               params, sphere, w, h)`.
 - A `--render-relativistic` CLI action writing to
   `output/gpu_relativistic_sphere.ppm`.
+
+The next stage in the master order after that is **Module 11 — GPU
+scene upload** (multi-sphere scenes uploaded into device memory
+once and rendered without per-frame re-uploads).
 
 ## Constraints carried forward
 

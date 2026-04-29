@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.20)
 
 project(RelativityRender
     VERSION     0.1.0
-    DESCRIPTION "RelativityRender - GPU renderer platform (Stage 8: primitive GPU rendering)"
+    DESCRIPTION "RelativityRender - GPU renderer platform (Stage 9: relativistic camera model)"
     LANGUAGES   CXX
 )
 
@@ -23,7 +23,7 @@ option(RR_ENABLE_CUDA "Enable CUDA backend (requires CUDA Toolkit)"   OFF)
 
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
-message(STATUS "RelativityRender ${PROJECT_VERSION} (Stage 8: primitive GPU rendering)")
+message(STATUS "RelativityRender ${PROJECT_VERSION} (Stage 9: relativistic camera model)")
 
 message(STATUS "  Build type   : ${CMAKE_BUILD_TYPE}")
 message(STATUS "  C++ standard : ${CMAKE_CXX_STANDARD}")
@@ -101,6 +101,26 @@ rr_apply_warnings(rr_camera)
 add_library(rr_geometry INTERFACE)
 target_include_directories(rr_geometry INTERFACE src)
 target_link_libraries(rr_geometry INTERFACE rr_math)
+
+# rr_relativity: header-only relativity math leaf.
+#
+#   RelativityParams.h - Observer (3-velocity in c-units) and
+#                         RelativityParams (artist-facing toggles +
+#                         max_beta cap).
+#   RelativityMath.h   - RR_HD inline functions: clampBeta, gamma,
+#                         lorentzContraction, dopplerFactor,
+#                         searchlightFactor, aberrateDirection,
+#                         applyDopplerColor. PHYSICAL vs
+#                         ARTISTIC-APPROXIMATION tagging in each
+#                         function header.
+#   RelativityMath.cuh - Thin re-export for kernel TUs; future
+#                         device-specific overrides land here.
+#
+# Stage 9 is math-only; no renderer or kernel integration ships in
+# this stage.
+add_library(rr_relativity INTERFACE)
+target_include_directories(rr_relativity INTERFACE src)
+target_link_libraries(rr_relativity INTERFACE rr_math)
 
 # rr_gpu: backend-agnostic GPU device + memory + (Stage 6) kernel
 # launch layer.
