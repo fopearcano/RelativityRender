@@ -1,11 +1,7 @@
-# `src/lighting/` — Lighting System
+# `src/lighting/` — Lighting
 
-**Layer:** L4. **Milestone:** M12. **Status:** not started.
+**Status (relativity-core-v1, day-1): scaffold only — no code yet.**
 
-Light types (point, directional, area, environment), emissive-mesh
-linkage, importance sampling, light tree / power-based selection.
-
-Depends on Math, Scene Graph, Texture (for env maps), and Geometry (for
-emissive triangles). Must not depend on the path tracer or UI.
-
-See `docs/MODULE_MAP.md` for the authoritative contract.
+The prototype shipped a `Light` POD with `Area` / `Environment`
+fields flagged PLACEHOLDER. The rewrite reintroduces lights, with
+proper area + environment sampling, alongside the path tracer slice.

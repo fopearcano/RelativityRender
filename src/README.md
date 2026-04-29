@@ -1,29 +1,27 @@
 # `src/` — RelativityRender source modules
 
-Each subdirectory is one module from `docs/MODULE_MAP.md`. Modules are
-implemented one at a time, in the order defined by
-`docs/MILESTONE_ROADMAP.md`. None of these modules contain code yet — only
-placeholder READMEs.
+This is the `relativity-core-v1` rewrite tree. Day-1 scope: **GPU
+foundation only** — CUDA detection plus a single GPU gradient kernel.
+Everything else is scaffold (an empty directory + README) and will be
+repopulated in dedicated slices listed in `docs/REWRITE_STATUS.md`.
 
-| Directory       | Module                          | Layer | Milestone |
-|-----------------|---------------------------------|-------|-----------|
-| `core/`         | Core Engine                     | L0    | M2        |
-| `math/`         | Math Library                    | L1    | M3        |
-| `image/`        | Image / Framebuffer System      | L1    | M4        |
-| `gpu/`          | GPU Device Layer                | L2    | M5        |
-| `cuda/`         | CUDA Backend                    | L3    | M5 / M6   |
-| `optix/`        | OptiX Backend                   | L3    | M15       |
-| `scene/`        | Scene Graph                     | L4    | M10       |
-| `geometry/`     | Geometry System                 | L4    | M10       |
-| `material/`     | Material / Shading System       | L4    | M11       |
-| `texture/`      | Texture System                  | L4    | M16       |
-| `lighting/`     | Lighting System                 | L4    | M12       |
-| `camera/`       | Camera System                   | L4    | M7        |
-| `relativity/`   | Relativistic Camera Model       | L4    | M9        |
-| `pathtracer/`   | Path Tracer                     | L5    | M14       |
-| `renderer/`     | Progressive Renderer / AOVs / Denoiser glue | L5 | M14+ |
-| `io/`           | Image IO + Scene File Format    | L1/L6 | M4 / M13  |
-| `server/`       | Renderer Server                 | L6    | M18       |
+| Directory     | Day-1 status         | Notes |
+|---------------|----------------------|-------|
+| `core/`       | partial              | `Logger`, `Version` only |
+| `math/`       | populated            | Vec2/3/4, Mat4, Transform, MathUtils (RR_HD foundation) |
+| `image/`      | partial              | host `Image` + PPM writer; `Framebuffer` deferred |
+| `gpu/`        | partial              | `GpuBuffer<T>`, `GpuDevice` |
+| `cuda/`       | partial              | `CudaContext`, `CudaBuffer`, `CudaRenderer::render_gradient` |
+| `scene/`      | scaffold (empty)     | comes back with a real renderer |
+| `geometry/`   | scaffold (empty)     | comes back with intersection |
+| `material/`   | scaffold (empty)     | comes back with shading |
+| `lighting/`   | scaffold (empty)     | comes back with sampler support |
+| `camera/`     | scaffold (empty)     | comes back with ray-gen |
+| `relativity/` | scaffold (empty)     | comes back with relativistic kernel |
+| `renderer/`   | scaffold (empty)     | integrator + AOVs land here |
+| `io/`         | scaffold (empty)     | scene loader / writer |
+| `server/`     | scaffold (empty)     | server v2 |
 
-The renderer core (everything in `src/`) MUST NOT depend on UI or Cinema 4D.
-See `docs/MODULE_MAP.md` for the per-module forbidden lists.
+Hard rule (from the prototype audit, carried forward): the renderer
+core MUST NOT depend on UI or Cinema 4D. See `docs/REWRITE_STATUS.md`
+for the rewrite slice order.

@@ -1,13 +1,8 @@
-# `src/scene/` — Scene Graph
+# `src/scene/` — Scene container
 
-**Layer:** L4. **Milestone:** M10. **Status:** not started.
+**Status (relativity-core-v1, day-1): scaffold only — no code yet.**
 
-Scene node hierarchy, transforms (local + world), node references to
-geometry / material / light / camera resources, traversal helpers, scene
-bounds, scene IDs.
-
-Pure host data. Must not depend on GPU backends, the path tracer, UI, or
-Cinema 4D. The Scene File Format under `src/io/` depends on Scene Graph,
-not the other way around.
-
-See `docs/MODULE_MAP.md` for the authoritative contract.
+The prototype's host-side `Scene` + `SceneObject` PODs come back when
+the renderer can consume real geometry. The legacy `Transform.h`
+back-compat shim is **not** ported; the rewrite uses `math::Transform`
+directly from day one.

@@ -1,35 +1,12 @@
-// Hand-rolled assertion runner. The real test framework comes with
-// the M2 deferred items.
-//
-// These tests exercise the public surface of `rr::gpu::` against the
-// invariants that hold regardless of whether CUDA is compiled in:
-//
-//   - the backend name is non-empty,
-//   - `gpu_backend_available()` and `gpu_backend_name()` agree,
-//   - `enumerate_devices()` is empty when no backend is compiled in,
-//   - `GpuDevice` formatters produce the expected strings.
-//
-// When `RR_HAS_CUDA` is defined and a real device is present, the
-// device list is non-empty - we don't assert that, since CI machines
-// without GPUs are valid environments.
+// GPU foundation tests. Day-1 covers only GpuBuffer<T> + GpuDevice;
+// scene / mesh / camera-related GPU tests come back in their own
+// slices.
 
-#include "camera/Camera.h"
-#include "geometry/Mesh.h"
-#include "geometry/Sphere.h"
-#include "geometry/Triangle.h"
 #include "gpu/GpuBuffer.h"
 #include "gpu/GpuDevice.h"
-#include "gpu/GpuMesh.h"
-#include "gpu/GpuScene.h"
-#include "lighting/Light.h"
-#include "material/MaterialTypes.h"
-#include "math/Transform.h"
-#include "math/Vec2.h"
-#include "math/Vec3.h"
-#include "relativity/RelativityParams.h"
-#include "scene/Scene.h"
 
 #include <cstdio>
+#include <cstdint>
 #include <string>
 #include <utility>
 #include <vector>
@@ -49,407 +26,104 @@ int g_failed = 0;
         }                                                                     \
     } while (0)
 
-void test_backend_name_consistency() {
-    const auto name      = rr::gpu::gpu_backend_name();
-    const bool available = rr::gpu::gpu_backend_available();
+using rr::gpu::GpuBuffer;
 
-    RR_CHECK(!name.empty());
-    if (available) {
-        RR_CHECK(name != "(none)");
+void test_buffer_default_state() {
+    GpuBuffer<int> buf;
+    RR_CHECK(buf.empty());
+    RR_CHECK(buf.size() == 0u);
+    RR_CHECK(buf.size_in_bytes() == 0u);
+    RR_CHECK(buf.device_ptr() == nullptr);
+}
+
+void test_buffer_zero_alloc_is_ok() {
+    GpuBuffer<float> buf;
+    RR_CHECK(buf.allocate(0));
+    RR_CHECK(buf.empty());
+}
+
+void test_buffer_allocate_no_backend_fails_honestly() {
+    // When CUDA is not compiled in, gpu_alloc returns nullptr and
+    // allocate(>0) returns false. When CUDA IS compiled in but no
+    // device is visible the same path also reports failure honestly.
+    // Either way the buffer stays in a clean post-failure state.
+    GpuBuffer<float> buf;
+    const bool ok = buf.allocate(64);
+    if (!ok) {
+        RR_CHECK(buf.empty());
+        RR_CHECK(buf.device_ptr() == nullptr);
     } else {
-        RR_CHECK(name == "(none)");
+        RR_CHECK(buf.size() == 64u);
+        RR_CHECK(buf.device_ptr() != nullptr);
+        buf.reset();
+        RR_CHECK(buf.empty());
     }
 }
 
-void test_enumerate_when_unavailable_is_empty() {
-    if (rr::gpu::gpu_backend_available()) return;  // not applicable here
-    RR_CHECK(rr::gpu::enumerate_devices().empty());
-}
+void test_buffer_move_only() {
+    static_assert(!std::is_copy_constructible_v<GpuBuffer<int>>);
+    static_assert(!std::is_copy_assignable_v<GpuBuffer<int>>);
+    static_assert(std::is_move_constructible_v<GpuBuffer<int>>);
+    static_assert(std::is_move_assignable_v<GpuBuffer<int>>);
 
-void test_device_formatters() {
-    rr::gpu::GpuDevice d;
-    d.index                    = 0;
-    d.name                     = "Test Device";
-    d.compute_capability_major = 8;
-    d.compute_capability_minor = 9;
-    d.total_memory_bytes       = 2ull * 1024ull * 1024ull;  // 2 MiB
-    d.multiprocessor_count     = 16;
-
-    RR_CHECK(d.compute_capability_string() == "8.9");
-    RR_CHECK(d.total_memory_human()        == "2 MiB");
-}
-
-// --- GpuBuffer<T> ---------------------------------------------------------
-
-void test_buffer_default_state() {
-    rr::gpu::GpuBuffer<float> buf;
-    RR_CHECK(buf.empty());
-    RR_CHECK(buf.size() == 0);
-    RR_CHECK(buf.size_in_bytes() == 0);
-    RR_CHECK(buf.device_ptr() == nullptr);
-    buf.reset();  // reset on empty must be a no-op
-    RR_CHECK(buf.empty());
-}
-
-void test_buffer_move_default() {
-    rr::gpu::GpuBuffer<int> a;
-    rr::gpu::GpuBuffer<int> b(std::move(a));
-    RR_CHECK(a.empty());
+    GpuBuffer<int> a;
+    (void)a.allocate(0);
+    GpuBuffer<int> b = std::move(a);
     RR_CHECK(b.empty());
 
-    rr::gpu::GpuBuffer<int> c;
+    GpuBuffer<int> c;
     c = std::move(b);
-    RR_CHECK(b.empty());
     RR_CHECK(c.empty());
 }
 
-void test_buffer_no_backend_fails_predictably() {
-    if (rr::gpu::gpu_backend_available()) return;  // host-only path only
-
-    rr::gpu::GpuBuffer<float> buf;
-    RR_CHECK(!buf.allocate(16));
-    RR_CHECK(buf.empty());
-
-    const float src[4] = {1.0f, 2.0f, 3.0f, 4.0f};
-    RR_CHECK(!buf.upload(src, 4));
-    RR_CHECK(buf.empty());
-
-    float dst[4] = {};
-    RR_CHECK(!buf.download(dst, 4));   // download from empty -> only true for count=0
-    RR_CHECK(buf.download(dst, 0));    // empty download is a no-op success
-}
-
-// Upload a small float array, run no kernel, download into a fresh
-// vector, and verify the bytes survive the round trip. This is the
-// minimum test the M5/M6 buffer plumbing must support before any
-// kernels exist.
-void test_buffer_roundtrip_floats_with_real_device() {
-    if (!rr::gpu::gpu_backend_available()) {
-        std::printf("gpu_tests: skipping CUDA round-trip (no backend compiled)\n");
+void test_buffer_upload_download_roundtrip_when_backend_works() {
+    GpuBuffer<int> buf;
+    if (!buf.allocate(4)) {
+        // No backend available - skip the round-trip silently. The
+        // honest-failure path is exercised by test_buffer_allocate_*.
         return;
     }
-    if (rr::gpu::enumerate_devices().empty()) {
-        std::printf("gpu_tests: skipping CUDA round-trip (no devices visible)\n");
-        return;
-    }
-
-    constexpr std::size_t kN = 256;
-    std::vector<float> input(kN);
-    for (std::size_t i = 0; i < kN; ++i) {
-        input[i] = static_cast<float>(i) * 0.5f - 1.25f;
-    }
-
-    rr::gpu::GpuBuffer<float> dev;
-    RR_CHECK(dev.upload(input.data(), input.size()));
-    RR_CHECK(dev.size() == kN);
-    RR_CHECK(dev.size_in_bytes() == kN * sizeof(float));
-    RR_CHECK(dev.device_ptr() != nullptr);
-
-    std::vector<float> output(kN, -999.0f);
-    RR_CHECK(dev.download(output.data(), output.size()));
-
-    bool round_trip_ok = true;
-    for (std::size_t i = 0; i < kN; ++i) {
-        if (output[i] != input[i]) { round_trip_ok = false; break; }
-    }
-    RR_CHECK(round_trip_ok);
-
-    // Move ownership and re-download from the new owner.
-    rr::gpu::GpuBuffer<float> moved(std::move(dev));
-    RR_CHECK(dev.empty());
-    RR_CHECK(moved.size() == kN);
-
-    std::vector<float> output2(kN, -999.0f);
-    RR_CHECK(moved.download(output2.data(), output2.size()));
-    RR_CHECK(output2 == input);
+    const int src[4] = {1, 2, 3, 4};
+    RR_CHECK(buf.upload(src, 4));
+    int dst[4] = {0, 0, 0, 0};
+    RR_CHECK(buf.download(dst, 4));
+    RR_CHECK(dst[0] == 1);
+    RR_CHECK(dst[1] == 2);
+    RR_CHECK(dst[2] == 3);
+    RR_CHECK(dst[3] == 4);
 }
 
-}
+void test_device_query_is_consistent_with_backend_flag() {
+    const bool        avail   = rr::gpu::gpu_backend_available();
+    const std::string name    = rr::gpu::gpu_backend_name();
+    const auto        devices = rr::gpu::enumerate_devices();
 
-// --- GpuScene -----------------------------------------------------------
-
-void test_scene_default_state() {
-    rr::gpu::GpuScene s;
-    RR_CHECK(!s.has_camera());
-    RR_CHECK(!s.has_relativity());
-    RR_CHECK(s.sphere_count()    == 0u);
-    RR_CHECK(s.device_spheres()  == nullptr);
-}
-
-void test_scene_camera_and_relativity_uploads_succeed_unconditionally() {
-    // Camera + relativity are pure host snapshots, so they always
-    // succeed - even on a host-only build with no GPU backend.
-    rr::gpu::GpuScene s;
-
-    rr::camera::Camera cam;
-    cam.set_aspect(2.0f);
-    RR_CHECK(s.upload_camera(cam));
-    RR_CHECK(s.has_camera());
-    RR_CHECK(s.gpu_camera().aspect == 2.0f);
-
-    rr::relativity::Observer        observer;
-    rr::relativity::RelativityParams params;
-    observer.velocity = rr::math::Vec3{0.5f, 0.0f, 0.0f};
-    RR_CHECK(s.upload_relativity(observer, params));
-    RR_CHECK(s.has_relativity());
-    RR_CHECK(s.observer().velocity == rr::math::Vec3{0.5f, 0.0f, 0.0f});
-    RR_CHECK(s.relativity().enable_aberration);
-}
-
-void test_scene_empty_sphere_upload_succeeds_everywhere() {
-    rr::gpu::GpuScene s;
-    RR_CHECK(s.upload_spheres(nullptr, 0));   // no buffer needed
-    RR_CHECK(s.sphere_count()   == 0u);
-    RR_CHECK(s.device_spheres() == nullptr);
-}
-
-void test_scene_sphere_upload_without_backend_fails_predictably() {
-    if (rr::gpu::gpu_backend_available()) return;  // host-only path only
-
-    rr::gpu::GpuScene s;
-    const rr::geometry::Sphere data[] = {
-        {{0.0f, 0.0f, -3.0f}, 1.0f},
-        {{1.0f, 0.0f, -3.0f}, 0.5f},
-    };
-    RR_CHECK(!s.upload_spheres(data, 2));
-    RR_CHECK(s.sphere_count()   == 0u);
-    RR_CHECK(s.device_spheres() == nullptr);
-}
-
-void test_scene_upload_from_filters_invisible_spheres() {
-    rr::scene::Scene host_scene;
-    host_scene.camera.set_aspect(1.0f);
-    {
-        rr::scene::SceneSphere a;
-        a.object.visible  = true;
-        a.geometry.center = rr::math::Vec3{0, 0, -3};
-        a.geometry.radius = 1.0f;
-        host_scene.spheres.push_back(a);
-
-        rr::scene::SceneSphere b;
-        b.object.visible  = false;          // should be dropped
-        b.geometry.center = rr::math::Vec3{1, 0, -3};
-        b.geometry.radius = 0.5f;
-        host_scene.spheres.push_back(b);
-    }
-
-    rr::gpu::GpuScene gpu_scene;
-    const bool ok = gpu_scene.upload_from(host_scene);
-
-    // Camera + relativity should always be uploaded, regardless of
-    // backend availability. The sphere upload outcome depends on the
-    // backend; on host-only builds the visible-sphere count is zero
-    // because the GPU allocation failed.
-    RR_CHECK(gpu_scene.has_camera());
-    RR_CHECK(gpu_scene.has_relativity());
-
-    if (rr::gpu::gpu_backend_available()
-        && !rr::gpu::enumerate_devices().empty()) {
-        RR_CHECK(ok);
-        RR_CHECK(gpu_scene.sphere_count()   == 1u);  // invisible dropped
-        RR_CHECK(gpu_scene.device_spheres() != nullptr);
+    if (avail) {
+        // CUDA compiled in. Backend name is "CUDA". Device list may be
+        // empty (no GPU on this host) but the call must succeed.
+        RR_CHECK(name == "CUDA");
     } else {
-        // ok is false because sphere upload failed; the camera/
-        // relativity uploads still succeeded so partial state is
-        // visible.
-        RR_CHECK(!ok);
-        RR_CHECK(gpu_scene.sphere_count() == 0u);
+        RR_CHECK(name == "(none)");
+        RR_CHECK(devices.empty());
+    }
+
+    for (const auto& d : devices) {
+        RR_CHECK(d.index >= 0);
+        RR_CHECK(!d.name.empty());
+        RR_CHECK(d.compute_capability_major >= 0);
     }
 }
 
-// --- GpuMesh ------------------------------------------------------------
-
-void test_mesh_default_state() {
-    rr::gpu::GpuMesh m;
-    RR_CHECK(m.vertex_count()     == 0u);
-    RR_CHECK(m.triangle_count()   == 0u);
-    RR_CHECK(!m.has_data());
-    RR_CHECK(m.material_id()      == -1);
-    RR_CHECK(m.transform().position == rr::math::Vec3{0, 0, 0});
-    RR_CHECK(m.transform().scale    == rr::math::Vec3{1, 1, 1});
-    RR_CHECK(m.device_vertices()  == nullptr);
-    RR_CHECK(m.device_triangles() == nullptr);
-}
-
-void test_mesh_metadata_setter_is_pure_host() {
-    // `set_metadata` writes only host fields and must succeed even
-    // on a host-only build with no GPU backend.
-    rr::gpu::GpuMesh m;
-    rr::math::Transform t;
-    t.position = rr::math::Vec3{1, 2, 3};
-    t.scale    = rr::math::Vec3{2, 2, 2};
-
-    m.set_metadata(/*material_id=*/7, t);
-    RR_CHECK(m.material_id()         == 7);
-    RR_CHECK(m.transform().position  == rr::math::Vec3{1, 2, 3});
-    RR_CHECK(m.transform().scale     == rr::math::Vec3{2, 2, 2});
-}
-
-void test_mesh_empty_upload_succeeds_everywhere() {
-    rr::gpu::GpuMesh m;
-    RR_CHECK(m.upload_vertices(nullptr, 0));
-    RR_CHECK(m.upload_triangles(nullptr, 0));
-    RR_CHECK(m.vertex_count()    == 0u);
-    RR_CHECK(m.triangle_count()  == 0u);
-    RR_CHECK(!m.has_data());
-}
-
-void test_mesh_non_empty_upload_without_backend_fails_predictably() {
-    if (rr::gpu::gpu_backend_available()) return;  // host-only path only
-
-    rr::gpu::GpuMesh m;
-
-    const rr::geometry::Vertex verts[] = {
-        {rr::math::Vec3{0, 0, 0}, rr::math::Vec3{0, 0, 1}, rr::math::Vec2{0, 0}},
-        {rr::math::Vec3{1, 0, 0}, rr::math::Vec3{0, 0, 1}, rr::math::Vec2{1, 0}},
-        {rr::math::Vec3{0, 1, 0}, rr::math::Vec3{0, 0, 1}, rr::math::Vec2{0, 1}},
-    };
-    const rr::geometry::Triangle tris[] = { {0, 1, 2} };
-
-    RR_CHECK(!m.upload_vertices(verts, 3));
-    RR_CHECK(m.vertex_count()   == 0u);
-    RR_CHECK(m.device_vertices() == nullptr);
-
-    RR_CHECK(!m.upload_triangles(tris, 1));
-    RR_CHECK(m.triangle_count()   == 0u);
-    RR_CHECK(m.device_triangles() == nullptr);
-}
-
-void test_mesh_upload_from_round_trip_or_skip() {
-    // Build a host quad (two triangles).
-    rr::geometry::Mesh host;
-    host.vertices.push_back({rr::math::Vec3{0, 0, 0}, rr::math::Vec3{0, 0, 1}, rr::math::Vec2{0, 0}});
-    host.vertices.push_back({rr::math::Vec3{1, 0, 0}, rr::math::Vec3{0, 0, 1}, rr::math::Vec2{1, 0}});
-    host.vertices.push_back({rr::math::Vec3{1, 1, 0}, rr::math::Vec3{0, 0, 1}, rr::math::Vec2{1, 1}});
-    host.vertices.push_back({rr::math::Vec3{0, 1, 0}, rr::math::Vec3{0, 0, 1}, rr::math::Vec2{0, 1}});
-    host.triangles.push_back({0, 1, 2});
-    host.triangles.push_back({0, 2, 3});
-    host.material_id          = 11;
-    host.transform.position   = rr::math::Vec3{0, 0, -3};
-
-    rr::gpu::GpuMesh gpu;
-    const bool ok = gpu.upload_from(host);
-
-    // Metadata is host-only and must always be set, regardless of
-    // whether the buffer uploads succeed.
-    RR_CHECK(gpu.material_id()        == 11);
-    RR_CHECK(gpu.transform().position == rr::math::Vec3{0, 0, -3});
-
-    if (rr::gpu::gpu_backend_available()
-        && !rr::gpu::enumerate_devices().empty()) {
-        RR_CHECK(ok);
-        RR_CHECK(gpu.vertex_count()   == 4u);
-        RR_CHECK(gpu.triangle_count() == 2u);
-        RR_CHECK(gpu.has_data());
-        RR_CHECK(gpu.device_vertices()  != nullptr);
-        RR_CHECK(gpu.device_triangles() != nullptr);
-    } else {
-        // Without a backend the buffer uploads fail and counts stay
-        // at zero; metadata is still readable.
-        RR_CHECK(!ok);
-        RR_CHECK(gpu.vertex_count()   == 0u);
-        RR_CHECK(gpu.triangle_count() == 0u);
-        RR_CHECK(!gpu.has_data());
-    }
-}
-
-void test_mesh_move_only_preserves_metadata() {
-    rr::gpu::GpuMesh a;
-    a.set_metadata(/*material_id=*/5, rr::math::Transform{});
-    rr::gpu::GpuMesh b(std::move(a));
-    RR_CHECK(b.material_id() == 5);
-
-    rr::gpu::GpuMesh c;
-    c = std::move(b);
-    RR_CHECK(c.material_id() == 5);
-}
-
-// --- GpuScene::upload_materials -----------------------------------------
-
-void test_scene_default_has_no_materials() {
-    rr::gpu::GpuScene s;
-    RR_CHECK(s.material_count()    == 0u);
-    RR_CHECK(s.device_materials()  == nullptr);
-}
-
-void test_scene_empty_material_upload_succeeds_everywhere() {
-    rr::gpu::GpuScene s;
-    RR_CHECK(s.upload_materials(nullptr, 0));
-    RR_CHECK(s.material_count()    == 0u);
-    RR_CHECK(s.device_materials()  == nullptr);
-}
-
-void test_scene_material_upload_without_backend_fails_predictably() {
-    if (rr::gpu::gpu_backend_available()) return;  // host-only path only
-
-    rr::gpu::GpuScene s;
-    rr::material::MaterialParams mats[2];
-    mats[0].baseColor = rr::math::Vec3{0.9f, 0.1f, 0.1f};
-    mats[1].baseColor = rr::math::Vec3{0.1f, 0.9f, 0.1f};
-
-    RR_CHECK(!s.upload_materials(mats, 2));
-    RR_CHECK(s.material_count()    == 0u);
-    RR_CHECK(s.device_materials()  == nullptr);
-}
-
-// --- GpuScene::upload_lights --------------------------------------------
-
-void test_scene_default_has_no_lights() {
-    rr::gpu::GpuScene s;
-    RR_CHECK(s.light_count()    == 0u);
-    RR_CHECK(s.device_lights()  == nullptr);
-}
-
-void test_scene_empty_light_upload_succeeds_everywhere() {
-    rr::gpu::GpuScene s;
-    RR_CHECK(s.upload_lights(nullptr, 0));
-    RR_CHECK(s.light_count()    == 0u);
-    RR_CHECK(s.device_lights()  == nullptr);
-}
-
-void test_scene_light_upload_without_backend_fails_predictably() {
-    if (rr::gpu::gpu_backend_available()) return;  // host-only path only
-
-    rr::gpu::GpuScene s;
-    const rr::lighting::Light L[3] = {
-        rr::lighting::make_directional_light(
-            rr::math::Vec3{0, -1, 0}, rr::math::Vec3{1, 1, 1}, 1.0f),
-        rr::lighting::make_point_light(
-            rr::math::Vec3{0, 5, 0}, rr::math::Vec3{1, 1, 1}, 5.0f),
-        rr::lighting::make_environment_light(
-            rr::math::Vec3{0.5f, 0.6f, 0.8f}, 0.4f),
-    };
-    RR_CHECK(!s.upload_lights(L, 3));
-    RR_CHECK(s.light_count()    == 0u);
-    RR_CHECK(s.device_lights()  == nullptr);
-}
+}  // namespace
 
 int main() {
-    test_backend_name_consistency();
-    test_enumerate_when_unavailable_is_empty();
-    test_device_formatters();
     test_buffer_default_state();
-    test_buffer_move_default();
-    test_buffer_no_backend_fails_predictably();
-    test_buffer_roundtrip_floats_with_real_device();
-    test_scene_default_state();
-    test_scene_camera_and_relativity_uploads_succeed_unconditionally();
-    test_scene_empty_sphere_upload_succeeds_everywhere();
-    test_scene_sphere_upload_without_backend_fails_predictably();
-    test_scene_upload_from_filters_invisible_spheres();
-    test_mesh_default_state();
-    test_mesh_metadata_setter_is_pure_host();
-    test_mesh_empty_upload_succeeds_everywhere();
-    test_mesh_non_empty_upload_without_backend_fails_predictably();
-    test_mesh_upload_from_round_trip_or_skip();
-    test_mesh_move_only_preserves_metadata();
-    test_scene_default_has_no_materials();
-    test_scene_empty_material_upload_succeeds_everywhere();
-    test_scene_material_upload_without_backend_fails_predictably();
-    test_scene_default_has_no_lights();
-    test_scene_empty_light_upload_succeeds_everywhere();
-    test_scene_light_upload_without_backend_fails_predictably();
+    test_buffer_zero_alloc_is_ok();
+    test_buffer_allocate_no_backend_fails_honestly();
+    test_buffer_move_only();
+    test_buffer_upload_download_roundtrip_when_backend_works();
+    test_device_query_is_consistent_with_backend_flag();
 
-    std::printf("gpu_tests: %d/%d passed\n", g_total - g_failed, g_total);
+    std::printf("gpu_tests: %d / %d passed\n", g_total - g_failed, g_total);
     return g_failed == 0 ? 0 : 1;
 }

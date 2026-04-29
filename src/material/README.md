@@ -1,12 +1,9 @@
-# `src/material/` — Material / Shading System
+# `src/material/` — Materials
 
-**Layer:** L4. **Milestone:** M11. **Status:** not started.
+**Status (relativity-core-v1, day-1): scaffold only — no code yet.**
 
-BSDF interface; concrete BSDFs (Lambert, GGX, dielectric, layered);
-parameter binding (constants + textures); shader evaluation callable on
-device; `eval / sample / pdf` triple per BSDF.
-
-The path tracer calls into materials, never the other way around. Must not
-depend on UI, Cinema 4D, or the node editor.
-
-See `docs/MODULE_MAP.md` for the authoritative contract.
+The prototype's two parallel material implementations
+(`material/MaterialGraph.{h,cpp}` and `material/graph/`) are not
+copied across day-1. The new `material/graph/` data core + `GpuMaterial`
+GPU IR survive into the rewrite per `docs/REUSE_PLAN.md` and come back
+in their own slice when there's a renderer that consumes them.

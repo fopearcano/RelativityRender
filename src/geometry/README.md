@@ -1,13 +1,8 @@
-# `src/geometry/` — Geometry System
+# `src/geometry/` — Geometry primitives
 
-**Layer:** L4. **Milestone:** M10. **Status:** not started.
+**Status (relativity-core-v1, day-1): scaffold only — no code yet.**
 
-Triangle meshes, instancing data, attribute layouts (position / normal / uv /
-tangent), GPU-uploadable forms (interleaved or SoA), AS build inputs for
-OptiX. Curves and volumes are placeholders for later milestones.
-
-Depends on Math, Scene Graph, and the GPU Device Layer (for upload
-abstractions only). Must not depend on the path tracer or the renderer
-server.
-
-See `docs/MODULE_MAP.md` for the authoritative contract.
+The prototype's `Sphere`, `Triangle`, and `Mesh` PODs come back in
+their own slice when there's a kernel that performs intersection.
+The day-1 GPU foundation only renders a UV gradient, which has no
+geometry.
