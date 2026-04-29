@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.20)
 
 project(RelativityRender
     VERSION     0.1.0
-    DESCRIPTION "RelativityRender - GPU renderer platform (Stage 9: relativistic camera model)"
+    DESCRIPTION "RelativityRender - GPU renderer platform (Stage 10: relativistic GPU rendering)"
     LANGUAGES   CXX
 )
 
@@ -23,7 +23,7 @@ option(RR_ENABLE_CUDA "Enable CUDA backend (requires CUDA Toolkit)"   OFF)
 
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
-message(STATUS "RelativityRender ${PROJECT_VERSION} (Stage 9: relativistic camera model)")
+message(STATUS "RelativityRender ${PROJECT_VERSION} (Stage 10: relativistic GPU rendering)")
 
 message(STATUS "  Build type   : ${CMAKE_BUILD_TYPE}")
 message(STATUS "  C++ standard : ${CMAKE_CXX_STANDARD}")
@@ -172,17 +172,21 @@ if(RR_ENABLE_CUDA)
     # const ref and CudaTestKernel.cu calls generate_camera_ray.
     # rr_geometry joins for the sphere-intersection diagnostic;
     # CudaRenderer::render_sphere takes a Sphere by const ref and
-    # the kernel reads its fields.
-    target_link_libraries(rr_gpu PUBLIC  rr_image rr_camera rr_geometry)
+    # the kernel reads its fields. rr_relativity joins at Stage 10:
+    # CudaRenderer::render_relativistic_sphere takes Observer +
+    # RelativityParams by const ref, and the kernel calls
+    # aberrateDirection / dopplerFactor / applyDopplerColor /
+    # searchlightFactor on the device.
+    target_link_libraries(rr_gpu PUBLIC  rr_image rr_camera rr_geometry rr_relativity)
     target_link_libraries(rr_gpu PRIVATE CUDA::cudart)
     set_target_properties(rr_gpu PROPERTIES POSITION_INDEPENDENT_CODE ON)
 endif()
 
-# Main executable. Stage 8 surface: --device-info / --render-gradient
-# / --render-rays / --render-sphere. Always links rr_image, rr_camera,
-# and rr_geometry so the host build still has access to those modules
-# even when CUDA is off (rr_gpu's PUBLIC link to them is only active
-# under RR_ENABLE_CUDA).
+# Main executable. Stage 10 surface: --device-info / --render-gradient
+# / --render-rays / --render-sphere / --render-relativistic. Always
+# links rr_image, rr_camera, rr_geometry, and rr_relativity so the
+# host build still has access to those modules even when CUDA is off
+# (rr_gpu's PUBLIC link to them is only active under RR_ENABLE_CUDA).
 add_executable(RelativityRender
     src/main.cpp
     src/core/Logger.cpp
@@ -191,7 +195,7 @@ add_executable(RelativityRender
 )
 target_include_directories(RelativityRender PRIVATE src)
 target_link_libraries(RelativityRender PRIVATE
-    rr_gpu rr_image rr_camera rr_geometry)
+    rr_gpu rr_image rr_camera rr_geometry rr_relativity)
 rr_apply_warnings(RelativityRender)
 
 # Tests. The project does not yet have a third-party test framework;

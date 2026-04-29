@@ -5,6 +5,7 @@
 #include "geometry/Sphere.h"
 #include "gpu/GpuBuffer.h"
 #include "image/Image.h"
+#include "relativity/RelativityParams.h"
 
 #include <cuda_runtime.h>
 
@@ -102,6 +103,30 @@ CudaRenderer::Result CudaRenderer::render_sphere(const rr::camera::Camera&   cam
         [cam, sphere](float* device_pixels, int w, int h) {
             launch_sphere_visualize(device_pixels, w, h, cam, sphere,
                                     /*stream=*/nullptr);
+        });
+}
+
+CudaRenderer::Result CudaRenderer::render_relativistic_sphere(
+        const rr::camera::Camera&             camera,
+        const rr::relativity::Observer&       observer,
+        const rr::relativity::RelativityParams& params,
+        const rr::geometry::Sphere&           sphere,
+        int width, int height) {
+    if (sphere.radius <= 0.0f) {
+        Result r;
+        r.message = "sphere radius must be positive";
+        return r;
+    }
+    const auto cam = camera.to_gpu();
+    // Capture observer / params by value into the launch lambda so
+    // the kernel sees a self-contained POD bundle.
+    const auto obs = observer;
+    const auto par = params;
+    return run_kernel_render(width, height,
+        [cam, obs, par, sphere](float* device_pixels, int w, int h) {
+            launch_sphere_relativistic(device_pixels, w, h,
+                                       cam, obs, par, sphere,
+                                       /*stream=*/nullptr);
         });
 }
 

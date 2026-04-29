@@ -6,6 +6,7 @@
 
 #include "camera/CameraRay.h"  // GpuCamera + RR_HD generate_camera_ray
 #include "geometry/Sphere.h"   // Sphere POD passed by value to launchers
+#include "relativity/RelativityParams.h"  // Observer + RelativityParams PODs
 
 #include <cuda_runtime.h>
 
@@ -45,5 +46,30 @@ void launch_sphere_visualize(float* device_pixels, int width, int height,
                              rr::camera::GpuCamera   cam,
                              rr::geometry::Sphere    sphere,
                              cudaStream_t            stream = 0);
+
+// Host-callable launcher for the relativistic single-sphere kernel.
+// Defined in CudaTestKernel.cu. Per pixel, the device runs the full
+// relativistic perception pipeline:
+//   1. Generate the primary camera ray (rr::camera::generate_camera_ray).
+//   2. (If `params.enable_aberration`) apply Lorentz aberration to the
+//      ray's direction in the observer's frame.
+//   3. Intersect the (possibly aberrated) ray against `sphere`.
+//   4. Compute a base shade: `0.5*n + 0.5` on hit; vertical sky
+//      gradient on miss.
+//   5. Compute the Doppler factor D for the (possibly aberrated)
+//      ray direction.
+//   6. (If `params.enable_doppler`) apply the artistic Doppler
+//      colour shift, modulated by `params.doppler_color_strength`.
+//   7. (If `params.enable_searchlight`) scale the colour by
+//      `1 + (D^4 - 1) * params.searchlight_strength` (relativistic
+//      beaming).
+//   8. Write the framebuffer.
+// The CPU never touches per-ray state.
+void launch_sphere_relativistic(float* device_pixels, int width, int height,
+                                rr::camera::GpuCamera           cam,
+                                rr::relativity::Observer        observer,
+                                rr::relativity::RelativityParams params,
+                                rr::geometry::Sphere            sphere,
+                                cudaStream_t                    stream = 0);
 
 }

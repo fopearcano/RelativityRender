@@ -1,12 +1,14 @@
 // RelativityRender entry point.
 //
-// Stage 8 scope: parse command-line flags and dispatch a
-// stage-appropriate response. `--device-info` enumerates CUDA devices
-// (Module 6 of the master order); `--render-gradient` runs the GPU
-// UV-gradient diagnostic; `--render-rays` runs the GPU camera-ray
-// visualisation; `--render-sphere` runs the GPU single-sphere
-// intersection diagnostic (Module 9). No scene system, no path
-// tracer, no materials, no lights, no relativity, no server, no C4D.
+// Stage 10 scope: parse command-line flags and dispatch a
+// stage-appropriate response. `--device-info` enumerates CUDA
+// devices; `--render-gradient` runs the GPU UV-gradient diagnostic;
+// `--render-rays` runs the GPU camera-ray visualisation;
+// `--render-sphere` runs the GPU single-sphere intersection
+// diagnostic; `--render-relativistic` runs the relativistic
+// single-sphere pipeline at four observer speeds (beta = 0.00, 0.25,
+// 0.75, 0.95) and writes the four PPMs into output/. No scene
+// system, no path tracer, no materials, no lights, no server, no C4D.
 
 #include "core/CommandLine.h"
 #include "core/Config.h"
@@ -19,6 +21,7 @@
     #include "cuda/CudaRenderer.h"
     #include "geometry/Sphere.h"
     #include "math/Vec3.h"
+    #include "relativity/RelativityParams.h"
 #endif
 
 #include "image/Image.h"
@@ -195,6 +198,76 @@ int run_render_sphere(const rr::core::Config& cfg) {
 #endif
 }
 
+// `--render-relativistic` dispatch. Runs the relativistic single-sphere
+// pipeline at four observer speeds (beta = 0.00, 0.25, 0.75, 0.95) and
+// writes four named PPMs into output/. The observer moves along the
+// camera's default forward direction (-Z) so positive beta ->
+// approaching the sphere -> blueshift in front + searchlight
+// brightening + rays aberrated forward. `--output` is ignored; the
+// four output paths are fixed.
+int run_render_relativistic(const rr::core::Config& cfg) {
+#ifndef RR_HAS_CUDA
+    (void)cfg;
+    rr::core::Logger::error("--render-relativistic requires CUDA. Rebuild "
+                            "with -DRR_ENABLE_CUDA=ON on a host with the "
+                            "CUDA Toolkit and a CUDA-capable GPU.");
+    return 1;
+#else
+    rr::camera::Camera cam;
+    cam.set_aspect(static_cast<float>(cfg.width)
+                 / static_cast<float>(cfg.height));
+
+    const rr::geometry::Sphere sphere{
+        rr::math::Vec3{0.0f, 0.0f, -3.0f},
+        1.0f,
+        /*material_index=*/-1
+    };
+
+    rr::relativity::RelativityParams params;  // all effects on at strength 1
+
+    struct BetaRun {
+        float       beta;
+        const char* path;
+    };
+    constexpr BetaRun kRuns[] = {
+        {0.00f, "output/sphere_beta_000.ppm"},
+        {0.25f, "output/sphere_beta_025.ppm"},
+        {0.75f, "output/sphere_beta_075.ppm"},
+        {0.95f, "output/sphere_beta_095.ppm"},
+    };
+
+    int failures = 0;
+    for (const auto& run : kRuns) {
+        // Observer moves along the camera's forward (-Z) direction at
+        // |beta| of `run.beta`. Approaching the sphere produces the
+        // canonical blueshift + forward-aberration + beaming response
+        // when beta > 0.
+        rr::relativity::Observer observer;
+        observer.velocity = rr::math::Vec3{0.0f, 0.0f, -run.beta};
+
+        auto r = rr::cuda::CudaRenderer::render_relativistic_sphere(
+            cam, observer, params, sphere, cfg.width, cfg.height);
+        if (!r.ok) {
+            rr::core::Logger::error(
+                std::string("relativistic render failed at beta=")
+                + std::to_string(run.beta) + ": " + r.message);
+            ++failures;
+            continue;
+        }
+
+        const std::string label = std::string("GPU relativistic sphere "
+                                              "(beta=") +
+                                  std::to_string(run.beta) + ")";
+        if (!save_image_or_error(r.image, run.path, label,
+                                 cfg.width, cfg.height)) {
+            ++failures;
+        }
+    }
+
+    return failures == 0 ? 0 : 1;
+#endif
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -229,6 +302,9 @@ int main(int argc, char** argv) {
         case CommandLine::Action::RenderSphere:
             return run_render_sphere(result.config);
 
+        case CommandLine::Action::RenderRelativistic:
+            return run_render_relativistic(result.config);
+
         case CommandLine::Action::Error:
             Logger::error(result.error_message);
             std::cerr << CommandLine::usage(argv[0]);
@@ -237,9 +313,10 @@ int main(int argc, char** argv) {
         case CommandLine::Action::Default:
             Logger::info(std::string(rr::core::kProjectName) + " "
                        + rr::core::kVersionString + " starting up.");
-            Logger::info("Stage 8: primitive GPU rendering. "
+            Logger::info("Stage 10: relativistic GPU rendering. "
                          "Try --device-info, --render-gradient, "
-                         "--render-rays, or --render-sphere.");
+                         "--render-rays, --render-sphere, or "
+                         "--render-relativistic.");
             return 0;
     }
     return 0;

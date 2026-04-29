@@ -9,14 +9,20 @@
 // callers gate use of this class on the `RR_HAS_CUDA` macro that the
 // `rr_gpu` library propagates publicly when CUDA is enabled.
 //
-// Stage 8 surface: three GPU diagnostics - a UV-gradient render, a
-// camera-ray-direction visualisation, and a single-sphere intersection
-// diagnostic. Real renderers (scene render, path trace, AOV pack,
-// relativistic perception) come back in later stages on top of this
-// scaffold.
+// Stage 10 surface: four GPU diagnostics - a UV-gradient render, a
+// camera-ray-direction visualisation, a single-sphere intersection
+// diagnostic, and a relativistic single-sphere render that runs
+// aberration / Doppler-colour / searchlight on the device. The full
+// renderer (scene render, path trace, AOV pack) comes back in later
+// stages on top of this scaffold.
 
-namespace rr::camera   { class Camera; }
+namespace rr::camera   { class  Camera; }
 namespace rr::geometry { struct Sphere; }
+
+namespace rr::relativity {
+struct Observer;
+struct RelativityParams;
+}
 
 namespace rr::cuda {
 
@@ -52,6 +58,19 @@ public:
     [[nodiscard]] static Result render_sphere(const rr::camera::Camera&   camera,
                                               const rr::geometry::Sphere& sphere,
                                               int width, int height);
+
+    // Render a single sphere with the full relativistic perception
+    // pipeline: per pixel the GPU runs aberration -> intersection ->
+    // base shade -> Doppler colour -> searchlight beaming. The host
+    // only uploads the camera / observer / params / sphere PODs as
+    // launch arguments. `params.max_beta` is the caller's
+    // responsibility to set; the kernel does not re-clamp.
+    [[nodiscard]] static Result render_relativistic_sphere(
+        const rr::camera::Camera&             camera,
+        const rr::relativity::Observer&       observer,
+        const rr::relativity::RelativityParams& params,
+        const rr::geometry::Sphere&           sphere,
+        int width, int height);
 };
 
 }

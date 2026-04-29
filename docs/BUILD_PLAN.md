@@ -6,23 +6,26 @@ records what landed, in which stage, and the next concrete step.
 
 ## Current state
 
-**Stages 1–9 — Core app + math + image + GPU device + GPU buffer layer
-+ CUDA kernel infrastructure + camera system + primitive GPU
-intersection + relativistic camera math.** Skeleton C++20 executable;
-header-only RR_HD math library; host-side floating-point image +
-framebuffer system; backend-agnostic GPU device + memory layers;
-pinhole `Camera` + RR_HD `generate_camera_ray`; single-sphere
-intersection kernel; **and the relativity-math leaf
-(`Observer`, `RelativityParams`, `clampBeta` / `gamma` /
-`lorentzContraction` / `dopplerFactor` / `searchlightFactor` /
-`aberrateDirection` / `applyDopplerColor`) is now in the tree as a
-header-only RR_HD library — but not yet wired into any kernel.**
-Three GPU kernels live: UV gradient, camera-ray visualisation,
-single-sphere visualisation. `--device-info`, `--render-gradient`,
-`--render-rays`, and `--render-sphere` actions are all live. 150
-host-side test assertions across three ctest binaries pass. No scene
-system, no materials, no lights, no path tracer, no server, no
-integrations.
+**Stages 1–10 — Core app + math + image + GPU device + GPU buffer
+layer + CUDA kernel infrastructure + camera system + primitive GPU
+intersection + relativistic camera math + relativistic GPU
+rendering.** Skeleton C++20 executable; header-only RR_HD math
+library; host-side floating-point image + framebuffer system;
+backend-agnostic GPU device + memory layers; pinhole `Camera` + RR_HD
+`generate_camera_ray`; single-sphere intersection kernel; relativity
+math leaf (`Observer`, `RelativityParams`, RR_HD `clampBeta` / `gamma`
+/ `lorentzContraction` / `dopplerFactor` / `searchlightFactor` /
+`aberrateDirection` / `applyDopplerColor`); **and a new relativistic
+single-sphere kernel that runs aberration → intersection → Doppler
+colour → searchlight beaming entirely on the device**. Four GPU
+kernels live now: UV gradient, camera-ray visualisation, single-sphere
+visualisation, relativistic single-sphere. `--device-info`,
+`--render-gradient`, `--render-rays`, `--render-sphere`, and
+`--render-relativistic` actions are all live. The relativistic action
+runs a four-β sweep (0.00, 0.25, 0.75, 0.95) and writes four named
+PPMs. 150 host-side test assertions across three ctest binaries pass.
+No scene system, no materials, no lights, no path tracer, no server,
+no integrations.
 
 ### Files in scope
 
@@ -87,14 +90,15 @@ cmake -S . -B build-cuda -DRR_ENABLE_CUDA=ON
 cmake --build build-cuda -j
 
 # Run modes:
-build/bin/RelativityRender                          # startup banner
+build/bin/RelativityRender                            # startup banner
 build/bin/RelativityRender --help
 build/bin/RelativityRender --version
 build/bin/RelativityRender --device-info
 build/bin/RelativityRender --render scene.rrscene --output out.png --width 1920 --height 1080  # placeholder
-build-cuda/bin/RelativityRender --render-gradient   # -> output/gpu_gradient.ppm
-build-cuda/bin/RelativityRender --render-rays       # -> output/gpu_camera_rays.ppm
-build-cuda/bin/RelativityRender --render-sphere     # -> output/gpu_sphere.ppm
+build-cuda/bin/RelativityRender --render-gradient     # -> output/gpu_gradient.ppm
+build-cuda/bin/RelativityRender --render-rays         # -> output/gpu_camera_rays.ppm
+build-cuda/bin/RelativityRender --render-sphere       # -> output/gpu_sphere.ppm
+build-cuda/bin/RelativityRender --render-relativistic # -> output/sphere_beta_{000,025,075,095}.ppm
 ```
 
 ### CLI behavior (Stage 1)
@@ -673,27 +677,178 @@ and are **not** included by any `.cu` translation unit yet, so the
 CUDA build still compiles only the existing kernels. Wiring the
 relativity math into a kernel is the next stage's job.
 
+### Stage 10 — Relativistic GPU rendering
+
+Status: implemented (integration half - the math half landed in
+Stage 9).
+
+- New `__global__ void k_sphere_relativistic(float*, int, int,
+  GpuCamera, Observer, RelativityParams, Sphere)` in
+  `CudaTestKernel.cu`. One thread per pixel runs the eight-step
+  pipeline:
+    1. `generate_camera_ray`.
+    2. `aberrateDirection(observer.velocity, ray.direction)` if
+       `params.enable_aberration`.
+    3. `intersect_sphere`.
+    4. Base shade: `0.5 * normal + 0.5` on hit; vertical sky
+       gradient (white -> soft blue) on miss.
+    5. `D = dopplerFactor(observer.velocity, ray.direction)` (using
+       the *aberrated* direction, computed once and reused).
+    6. `applyDopplerColor(color, D, params.doppler_color_strength)`
+       if `params.enable_doppler`.
+    7. `scale = 1 + (D^4 - 1) * params.searchlight_strength`;
+       `color *= scale` if `params.enable_searchlight`.
+    8. Write Rgba32F.
+- `launch_sphere_relativistic` declared in `CudaKernels.cuh`,
+  defined in `CudaTestKernel.cu`. Takes `GpuCamera` + `Observer` +
+  `RelativityParams` + `Sphere` PODs by value as launch arguments.
+- `CudaRenderer::render_relativistic_sphere(camera, observer,
+                                              params, sphere, w, h)`
+  added; reuses the same `run_kernel_render` template scaffold.
+  Validates `radius > 0` before launch.
+- New CLI action `--render-relativistic` (mutually exclusive with
+  the other action flags). `main.cpp::run_render_relativistic`
+  drives a four-β sweep:
+
+    | Beta | Output PPM                       |
+    |------|----------------------------------|
+    | 0.00 | `output/sphere_beta_000.ppm`     |
+    | 0.25 | `output/sphere_beta_025.ppm`     |
+    | 0.75 | `output/sphere_beta_075.ppm`     |
+    | 0.95 | `output/sphere_beta_095.ppm`     |
+
+  All four runs use the same camera (origin, looking down -Z),
+  sphere (`{(0,0,-3), radius=1}`), and `RelativityParams` (all
+  effects on, strengths 1, `max_beta=0.999999`). The observer's
+  3-velocity is `(0, 0, -beta)` for each run, so positive β =
+  observer approaches the sphere → blueshift in front +
+  forward-aberration concentration + searchlight brightening; β=0 is
+  the reference image identical to the non-relativistic
+  `--render-sphere` output. `--output` is ignored for this action;
+  the four paths are fixed.
+- CMake additions:
+    - `rr_gpu` PUBLIC-links `rr_relativity` when CUDA is on
+      (`render_relativistic_sphere` takes `Observer` +
+      `RelativityParams` by const ref; the kernel calls
+      `aberrateDirection` / `dopplerFactor` / `applyDopplerColor` /
+      `searchlightFactor` on the device).
+    - `RelativityRender` always PRIVATE-links `rr_relativity` so
+      `run_render_relativistic` can construct the PODs in host-only
+      builds.
+
+#### Implemented relativistic effects
+
+- **Lorentz aberration** (PHYSICAL). Vector form of the textbook
+  angle relation. Applied to each primary ray's direction before
+  intersection so the observed positions of objects shift forward
+  along the boost direction at high β.
+- **Relativistic Doppler factor + colour shift** (PHYSICAL D;
+  ARTISTIC colour). The factor `D = 1 / [γ (1 - β·d̂)]` is computed
+  for each ray. Colour is shifted with the
+  `tanh(0.5 log D) * strength` placeholder (per the Stage 9 audit -
+  a proper spectral remap waits on the texture / shading pipeline).
+- **Relativistic beaming** (PHYSICAL, bolometric form). The
+  intensity scaling `D^4` is applied as `1 + (D^4 - 1) * strength`,
+  so `strength = 0` disables beaming and `strength = 1` applies
+  full bolometric `D^4`. Per-frequency `D^3` is left to a future
+  monochromatic / spectral path.
+- **Length contraction** (`lorentzContraction`) is in the math
+  library but **not** wired into the kernel. The single-sphere
+  scene has no rigid extended object whose dimension along the
+  boost direction would be visible; contraction returns when the
+  mesh stage starts shipping objects with a sensible aspect ratio.
+
+#### Documented limitations
+
+- **No retarded-time treatment.** The kernel uses the camera-frame
+  position of the sphere directly. A correct treatment would solve
+  for the position of the sphere at the photon emission time given
+  the observer's worldline. This becomes visually relevant when the
+  sphere itself moves; with a stationary sphere and only the
+  observer boosted along a fixed direction, the simplification is
+  acceptable for Stage 10.
+- **No spectral colour pipeline.** `applyDopplerColor` is the
+  ARTISTIC APPROXIMATION already documented in Stage 9. Replacing
+  it with a spectral shift + colour-primary remap is a later stage.
+- **Beaming is bolometric only.** The kernel uses `D^4`. A
+  per-frequency renderer would prefer `D^3`; the choice will be
+  revisited alongside the spectral pipeline.
+- **No CPU-side beta validation.** The kernel does not re-check
+  `\|β\| < 1`. The host-side `run_render_relativistic` driver picks
+  values strictly less than 0.999999 (max 0.95), so the kernel does
+  not need to guard them. Out-of-band callers must clamp via
+  `clampBeta`.
+- **No materials, no lights, no scene.** The pipeline shades hits
+  with `0.5 * normal + 0.5` and misses with a sky gradient -
+  exactly as Stage 8 did. Real materials and lights land in their
+  own stages.
+- **No CUDA-runtime verification in this commit.** The development
+  environment has no CUDA Toolkit and no GPU; kernel launch +
+  PPM write was not exercised at this commit. The kernel logic
+  matches the prototype's tested `k_sphere_relativistic` byte-for-
+  byte, modulo the trimmed scope (no scene loop, no AOVs).
+
+#### Hard-rule audit
+
+- All per-ray / per-pixel effects on GPU - **yes**. Only
+  `__global__ k_sphere_relativistic` calls
+  `generate_camera_ray` / `aberrateDirection` / `intersect_sphere`
+  / `dopplerFactor` / `applyDopplerColor` / `searchlightFactor`.
+- No CPU rendering - **yes**. Host work is `Camera` + `Observer` +
+  `Sphere` + `RelativityParams` construction, `Camera::to_gpu()`,
+  kernel launch, sync, `GpuBuffer::download`, and `Image::save_ppm`
+  (the allowed image-saving internal).
+- No scene system, no materials, no lights, no C4D - **yes**.
+
+Verified (host-only build):
+
+- `cmake --build build -j` clean under `-Wall -Wextra -Wpedantic`,
+  no warnings.
+- `ctest` 3/3 passes.
+- `--help` lists `--render-relativistic` with the correct sweep
+  description.
+- `--render-relativistic` on a host without CUDA prints the
+  actionable rebuild hint and exits 1.
+
+#### Outputs (cannot be confirmed in this environment)
+
+The four PPMs `output/sphere_beta_{000,025,075,095}.ppm` are
+**produced by the kernel sweep**, but **not** confirmed in this
+commit because the development environment has no CUDA Toolkit and
+no GPU. The kernel logic + driver loop match the prototype's
+tested implementation exactly, so on a GPU host the four PPMs are
+expected to:
+
+- `sphere_beta_000.ppm` - identical to `gpu_sphere.ppm`: a
+  normal-shaded sphere against the sky gradient.
+- `sphere_beta_025.ppm` - mild blue tint on the front-facing
+  hemisphere, slight forward aberration, slight overall brightening.
+- `sphere_beta_075.ppm` - clearly bluer, smaller (apparent)
+  silhouette as rays aberrate forward, noticeable brightening.
+- `sphere_beta_095.ppm` - strong blue tint, sphere appears
+  significantly compressed forward in the frame, pronounced
+  searchlight brightening (`D^4` scales rapidly past β=0.9).
+
 ## Next stage
 
-**Stage 10 — Relativistic kernel.** Module 10 in the master order
-(integration half - the math half landed in this stage). Scope:
-extend the existing single-sphere kernel with aberration before
-intersection, Doppler colour after shading, and searchlight beaming
-after that. The CPU only uploads the existing `Camera` + `Sphere`
-plus the new `Observer` + `RelativityParams` PODs as launch
-arguments; every per-ray relativistic step runs on the device.
+**Stage 11 — GPU scene upload.** Module 11 in the master order.
+Scope: introduce a host-side `Scene` container of multiple spheres
++ camera + observer + params, plus a CUDA-side `CudaSceneView` POD,
+and wire a `k_render_scene` kernel that runs a closest-hit loop
+over the uploaded sphere array. The CPU uploads once per frame
+(or once per scene change); per-pixel work stays on the device.
 
 Deliverables (planned, NOT yet implemented):
 
-- A `__global__ k_sphere_relativistic` kernel + launcher.
-- `CudaRenderer::render_relativistic_sphere(camera, observer,
-                                              params, sphere, w, h)`.
-- A `--render-relativistic` CLI action writing to
-  `output/gpu_relativistic_sphere.ppm`.
-
-The next stage in the master order after that is **Module 11 — GPU
-scene upload** (multi-sphere scenes uploaded into device memory
-once and rendered without per-frame re-uploads).
+- `src/scene/Scene.{h,cpp}`     (host-side container)
+- `src/gpu/GpuScene.{h,cpp}`    (move-only RAII upload manager
+                                  over `GpuBuffer<Sphere>` etc.)
+- `src/cuda/CudaScene.cuh`      (device-side view POD)
+- A `k_render_scene` kernel + launcher.
+- `CudaRenderer::render_scene(scene, w, h)`.
+- A `--render-scene <path>` CLI action (still placeholder for the
+  scene loader; can use a hard-coded scene for the diagnostic in
+  the meantime).
 
 ## Constraints carried forward
 

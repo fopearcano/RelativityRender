@@ -24,6 +24,12 @@ namespace rr::core {
 //   --render-sphere         Run the GPU single-sphere intersection
 //                           diagnostic and save it to <output>.
 //                           Requires CUDA.
+//   --render-relativistic   Run the relativistic single-sphere
+//                           pipeline at four observer speeds
+//                           (beta = 0.00, 0.25, 0.75, 0.95) and
+//                           write the four PPMs into output/.
+//                           --output is ignored for this action.
+//                           Requires CUDA.
 //   --output <path>         Write the rendered image to <path>.
 //                           Default for --render-gradient is
 //                           "output/gpu_gradient.ppm";
@@ -31,13 +37,15 @@ namespace rr::core {
 //                           "output/gpu_camera_rays.ppm";
 //                           default for --render-sphere   is
 //                           "output/gpu_sphere.ppm".
+//                           Ignored for --render-relativistic.
 //   --width  <int>          Render width in pixels  (default 1280).
 //   --height <int>          Render height in pixels (default 720).
 //
 // Action flags (--help / --version / --device-info / --render /
-// --render-gradient / --render-rays / --render-sphere) are mutually
-// exclusive; combining them is a parse error. The remaining flags
-// configure `Config` and are accepted regardless of action.
+// --render-gradient / --render-rays / --render-sphere /
+// --render-relativistic) are mutually exclusive; combining them is a
+// parse error. The remaining flags configure `Config` and are
+// accepted regardless of action.
 
 class CommandLine {
 public:
@@ -50,6 +58,7 @@ public:
         RenderGradient,
         RenderRays,
         RenderSphere,
+        RenderRelativistic,
         Error,          // parse failure; see `error_message`
     };
 
