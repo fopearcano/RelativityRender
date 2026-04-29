@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.20)
 
 project(RelativityRender
     VERSION     0.1.0
-    DESCRIPTION "RelativityRender - GPU renderer platform (Stage 9B: direct lighting on GPU)"
+    DESCRIPTION "RelativityRender - GPU renderer platform (Stage 10B.1: scene parser foundation)"
     LANGUAGES   CXX
 )
 
@@ -23,7 +23,7 @@ option(RR_ENABLE_CUDA "Enable CUDA backend (requires CUDA Toolkit)"   OFF)
 
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
-message(STATUS "RelativityRender ${PROJECT_VERSION} (Stage 9B: direct lighting on GPU)")
+message(STATUS "RelativityRender ${PROJECT_VERSION} (Stage 10B.1: scene parser foundation)")
 
 message(STATUS "  Build type   : ${CMAKE_BUILD_TYPE}")
 message(STATUS "  C++ standard : ${CMAKE_CXX_STANDARD}")
@@ -170,6 +170,20 @@ add_library(rr_scene STATIC
 target_include_directories(rr_scene PUBLIC src)
 target_link_libraries(rr_scene PUBLIC rr_math rr_camera rr_geometry rr_relativity rr_material rr_lighting)
 rr_apply_warnings(rr_scene)
+
+# rr_io: scene-format IO (Stage 10B). Stage 10B.1 ships only the
+# library scaffold + a single host-side helper (`sceneFileExists`).
+# The `.rrscene` v1.0 parser + writer (`SceneLoader::load`,
+# `SceneWriter::save`, etc., per `docs/RRSCENE_FORMAT.md`) arrive
+# in a follow-up sub-stage. The library PUBLIC-links `rr_scene`
+# because the parser API will populate `rr::scene::Scene` by value.
+add_library(rr_io STATIC
+    src/io/SceneLoader.cpp
+    src/io/SceneWriter.cpp
+)
+target_include_directories(rr_io PUBLIC src)
+target_link_libraries(rr_io PUBLIC rr_scene)
+rr_apply_warnings(rr_io)
 
 # rr_gpu: backend-agnostic GPU device + memory + (Stage 6) kernel
 # launch layer.

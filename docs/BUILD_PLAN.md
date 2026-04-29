@@ -6,8 +6,8 @@ records what landed, in which stage, and the next concrete step.
 
 ## Current state
 
-**Stages 1–10 + 6A + 6B + 7A + 7B + 7C + 8A + 8B + 9A + 9B — through
-direct lighting on GPU.** Skeleton C++20 executable; header-only RR_HD math
+**Stages 1–10 + 6A + 6B + 7A + 7B + 7C + 8A + 8B + 9A + 9B + 10A +
+10B.1 — through scene parser foundation.** Skeleton C++20 executable; header-only RR_HD math
 library; host-side floating-point image + framebuffer system;
 backend-agnostic GPU device + memory layers; pinhole `Camera` + RR_HD
 `generate_camera_ray`; single-sphere intersection kernel; relativity
@@ -1565,32 +1565,140 @@ self-contained and the kept code paths (light evaluation,
 material lookup, Doppler / searchlight) are byte-equivalent to the
 prototype's tested implementation.
 
+### Stage 10A — `.rrscene` format spec
+
+Status: implemented (specification only).
+
+- `docs/RRSCENE_FORMAT.md` defines the v1.0 file format the
+  parser will implement against. 15 sections covering top-level
+  shape, render settings, camera, relativity, materials, spheres,
+  meshes, lights, transforms, cross-section validation rules,
+  format-evolution policy, and parser non-goals.
+- No source code modified by this slice.
+
+### Stage 10B.1 — Scene parser foundation
+
+Status: implemented.
+
+The user split master module 15 (Scene format / parser) into
+fine-grained sub-stages, mirroring the 6A/6B pattern. Stage
+**10B.1** ships only the library scaffold + a single host helper +
+the JSON-strategy decision; actual `.rrscene` parsing arrives in a
+follow-up sub-stage.
+
+Files:
+
+- `src/io/SceneLoader.h`   — declares the single Stage-10B.1
+  function `bool sceneFileExists(const std::string& path)`. Any
+  `parse(...)` / `load(...)` API + `LoadResult` struct lands in
+  the next sub-stage; the header is kept narrow on purpose.
+- `src/io/SceneLoader.cpp` — implementation: `std::filesystem::exists`
+  + `is_regular_file` with error-code suppression. Pure host code,
+  never throws.
+- `src/io/SceneWriter.h`   — empty namespace scaffold; the
+  writer's API surface (`save(path, scene)`, `serialize(scene)`,
+  `WriteResult`) joins alongside the parser in the next sub-stage.
+- `src/io/SceneWriter.cpp` — empty translation unit so the
+  `rr_io` library has a non-empty source list and the writer's
+  public header has a paired implementation file from the start.
+
+CMake: new `rr_io` STATIC library under
+`add_library(rr_io STATIC SceneLoader.cpp SceneWriter.cpp)`,
+PUBLIC-links `rr_scene` (because the parser API will populate
+`rr::scene::Scene` by value). `librr_io.a` is built but not yet
+linked into `RelativityRender`; the executable picks it up when
+the parser entry points actually become reachable from
+`main.cpp::run_render` (Stage 10B.2).
+
+#### JSON strategy decision
+
+**Decision: hand-roll a focused JSON parser + schema mapper for
+`.rrscene` v1.0.** Rationale:
+
+- The Stage 10A spec is closed and small (15 sections, one root
+  schema, ~20 distinct field shapes). A focused recursive-descent
+  parser specific to this schema is feasible at ~400 lines for
+  parser + ~300 for the schema layer.
+- The prototype's lesson was *not* "always hand-roll" — it was
+  "don't hand-roll a parser **and** an ill-specified schema at
+  the same time". With the schema locked in `RRSCENE_FORMAT.md`
+  v1.0 and a bounded set of validation rules, the schema risk is
+  paid down before the parser starts.
+- Vendoring `nlohmann/json` would drop a ~30,000-line single
+  header into `third_party/` and significantly slow compilation
+  for every TU that includes JSON; for a closed format that
+  expense is hard to justify.
+- The dev environment for this branch cannot fetch external
+  libraries from the network, so a vendoring-only path would
+  block forward progress without a local copy of the header.
+- The hand-rolled parser produces error messages tailored to
+  this schema (line/col + section name). A general JSON parser
+  would surface generic JSON errors and require the schema layer
+  to translate them.
+
+Tradeoffs accepted:
+
+- More code under our maintenance (vs. a third-party header that
+  someone else maintains).
+- Need to handle JSON edge cases (UTF-8 escapes, exponents,
+  empty arrays/objects) ourselves; this is bounded by the
+  "strict JSON only, no comments, no trailing commas" stance in
+  `RRSCENE_FORMAT.md` §15.
+
+Mitigation: the parser is split across logical sections (tokeniser
+→ value tree → schema mapper) with each section under ~150 lines,
+so unit-style tests can target each layer independently when
+`tests/io_tests.cpp` lands.
+
+If this decision proves wrong (parser bugs accumulate, schema
+needs to grow beyond v1's scope), the migration path is to swap
+the JSON-tree layer for `nlohmann::json` and keep the schema
+layer; the schema layer is the contract, not the JSON
+implementation.
+
+Hard-rule audit (per the prompt):
+
+- Do not parse scene content yet - **yes**, the only function in
+  this slice is `sceneFileExists`.
+- Do not modify renderer - **yes**, `main.cpp`,
+  `CudaTestKernel.cu`, `CudaRenderer.{h,cu}`, `GpuScene.{h,cpp}`
+  are byte-identical to Stage 9B.
+- No server, no C4D - **yes**.
+- Must compile - **yes**, host-only build clean under
+  `-Wall -Wextra -Wpedantic`, no warnings; `librr_io.a` is
+  produced; ctest 3/3; every existing CLI action behaves
+  identically to Stage 9B.
+
+Stage 10B.1 ships zero behavioural delta - pure additive
+structural slice. The next sub-stage (planned name: Stage
+10B.2) implements the JSON tokeniser + parser + schema mapper
+against the v1.0 spec, then wires `--render <scene>` in
+`main.cpp` to call `SceneLoader::load(...)` followed by the
+existing `GpuScene::upload_*` chain.
+
 ## Next stage
 
-**Scene format / parser (master module 15).** Materials, lights,
-spheres, and meshes are all uploadable; the next deliberate step
-is letting the renderer load a scene from a file instead of
-building it programmatically in `main.cpp`. Plan: bring back the
-`.rrscene` JSON loader (using a real JSON library this time, not
-the prototype's hand-rolled parser), populate `rr::scene::Scene`
-from disk, and wire `--render <path>` (currently a placeholder)
-to actually load + render the file.
+**Stage 10B.2 — `.rrscene` parser implementation.** Scope:
 
-Deliverables (planned, NOT yet implemented):
-
-- Vendored `nlohmann/json` or equivalent (single header) under
-  `third_party/`.
-- `src/io/SceneLoader.{h,cpp}` (parses `.rrscene` JSON →
-  `rr::scene::Scene`).
-- `src/io/SceneWriter.{h,cpp}` (serialises a `Scene` for
-  round-trip tests).
-- `tests/io_tests.cpp` (round-trip: write → read → compare).
-- `--render <scene>` finally does something - calls
-  `SceneLoader::load(path)`, then `CudaRenderer::render_scene`,
-  then writes to `--output`.
-- Two fixture scenes under `scenes/`: `test_minimal.rrscene` (one
-  sphere, default camera) and `test_lit.rrscene` (a richer scene
-  with materials + lights).
+- Add the `LoadResult` struct + `SceneLoader::load(path)` /
+  `SceneLoader::parse(text)` to `SceneLoader.h`.
+- Implement the JSON tokeniser + recursive-descent value-tree
+  parser in `SceneLoader.cpp` (private helpers in an anonymous
+  namespace).
+- Implement the schema mapper that projects the value tree onto
+  `rr::scene::Scene`, enforcing every cross-section validation
+  rule from `RRSCENE_FORMAT.md` §12.
+- Add the `WriteResult` struct + `SceneWriter::save(path,
+  scene)` / `serialize(scene)` for the round-trip path.
+- Wire `--render <path>` in `main.cpp` to: call
+  `SceneLoader::load`, build a `GpuScene` from the loaded scene,
+  call `CudaRenderer::render_scene`, save to `--output`.
+- Add `tests/io_tests.cpp` exercising round-trip + each
+  validation rule.
+- Ship two fixture scenes under `scenes/`:
+  `test_minimal.rrscene` (one sphere, default camera) and
+  `test_lit.rrscene` (a richer scene matching the Stage 9B
+  `--render-direct-lighting` demo).
 
 ## Constraints carried forward
 
