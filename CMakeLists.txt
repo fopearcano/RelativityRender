@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.20)
 
 project(RelativityRender
     VERSION     0.1.0
-    DESCRIPTION "RelativityRender - GPU renderer platform (Stage 5: GPU buffer layer)"
+    DESCRIPTION "RelativityRender - GPU renderer platform (Stage 6: CUDA kernel infrastructure)"
     LANGUAGES   CXX
 )
 
@@ -23,7 +23,7 @@ option(RR_ENABLE_CUDA "Enable CUDA backend (requires CUDA Toolkit)"   OFF)
 
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
-message(STATUS "RelativityRender ${PROJECT_VERSION} (Stage 5: GPU buffer layer)")
+message(STATUS "RelativityRender ${PROJECT_VERSION} (Stage 6: CUDA kernel infrastructure)")
 
 message(STATUS "  Build type   : ${CMAKE_BUILD_TYPE}")
 message(STATUS "  C++ standard : ${CMAKE_CXX_STANDARD}")
@@ -31,16 +31,25 @@ message(STATUS "  Build tests  : ${RR_BUILD_TESTS}")
 message(STATUS "  CUDA backend : ${RR_ENABLE_CUDA}")
 
 # Optional CUDA toolchain. Only required when RR_ENABLE_CUDA is ON.
-# Stage 4 only needs the CUDA Runtime headers + libcudart for device
-# enumeration; no .cu files are compiled here, so we deliberately do
-# NOT call enable_language(CUDA). That comes back when Stage 5 (CUDA
-# framebuffer / kernel infrastructure) introduces the first kernel.
-# When RR_ENABLE_CUDA is OFF the host build configures cleanly with
-# no CUDA on the system - the GPU layer reports backend "(none)"
-# and an empty device list at runtime.
+# Stage 6 introduces the first .cu translation units (CudaTestKernel.cu
+# + CudaRenderer.cu), so the CUDA language is enabled here. Earlier
+# CUDA-compiled .cpp files (CudaContext.cpp, CudaBuffer.cpp) continue
+# to be compiled by the host C++ compiler; nvcc only sees the .cu files.
+# When RR_ENABLE_CUDA is OFF the host build configures cleanly with no
+# CUDA on the system - the GPU layer reports backend "(none)" and an
+# empty device list at runtime.
 if(RR_ENABLE_CUDA)
     find_package(CUDAToolkit REQUIRED)
+    enable_language(CUDA)
+    set(CMAKE_CUDA_STANDARD          17)
+    set(CMAKE_CUDA_STANDARD_REQUIRED ON)
+    if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
+        # Turing through Blackwell. Override with
+        # `-DCMAKE_CUDA_ARCHITECTURES=...` to target other GPUs.
+        set(CMAKE_CUDA_ARCHITECTURES "75;80;86;89;90;100;120")
+    endif()
     message(STATUS "  CUDA Toolkit : ${CUDAToolkit_VERSION}")
+    message(STATUS "  CUDA archs   : ${CMAKE_CUDA_ARCHITECTURES}")
 endif()
 
 # Centralised warning flags. Every target goes through this so warnings
@@ -74,7 +83,8 @@ target_include_directories(rr_image PUBLIC src)
 target_link_libraries(rr_image PUBLIC rr_math)
 rr_apply_warnings(rr_image)
 
-# rr_gpu: backend-agnostic GPU device + memory layer.
+# rr_gpu: backend-agnostic GPU device + memory + (Stage 6) kernel
+# launch layer.
 #
 #   GpuDevice.cpp  - device enumeration; delegates to the CUDA backend
 #                    when RR_HAS_CUDA is defined, returns empty list
@@ -84,13 +94,22 @@ rr_apply_warnings(rr_image)
 #                    to the CUDA backend when RR_HAS_CUDA is defined,
 #                    or returns nullptr / false honestly otherwise.
 #
-# The CUDA backend (CudaContext.cpp + CudaBuffer.cpp) is added to
-# rr_gpu only when RR_ENABLE_CUDA is ON. Both .cpp files are plain
-# C++ - they include <cuda_runtime.h> and call cudaMalloc / cudaFree
-# / cudaMemcpy / cudaGetDeviceProperties; no __global__ kernels and
-# no <<<...>>> launch syntax, so this stage still does NOT need
-# enable_language(CUDA). That comes back when the first .cu kernel
-# lands in a later stage.
+# When RR_ENABLE_CUDA is ON the library also picks up:
+#
+#   CudaContext.cpp     - cudaGetDeviceCount + cudaGetDeviceProperties.
+#                          Plain C++.
+#   CudaBuffer.cpp      - cudaMalloc / cudaFree / cudaMemcpy. Plain C++.
+#   CudaTestKernel.cu   - __global__ k_gradient_rgba32f + the
+#                          launch_gradient_rgba32f host-callable
+#                          launcher. Compiled by nvcc.
+#   CudaRenderer.cu     - host-side scaffolding (allocate GpuBuffer,
+#                          launch, sync, download into rr::image::Image).
+#                          Compiled by nvcc because it transitively
+#                          includes <cuda_runtime.h>.
+#
+# rr_image is part of the public ABI when CUDA is on (CudaRenderer's
+# Result carries an rr::image::Image by value), so it is PUBLIC-linked
+# in that mode.
 add_library(rr_gpu STATIC
     src/gpu/GpuDevice.cpp
     src/gpu/GpuBuffer.cpp
@@ -102,15 +121,21 @@ if(RR_ENABLE_CUDA)
     target_sources(rr_gpu PRIVATE
         src/cuda/CudaContext.cpp
         src/cuda/CudaBuffer.cpp
+        src/cuda/CudaTestKernel.cu
+        src/cuda/CudaRenderer.cu
     )
     # PUBLIC: targets linking rr_gpu (RelativityRender, gpu_tests) gate
     # CUDA-specific call sites on the same RR_HAS_CUDA macro.
     target_compile_definitions(rr_gpu PUBLIC RR_HAS_CUDA)
+    target_link_libraries(rr_gpu PUBLIC  rr_image)
     target_link_libraries(rr_gpu PRIVATE CUDA::cudart)
+    set_target_properties(rr_gpu PROPERTIES POSITION_INDEPENDENT_CODE ON)
 endif()
 
-# Main executable. Stage 4 surface: now links rr_gpu so --device-info
-# can enumerate visible CUDA devices.
+# Main executable. Stage 6 surface: links rr_gpu (and, via PUBLIC link
+# when CUDA is on, rr_image) so --device-info enumerates devices and
+# --render-gradient produces a real GPU-driven PPM. Always links
+# rr_image so the host build still has a path to save images later.
 add_executable(RelativityRender
     src/main.cpp
     src/core/Logger.cpp
@@ -118,7 +143,7 @@ add_executable(RelativityRender
     src/core/CommandLine.cpp
 )
 target_include_directories(RelativityRender PRIVATE src)
-target_link_libraries(RelativityRender PRIVATE rr_gpu)
+target_link_libraries(RelativityRender PRIVATE rr_gpu rr_image)
 rr_apply_warnings(RelativityRender)
 
 # Tests. The project does not yet have a third-party test framework;

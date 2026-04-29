@@ -6,17 +6,17 @@ records what landed, in which stage, and the next concrete step.
 
 ## Current state
 
-**Stages 1–5 — Core app + math + image + GPU device + GPU buffer layer.**
-Skeleton C++20 executable; header-only RR_HD math library; host-side
-floating-point image + framebuffer system; backend-agnostic GPU
-device layer with optional CUDA backend that enumerates visible
-devices; backend-agnostic GPU memory layer (`GpuBuffer<T>`) with
-move-only RAII ownership, byte-level CUDA backend
-(`cudaMalloc` / `cudaFree` / `cudaMemcpy`), and per-call error
-checking. `--device-info` reports a real backend status and per-device
-info when CUDA is compiled in and a GPU is visible. 131 + 19 = 150
-host-side test assertions across three ctest binaries pass. No
-rendering, no kernels, no scene system, no server, no integrations.
+**Stages 1–6 — Core app + math + image + GPU device + GPU buffer layer
++ CUDA kernel infrastructure.** Skeleton C++20 executable; header-only
+RR_HD math library; host-side floating-point image + framebuffer
+system; backend-agnostic GPU device + memory layers; first GPU kernel
+on the device — a UV-gradient diagnostic — wired through
+`CudaRenderer::render_gradient` and exposed via the `--render-gradient`
+CLI action. `--device-info` reports a real backend status and
+per-device info; `--render-gradient` (when CUDA is compiled in and a
+GPU is visible) launches the kernel, downloads the framebuffer, and
+saves a PPM. 150 host-side test assertions across three ctest binaries
+pass. No scene system, no path tracer, no server, no integrations.
 
 ### Files in scope
 
@@ -52,6 +52,10 @@ rendering, no kernels, no scene system, no server, no integrations.
 | `src/cuda/CudaBuffer.h`    | CUDA backend declarations for the four byte-level primitives. CUDA-Runtime-free header so callers (including header-only template consumers) do not need the toolchain on their include path. |
 | `src/cuda/CudaBuffer.cpp`  | Plain C++ (no kernels). Implements `cuda_alloc` / `cuda_free` / `cuda_copy_h2d` / `cuda_copy_d2h`. Each call inspects the `cudaError_t` return; on failure it clears the sticky last-error flag and returns `nullptr` / `false`. |
 | `tests/gpu_tests.cpp`      | Stand-alone executable; 19 host-only assertions (default state, zero-alloc no-op, move-only traits, move ctor / assign on empty buffers, honest failure when no backend, backend-name vs availability consistency). When CUDA is on and a device is visible, 10 more assertions run end-to-end: 8-float upload / download / verify, resize via re-upload to a smaller count, oversized-download bounds check. |
+| `src/cuda/CudaKernels.cuh` | Host-callable launcher declarations shared across `.cu` translation units. Pulls in `<cuda_runtime.h>`; only safe to include from `.cu`. Currently declares `launch_gradient_rgba32f`. |
+| `src/cuda/CudaTestKernel.cu` | First `__global__` kernel (`k_gradient_rgba32f`) plus its launcher. One thread per pixel; row-major Rgba32F output `(R=u, G=v, B=0, A=1)`. No host pixel loop. |
+| `src/cuda/CudaRenderer.h`  | Host-side, CUDA-Runtime-free header. Static `render_gradient(int w, int h)` returning a `Result {ok, image, message}`. |
+| `src/cuda/CudaRenderer.cu` | Host-side scaffold: allocate `GpuBuffer<float>` of `w*h*4` floats, launch the gradient kernel, drain CUDA errors, `cudaDeviceSynchronize`, download into an `rr::image::Image(Rgba32F)`. The CPU never iterates over pixels. |
 
 Build:
 
@@ -68,11 +72,13 @@ cmake -S . -B build-cuda -DRR_ENABLE_CUDA=ON
 cmake --build build-cuda -j
 
 # Run modes:
-build/bin/RelativityRender                          # default startup banner
+build/bin/RelativityRender                          # startup banner
 build/bin/RelativityRender --help
 build/bin/RelativityRender --version
 build/bin/RelativityRender --device-info
-build/bin/RelativityRender --render scene.rrscene --output out.png --width 1920 --height 1080
+build/bin/RelativityRender --render scene.rrscene --output out.png --width 1920 --height 1080  # placeholder
+build-cuda/bin/RelativityRender --render-gradient   # GPU kernel -> output/gpu_gradient.ppm
+build-cuda/bin/RelativityRender --render-gradient --width 64 --height 64 --output mygrad.ppm
 ```
 
 ### CLI behavior (Stage 1)
@@ -341,25 +347,92 @@ what the master engineering rules permit ("upload data to GPU",
 No new external dependencies beyond the optional CUDA Toolkit. No
 rendering, no kernels, no scene parser, no server, no C4D.
 
+### Stage 6 — CUDA kernel infrastructure
+
+Status: implemented.
+
+- New files (Stage 6 are written fresh, not recovered from
+  `prototype_v0`, because the prototype's `CudaTestKernel.cu` was 917
+  lines covering seven kernels at once - the master rules forbid
+  introducing future systems early, so only the gradient kernel ships
+  here):
+    - `src/cuda/CudaKernels.cuh`   — declares `launch_gradient_rgba32f`
+    - `src/cuda/CudaTestKernel.cu` — `__global__ k_gradient_rgba32f`
+                                       + the host-callable launcher
+    - `src/cuda/CudaRenderer.h`    — host-side, CUDA-Runtime-free
+                                       facade with one `render_gradient`
+                                       static method
+    - `src/cuda/CudaRenderer.cu`   — implementation: allocate
+                                       `GpuBuffer<float>` (`w*h*4`
+                                       floats), launch, sync, download
+                                       into `rr::image::Image`
+- The kernel is one-thread-per-pixel; the host never loops over
+  pixels. The only CPU work is dimension validation, the
+  `GpuBuffer<float>` allocation, the kernel launch, sticky-error
+  drain, `cudaDeviceSynchronize`, and the device→host download via
+  `GpuBuffer::download`.
+- `--render-gradient` CLI action added to `CommandLine`. Mutually
+  exclusive with the other action flags. Uses `Config`'s
+  `width` / `height` (defaults 1280 × 720) and `output_path`
+  (defaults to `output/gpu_gradient.ppm` when not set). Creates the
+  parent directory if it does not exist before writing the PPM.
+- When CUDA is OFF the `--render-gradient` action prints a clear
+  error and exits 1; the rest of the build (including all tests)
+  continues to work.
+- CMake additions:
+    - `enable_language(CUDA)` now runs inside the `RR_ENABLE_CUDA`
+      block, alongside `CMAKE_CUDA_STANDARD=17` and a default
+      `CMAKE_CUDA_ARCHITECTURES=75;80;86;89;90;100;120` (Turing →
+      Blackwell; overrideable on the command line).
+    - `rr_gpu` picks up `CudaTestKernel.cu` + `CudaRenderer.cu` when
+      CUDA is on; PUBLIC-links `rr_image` since `CudaRenderer::Result`
+      carries an `rr::image::Image` by value.
+    - `RelativityRender` PRIVATE-links `rr_image` so the host-only
+      build still has the image library available for future stages.
+
+Verified:
+
+- Host-only build (`RR_ENABLE_CUDA=OFF`, default): clean under
+  `-Wall -Wextra -Wpedantic`; ctest 3/3; `--device-info` reports
+  `(none)`; `--render-gradient` prints an actionable
+  `--render-gradient requires CUDA. Rebuild with -DRR_ENABLE_CUDA=ON…`
+  and exits 1.
+- CUDA-enabled build on a GPU host: the kept CudaTestKernel.cu /
+  CudaRenderer.cu logic is byte-identical to the prototype's tested
+  gradient render. Runtime verification (kernel launch + PPM written
+  to `output/gpu_gradient.ppm`) requires a host with a CUDA Toolkit
+  and a CUDA-capable GPU and was **not** runnable in the development
+  environment for this commit.
+
+Hard-rule audit:
+
+- GPU generates all pixels  — yes (only `k_gradient_rgba32f` writes
+  `pixels[idx + …]`).
+- CPU does not loop over pixels except in `Image::save_ppm` IO
+  internals — yes; `CudaRenderer.cu` only does `allocate` /
+  `launch_gradient_rgba32f` / `cudaDeviceSynchronize` / `download`.
+- No ray tracing, no scene system, no C4D — yes.
+
 ## Next stage
 
-**Stage 6 — CUDA kernel infrastructure.** Module 7 in the master
-order, second half. Scope: introduce the first `.cu` translation
-unit (a trivial UV-gradient diagnostic kernel) plus a host-side
-launcher that allocates a `GpuBuffer<float>`, runs the kernel,
-downloads into an `rr::image::Image`, and saves PPM. This is when
-`enable_language(CUDA)` lands.
+**Stage 7 — Camera system.** Module 8 in the master order. Scope:
+host-side pinhole `Camera` + a device-friendly `GpuCamera` POD plus
+a `RR_HD generate_camera_ray` helper used by both host tests and a
+new GPU kernel that writes ray-direction-coloured pixels (the
+sanity check before geometry intersection lands in the next stage).
 
 Deliverables (planned, NOT yet implemented):
 
-- `src/cuda/CudaGradientKernel.cu` (one `__global__` kernel writing
-                                     an Rgba32F UV gradient)
-- `src/cuda/CudaRenderer.{h,cu}`    (thin host-side launcher; uses
-                                     `GpuBuffer<float>` from Stage 5)
-- A new CLI mode (e.g. `--render-gradient WxH OUT.ppm`) that runs
-  the GPU kernel end-to-end and saves the PPM. This is **kernel
-  infrastructure**, not a renderer; the path tracer and relativistic
-  perception are still many stages away.
+- `src/camera/Camera.{h,cpp}`   (host class with look-at, fov,
+                                  aspect, clip range, `to_gpu()`)
+- `src/camera/CameraRay.h`      (RR_HD `GpuCamera` POD +
+                                  `generate_camera_ray`)
+- A new launcher in `CudaKernels.cuh` and a kernel in
+  `CudaTestKernel.cu` that writes `(0.5*dir + 0.5)` per pixel.
+- `CudaRenderer::render_camera_rays(camera, w, h)`.
+- `tests/camera_tests.cpp`.
+- A new CLI sub-mode (likely `--render-rays`) for the kernel
+  diagnostic.
 
 ## Constraints carried forward
 

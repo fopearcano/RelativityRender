@@ -46,7 +46,7 @@ bool set_action(CommandLine::Action& current, CommandLine::Action target,
                 std::string& error) {
     if (current != CommandLine::Action::Default) {
         error = "cannot combine action flags (--help / --version / "
-                "--device-info / --render)";
+                "--device-info / --render / --render-gradient)";
         return false;
     }
     current = target;
@@ -87,6 +87,12 @@ CommandLine::ParseResult CommandLine::parse(int argc, char** argv) {
                 return r;
             }
             r.config.scene_path.assign(value);
+        } else if (a == "--render-gradient") {
+            if (!set_action(r.action, Action::RenderGradient,
+                            r.error_message)) {
+                r.action = Action::Error;
+                return r;
+            }
         } else if (a == "--output") {
             if (!take_value(argc, argv, i, a, value, r.error_message)) {
                 r.action = Action::Error;
@@ -125,7 +131,9 @@ CommandLine::ParseResult CommandLine::parse(int argc, char** argv) {
     // Validate config for actions that would actually use it. --help /
     // --version / --device-info are pure information requests and must
     // not fail on, e.g., a defaulted dimension being misconfigured.
-    if (r.action == Action::Default || r.action == Action::Render) {
+    if (r.action == Action::Default
+     || r.action == Action::Render
+     || r.action == Action::RenderGradient) {
         if (auto err = r.config.validate(); !err.empty()) {
             r.action        = Action::Error;
             r.error_message = std::move(err);
@@ -139,16 +147,17 @@ std::string CommandLine::usage(std::string_view argv0) {
     std::ostringstream os;
     os << "Usage: " << argv0 << " [options]\n"
        << "\n"
-       << "Stage 1 - core application. No rendering yet.\n"
-       << "\n"
        << "Options:\n"
        << "  --help                Print this message and exit.\n"
        << "  --version             Print version and exit.\n"
-       << "  --device-info         Print GPU device info "
-                                  "(not implemented yet).\n"
+       << "  --device-info         Print GPU device info.\n"
        << "  --render <scene>      Run the renderer on the given "
-                                  "scene file.\n"
+                                  "scene file (placeholder).\n"
+       << "  --render-gradient     Run the GPU UV-gradient diagnostic "
+                                  "and save it (requires CUDA).\n"
        << "  --output <path>       Write the rendered image to <path>.\n"
+       << "                        Default for --render-gradient is "
+                                  "output/gpu_gradient.ppm.\n"
        << "  --width  <int>        Render width in pixels "
                                   "(default 1280).\n"
        << "  --height <int>        Render height in pixels "

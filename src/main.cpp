@@ -1,18 +1,25 @@
 // RelativityRender entry point.
 //
-// Stage 4 scope: parse command-line flags and dispatch a
-// stage-appropriate response. `--device-info` now enumerates visible
-// CUDA devices via `rr::gpu::enumerate_devices` (Module 6 of the
-// master order). Still no rendering, no kernels, no scene system,
-// no server.
+// Stage 6 scope: parse command-line flags and dispatch a
+// stage-appropriate response. `--device-info` enumerates CUDA devices
+// (Module 6 of the master order); `--render-gradient` launches the
+// GPU UV-gradient diagnostic kernel (Module 7) and saves a PPM. No
+// scene system, no path tracer, no server, no C4D.
 
 #include "core/CommandLine.h"
+#include "core/Config.h"
 #include "core/Logger.h"
 #include "core/Version.h"
 #include "gpu/GpuDevice.h"
 
+#ifdef RR_HAS_CUDA
+    #include "cuda/CudaRenderer.h"
+#endif
+
+#include <filesystem>
 #include <iostream>
 #include <string>
+#include <system_error>
 
 namespace {
 
@@ -42,6 +49,61 @@ void report_device_info() {
     }
 }
 
+// `--render-gradient` dispatch. Width / height come from Config (the
+// CLI's --width / --height knobs); output path defaults to
+// "output/gpu_gradient.ppm" but is overridden by --output.
+//
+// Returns the process exit code: 0 on success, 1 on any failure.
+int run_render_gradient(const rr::core::Config& cfg) {
+    using rr::core::Logger;
+
+    const std::string out_path = cfg.output_path.empty()
+        ? std::string("output/gpu_gradient.ppm")
+        : cfg.output_path;
+
+#ifndef RR_HAS_CUDA
+    (void)cfg;
+    Logger::error("--render-gradient requires CUDA. Rebuild with "
+                  "-DRR_ENABLE_CUDA=ON on a host with the CUDA Toolkit "
+                  "and a CUDA-capable GPU.");
+    return 1;
+#else
+    auto r = rr::cuda::CudaRenderer::render_gradient(cfg.width, cfg.height);
+    if (!r.ok) {
+        Logger::error("gradient render failed: " + r.message);
+        return 1;
+    }
+
+    // Make sure the output directory exists before writing. Image's
+    // save_ppm does not create parent directories.
+    namespace fs = std::filesystem;
+    const fs::path out_fs = out_path;
+    if (out_fs.has_parent_path()) {
+        std::error_code ec;
+        fs::create_directories(out_fs.parent_path(), ec);
+        if (ec) {
+            Logger::error("could not create output directory '"
+                        + out_fs.parent_path().string() + "': "
+                        + ec.message());
+            return 1;
+        }
+    }
+
+    if (!r.image.save_ppm(out_fs)) {
+        Logger::error("could not write PPM: " + out_path);
+        return 1;
+    }
+
+    std::error_code ec;
+    const fs::path  abs = fs::absolute(out_fs, ec);
+    Logger::info("wrote GPU gradient: "
+               + (ec ? out_path : abs.string())
+               + " (" + std::to_string(cfg.width) + "x"
+               + std::to_string(cfg.height) + ", RGBA32F)");
+    return 0;
+#endif
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -67,6 +129,9 @@ int main(int argc, char** argv) {
             Logger::info("render command received");
             return 0;
 
+        case CommandLine::Action::RenderGradient:
+            return run_render_gradient(result.config);
+
         case CommandLine::Action::Error:
             Logger::error(result.error_message);
             std::cerr << CommandLine::usage(argv[0]);
@@ -75,9 +140,8 @@ int main(int argc, char** argv) {
         case CommandLine::Action::Default:
             Logger::info(std::string(rr::core::kProjectName) + " "
                        + rr::core::kVersionString + " starting up.");
-            Logger::info("Stage 4: CUDA device layer. "
-                         "Try --device-info; rendering arrives in a "
-                         "later stage.");
+            Logger::info("Stage 6: CUDA kernel infrastructure. "
+                         "Try --device-info or --render-gradient.");
             return 0;
     }
     return 0;

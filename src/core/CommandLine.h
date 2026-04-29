@@ -7,30 +7,38 @@
 
 namespace rr::core {
 
-// Stage 1 command-line parser. Pure host code, no dependencies beyond
+// Command-line parser. Pure host code, no dependencies beyond
 // `core/Config.h`. The CLI surface today:
 //
-//   --help                Print usage and exit.
-//   --version             Print version and exit.
-//   --device-info         Print GPU device info (placeholder).
-//   --render <scene>      Run the renderer on the given scene file.
-//   --output <path>       Write the rendered image to <path>.
-//   --width  <int>        Render width in pixels  (default 1280).
-//   --height <int>        Render height in pixels (default 720).
+//   --help                  Print usage and exit.
+//   --version               Print version and exit.
+//   --device-info           Print GPU device info.
+//   --render <scene>        Run the renderer on the given scene file
+//                           (placeholder; scene loading lands in a
+//                           later stage).
+//   --render-gradient       Run the GPU UV-gradient diagnostic and
+//                           save it to <output>. Requires CUDA.
+//   --output <path>         Write the rendered image to <path>.
+//                           Default for --render-gradient is
+//                           "output/gpu_gradient.ppm".
+//   --width  <int>          Render width in pixels  (default 1280).
+//   --height <int>          Render height in pixels (default 720).
 //
-// Action flags (--help / --version / --device-info / --render) are
-// mutually exclusive; combining them is a parse error. The remaining
-// flags configure `Config` and are accepted regardless of action.
+// Action flags (--help / --version / --device-info / --render /
+// --render-gradient) are mutually exclusive; combining them is a
+// parse error. The remaining flags configure `Config` and are
+// accepted regardless of action.
 
 class CommandLine {
 public:
     enum class Action {
-        Default,      // no action flag given
+        Default,        // no action flag given
         Help,
         Version,
         DeviceInfo,
         Render,
-        Error,        // parse failure; see `error_message`
+        RenderGradient,
+        Error,          // parse failure; see `error_message`
     };
 
     struct ParseResult {
