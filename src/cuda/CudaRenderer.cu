@@ -135,14 +135,24 @@ CudaRenderer::Result CudaRenderer::render_relativistic_sphere(
 CudaRenderer::Result CudaRenderer::render_scene(const rr::gpu::GpuScene& scene,
                                                 int width, int height) {
     // Snapshot the GpuScene's host-resident state into a launch-arg
-    // POD. The sphere device pointer / count are read off the
-    // GpuScene; no copy of the device buffer happens here.
+    // POD. The sphere + mesh device pointers / counts are read off
+    // the GpuScene; no copy of the device buffers happens here.
     rr::cuda::CudaSceneView view;
     view.camera        = scene.gpu_camera();
     view.observer      = scene.observer();
     view.params        = scene.params();
     view.spheres       = scene.device_spheres();
     view.sphere_count  = static_cast<int>(scene.sphere_count());
+
+    // Mesh slot. When the GpuScene has no mesh uploaded the counts
+    // are zero and the kernel's triangle loop is a no-op.
+    const auto& m            = scene.mesh();
+    view.mesh.vertices       = m.device_vertices();
+    view.mesh.triangles      = m.device_triangles();
+    view.mesh.vertex_count   = static_cast<int>(m.vertex_count());
+    view.mesh.triangle_count = static_cast<int>(m.triangle_count());
+    view.mesh.material_id    = m.material_id();
+    view.mesh.transform      = m.transform();
 
     return run_kernel_render(width, height,
         [view](float* device_pixels, int w, int h) {

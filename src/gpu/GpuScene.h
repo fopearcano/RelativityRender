@@ -4,9 +4,12 @@
 #include "camera/CameraRay.h"
 #include "geometry/Sphere.h"
 #include "gpu/GpuBuffer.h"
+#include "gpu/GpuMesh.h"
 #include "relativity/RelativityParams.h"
 
 #include <cstddef>
+
+namespace rr::geometry { struct Mesh; }
 
 namespace rr::gpu {
 
@@ -61,6 +64,15 @@ public:
     [[nodiscard]] bool upload_spheres(const rr::geometry::Sphere* host,
                                       std::size_t                 count);
 
+    // Upload a single triangle mesh into the scene's mesh slot.
+    // Calling with an empty mesh clears the slot. Multi-mesh support
+    // is a future slice. Forwards to `GpuMesh::upload_from`, so
+    // partial-failure semantics match: vertex/triangle uploads are
+    // attempted independently and the metadata (material id,
+    // transform) is written even when an upload fails - useful for
+    // diagnostics.
+    [[nodiscard]] bool upload_mesh(const rr::geometry::Mesh& mesh);
+
     // Free every device allocation owned by this scene. Does NOT
     // touch the host snapshots (camera / observer / params) - call
     // `clear()` for the full reset.
@@ -81,6 +93,11 @@ public:
     [[nodiscard]] const rr::geometry::Sphere* device_spheres() const noexcept { return spheres_.device_ptr(); }
     [[nodiscard]] std::size_t                 sphere_count()   const noexcept { return sphere_count_; }
 
+    // The mesh slot owned by this scene. Renderer reads device
+    // pointers + counts off this object to populate a
+    // `CudaMeshView`.
+    [[nodiscard]] const GpuMesh& mesh() const noexcept { return mesh_; }
+
     [[nodiscard]] bool has_camera()     const noexcept { return has_camera_; }
     [[nodiscard]] bool has_relativity() const noexcept { return has_relativity_; }
 
@@ -91,6 +108,8 @@ private:
 
     GpuBuffer<rr::geometry::Sphere>   spheres_{};
     std::size_t                       sphere_count_   = 0;
+
+    GpuMesh                           mesh_{};
 
     bool                              has_camera_     = false;
     bool                              has_relativity_ = false;

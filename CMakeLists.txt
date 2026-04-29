@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.20)
 
 project(RelativityRender
     VERSION     0.1.0
-    DESCRIPTION "RelativityRender - GPU renderer platform (Stage 7A: mesh structures)"
+    DESCRIPTION "RelativityRender - GPU renderer platform (Stage 7C: CUDA triangle intersection)"
     LANGUAGES   CXX
 )
 
@@ -23,7 +23,7 @@ option(RR_ENABLE_CUDA "Enable CUDA backend (requires CUDA Toolkit)"   OFF)
 
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
-message(STATUS "RelativityRender ${PROJECT_VERSION} (Stage 7A: mesh structures)")
+message(STATUS "RelativityRender ${PROJECT_VERSION} (Stage 7C: CUDA triangle intersection)")
 
 message(STATUS "  Build type   : ${CMAKE_BUILD_TYPE}")
 message(STATUS "  C++ standard : ${CMAKE_CXX_STANDARD}")
@@ -174,6 +174,7 @@ add_library(rr_gpu STATIC
     src/gpu/GpuDevice.cpp
     src/gpu/GpuBuffer.cpp
     src/gpu/GpuScene.cpp
+    src/gpu/GpuMesh.cpp
 )
 target_include_directories(rr_gpu PUBLIC src)
 # rr_gpu's GpuScene exposes Camera / Observer / RelativityParams /

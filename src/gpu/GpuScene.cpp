@@ -1,5 +1,7 @@
 #include "gpu/GpuScene.h"
 
+#include "geometry/Mesh.h"
+
 namespace rr::gpu {
 
 bool GpuScene::upload_camera(const rr::camera::Camera& camera) {
@@ -41,9 +43,18 @@ bool GpuScene::upload_spheres(const rr::geometry::Sphere* host,
     return true;
 }
 
+bool GpuScene::upload_mesh(const rr::geometry::Mesh& mesh) {
+    return mesh_.upload_from(mesh);
+}
+
 void GpuScene::reset_device() noexcept {
     spheres_.reset();
     sphere_count_ = 0;
+    // GpuMesh has no reset method that drops device buffers
+    // separately from metadata; replacing it with a default-
+    // constructed instance is the safest equivalent and avoids
+    // partial state.
+    mesh_ = GpuMesh{};
 }
 
 void GpuScene::clear() noexcept {

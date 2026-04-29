@@ -15,7 +15,9 @@
 #ifdef RR_HAS_CUDA
     #include "camera/Camera.h"
     #include "cuda/CudaRenderer.h"
+    #include "geometry/Mesh.h"
     #include "geometry/Sphere.h"
+    #include "geometry/Triangle.h"
     #include "gpu/GpuScene.h"
     #include "math/Vec3.h"
     #include "relativity/RelativityParams.h"
@@ -199,6 +201,52 @@ int run_render_sphere(const rr::core::Config& cfg) {
 }
 
 #ifdef RR_HAS_CUDA
+// Build a single front-facing equilateral triangle in front of the
+// default camera. Vertex winding is counter-clockwise from the
+// camera's point of view so `intersect_triangle` returns the
+// front-face normal (pointing toward +Z). One triangle is enough
+// to demonstrate the triangle closest-hit path on its own.
+rr::geometry::Mesh build_demo_triangle_mesh() {
+    rr::geometry::Mesh mesh;
+    mesh.vertices.reserve(3);
+    mesh.vertices.push_back({rr::math::Vec3{ 0.0f,    1.0f, -3.0f},
+                             rr::math::Vec3{0.0f, 0.0f, 1.0f},
+                             rr::math::Vec2{0.5f, 1.0f}});
+    mesh.vertices.push_back({rr::math::Vec3{-0.866f, -0.5f, -3.0f},
+                             rr::math::Vec3{0.0f, 0.0f, 1.0f},
+                             rr::math::Vec2{0.0f, 0.0f}});
+    mesh.vertices.push_back({rr::math::Vec3{ 0.866f, -0.5f, -3.0f},
+                             rr::math::Vec3{0.0f, 0.0f, 1.0f},
+                             rr::math::Vec2{1.0f, 0.0f}});
+    mesh.triangles.push_back({0, 1, 2});
+    mesh.material_id = -1;  // simple normal-as-color shading; no material yet
+    return mesh;
+}
+
+// Build a quad behind the multi-sphere scene so the closest-hit
+// logic visibly competes between sphere and triangle primitives.
+// Two CCW triangles at z = -6, large enough to cover the background.
+rr::geometry::Mesh build_demo_quad_mesh() {
+    rr::geometry::Mesh mesh;
+    mesh.vertices.reserve(4);
+    mesh.vertices.push_back({rr::math::Vec3{-3.0f, -3.0f, -6.0f},
+                             rr::math::Vec3{0.0f, 0.0f, 1.0f},
+                             rr::math::Vec2{0.0f, 0.0f}});
+    mesh.vertices.push_back({rr::math::Vec3{ 3.0f, -3.0f, -6.0f},
+                             rr::math::Vec3{0.0f, 0.0f, 1.0f},
+                             rr::math::Vec2{1.0f, 0.0f}});
+    mesh.vertices.push_back({rr::math::Vec3{ 3.0f,  3.0f, -6.0f},
+                             rr::math::Vec3{0.0f, 0.0f, 1.0f},
+                             rr::math::Vec2{1.0f, 1.0f}});
+    mesh.vertices.push_back({rr::math::Vec3{-3.0f,  3.0f, -6.0f},
+                             rr::math::Vec3{0.0f, 0.0f, 1.0f},
+                             rr::math::Vec2{0.0f, 1.0f}});
+    mesh.triangles.push_back({0, 1, 2});
+    mesh.triangles.push_back({0, 2, 3});
+    mesh.material_id = -1;
+    return mesh;
+}
+
 // Build the built-in multi-sphere demo scene used by `--render-scene`.
 // Three spheres in a row at z = -4, slight stagger in y so the
 // closest-hit logic has something non-trivial to do. Camera is the
@@ -362,6 +410,128 @@ int run_render_scene(const rr::core::Config& cfg) {
 #endif
 }
 
+// `--render-triangle` dispatch. Builds a Scene with no spheres + a
+// single triangle mesh, uploads via GpuScene, runs the GPU
+// closest-hit kernel (which falls through the empty sphere loop),
+// and writes the PPM. Demonstrates the triangle-only path of
+// k_render_scene's combined loop.
+int run_render_triangle(const rr::core::Config& cfg) {
+    const std::string out_path = cfg.output_path.empty()
+        ? std::string("output/gpu_triangle.ppm")
+        : cfg.output_path;
+
+#ifndef RR_HAS_CUDA
+    (void)cfg;
+    rr::core::Logger::error("--render-triangle requires CUDA. Rebuild with "
+                            "-DRR_ENABLE_CUDA=ON on a host with the CUDA "
+                            "Toolkit and a CUDA-capable GPU.");
+    return 1;
+#else
+    rr::scene::Scene scene;
+    scene.camera.set_aspect(static_cast<float>(cfg.width)
+                          / static_cast<float>(cfg.height));
+    // No spheres - the kernel's sphere loop runs zero iterations.
+
+    const auto mesh = build_demo_triangle_mesh();
+
+    rr::gpu::GpuScene gpu_scene;
+    if (!gpu_scene.upload_camera(scene.camera)) {
+        rr::core::Logger::error("triangle render failed: upload_camera");
+        return 1;
+    }
+    if (!gpu_scene.upload_relativity(scene.observer, scene.relativity)) {
+        rr::core::Logger::error("triangle render failed: upload_relativity");
+        return 1;
+    }
+    if (!gpu_scene.upload_mesh(mesh)) {
+        rr::core::Logger::error("triangle render failed: upload_mesh "
+                                "(no GPU backend or device allocation "
+                                "failed)");
+        return 1;
+    }
+
+    auto r = rr::cuda::CudaRenderer::render_scene(gpu_scene,
+                                                  cfg.width, cfg.height);
+    if (!r.ok) {
+        rr::core::Logger::error("triangle render failed: " + r.message);
+        return 1;
+    }
+
+    rr::core::Logger::info("triangle: 0 spheres + "
+                         + std::to_string(mesh.triangle_count())
+                         + " tri(s) uploaded, "
+                         + std::to_string(cfg.width) + "x"
+                         + std::to_string(cfg.height) + " framebuffer");
+
+    return save_image_or_error(r.image, out_path, "GPU triangle",
+                               cfg.width, cfg.height) ? 0 : 1;
+#endif
+}
+
+// `--render-mesh-scene` dispatch. Builds the multi-sphere demo scene
+// + a triangle quad behind the spheres, uploads both via GpuScene,
+// runs the GPU closest-hit kernel (sphere + triangle compete on
+// t_max), and writes the PPM.
+int run_render_mesh_scene(const rr::core::Config& cfg) {
+    const std::string out_path = cfg.output_path.empty()
+        ? std::string("output/gpu_mesh_scene.ppm")
+        : cfg.output_path;
+
+#ifndef RR_HAS_CUDA
+    (void)cfg;
+    rr::core::Logger::error("--render-mesh-scene requires CUDA. Rebuild "
+                            "with -DRR_ENABLE_CUDA=ON on a host with the "
+                            "CUDA Toolkit and a CUDA-capable GPU.");
+    return 1;
+#else
+    const auto scene = build_demo_scene(cfg.width, cfg.height);
+
+    std::vector<rr::geometry::Sphere> sphere_pods;
+    sphere_pods.reserve(scene.spheres.size());
+    for (const auto& s : scene.spheres) {
+        if (s.object.visible) sphere_pods.push_back(s.geometry);
+    }
+
+    const auto quad = build_demo_quad_mesh();
+
+    rr::gpu::GpuScene gpu_scene;
+    if (!gpu_scene.upload_camera(scene.camera)) {
+        rr::core::Logger::error("mesh-scene render failed: upload_camera");
+        return 1;
+    }
+    if (!gpu_scene.upload_relativity(scene.observer, scene.relativity)) {
+        rr::core::Logger::error("mesh-scene render failed: upload_relativity");
+        return 1;
+    }
+    if (!gpu_scene.upload_spheres(sphere_pods.data(), sphere_pods.size())) {
+        rr::core::Logger::error("mesh-scene render failed: upload_spheres");
+        return 1;
+    }
+    if (!gpu_scene.upload_mesh(quad)) {
+        rr::core::Logger::error("mesh-scene render failed: upload_mesh");
+        return 1;
+    }
+
+    auto r = rr::cuda::CudaRenderer::render_scene(gpu_scene,
+                                                  cfg.width, cfg.height);
+    if (!r.ok) {
+        rr::core::Logger::error("mesh-scene render failed: " + r.message);
+        return 1;
+    }
+
+    rr::core::Logger::info("mesh-scene: "
+                         + std::to_string(sphere_pods.size())
+                         + " sphere(s) + "
+                         + std::to_string(quad.triangle_count())
+                         + " tri(s) uploaded, "
+                         + std::to_string(cfg.width) + "x"
+                         + std::to_string(cfg.height) + " framebuffer");
+
+    return save_image_or_error(r.image, out_path, "GPU mesh scene",
+                               cfg.width, cfg.height) ? 0 : 1;
+#endif
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -402,6 +572,12 @@ int main(int argc, char** argv) {
         case CommandLine::Action::RenderScene:
             return run_render_scene(result.config);
 
+        case CommandLine::Action::RenderTriangle:
+            return run_render_triangle(result.config);
+
+        case CommandLine::Action::RenderMeshScene:
+            return run_render_mesh_scene(result.config);
+
         case CommandLine::Action::Error:
             Logger::error(result.error_message);
             std::cerr << CommandLine::usage(argv[0]);
@@ -410,10 +586,11 @@ int main(int argc, char** argv) {
         case CommandLine::Action::Default:
             Logger::info(std::string(rr::core::kProjectName) + " "
                        + rr::core::kVersionString + " starting up.");
-            Logger::info("Stage 6B: GPU scene upload. "
+            Logger::info("Stage 7C: CUDA triangle intersection. "
                          "Try --device-info, --render-gradient, "
                          "--render-rays, --render-sphere, "
-                         "--render-relativistic, or --render-scene.");
+                         "--render-relativistic, --render-scene, "
+                         "--render-triangle, or --render-mesh-scene.");
             return 0;
     }
     return 0;

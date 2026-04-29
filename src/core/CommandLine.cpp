@@ -48,7 +48,8 @@ bool set_action(CommandLine::Action& current, CommandLine::Action target,
         error = "cannot combine action flags (--help / --version / "
                 "--device-info / --render / --render-gradient / "
                 "--render-rays / --render-sphere / "
-                "--render-relativistic / --render-scene)";
+                "--render-relativistic / --render-scene / "
+                "--render-triangle / --render-mesh-scene)";
         return false;
     }
     current = target;
@@ -119,6 +120,18 @@ CommandLine::ParseResult CommandLine::parse(int argc, char** argv) {
                 r.action = Action::Error;
                 return r;
             }
+        } else if (a == "--render-triangle") {
+            if (!set_action(r.action, Action::RenderTriangle,
+                            r.error_message)) {
+                r.action = Action::Error;
+                return r;
+            }
+        } else if (a == "--render-mesh-scene") {
+            if (!set_action(r.action, Action::RenderMeshScene,
+                            r.error_message)) {
+                r.action = Action::Error;
+                return r;
+            }
         } else if (a == "--output") {
             if (!take_value(argc, argv, i, a, value, r.error_message)) {
                 r.action = Action::Error;
@@ -163,7 +176,9 @@ CommandLine::ParseResult CommandLine::parse(int argc, char** argv) {
      || r.action == Action::RenderRays
      || r.action == Action::RenderSphere
      || r.action == Action::RenderRelativistic
-     || r.action == Action::RenderScene) {
+     || r.action == Action::RenderScene
+     || r.action == Action::RenderTriangle
+     || r.action == Action::RenderMeshScene) {
         if (auto err = r.config.validate(); !err.empty()) {
             r.action        = Action::Error;
             r.error_message = std::move(err);
@@ -199,6 +214,12 @@ std::string CommandLine::usage(std::string_view argv0) {
        << "  --render-scene        Render a built-in multi-sphere scene "
                                   "via the GpuScene upload\n"
        << "                        path (requires CUDA).\n"
+       << "  --render-triangle     Render a single uploaded triangle "
+                                  "on the GPU (requires CUDA).\n"
+       << "  --render-mesh-scene   Render the multi-sphere scene plus "
+                                  "a triangle-mesh quad with\n"
+       << "                        sphere / triangle closest-hit "
+                                  "competition (requires CUDA).\n"
        << "  --output <path>       Write the rendered image to <path>.\n"
        << "                        Default for --render-gradient is "
                                   "output/gpu_gradient.ppm;\n"
@@ -207,7 +228,11 @@ std::string CommandLine::usage(std::string_view argv0) {
        << "                        default for --render-sphere   is "
                                   "output/gpu_sphere.ppm;\n"
        << "                        default for --render-scene    is "
-                                  "output/gpu_scene_spheres.ppm.\n"
+                                  "output/gpu_scene_spheres.ppm;\n"
+       << "                        default for --render-triangle is "
+                                  "output/gpu_triangle.ppm;\n"
+       << "                        default for --render-mesh-scene is "
+                                  "output/gpu_mesh_scene.ppm.\n"
        << "                        Ignored for --render-relativistic.\n"
        << "  --width  <int>        Render width in pixels "
                                   "(default 1280).\n"
