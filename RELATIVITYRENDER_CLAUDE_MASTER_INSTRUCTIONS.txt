@@ -133,3 +133,54 @@ When given a prompt:
 - If a requested change violates the order above, document the issue and implement only the safe prerequisite work.
 - Keep the project buildable.
 - Update docs/BUILD_PLAN.md.
+
+BRANCHING & MIGRATION RULES
+
+1. The repository may contain:
+   - prototype_v0 (experimental code)
+   - relativity-core-v1 (clean architecture)
+
+2. Do NOT continue development on prototype_v0.
+
+3. All new work must happen on:
+   relativity-core-v1
+
+4. When reusing code from prototype_v0:
+   - Only copy code that is:
+     - fully working
+     - GPU-correct (no CPU rendering)
+     - modular and clean
+   - Do NOT copy:
+     - partial systems
+     - stubs
+     - mixed CPU/GPU logic
+     - early integrations (C4D, UI, etc.)
+
+5. Every reused file must be:
+   - placed in the correct module
+   - reviewed for architecture compliance
+   - refactored if needed
+
+6. Maintain a document:
+   docs/REWRITE_STATUS.md
+
+   listing:
+   - reused modules
+   - rewritten modules
+   - discarded modules
+
+7. The goal is NOT to extend the prototype.
+   The goal is to build a clean renderer platform.
+
+CODE QUALITY RULE
+
+A feature is considered implemented only if:
+- it compiles
+- it runs
+- it produces correct output
+- it is not a placeholder
+- it is not partially implemented
+
+If any of these are false:
+→ it is NOT implemented
+→ it must be marked as incomplete in BUILD_PLAN.md
