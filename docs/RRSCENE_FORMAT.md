@@ -1,0 +1,597 @@
+# `.rrscene` File Format — v1.0
+
+Date: 2026-04-29
+Branch: `relativity-core-v1`
+Status: **specification only** — no parser is implemented in this
+slice. This doc is the contract the master-module-15 parser slice
+will implement against.
+
+---
+
+## 1. Overview
+
+`.rrscene` is the on-disk format for a complete RelativityRender
+scene. One file holds the full set of inputs the renderer needs to
+produce a frame:
+
+- render settings (resolution, sample / bounce counts)
+- camera
+- relativistic observer state
+- materials
+- sphere primitives
+- triangle meshes
+- lights
+
+The file is a single UTF-8-encoded JSON object. The on-disk
+extension is `.rrscene`; the MIME type is
+`application/x-rrscene+json`. Editors / tools that want
+JSON-compatible tooling should also accept the `.rrjson` extension
+(same content).
+
+Field naming is **snake_case throughout**. The C++ types the parser
+populates have a few camelCase exceptions (`baseColor`,
+`emissionColor`, `emissionStrength`); the parser converts JSON
+`base_color` → C++ `baseColor` etc. so the file format stays
+consistent for the user.
+
+Vectors are JSON arrays:
+
+- `Vec3`        → `[x, y, z]` (length 3)
+- `Vec2`        → `[u, v]` (length 2)
+- triangle      → `[v0, v1, v2]` (length 3 of `uint32_t`)
+
+Colours are **linear-space floats**, conventionally in `[0, 1]` but
+HDR values `> 1` are valid (emission, environment intensity).
+
+Coordinate convention: right-handed, +Y up, +X right, looking down
+−Z by default. Distances are scene units (no implicit metres).
+
+## 2. Versioning
+
+Every file MUST carry a top-level `version` field. The current
+schema is `"1.0.0"`.
+
+```json
+{ "version": "1.0.0", ... }
+```
+
+Versioning policy (compatible with semantic versioning):
+
+- The parser MUST require a matching **major** version. v1 parsers
+  reject v2 files; v2 files MUST therefore not load in v1 parsers.
+- Minor and patch increments are backwards-compatible additions
+  (new optional fields, new light types). A v1.0 parser MUST
+  ignore unknown optional fields and load a v1.x file silently.
+- The parser MAY warn on unknown unrecognised top-level objects.
+
+## 3. Top-level structure
+
+```json
+{
+  "version": "1.0.0",
+  "render_settings": { ... },
+  "camera":          { ... },
+  "relativity":      { ... },
+  "materials":       [ ... ],
+  "spheres":         [ ... ],
+  "meshes":          [ ... ],
+  "lights":          [ ... ]
+}
+```
+
+| Key               | Type    | Required? | Default                            |
+|-------------------|---------|:---------:|------------------------------------|
+| `version`         | string  | **yes**   | —                                  |
+| `render_settings` | object  | no        | `RenderSettings{}` defaults        |
+| `camera`          | object  | no        | default `Camera{}`                 |
+| `relativity`      | object  | no        | β=0, all `enable_*=true`           |
+| `materials`       | array   | no        | `[]`                               |
+| `spheres`         | array   | no        | `[]`                               |
+| `meshes`          | array   | no        | `[]`                               |
+| `lights`          | array   | no        | `[]`                               |
+
+The minimal valid v1 file is therefore:
+
+```json
+{ "version": "1.0.0" }
+```
+
+which loads as a default scene with the default camera, no
+geometry, no materials, no lights. The renderer outputs the sky
+gradient.
+
+## 4. `render_settings`
+
+Maps to `rr::scene::RenderSettings`.
+
+```json
+"render_settings": {
+  "width":             1280,
+  "height":            720,
+  "samples_per_pixel": 1,
+  "max_depth":         1
+}
+```
+
+| Key                | Type | Required? | Default | Validation                    |
+|--------------------|------|:---------:|--------:|-------------------------------|
+| `width`            | int  | no        |    1280 | `> 0`                         |
+| `height`           | int  | no        |     720 | `> 0`                         |
+| `samples_per_pixel`| int  | no        |       1 | `>= 1` (path tracer reads it) |
+| `max_depth`        | int  | no        |       1 | `>= 1` (path tracer reads it) |
+
+`samples_per_pixel` and `max_depth` are stored faithfully but are
+not consumed by the Stage 9B kernel; the path tracer (master
+module 16) reads them.
+
+## 5. `camera`
+
+Maps to `rr::camera::Camera`. Specified by an eye / target / up
+triple plus optical knobs; the parser feeds these into
+`Camera::look_at` + `set_vertical_fov_degrees` +
+`set_clip_range` + `set_aspect`.
+
+```json
+"camera": {
+  "position":    [0.0, 0.0, 0.0],
+  "target":      [0.0, 0.0, -1.0],
+  "up":          [0.0, 1.0, 0.0],
+  "fov_degrees": 45.0,
+  "near":        0.1,
+  "far":         1000.0
+}
+```
+
+| Key           | Type        | Required? | Default                    | Validation                                            |
+|---------------|-------------|:---------:|----------------------------|-------------------------------------------------------|
+| `position`    | Vec3        | no        | `[0, 0, 0]`                | finite                                                |
+| `target`      | Vec3        | no        | `[0, 0, -1]`               | finite; `target != position` (else basis untouched)   |
+| `up`          | Vec3        | no        | `[0, 1, 0]`                | finite; ideally non-parallel to `target − position`   |
+| `fov_degrees` | float       | no        | `45.0`                     | `0.01 ≤ fov < 180`                                    |
+| `near`        | float       | no        | `0.1`                      | `near > 0`                                            |
+| `far`         | float       | no        | `1000.0`                   | `far > near`                                          |
+
+`aspect` is **not** in the file because it is a function of the
+output framebuffer (`width / height`) — the parser sets
+`Camera::set_aspect(width / height)` from `render_settings`. Files
+that override aspect would do so by changing resolution.
+
+## 6. `relativity`
+
+Maps to `rr::relativity::Observer` (kinematic state) plus
+`rr::relativity::RelativityParams` (artist toggles). The two PODs
+are merged into a single JSON object for authoring convenience.
+
+```json
+"relativity": {
+  "observer_velocity":      [0.0, 0.0, 0.0],
+  "enable_aberration":      true,
+  "enable_doppler":         true,
+  "enable_searchlight":     true,
+  "doppler_color_strength": 1.0,
+  "searchlight_strength":   1.0,
+  "max_beta":               0.999999
+}
+```
+
+| Key                       | Type  | Required? | Default      | Validation                                  |
+|---------------------------|-------|:---------:|-------------:|---------------------------------------------|
+| `observer_velocity`       | Vec3  | no        | `[0, 0, 0]`  | `length(v) < max_beta` (and `< 1`)          |
+| `enable_aberration`       | bool  | no        | `true`       |                                             |
+| `enable_doppler`          | bool  | no        | `true`       |                                             |
+| `enable_searchlight`      | bool  | no        | `true`       |                                             |
+| `doppler_color_strength`  | float | no        | `1.0`        | `>= 0`                                      |
+| `searchlight_strength`    | float | no        | `1.0`        | `>= 0`                                      |
+| `max_beta`                | float | no        | `0.999999`   | `0 < max_beta < 1`                          |
+
+The kernel's `clampBeta` helper enforces the last invariant at
+runtime, but the parser MUST reject files where
+`length(observer_velocity) >= 1`. That value is not physical and
+indicates an authoring or unit error.
+
+## 7. `materials`
+
+Each entry maps to `rr::scene::SceneMaterial { id, name, params }`,
+where `params` is an `rr::material::MaterialParams`.
+
+```json
+"materials": [
+  {
+    "id":                 0,
+    "name":               "red diffuse",
+    "base_color":         [0.85, 0.20, 0.20],
+    "emission_color":     [0.0, 0.0, 0.0],
+    "emission_strength":  0.0,
+    "roughness":          0.5,
+    "metallic":           0.0,
+    "specular":           0.5,
+    "transmission":       0.0
+  }
+]
+```
+
+| Key                 | Type   | Required? | Default                  | Validation                  |
+|---------------------|--------|:---------:|--------------------------|-----------------------------|
+| `id`                | int    | **yes**   | —                        | `>= 0`; unique within array |
+| `name`              | string | no        | `""`                     | UTF-8                       |
+| `base_color`        | Vec3   | no        | `[0.8, 0.8, 0.8]`        | each component `>= 0`       |
+| `emission_color`    | Vec3   | no        | `[0, 0, 0]`              | each component `>= 0`       |
+| `emission_strength` | float  | no        | `0.0`                    | `>= 0`                      |
+| `roughness`         | float  | no        | `0.5`                    | in `[0, 1]`                 |
+| `metallic`          | float  | no        | `0.0`                    | in `[0, 1]`                 |
+| `specular`          | float  | no        | `0.5`                    | in `[0, 1]`                 |
+| `transmission`      | float  | no        | `0.0`                    | in `[0, 1]` (PLACEHOLDER)   |
+
+**Index convention**: `id` is the lookup key. The parser MAY also
+treat the array's positional index as the material's stable id when
+all `id` fields are absent; the canonical form is to set both and
+use the array position. Sphere `material_index` and Mesh
+`material_id` reference the array position (`materials[i]`), not
+the `id`.
+
+`transmission` is reserved for the future glass / refraction BSDF;
+the kernel does not read it today.
+
+## 8. `spheres`
+
+Each entry maps to `rr::scene::SceneSphere { object, geometry }`.
+
+```json
+"spheres": [
+  {
+    "name":           "left",
+    "visible":        true,
+    "transform":      { "position": [0,0,0], "rotation_radians": [0,0,0], "scale": [1,1,1] },
+    "center":         [-1.5, 0.2, -4.0],
+    "radius":         0.7,
+    "material_index": 0
+  }
+]
+```
+
+| Key              | Type       | Required? | Default                        | Validation                                                        |
+|------------------|------------|:---------:|--------------------------------|-------------------------------------------------------------------|
+| `name`           | string     | no        | `""`                           | UTF-8                                                             |
+| `visible`        | bool       | no        | `true`                         |                                                                   |
+| `transform`      | Transform  | no        | identity                       | see §11                                                           |
+| `center`         | Vec3       | **yes**   | —                              | finite                                                            |
+| `radius`         | float      | **yes**   | —                              | `> 0`                                                             |
+| `material_index` | int        | no        | `-1`                           | `-1` or in `[0, materials.size())`                                |
+
+Stage 9B note: the `transform` on a sphere is currently not applied
+to `center`; the kernel reads `center` as world-space. The
+authoring `transform` is preserved for forward compatibility with
+the upcoming relative-transform scene editor.
+
+## 9. `meshes`
+
+Each entry maps to `rr::scene::SceneMesh` (currently a placeholder
+shell carrying `SceneObject + source_path`; the parser also
+populates an `rr::geometry::Mesh` on the side that is uploaded
+through `GpuScene::upload_mesh`).
+
+The format supports two ways to populate vertex data:
+
+- Inline `vertices` + `triangles` arrays (canonical for v1).
+- A `source_path` reference to an external asset (reserved; v1
+  parsers MUST treat `source_path` as informational metadata and
+  leave the mesh empty unless inline arrays are also present).
+
+```json
+"meshes": [
+  {
+    "name":        "quad",
+    "visible":     true,
+    "transform":   { "position": [0,0,0], "rotation_radians": [0,0,0], "scale": [1,1,1] },
+    "source_path": "",
+    "material_id": 4,
+    "vertices": [
+      { "position": [-3.0, -3.0, -6.0], "normal": [0, 0, 1], "uv": [0, 0] },
+      { "position": [ 3.0, -3.0, -6.0], "normal": [0, 0, 1], "uv": [1, 0] },
+      { "position": [ 3.0,  3.0, -6.0], "normal": [0, 0, 1], "uv": [1, 1] },
+      { "position": [-3.0,  3.0, -6.0], "normal": [0, 0, 1], "uv": [0, 1] }
+    ],
+    "triangles": [
+      [0, 1, 2],
+      [0, 2, 3]
+    ]
+  }
+]
+```
+
+### 9.1 Mesh entry
+
+| Key            | Type      | Required? | Default                | Validation                                       |
+|----------------|-----------|:---------:|------------------------|--------------------------------------------------|
+| `name`         | string    | no        | `""`                   | UTF-8                                            |
+| `visible`      | bool      | no        | `true`                 |                                                  |
+| `transform`    | Transform | no        | identity               | see §11                                          |
+| `source_path`  | string    | no        | `""`                   | informational only in v1                         |
+| `material_id`  | int       | no        | `-1`                   | `-1` or in `[0, materials.size())`               |
+| `vertices`     | array     | no        | `[]`                   | every entry passes §9.2                          |
+| `triangles`    | array     | no        | `[]`                   | every entry passes §9.3                          |
+
+A mesh with `vertices.length() == 0` OR `triangles.length() == 0`
+is rendered as empty (Mesh::empty() returns true and the kernel
+loop runs zero iterations). This is permitted; the parser MUST
+still accept it.
+
+### 9.2 Vertex entry
+
+| Key       | Type | Required? | Default       | Validation         |
+|-----------|------|:---------:|--------------:|--------------------|
+| `position`| Vec3 | **yes**   | —             | finite             |
+| `normal`  | Vec3 | no        | `[0, 0, 0]`   | finite (NOT auto-normalised; renderer expects unit length)|
+| `uv`      | Vec2 | no        | `[0, 0]`      | finite             |
+
+### 9.3 Triangle entry
+
+A triangle is a JSON array of exactly three `uint32_t` vertex
+indices: `[v0, v1, v2]`. Counter-clockwise winding when viewed from
+the front face.
+
+| Constraint | Rule |
+|---|---|
+| Element type | non-negative integer fitting in `uint32_t` |
+| Length       | exactly `3` |
+| Index range  | each `vN` in `[0, vertices.length())` |
+| Distinct?    | indices SHOULD be distinct; degenerate triangles (`v0 == v1` etc.) are accepted but produce zero contribution at intersection time |
+
+### 9.4 Stage 9B mesh-renderer note
+
+The kernel currently reads vertex positions in **world space** —
+the per-mesh `transform` is uploaded but **not** applied to
+positions during intersection. Authors who need a transformed
+mesh today must pre-bake the transform into the vertex positions.
+This restriction lifts when per-vertex transform support lands
+(planned alongside instancing).
+
+## 10. `lights`
+
+Each entry maps to `rr::scene::SceneLight { object, data }`, where
+`data` is an `rr::lighting::Light`. The Light is a flat
+type-discriminated POD; the JSON object names the type explicitly.
+
+```json
+"lights": [
+  {
+    "name":       "key",
+    "visible":    true,
+    "type":       "directional",
+    "direction":  [-0.4, -0.7, -0.6],
+    "color":      [1.0, 0.95, 0.85],
+    "intensity":  0.9
+  },
+  {
+    "name":       "fill",
+    "type":       "point",
+    "position":   [2.0, 1.5, -2.5],
+    "color":      [1.0, 0.85, 0.6],
+    "intensity":  30.0
+  },
+  {
+    "name":       "sky",
+    "type":       "environment",
+    "color":      [0.30, 0.40, 0.55],
+    "intensity":  0.4
+  }
+]
+```
+
+| Key           | Type    | Required?     | Default                | Validation                                          |
+|---------------|---------|:-------------:|------------------------|-----------------------------------------------------|
+| `name`        | string  | no            | `""`                   |                                                     |
+| `visible`     | bool    | no            | `true`                 |                                                     |
+| `transform`   | Transform | no          | identity               | see §11; uploaded but unused in v1                  |
+| `type`        | string  | **yes**       | —                      | one of `"point" / "directional" / "area" / "environment"` |
+| `color`       | Vec3    | no            | `[1, 1, 1]`            | each `>= 0`                                         |
+| `intensity`   | float   | no            | `1.0`                  | `>= 0`                                              |
+| `position`    | Vec3    | required for `point`, `area`; ignored otherwise | `[0, 0, 0]` | finite |
+| `direction`   | Vec3    | required for `directional`, `area`; ignored otherwise | `[0, -1, 0]` | finite, non-zero |
+| `area_width`  | float   | required for `area` (PLACEHOLDER) | `0.0` | `> 0`                                  |
+| `area_height` | float   | required for `area` (PLACEHOLDER) | `0.0` | `> 0`                                  |
+
+**Direction normalisation**: the parser MUST normalise `direction`
+for `directional` and `area` lights before populating
+`Light::direction` (matching the behaviour of
+`make_directional_light` / `make_area_light`). Zero-length input
+falls back to `(0, -1, 0)`.
+
+**Type semantics** (matches Stage 9B kernel behaviour):
+
+| `type`        | Real renderer support | Notes                                                                                  |
+|---------------|:---------------------:|----------------------------------------------------------------------------------------|
+| `point`       | yes                   | `light_color * max(0, N · L) / d²` with epsilon falloff floor                          |
+| `directional` | yes                   | `light_color * max(0, N · -direction)`; no falloff                                     |
+| `area`        | **PLACEHOLDER**       | Uploaded; kernel currently skips. Real area-light sampling lands with the path tracer. |
+| `environment` | yes (basic)           | Treated as ambient `light_color` (no directional dependence); HDR env-maps are future. |
+
+## 11. `transform` (used by spheres, meshes, lights)
+
+Maps to `rr::math::Transform`. Plain data; conversion to a 4×4
+matrix is deferred to consumers.
+
+```json
+"transform": {
+  "position":         [0.0, 0.0, 0.0],
+  "rotation_radians": [0.0, 0.0, 0.0],
+  "scale":            [1.0, 1.0, 1.0]
+}
+```
+
+| Key                | Type | Required? | Default      | Validation     |
+|--------------------|------|:---------:|--------------|----------------|
+| `position`         | Vec3 | no        | `[0, 0, 0]`  | finite         |
+| `rotation_radians` | Vec3 | no        | `[0, 0, 0]`  | finite (Euler) |
+| `scale`            | Vec3 | no        | `[1, 1, 1]`  | finite, all components > 0 |
+
+**Note on Euler order**: the v1 parser MUST treat
+`rotation_radians` as XYZ-order intrinsic Euler angles (the
+prototype convention). The current renderer does not consume the
+transform, so the order is informational; once the kernel applies
+transforms (mesh-instancing / animation slices), this field's
+order is locked.
+
+## 12. Cross-section validation rules
+
+Beyond per-field validation, the parser MUST enforce these
+relationships before handing the scene to the renderer:
+
+| # | Rule | Failure mode |
+|---|------|-------------|
+| 1 | `version` major must match parser major version. | reject file |
+| 2 | `length(relativity.observer_velocity) < relativity.max_beta < 1`. | reject file |
+| 3 | Every `materials[i].id` must be unique. | reject file |
+| 4 | Every sphere `material_index` is `-1` or in `[0, materials.length())`. | reject sphere (load rest, warn) OR reject file (parser's choice; consistent across the file) |
+| 5 | Every mesh `material_id` is `-1` or in `[0, materials.length())`. | same as #4 |
+| 6 | Every triangle `[v0, v1, v2]` has indices in `[0, vertices.length())`. | reject mesh (load rest, warn) OR reject file |
+| 7 | Every light `type` is one of `point / directional / area / environment`. | reject file |
+| 8 | Light type-specific required fields are present (`position` for point/area, `direction` for directional/area, `area_*` for area). | reject light (load rest, warn) OR reject file |
+| 9 | Sphere `radius > 0`. | reject sphere (load rest, warn) OR reject file |
+| 10 | Resolution `width > 0` and `height > 0`. | reject file |
+
+The choice between "reject file" vs "reject entry, load rest, warn"
+is a parser-implementation choice that v1 declares **per-rule**
+above. Tools that need strict file validity (e.g. a CLI converter)
+MAY treat all "reject entry" cases as "reject file"; rendering
+tools SHOULD load what they can and surface warnings.
+
+## 13. Complete example
+
+A small lit scene with one diffuse-red sphere and a quad ground
+plane, plus directional + environment lighting:
+
+```json
+{
+  "version": "1.0.0",
+
+  "render_settings": {
+    "width":             512,
+    "height":            384,
+    "samples_per_pixel": 1,
+    "max_depth":         1
+  },
+
+  "camera": {
+    "position":    [0.0, 0.5, 0.0],
+    "target":      [0.0, 0.0, -3.0],
+    "up":          [0.0, 1.0, 0.0],
+    "fov_degrees": 50.0,
+    "near":        0.1,
+    "far":         100.0
+  },
+
+  "relativity": {
+    "observer_velocity":      [0.0, 0.0, 0.0],
+    "enable_aberration":      true,
+    "enable_doppler":         true,
+    "enable_searchlight":     true,
+    "doppler_color_strength": 1.0,
+    "searchlight_strength":   1.0,
+    "max_beta":               0.999999
+  },
+
+  "materials": [
+    {
+      "id":         0,
+      "name":       "red",
+      "base_color": [0.85, 0.20, 0.20]
+    },
+    {
+      "id":         1,
+      "name":       "neutral",
+      "base_color": [0.65, 0.65, 0.65]
+    }
+  ],
+
+  "spheres": [
+    {
+      "name":           "ball",
+      "center":         [0.0, 0.0, -3.0],
+      "radius":         0.6,
+      "material_index": 0
+    }
+  ],
+
+  "meshes": [
+    {
+      "name":        "ground",
+      "material_id": 1,
+      "vertices": [
+        { "position": [-2.0, -0.6, -2.0], "normal": [0, 1, 0], "uv": [0, 0] },
+        { "position": [ 2.0, -0.6, -2.0], "normal": [0, 1, 0], "uv": [1, 0] },
+        { "position": [ 2.0, -0.6, -5.0], "normal": [0, 1, 0], "uv": [1, 1] },
+        { "position": [-2.0, -0.6, -5.0], "normal": [0, 1, 0], "uv": [0, 1] }
+      ],
+      "triangles": [
+        [0, 1, 2],
+        [0, 2, 3]
+      ]
+    }
+  ],
+
+  "lights": [
+    {
+      "name":      "sun",
+      "type":      "directional",
+      "direction": [-0.4, -0.7, -0.6],
+      "color":     [1.0, 0.95, 0.85],
+      "intensity": 1.0
+    },
+    {
+      "name":      "sky",
+      "type":      "environment",
+      "color":     [0.30, 0.40, 0.55],
+      "intensity": 0.4
+    }
+  ]
+}
+```
+
+## 14. Format-evolution policy
+
+When v1.x adds backwards-compatible features, this doc gets a new
+section per addition; the version string bumps the minor / patch
+component. The complete list of v1 reserved-but-unused features
+the parser MUST accept silently:
+
+| Future feature              | Reserved field(s)                             | Lands in module |
+|-----------------------------|-----------------------------------------------|-----------------|
+| Texture binding             | `materials[].base_color_texture_id` (int)     | 18              |
+| Texture array               | top-level `textures` (array)                  | 18              |
+| Material node graphs        | `materials[].graph` (object)                  | 23              |
+| Per-mesh transform applied at intersection | (current `transform` finally consumed by kernel) | mesh-instancing slice |
+| Area-light sampling         | (current `area_*` finally consumed by kernel) | 16 (path tracer)|
+| HDR environment maps        | `lights[].env_map_path` (string)              | 18              |
+| Spectral colour             | `materials[].base_color_spectrum` (array)     | post-18         |
+| Animation                   | top-level `animation` (object)                | post-22         |
+
+A v1.0 parser MUST silently ignore any field name it does not
+recognise from the v1.0 schema. This guarantees that a v1.0 file
+authored against a v1.x parser still loads in a v1.0 parser, with
+the v1.x-specific features absent at runtime.
+
+## 15. Parser non-goals (v1)
+
+To set expectations for the parser-implementation slice:
+
+- **No comments in JSON.** Strict JSON only. JSON5 / JSONC are
+  rejected. (Tools that want comments can pre-process to standard
+  JSON.)
+- **No file references** beyond the placeholder `source_path` on
+  meshes (v2 will define a binary mesh format and texture references).
+- **No coordinate-system options.** The format is right-handed,
+  +Y-up, units-agnostic. Files for other conventions must convert
+  before saving.
+- **No exposure / tone-map metadata.** Writeback is linear
+  Rgba32F → 8-bit PPM today; HDR output is a future deliverable.
+- **No camera animation.** A single static camera per file. Time
+  / motion-blur land in a future schema version.
+
+---
+
+This is the complete `.rrscene` v1.0 specification. The parser
+implementation lives in master module 15 and lands in the
+`src/io/` layer (`SceneLoader.{h,cpp}` + `SceneWriter.{h,cpp}`)
+in the next stage; this document is the contract that work
+implements against.
