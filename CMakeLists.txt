@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.20)
 
 project(RelativityRender
     VERSION     0.1.0
-    DESCRIPTION "RelativityRender - GPU renderer platform (Stage 2: math library)"
+    DESCRIPTION "RelativityRender - GPU renderer platform (Stage 3: image / framebuffer)"
     LANGUAGES   CXX
 )
 
@@ -22,7 +22,7 @@ option(RR_BUILD_TESTS "Build tests" ON)
 
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
-message(STATUS "RelativityRender ${PROJECT_VERSION} (Stage 2: math library)")
+message(STATUS "RelativityRender ${PROJECT_VERSION} (Stage 3: image / framebuffer)")
 
 message(STATUS "  Build type   : ${CMAKE_BUILD_TYPE}")
 message(STATUS "  C++ standard : ${CMAKE_CXX_STANDARD}")
@@ -46,7 +46,20 @@ endfunction()
 add_library(rr_math INTERFACE)
 target_include_directories(rr_math INTERFACE src)
 
-# Main executable. Stage 1 surface (no math dependency yet).
+# rr_image: host-side floating-point framebuffer + PPM writer.
+# Color (Rgb / Rgba), Image (host buffer with set/get_pixel + clear +
+# resize + save_ppm), Framebuffer (thin owning wrapper that pairs an
+# Image with the renderer-target lifecycle). PUBLIC-links rr_math
+# because Color.h includes math/MathUtils.h for the RR_HD macro.
+add_library(rr_image STATIC
+    src/image/Image.cpp
+    src/image/Framebuffer.cpp
+)
+target_include_directories(rr_image PUBLIC src)
+target_link_libraries(rr_image PUBLIC rr_math)
+rr_apply_warnings(rr_image)
+
+# Main executable. Stage 1 surface (no math/image dependency yet).
 add_executable(RelativityRender
     src/main.cpp
     src/core/Logger.cpp
@@ -66,4 +79,15 @@ if(RR_BUILD_TESTS)
     target_link_libraries(math_tests PRIVATE rr_math)
     rr_apply_warnings(math_tests)
     add_test(NAME math_tests COMMAND math_tests)
+
+    # image_tests writes a debug gradient to `output/image_test.ppm`
+    # alongside its automated assertions. Pinning the working directory
+    # to ${CMAKE_BINARY_DIR} keeps the gradient under the build tree
+    # (which is gitignored) instead of polluting the source tree when
+    # ctest runs.
+    add_executable(image_tests tests/image_tests.cpp)
+    target_link_libraries(image_tests PRIVATE rr_image)
+    rr_apply_warnings(image_tests)
+    add_test(NAME image_tests COMMAND image_tests
+             WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
 endif()
