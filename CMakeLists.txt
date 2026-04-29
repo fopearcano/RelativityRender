@@ -30,6 +30,8 @@ message(STATUS "  C++ standard : ${CMAKE_CXX_STANDARD}")
 add_executable(RelativityRender
     src/main.cpp
     src/core/Logger.cpp
+    src/core/Config.cpp
+    src/core/CommandLine.cpp
 )
 target_include_directories(RelativityRender PRIVATE src)
 
