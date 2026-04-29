@@ -6,15 +6,17 @@ records what landed, in which stage, and the next concrete step.
 
 ## Current state
 
-**Stage 1 — Core app.** Skeleton C++20 executable with logger, version
-constants, application config, and command-line handling. No GPU, no
-rendering, no scene system, no server, no integrations.
+**Stages 1–2 — Core app + math library.** Skeleton C++20 executable
+with logger, version constants, application config, command-line
+handling, and a header-only RR_HD math library covering Vec2 / Vec3 /
+Vec4 / Mat4 plus 60 host-side test assertions wired to ctest. No GPU,
+no rendering, no scene system, no server, no integrations.
 
 ### Files in scope
 
 | File                       | Role                                                |
 |----------------------------|-----------------------------------------------------|
-| `CMakeLists.txt`           | Single executable, C++20, warnings on, no deps.     |
+| `CMakeLists.txt`           | Executable + interface library + ctest wiring.      |
 | `src/main.cpp`             | Entry point. Parses CLI, dispatches per action.     |
 | `src/core/Logger.h`        | `info` / `warning` / `error` static API.            |
 | `src/core/Logger.cpp`      | Thread-safe stdio logger with timestamp + level.    |
@@ -23,12 +25,19 @@ rendering, no scene system, no server, no integrations.
 | `src/core/Config.cpp`      | `Config::validate()` returns first problem (positive dims) as a string. |
 | `src/core/CommandLine.h`   | `CommandLine::parse(argc, argv) -> ParseResult { Action, Config, error_message }`, `usage(...)`, `version_string()`. |
 | `src/core/CommandLine.cpp` | Hand-rolled flag parser. Action flags mutually exclusive; numeric / value validation; clean exit codes. |
+| `src/math/MathUtils.h`     | `RR_HD` host/device portability macro; `min`/`max`/`clamp`/`lerp`/`saturate`/`radians`/`degrees`; `kPi`/`kTwoPi`/`kHalfPi`/`kEpsilon`. |
+| `src/math/Vec2.h`          | RR_HD POD; `+`/`-`/scalar `*`/`/`, `dot`, `length`. |
+| `src/math/Vec3.h`          | RR_HD POD; `+`/`-`/scalar `*`/`/`, Hadamard `*`, `dot`, `cross`, `length`, `length_squared`, `normalize` (zero on degenerate input), `clamp` (Vec3 + scalar bounds), `lerp`. |
+| `src/math/Vec4.h`          | RR_HD POD; `+`/`-`/scalar `*`/`/`, `dot`, `xyz()` accessor, `(Vec3, w)` constructor. |
+| `src/math/Mat4.h`          | Row-major 4x4; `identity` / `translation` / `scale` (snake_case to match codebase convention); `operator*`; `transform_point` / `transform_vector`. |
+| `tests/math_tests.cpp`     | Stand-alone executable, hand-rolled `RR_CHECK` macro, 60 assertions covering every Vec3 + Mat4 capability the prompt called out. |
 
 Build:
 
 ```sh
 cmake -S . -B build
 cmake --build build -j
+ctest --test-dir build --output-on-failure
 build/bin/RelativityRender                          # default startup banner
 build/bin/RelativityRender --help
 build/bin/RelativityRender --version
@@ -97,26 +106,68 @@ Status: implemented.
 No new dependencies. No GPU, no rendering, no scene parser, no
 server, no C4D — same as Stage 1.1.
 
+### Stage 2 — Math library
+
+Status: implemented.
+
+- Recovered the five math headers from the `prototype_v0` tag (each
+  was classified KEEP_AS_IS by the prior audit and supplies exactly
+  the surface the prompt requires):
+  `src/math/MathUtils.h`, `Vec2.h`, `Vec3.h`, `Vec4.h`, `Mat4.h`.
+- The `RR_HD` macro in `MathUtils.h` expands to `__host__ __device__`
+  under nvcc and is empty otherwise, so the same headers will be
+  usable from CUDA kernels in a later stage without modification.
+- `Mat4` keeps the codebase's snake_case naming for member operations
+  (`Mat4::identity` / `translation` / `scale` static factories,
+  `transform_point` / `transform_vector` free functions). The Stage-2
+  prompt named these `transformPoint` / `transformVector` informally;
+  using snake_case keeps the math library consistent with the rest of
+  the public surface (`Logger::info`, `Config::validate`,
+  `CommandLine::parse`, ...) and with the audit's naming-consistency
+  finding.
+- Added `tests/math_tests.cpp`. The project does not yet have a
+  third-party test framework, so this is a small self-contained
+  executable: hand-rolled `RR_CHECK` macro, 60 assertions covering
+  every Vec3 + Mat4 capability the prompt called out (construction,
+  arithmetic, dot, cross, length / length_squared, normalize incl.
+  degenerate input, clamp incl. both overloads, lerp, identity,
+  translation / scale point-vs-vector semantics, multiplication +
+  composition order). main() returns 0 on full pass, 1 otherwise.
+- CMake additions: a header-only `rr_math` INTERFACE library
+  (publishes `src/` as include path), an `RR_BUILD_TESTS` option (ON
+  by default), an `rr_apply_warnings()` helper to keep warning flags
+  centralised, an `enable_testing()` block, and a `math_tests`
+  executable wired through `add_test(NAME math_tests COMMAND
+  math_tests)`.
+
+Verified: `cmake --build build -j` clean (no warnings under
+`-Wall -Wextra -Wpedantic`); `ctest` reports `1/1 passed`; running
+`math_tests` directly prints `math_tests: 60 / 60 passed`. The main
+`RelativityRender` binary is unchanged — math is not yet consumed by
+core code.
+
+No new dependencies. No GPU, no rendering, no scene parser, no
+server, no C4D — same as Stages 1.1 and 1.2.
+
 ## Next stage
 
-**Stage 2 — Math library.** Module 4 in the master order. Scope:
-header-only RR_HD POD primitives — `Vec2`, `Vec3`, `Vec4`, `Mat4`,
-`Transform`, `MathUtils.h` (with the `RR_HD` macro). Host tests
-verify behaviour by construction so the same code works on the GPU
-when the CUDA stage lands.
+**Stage 3 — Image / framebuffer system.** Module 5 in the master
+order. Scope: a host-side floating-point framebuffer + simple PPM
+writer so later stages have somewhere to download GPU pixels into.
 
 Deliverables (planned, NOT yet implemented):
 
-- `src/math/Vec2.h`, `Vec3.h`, `Vec4.h`
-- `src/math/Mat4.h`
-- `src/math/Transform.h`
-- `src/math/MathUtils.h`
-- `tests/math_tests.cpp`
-- CMake additions: a header-only `rr_math` interface library, a
-  `math_tests` executable wired via `add_test()`.
+- `src/image/Color.h`     (Rgb / Rgba PODs)
+- `src/image/Image.h`     (host-side float framebuffer)
+- `src/image/Image.cpp`   (pixel write + PPM IO)
+- `tests/image_tests.cpp` (assertions on basic ops + PPM round-trip)
+- CMake additions: a real `rr_image` static library + an
+  `image_tests` test target, plus `rr_apply_warnings()` applied to
+  both.
 
-No additional dependencies. The prototype's math headers (audited
-clean, KEEP_AS_IS) are the source of the implementation.
+Allowed CPU work (per the master engineering rule that bans CPU
+ray-tracing): pixel writes for clearing / debug fills / IO
+validation. No per-ray work.
 
 ## Constraints carried forward
 
