@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.20)
 
 project(RelativityRender
     VERSION     0.1.0
-    DESCRIPTION "RelativityRender - GPU renderer platform (Stage 8B: GPU material shading)"
+    DESCRIPTION "RelativityRender - GPU renderer platform (Stage 9A: light data model)"
     LANGUAGES   CXX
 )
 
@@ -23,7 +23,7 @@ option(RR_ENABLE_CUDA "Enable CUDA backend (requires CUDA Toolkit)"   OFF)
 
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
-message(STATUS "RelativityRender ${PROJECT_VERSION} (Stage 8B: GPU material shading)")
+message(STATUS "RelativityRender ${PROJECT_VERSION} (Stage 9A: light data model)")
 
 message(STATUS "  Build type   : ${CMAKE_BUILD_TYPE}")
 message(STATUS "  C++ standard : ${CMAKE_CXX_STANDARD}")
@@ -121,6 +121,20 @@ target_include_directories(rr_material PUBLIC src)
 target_link_libraries(rr_material PUBLIC rr_math)
 rr_apply_warnings(rr_material)
 
+# rr_lighting: light data model (Stage 9A). Host-side `Light` POD
+# (a flat type-discriminated struct with point / directional /
+# area-placeholder / environment-placeholder fields) plus four
+# convenience factory functions. The kernel-side sampling /
+# evaluation helpers join `cuda/CudaLight.cuh` later; today that
+# header is a thin re-export. Renderer integration (GPU upload +
+# kernel direct-lighting) is Stage 9B.
+add_library(rr_lighting STATIC
+    src/lighting/Light.cpp
+)
+target_include_directories(rr_lighting PUBLIC src)
+target_link_libraries(rr_lighting PUBLIC rr_math)
+rr_apply_warnings(rr_lighting)
+
 # rr_relativity: header-only relativity math leaf.
 #
 #   RelativityParams.h - Observer (3-velocity in c-units) and
@@ -154,7 +168,7 @@ add_library(rr_scene STATIC
     src/scene/Scene.cpp
 )
 target_include_directories(rr_scene PUBLIC src)
-target_link_libraries(rr_scene PUBLIC rr_math rr_camera rr_geometry rr_relativity rr_material)
+target_link_libraries(rr_scene PUBLIC rr_math rr_camera rr_geometry rr_relativity rr_material rr_lighting)
 rr_apply_warnings(rr_scene)
 
 # rr_gpu: backend-agnostic GPU device + memory + (Stage 6) kernel
@@ -236,7 +250,7 @@ add_executable(RelativityRender
 )
 target_include_directories(RelativityRender PRIVATE src)
 target_link_libraries(RelativityRender PRIVATE
-    rr_gpu rr_image rr_camera rr_geometry rr_relativity rr_material rr_scene)
+    rr_gpu rr_image rr_camera rr_geometry rr_relativity rr_material rr_lighting rr_scene)
 rr_apply_warnings(RelativityRender)
 
 # Tests. The project does not yet have a third-party test framework;

@@ -2,6 +2,7 @@
 
 #include "camera/Camera.h"
 #include "geometry/Sphere.h"
+#include "lighting/Light.h"
 #include "material/MaterialTypes.h"
 #include "relativity/RelativityParams.h"
 #include "scene/RenderSettings.h"
@@ -76,12 +77,13 @@ struct SceneMaterial {
 
 // Light entry.
 //
-// Stage 6A scaffolding: only the authoring metadata is present.
-// The light type + parameters (point / directional / area /
-// environment, intensity, colour, extents) join at master module 14,
-// which introduces `rr::lighting::Light`.
+// Stage 9A promotes this from a placeholder shell to a real
+// authoring entry that carries the device-friendly
+// `rr::lighting::Light` POD. The kernel reads light arrays
+// via `GpuScene::upload_lights` once that lands (Stage 9B).
 struct SceneLight {
-    SceneObject object;
+    SceneObject         object;
+    rr::lighting::Light data;
 };
 
 // --- The scene container ------------------------------------------
