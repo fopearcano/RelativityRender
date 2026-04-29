@@ -181,6 +181,29 @@ output framebuffer (`width / height`) — the parser sets
 `Camera::set_aspect(width / height)` from `render_settings`. Files
 that override aspect would do so by changing resolution.
 
+### 5.1 Authoring shorthands (Stage 10B.3)
+
+Like `render_settings`, the `camera` block accepts a few
+authoring shorthands as exact synonyms for the canonical names:
+
+| Canonical name | Accepted shorthand | Notes                                        |
+|----------------|--------------------|----------------------------------------------|
+| `target`       | `forward`          | Direction vector instead of look-at point    |
+| `fov_degrees`  | `fovDegrees`       | camelCase variant for hand-authoring         |
+
+`forward` and `target` express the camera's orientation in two
+different idioms: `target` (canonical) is a world-space point the
+camera looks at; `forward` is a direction vector relative to
+`position`. When both are present `forward` wins. When `forward`
+is given, the parser computes `target = position + forward` and
+hands the pair to `Camera::look_at`; the magnitude of `forward`
+does not matter because `look_at` normalises internally. A
+zero-length `forward` is rejected.
+
+Tools that emit `.rrscene` files MUST emit the canonical names
+only; shorthands exist to make hand-authored files less verbose
+and are not part of the wire format guarantees.
+
 ## 6. `relativity`
 
 Maps to `rr::relativity::Observer` (kinematic state) plus

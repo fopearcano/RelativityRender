@@ -130,18 +130,35 @@ int run_scene_info(const rr::core::Config& cfg) {
         return 1;
     }
 
-    const auto& rs = result.scene.render_settings;
+    const auto& rs  = result.scene.render_settings;
+    const auto& cam = result.scene.camera;
+
+    auto fmt_vec3 = [](rr::math::Vec3 v) {
+        return "[" + std::to_string(v.x) + ", "
+                   + std::to_string(v.y) + ", "
+                   + std::to_string(v.z) + "]";
+    };
+
     Logger::info("scene file: " + cfg.scene_path);
     Logger::info("  version           : " + result.version);
-    Logger::info("  width             : " + std::to_string(rs.width));
-    Logger::info("  height            : " + std::to_string(rs.height));
-    Logger::info("  samples_per_pixel : "
+    Logger::info("  render_settings:");
+    Logger::info("    width             : " + std::to_string(rs.width));
+    Logger::info("    height            : " + std::to_string(rs.height));
+    Logger::info("    samples_per_pixel : "
                + std::to_string(rs.samples_per_pixel));
-    Logger::info("  max_depth         : " + std::to_string(rs.max_depth));
-    Logger::info("  output_path       : "
+    Logger::info("    max_depth         : " + std::to_string(rs.max_depth));
+    Logger::info("    output_path       : "
                + (rs.output_path.empty()
                     ? std::string("(none)")
                     : rs.output_path));
+    Logger::info("  camera:");
+    Logger::info("    position          : " + fmt_vec3(cam.position()));
+    Logger::info("    forward           : " + fmt_vec3(cam.forward()));
+    Logger::info("    up                : " + fmt_vec3(cam.up()));
+    Logger::info("    fov_degrees       : "
+               + std::to_string(cam.vertical_fov_degrees()));
+    Logger::info("    aspect            : "
+               + std::to_string(cam.aspect()));
     return 0;
 }
 
@@ -932,7 +949,7 @@ int main(int argc, char** argv) {
         case CommandLine::Action::Default:
             Logger::info(std::string(rr::core::kProjectName) + " "
                        + rr::core::kVersionString + " starting up.");
-            Logger::info("Stage 10B.2: parse render settings. "
+            Logger::info("Stage 10B.3: parse camera. "
                          "Try --scene-info <file>, --device-info, "
                          "--render-gradient, --render-rays, "
                          "--render-sphere, --render-relativistic, "

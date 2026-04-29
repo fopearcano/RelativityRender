@@ -1,0 +1,15 @@
+{
+  "version": "1.0.0",
+
+  "render_settings": {
+    "width":  640,
+    "height": 360
+  },
+
+  "camera": {
+    "position":   [0.0, 1.5, 4.0],
+    "forward":    [0.0, -0.25, -1.0],
+    "up":         [0.0, 1.0, 0.0],
+    "fovDegrees": 55.0
+  }
+}

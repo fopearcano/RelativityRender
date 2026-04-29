@@ -1,6 +1,10 @@
 #include "io/SceneLoader.h"
 
+#include "camera/Camera.h"
+#include "math/Vec3.h"
+
 #include <cctype>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -465,6 +469,52 @@ bool to_string(const JsonValue& v, std::string& out, std::string& err,
     return true;
 }
 
+// Convert a JSON Number to float. Numbers that round-trip via double
+// are accepted; non-finite values (NaN / inf cannot legally appear
+// in JSON, but we double-check after the cast) are rejected.
+bool to_float(const JsonValue& v, float& out, std::string& err,
+              const char* field) {
+    if (v.kind != JsonKind::Number) {
+        err = std::string("field '") + field + "' must be a number";
+        return false;
+    }
+    const double n = v.n;
+    if (!std::isfinite(n)) {
+        err = std::string("field '") + field + "' must be finite";
+        return false;
+    }
+    out = static_cast<float>(n);
+    return true;
+}
+
+// Read a length-3 JSON array of finite numbers into a Vec3. The
+// `field` label is used for error diagnostics ("camera.position",
+// etc.) and is included in the error message verbatim.
+bool to_vec3(const JsonValue& v, rr::math::Vec3& out, std::string& err,
+             const char* field) {
+    if (v.kind != JsonKind::Array) {
+        err = std::string("field '") + field
+            + "' must be a JSON array of 3 numbers";
+        return false;
+    }
+    if (v.arr.size() != 3) {
+        err = std::string("field '") + field
+            + "' must have exactly 3 elements (got "
+            + std::to_string(v.arr.size()) + ")";
+        return false;
+    }
+    float xyz[3] = {0.0f, 0.0f, 0.0f};
+    const char* labels[3] = { "[0]", "[1]", "[2]" };
+    for (int i = 0; i < 3; ++i) {
+        const std::string elem_field = std::string(field) + labels[i];
+        if (!to_float(v.arr[i], xyz[i], err, elem_field.c_str())) {
+            return false;
+        }
+    }
+    out = rr::math::Vec3{xyz[0], xyz[1], xyz[2]};
+    return true;
+}
+
 // Apply an entry from the `render_settings` block onto `rs`.
 // Accepts the canonical spec names (`width`, `height`,
 // `samples_per_pixel`, `max_depth`) and the user-shorthand aliases
@@ -512,6 +562,95 @@ bool apply_render_settings(const JsonValue& obj,
         if (!to_string(*v, rs.output_path, err,
                        "render_settings.output_path")) return false;
     }
+    return true;
+}
+
+// Apply the `camera` block onto `cam`. Stage 10B.3 surface: reads
+// `position`, an orientation pair (`forward` direction OR `target`
+// look-at point - canonical spec form), `up`, and the vertical FOV
+// in degrees (`fov_degrees` canonical, `fovDegrees` accepted as
+// authoring shorthand). Aspect is set from `rs.width / rs.height`
+// so the camera basis is consistent with the resolution authored
+// in the same file (per RRSCENE_FORMAT.md §5).
+//
+// Stage 10B.3 explicitly does NOT read `near` / `far`; the Camera
+// keeps its default clip range. That mapping joins in a follow-up
+// sub-stage when the corresponding render features need them.
+bool apply_camera(const JsonValue& obj,
+                  const rr::scene::RenderSettings& rs,
+                  rr::camera::Camera& cam,
+                  std::string& err) {
+    if (obj.kind != JsonKind::Object) {
+        err = "'camera' must be a JSON object";
+        return false;
+    }
+
+    rr::math::Vec3 position{0.0f, 0.0f, 0.0f};
+    rr::math::Vec3 up_hint{0.0f, 1.0f, 0.0f};
+    rr::math::Vec3 target{0.0f, 0.0f, -1.0f};
+
+    bool has_position = false;
+    if (const auto* v = obj.find("position")) {
+        if (!to_vec3(*v, position, err, "camera.position")) return false;
+        has_position = true;
+    } else {
+        position = cam.position();
+    }
+
+    if (const auto* v = obj.find("up")) {
+        if (!to_vec3(*v, up_hint, err, "camera.up")) return false;
+    } else {
+        up_hint = cam.up();
+    }
+
+    // Orientation: prefer `forward` (the user-shorthand authoring
+    // style; a direction vector relative to `position`) and fall
+    // back to `target` (the canonical spec form; a world-space
+    // look-at point). If neither is given, retain the camera's
+    // existing orientation by deriving target from position +
+    // current forward.
+    if (const auto* v = obj.find("forward")) {
+        rr::math::Vec3 fwd{0.0f, 0.0f, -1.0f};
+        if (!to_vec3(*v, fwd, err, "camera.forward")) return false;
+        if (fwd.x == 0.0f && fwd.y == 0.0f && fwd.z == 0.0f) {
+            err = "camera.forward must be a non-zero vector";
+            return false;
+        }
+        target = position + fwd;
+    } else if (const auto* tv = obj.find("target")) {
+        if (!to_vec3(*tv, target, err, "camera.target")) return false;
+        if (target.x == position.x
+         && target.y == position.y
+         && target.z == position.z) {
+            err = "camera.target must differ from camera.position";
+            return false;
+        }
+    } else if (has_position) {
+        // Position changed but neither `forward` nor `target` was
+        // authored: keep the camera's existing forward direction by
+        // projecting it forward from the new position.
+        target = position + cam.forward();
+    } else {
+        target = position + cam.forward();
+    }
+
+    cam.look_at(position, target, up_hint);
+
+    if (const auto* v = obj.find_or("fov_degrees", "fovDegrees")) {
+        float fov = 0.0f;
+        if (!to_float(*v, fov, err, "camera.fov_degrees")) return false;
+        if (!(fov > 0.01f && fov < 180.0f)) {
+            err = "camera.fov_degrees must be in (0.01, 180)";
+            return false;
+        }
+        cam.set_vertical_fov_degrees(fov);
+    }
+
+    // Aspect derives from the resolution authored in the same file
+    // (see RRSCENE_FORMAT.md §5). RenderSettings has been validated
+    // before us; both width and height are > 0.
+    cam.set_aspect(static_cast<float>(rs.width)
+                 / static_cast<float>(rs.height));
     return true;
 }
 
@@ -621,11 +760,23 @@ LoadResult parse(const std::string& text) {
         }
     }
 
-    // Stage 10B.2 schema scope ends here. Other top-level keys
-    // (`camera`, `relativity`, `materials`, `spheres`, `meshes`,
-    // `lights`) are intentionally ignored - they were syntax-
-    // checked by the JSON parser pass and will be mapped onto
-    // `scene` in follow-up sub-stages.
+    // camera (optional). Stage 10B.3 surface: position / forward
+    // (or target) / up / fov. Aspect derives from the
+    // already-validated render_settings.
+    if (const JsonValue* cam_v = root.find("camera")) {
+        std::string apply_err;
+        if (!apply_camera(*cam_v, result.scene.render_settings,
+                          result.scene.camera, apply_err)) {
+            result.error_message = apply_err;
+            return result;
+        }
+    }
+
+    // Stage 10B.3 schema scope ends here. Other top-level keys
+    // (`relativity`, `materials`, `spheres`, `meshes`, `lights`)
+    // are intentionally ignored - they were syntax-checked by the
+    // JSON parser pass and will be mapped onto `scene` in
+    // follow-up sub-stages.
 
     result.ok = true;
     return result;

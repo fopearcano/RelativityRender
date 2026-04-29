@@ -1793,28 +1793,114 @@ and had no `output_path` field. Resolution:
   parsed without error and the section is silently dropped, as
   intended for this slice.
 
+## Stage 10B.3 — parse camera
+
+**Scope of this slice (Stage 10B.3): add a camera schema mapper
+that reads `camera.position`, `camera.forward`, `camera.up`, and
+`camera.fovDegrees` from a `.rrscene` v1 file onto
+`rr::scene::Scene::camera`, plus a fixture and an extension to
+`--scene-info`.** Relativity, materials, geometry, and lights
+remain out of scope; `near` / `far` are also deferred.
+
+### What ships
+
+- `src/io/SceneLoader.cpp` — added `to_float`, `to_vec3`, and
+  `apply_camera`. The mapper:
+  - Reads `position` (Vec3) and `up` (Vec3 hint), each via the
+    new `to_vec3` helper that validates length-3 finite arrays.
+  - Reads orientation via either `forward` (direction vector;
+    user-shorthand authoring style) OR `target` (world-space
+    look-at point; canonical spec form). When both are present
+    `forward` wins. Zero-length `forward` and `target ==
+    position` are both rejected.
+  - Reads `fov_degrees` (canonical) with `fovDegrees` accepted
+    as a camelCase shorthand. Validates `0.01 < fov < 180`.
+  - Calls `Camera::look_at(position, target, up_hint) +
+    set_vertical_fov_degrees(fov) + set_aspect(width / height)`,
+    deriving aspect from the already-validated render settings
+    (per RRSCENE_FORMAT.md §5).
+  - Stage 10B.3 explicitly does **not** read `near` / `far`; the
+    Camera retains its constructor defaults. Those mappings join
+    when a render feature actually consumes the clip range.
+- `src/io/SceneLoader.cpp::parse` — wires the camera mapper in
+  after `apply_render_settings`. Other top-level keys
+  (`relativity`, `materials`, `spheres`, `meshes`, `lights`) are
+  still parsed for syntactic validity and dropped.
+- `src/main.cpp::run_scene_info` — extended to print the parsed
+  camera fields (`position`, `forward`, `up`, `fov_degrees`,
+  derived `aspect`) under a `camera:` heading, with the existing
+  render-settings block now nested under `render_settings:` for
+  symmetry. A small `fmt_vec3` lambda formats `[x, y, z]`.
+- `scenes/test_camera.rrscene` — fixture exercising every
+  required camera field plus the `forward` / `fovDegrees`
+  shorthands, on a 640×360 framebuffer.
+- `docs/RRSCENE_FORMAT.md` §5.1 — new shorthand table:
+  `target` ↔ `forward`, `fov_degrees` ↔ `fovDegrees`. Documents
+  the precedence rule (`forward` wins when both are present),
+  the `target = position + forward` derivation, and the
+  zero-length rejection. Writers must still emit canonical names.
+
+### Naming-tension resolution
+
+Stage 10B.3's prompt listed `camera.forward` and `camera.fovDegrees`;
+the Stage 10A spec uses `target` (world-space point) and
+`fov_degrees` (snake_case). Same approach as 10B.2: accept both,
+prefer canonical in `find_or` lookups, document shorthands in the
+spec under §5.1.
+
+`forward` is **not** equivalent to `target` semantically (one is a
+direction, the other a point) so the parser converts: `target =
+position + forward` before calling `Camera::look_at`. The magnitude
+of `forward` is irrelevant because `look_at` normalises. The
+distinction matters when a future writer emits files: it will only
+emit `target`, never `forward`.
+
+### Hard-rule audit
+
+- Do not parse materials/geometry/lights yet — **yes**, no
+  mapper for `materials` / `spheres` / `meshes` / `lights` exists;
+  those blocks are JSON-validated and dropped.
+- Do not render yet unless a parser test path already exists —
+  **yes**, the only consumer of the parser is `--scene-info`,
+  which only prints. No GPU launch path is reached.
+- No GPU changes — **yes**, no source under `src/gpu/` or
+  `src/cuda/` is touched. `rr_gpu`'s sources, headers, and link
+  list are byte-identical to Stage 10B.2.
+- Must compile — **yes**, host-only build is clean under
+  `-Wall -Wextra -Wpedantic`, no warnings; `ctest` reports 3/3.
+
+### Verified at the CLI
+
+- `--scene-info scenes/test_camera.rrscene` prints position
+  `[0, 1.5, 4.0]`, forward normalised to `[0, -0.2425, -0.9701]`,
+  up reorthogonalised to `[0, 0.9701, -0.2425]`, fov 55°, aspect
+  derived as `640/360 ≈ 1.7778`.
+- A canonical-form fixture using `target` + `fov_degrees` parses
+  identically; the resulting forward / up basis is correct.
+- `forward = [0, 0, 0]` → exit 1, "camera.forward must be a
+  non-zero vector".
+- `position` of length 2 → exit 1, "field 'camera.position'
+  must have exactly 3 elements (got 2)".
+- The Stage 10B.2 fixture (`scenes/test_render_settings.rrscene`)
+  still parses without a `camera` block and yields the camera's
+  default basis.
+
 ## Next stage
 
-**Stage 10B.3 — camera + relativity mappers.** Scope:
+**Stage 10B.4 — parse relativity.** Scope:
 
-- Add `apply_camera` schema reader: maps the §5 `camera` block
-  onto `rr::camera::Camera` via `look_at` + `set_vertical_fov_degrees`
-  + `set_clip_range` + `set_aspect(width / height)` from the
-  already-populated `RenderSettings`.
-- Add `apply_relativity` schema reader: maps the §6
-  `relativity` block onto `rr::relativity::Observer` +
+- Add `apply_relativity` schema reader: maps the §6 `relativity`
+  block onto `rr::relativity::Observer` and
   `rr::relativity::RelativityParams`, enforcing the
   `length(observer_velocity) < max_beta < 1` cross-section rule
   from §12.
-- Extend the test fixture (`scenes/test_render_settings.rrscene`
-  → split into `test_minimal.rrscene` + `test_render_settings.rrscene`,
-  or add a second fixture) so `--scene-info` can also print the
-  parsed camera + observer state.
-- Still no GPU upload; still no `--render <file>` wiring.
+- Extend `--scene-info` to print the parsed observer velocity +
+  relativity toggles.
+- Add `scenes/test_relativity.rrscene` fixture.
 
-Materials / spheres / meshes / lights mappers come in 10B.4 and
-10B.5; the `--render <file>` wiring + writer (`SceneWriter::save`)
-join in the final 10B sub-stage.
+Materials / spheres / meshes / lights mappers come in 10B.5 and
+10B.6; the `--render <file>` end-to-end wiring + writer
+(`SceneWriter::save`) join in the final 10B sub-stage.
 
 ## Constraints carried forward
 
