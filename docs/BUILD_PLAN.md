@@ -3680,6 +3680,7 @@ sub-stages, appended to the same file.** No code is touched.
 |----------|----------------------------------|:------:|
 | 12A.1    | OPTIX_BACKEND_PLAN.md §1-§4      | ✅      |
 | 12A.2.1  | OPTIX_BACKEND_PLAN.md §5 (Raygen) | ✅      |
+| 12A.2.2  | OPTIX_BACKEND_PLAN.md §6 (Miss)  | ✅      |
 | 12A.x    | remaining program / AS / SBT / data-flow / file-layout / risks sections | pending |
 | 12B      | minimum-viable OptiX backend     | pending |
 | 12C+     | feature parity with CUDA backend | pending |
@@ -3719,14 +3720,84 @@ AH / §9 SBT / §10+ remain pending).**
   Stages 12A.1 and the Stage 11 audit.
 - Update docs/BUILD_PLAN.md — **yes**, this entry.
 
+## Stage 12A.2.2 — OptiX miss program design
+
+**Scope of this slice (Stage 12A.2.2): documentation-only.
+Append §6 "Miss program" to `docs/OPTIX_BACKEND_PLAN.md`
+covering role (env evaluator, refining §5's coarse "env-in-
+raygen" sketch), inputs (`optixGetWorldRayDirection` +
+`optixLaunchParams.{env_color, env_intensity, observer,
+params}` + empty SBT user-data), outputs (RGB radiance
+written to payload, hit-flag cleared), the Doppler /
+searchlight integration with explicit primary-vs-bounce
+design choice, and a read/write summary. No code; no other
+sections (§7 CH / §8 AH / §9 SBT / §10+ remain pending).**
+
+### What ships
+
+- `docs/OPTIX_BACKEND_PLAN.md` §6 with subsections 6.1 Role
+  (with three-part rationale for moving env evaluation out
+  of raygen and into miss: locality, relativistic
+  modulation, future ray types), 6.2 Inputs (6.2.1 built-in
+  OptiX state, 6.2.2 launch params, 6.2.3 SBT miss record),
+  6.3 Outputs (RGB radiance + hit flag in payload, sketch
+  with placeholder register names since the layout
+  finalises in 12A.2.3), 6.4 Doppler / searchlight
+  interaction (calls `dopplerFactor` /
+  `applyDopplerColor` / `searchlightFactor` from the
+  existing `relativity/RelativityMath.h` RR_HD helpers), 6.4.1
+  Primary vs bounce rays — a deliberate choice (Stage 12B
+  applies modulation on every miss; documents the upgrade
+  path via an `is_primary` payload bit if artifacts surface),
+  6.5 Read/write summary, 6.6 Scope (forward-points to
+  shadow-ray miss in 12C+ NEE and HDR env-maps in master
+  order #18).
+- The footer's first outstanding-items bullet narrows from
+  "Miss / Closest-hit / Any-hit / Intersection program
+  design" to "Closest-hit / Any-hit / Intersection program
+  design".
+- This BUILD_PLAN entry + status-table row.
+
+### Design notes worth highlighting
+
+- **§6 refines §5.** The §5 raygen section sketched "env
+  contribution computed in raygen". §6 supersedes that with
+  "miss program writes radiance, raygen accumulates" —
+  cleaner split, makes Doppler integration physically and
+  mechanically natural (the ray direction is in scope at the
+  miss site). A future doc-cleanup pass could roll this back
+  into §5 for consistency, but the forward-pointing note in
+  §6.1 makes the relationship explicit without rewriting §5.
+- **Apply Doppler/searchlight on every miss.** The simplest
+  Stage 12B design — matches the Stage 6-9 single-shot
+  kernel posture (Doppler applied to the primary's
+  contribution, all rays treated as observer-frame for
+  artistic consistency). The §6.4.1 subsection documents
+  the choice, the physics it deviates from, and the
+  one-payload-bit upgrade if needed.
+- **Reuses existing RR_HD helpers verbatim.** No new
+  relativity math is introduced; `dopplerFactor`,
+  `applyDopplerColor`, `searchlightFactor` already work
+  device-side (Stage 9 audit), so the miss-program path is
+  a textbook re-use of existing primitives.
+
+### Hard-rule audit
+
+- Do not add other sections — **yes**, only §6 was
+  appended; the footer was narrowed by exactly one item.
+- Documentation only — **yes**, no source under `src/`,
+  `tests/`, or `CMakeLists.txt` is touched. The only edits
+  are two markdown files.
+- Update docs/BUILD_PLAN.md — **yes**, this entry.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
 
-- continue 12A.2: append §6 (Miss), §7 (Closest-hit), §8
-  (Any-hit), and §9 (SBT) to `OPTIX_BACKEND_PLAN.md`,
-  one focused section per sub-stage (12A.2.2, 12A.2.3, ...)
-  matching the 12A.2.1 cadence;
+- continue 12A.2: append §7 (Closest-hit), §8 (Any-hit),
+  and §9 (SBT) to `OPTIX_BACKEND_PLAN.md`, one focused
+  section per sub-stage (12A.2.3, 12A.2.4, ...) matching the
+  12A.2.1 / 12A.2.2 cadence;
 - *or* (if the priority is path-tracer feature breadth
   instead of backend swap) direct-light sampling (NEE),
   non-diffuse materials, multi-mesh upload, or relativistic-
