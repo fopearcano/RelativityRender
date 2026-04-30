@@ -4296,6 +4296,32 @@ stable host-facing surface as those internals shift.
 
 ---
 
+## 20. OptiX programs
+
+The third piece of the planned `src/optix/` directory is
+the OptiX programs translation unit — a single `.cu`
+file that compiles to PTX (or OptiXIR) and is embedded
+into the executable for the OptiX pipeline to load at
+runtime.
+
+| File                          | Purpose                                                |
+|-------------------------------|--------------------------------------------------------|
+| `src/optix/OptixPrograms.cu`  | Contains raygen, miss, closest-hit programs            |
+
+Per Stage 12B's program-side design (§5 / §6 / §7), the
+file ships exactly three OptiX program entry points: the
+raygen (driving primary rays + the bounce loop), the miss
+(returning Doppler-modulated environment radiance), and
+the closest-hit (extracting hit data + emission +
+albedo). The any-hit slot stays empty in Stage 12B per
+§8.3's "no AH program" choice; the file does not declare
+an AH entry. Sphere + triangle hits share the same
+closest-hit entry function — geometry-specific recipes
+(§7.6.1 / §7.6.2) branch on the primitive type at hit
+time, so one CH file covers both HitGroup records (§9.4).
+
+---
+
 ## Sections to come
 
 Future Stage 12A sub-stages will append (one per slice or

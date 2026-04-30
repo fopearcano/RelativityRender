@@ -3694,6 +3694,7 @@ sub-stages, appended to the same file.** No code is touched.
 | 12A.4.2  | OPTIX_BACKEND_PLAN.md §17 (Path tracing integration) | ✅ |
 | 12A.4.3.1 | OPTIX_BACKEND_PLAN.md §18 (OptiX backend files) | ✅ |
 | 12A.4.3.2 | OPTIX_BACKEND_PLAN.md §19 (OptiX renderer files) | ✅ |
+| 12A.4.3.3 | OPTIX_BACKEND_PLAN.md §20 (OptiX programs)      | ✅ |
 | 12A.x    | remaining IS / file-layout sub-stages / migration-risks | pending |
 | 12B      | minimum-viable OptiX backend     | pending |
 | 12C+     | feature parity with CUDA backend | pending |
@@ -4998,6 +4999,78 @@ other sections.**
 - Do not add other files — **yes**, only the
   OptixRenderer pair was listed; the prompt's "Do not
   add other files" was respected.
+- Documentation only — **yes**, no source under
+  `src/`, `tests/`, or `CMakeLists.txt` is touched.
+  The only edits are two markdown files.
+- Update docs/BUILD_PLAN.md — **yes**, this entry.
+
+## Stage 12A.4.3.3 — OptiX programs
+
+**Scope of this slice (Stage 12A.4.3.3): documentation-only.
+Append §20 "OptiX programs" to
+`docs/OPTIX_BACKEND_PLAN.md` listing exactly the one file
+the user prompt names — `src/optix/OptixPrograms.cu` —
+with the user's exact one-liner: "Contains raygen, miss,
+closest-hit programs". Third sub-stage in the 12A.4.3.x
+file-pair sequence (single-file slice this time).
+Subsequent sub-stages append the remaining `src/optix/`
+modules (SBT, AS, launch-params). No code; no other
+files; no other sections.**
+
+### What ships
+
+- `docs/OPTIX_BACKEND_PLAN.md` §20 with a single-row
+  table:
+  - `src/optix/OptixPrograms.cu` — "Contains raygen,
+    miss, closest-hit programs" (the user's exact
+    one-liner).
+  Plus a short paragraph cross-referencing the
+  program-side design sections: raygen drives primary
+  rays + the bounce loop (§5), miss returns Doppler-
+  modulated environment radiance (§6), closest-hit
+  extracts hit data + emission + albedo (§7). The
+  any-hit slot stays empty per §8.3's "no AH program"
+  choice. Sphere + triangle hits share the same CH
+  entry function with the geometry-specific recipes
+  (§7.6.1 / §7.6.2) branching at hit time — one CH
+  function covers both HitGroup records (§9.4).
+- The footer is untouched — "Planned module / file
+  layout" stays pending until the full file layout is
+  documented across the remaining 12A.4.3.x sub-stages
+  (SBT, AS, launch-params remain to come).
+- This BUILD_PLAN entry + status-table row.
+
+### Architectural decisions worth highlighting
+
+- **Single .cu file for all three programs.** No need
+  to split raygen / miss / CH into separate
+  translation units — they all compile to the same
+  PTX/OptiXIR module that the OptiX pipeline links.
+  Co-locating them in one TU keeps the `OptixLaunch
+  Params.h` include path simple and lets all three
+  programs share `__device__` helper functions
+  without forward-declaration friction.
+- **No any-hit entry.** Stage 12B's §8.3 "no AH
+  program" decision means `OptixPrograms.cu`
+  declares only three entry functions, not four. The
+  AH slot in the HitGroup records (per §9.4) carries
+  `nullptr` at SBT build time. Future 12C+ shadow-ray
+  / alpha-test slices add an AH entry function
+  alongside the existing three.
+- **Shared CH for sphere + triangle.** §7.6.1 and
+  §7.6.2 documented the per-primitive hit-data
+  extraction recipes; both fit inside one CH program
+  that branches on the primitive type at hit time.
+  The two HitGroup records (sphere, triangle) point
+  at the same CH entry function, with the SBT's
+  per-record program-group identifier guaranteeing
+  the correct dispatch via OptiX's runtime.
+
+### Hard-rule audit
+
+- Do not add other files — **yes**, only
+  `OptixPrograms.cu` was listed; the prompt's "Do
+  not add other files" was respected.
 - Documentation only — **yes**, no source under
   `src/`, `tests/`, or `CMakeLists.txt` is touched.
   The only edits are two markdown files.
