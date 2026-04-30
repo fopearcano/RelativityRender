@@ -3144,12 +3144,218 @@ which the unit-length tolerances absorb).
 | ...   | (existing flags through 10B.11)  | (unchanged)                                      |
 | 11A   | `--render-rng-test`              | Stage 11A noise / sampling validation image      |
 
+## Stage 11B — progressive accumulation buffer
+
+**Scope of this slice (Stage 11B; master order #16, "Path
+tracing foundation"): add the GPU-side progressive-accumulation
+infrastructure the path tracer needs - a device Rgba32F sum
+buffer, a sample counter, kernels for clear / add-sample-frame /
+resolve-to-display, and a validation kernel that demonstrates
+the accumulator converges to the known mean of its input.** No
+path-tracer integration; the path tracer itself is its own
+stage. No CPU pixel accumulation; every per-pixel write happens
+on the device.
+
+### What ships
+
+- `src/renderer/AccumulationBuffer.h` — host-facing class
+  declaration:
+  - `resize(w, h)` allocates the device buffer (4 floats /
+    pixel, Rgba32F) and zero-initialises it via the same
+    kernel `reset` calls.
+  - `reset()` zeroes the device buffer + sample counter.
+  - `accumulate_sample(device_sample)` adds a single device-
+    side sample frame onto the running sum; advances the
+    counter on success.
+  - `resolve_to_image()` produces a host `rr::image::Image`
+    (Rgba32F): allocates a temporary device display buffer,
+    runs the resolve kernel (`display = acc * 1/N`),
+    downloads, returns. The accumulator stays untouched so
+    callers can keep adding samples after a preview resolve.
+  - `valid()` / `width()` / `height()` / `samples_count()`
+    accessors.
+- `src/renderer/AccumulationBuffer.cpp` — host-only owner.
+  Holds a `rr::gpu::GpuBuffer<float>` and dispatches each
+  primitive through the `cuda::launch_accum_*` shims (declared
+  in `CudaAccumulation.cuh`) under `RR_HAS_CUDA`. Returns
+  `false` honestly on the host-only build path - the master
+  rule "GPU accumulates samples" rules out a CPU fallback, so
+  the no-backend case is reported, not faked.
+- `src/cuda/CudaAccumulation.cuh` — host-callable launcher
+  declarations. Signatures use only host-friendly types
+  (`float*`, `std::size_t`, `int`, `unsigned int`, `float`),
+  no `cudaStream_t`, so this header is safe to include from
+  `AccumulationBuffer.cpp` without forcing nvcc on that TU.
+  Mirrors the `cuda/CudaBuffer.h` pattern (host-friendly shim
+  declarations whose definitions live in a CUDA-aware TU).
+- `src/cuda/CudaAccumulation.cu` (the implementation pair
+  for the `.cuh`, sibling of `CudaTestKernel.cu`; not in the
+  prompt's three-file list but required - kernel definitions
+  cannot live in a `.cpp`):
+  - `__global__ k_accum_add(acc, sample, n)` - element-wise
+    `acc[i] += sample[i]`, 1D grid sized at 256-threads/block.
+  - `__global__ k_accum_resolve(acc, display, n, inv_samples)`
+    - element-wise `display[i] = acc[i] * inv_samples`.
+  - `__global__ k_random_rgba_sample(pixels, w, h, seed,
+     sample_index)` - the test-only sample source. Per pixel,
+    seeds a `pathtracer::Rng` via `make_pixel_rng`, writes
+    `(next_float, next_float, next_float, 1.0)`. The
+    `sample_index` flows through `frame_index` so each of the
+    N accumulated frames produces decorrelated noise.
+  - `launch_accum_clear` is `cudaMemset` (no kernel needed -
+    faster than launching a per-element store).
+  - All four launchers drain the sticky `cudaGetLastError`
+    on failure so a later real CUDA call sees a clean state.
+- `src/main.cpp::run_render_accumulation_test` - the
+  orchestration handler. Allocates an `AccumulationBuffer` +
+  a device sample buffer, loops 64 iterations of
+  `launch_random_rgba_sample` -> `accumulate_sample`, then
+  `resolve_to_image()` and saves. The orchestration deliberately
+  lives in the executable (which links both `rr_renderer`
+  and `rr_gpu`) rather than as a static method on
+  `CudaRenderer`, so the dependency direction stays one-way:
+  `rr_renderer` -> `rr_gpu` only. Adding it to `rr_gpu`
+  would create a cycle (`rr_gpu` calls
+  `AccumulationBuffer::*`, `rr_renderer` already PUBLIC-links
+  `rr_gpu`).
+- `src/core/CommandLine.{h,cpp}` + `src/main.cpp` - new
+  `Action::RenderAccumulationTest` +
+  `--render-accumulation-test` flag (no argument; uses
+  `--width` / `--height`). Default output
+  `output/gpu_accumulation_test.ppm`. Mutually exclusive with
+  other action flags via the existing `set_action` machinery.
+- `CMakeLists.txt`:
+  - new `rr_renderer` STATIC library exporting
+    `AccumulationBuffer`. PUBLIC-links `rr_image` (because
+    `resolve_to_image` returns `Image` by value) and `rr_gpu`
+    (because the host class holds `GpuBuffer<float>` by value,
+    and the `RR_HAS_CUDA` macro propagates from `rr_gpu`'s
+    PUBLIC compile definitions so the same gating in
+    `AccumulationBuffer.cpp` stays in sync).
+  - `cuda/CudaAccumulation.cu` added to `rr_gpu`'s CUDA
+    sources under `RR_ENABLE_CUDA`.
+  - `RelativityRender` executable now links `rr_renderer`.
+  - status string bumped to "Stage 11B: progressive
+    accumulation buffer".
+
+### Layout choice
+
+The accumulation buffer stores per-pixel **sums** (not running
+averages) plus a single host-side sample counter. Resolving
+into a display divides every channel by the counter. This is
+the standard GPU-progressive-render shape:
+
+- Single global counter (vs. per-pixel) keeps the buffer at
+  exactly 4 floats/pixel - the same shape as every other
+  Rgba32F framebuffer in the project, including the input
+  sample buffers. Adaptive sampling can layer per-pixel
+  counts on top in a later stage by widening the storage to
+  5 floats/pixel.
+- Sums (not running averages) make `accumulate_sample` a
+  pure element-wise add - no divide on the hot path, no
+  rolling-mean numerical drift. The divide happens once per
+  resolve.
+
+### Why the orchestration moved out of CudaRenderer
+
+The first sketch put `render_accumulation_test` as a static
+method on `CudaRenderer` (rr_gpu). That introduced a circular
+static-lib dependency: `rr_gpu` calling
+`AccumulationBuffer::accumulate_sample` (defined in
+rr_renderer) while `rr_renderer` PUBLIC-linked `rr_gpu` for
+`GpuBuffer<float>`. The fix was moving the test orchestration
+into `main.cpp` (which already links both libs), keeping the
+static-lib graph acyclic:
+
+```
+rr_renderer ----> rr_gpu ----> rr_pathtracer
+       \             \              \
+        \             \-----> rr_image, rr_camera, ...
+         \---> rr_image
+```
+
+`rr_gpu` doesn't need to know about `AccumulationBuffer`; the
+two are coordinated by the executable.
+
+### Build-host constraint (this environment)
+
+Same as Stages 10B.10 / 10B.11 / 11A: this environment has no
+CUDA toolchain and no GPU, so `--render-accumulation-test`
+returns the standard "requires CUDA. Rebuild with
+-DRR_ENABLE_CUDA=ON ..." error. On a CUDA-enabled host:
+
+```
+cmake -S . -B build-cuda -DRR_ENABLE_CUDA=ON
+cmake --build build-cuda -j
+build-cuda/bin/RelativityRender --render-accumulation-test
+```
+
+writes `output/gpu_accumulation_test.ppm` at the default
+1280x720. Per-pixel writes happen entirely on the device:
+`launch_random_rgba_sample` produces one frame's worth of
+samples on-GPU; `launch_accum_add` adds it onto the on-GPU
+accumulator; the loop runs 64 times; `launch_accum_resolve`
+divides the on-GPU accumulator into a fresh on-GPU display
+buffer; the only host touch is the final `cudaMemcpy`
+download into `Image::data()`. After 64 random-RGB samples
+each channel converges to ~0.5; the output is a uniform
+mid-gray, the visual signal that the buffer + add + resolve
+chain is correct.
+
+A CPU fallback would directly violate the prompt's "No CPU
+pixel accumulation" rule and the master "No CPU ray tracing
+as production path" rule, so it is not shipped. The
+`AccumulationBuffer.cpp` no-backend code path returns `false`
+honestly so the CLI surfaces an error rather than producing
+a wrong-by-CPU image.
+
+### Hard-rule audit
+
+- No full path tracing yet — **yes**, the four primitives +
+  validation kernel are stand-alone. Nothing in
+  `--render-from-scene` / `--render-full-scene` /
+  `--render-scene` consumes them; the new
+  `--render-accumulation-test` action is the only call site.
+- No CPU pixel accumulation — **yes**, `AccumulationBuffer`'s
+  add / resolve paths only call CUDA launchers; the
+  host-only build returns `false` rather than running the
+  add on the CPU.
+- GPU accumulates samples — **yes**, `k_accum_add` runs on
+  the device; the host only owns the buffer lifetime and the
+  iteration counter.
+- Must compile and produce output — host-only build is clean
+  under `-Wall -Wextra -Wpedantic`, no warnings; `ctest`
+  reports 4/4. The "produce output" half is contingent on a
+  CUDA-enabled host per the constraint above.
+
+### Verified at the host-only CLI / ctest
+
+- `--render-accumulation-test` on a host-only build → exit 1,
+  "requires CUDA. Rebuild with -DRR_ENABLE_CUDA=ON ..."
+  (same shape as every other render action's no-CUDA error).
+- `--help` shows the new flag with its full description
+  including the convergence-to-mid-gray observation and the
+  default output path.
+- Action collisions list `--render-accumulation-test` in the
+  conflict error.
+- Existing tests still pass: `math_tests`, `image_tests`,
+  `gpu_tests`, `pathtracer_tests` are byte-identical to
+  Stage 11A.
+
+### CLI inventory after this slice
+
+| Stage | Action flag                       | What it does                                    |
+|-------|-----------------------------------|-------------------------------------------------|
+| ...   | (existing flags through 11A)      | (unchanged)                                     |
+| 11B   | `--render-accumulation-test`      | Stage 11B accumulation-buffer convergence test  |
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
 
 - the path tracer itself (master module 16, multi-bounce GPU
-  path integration consuming the Stage 11A primitives);
+  path integration consuming the Stage 11A RNG / sampling
+  primitives + the Stage 11B accumulation buffer);
 - multi-mesh upload on `GpuScene`;
 - `SceneWriter::save` / `serialize` for round-trip + a
   `tests/io_tests.cpp` covering round-trip and each §12 rule;

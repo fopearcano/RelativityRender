@@ -49,7 +49,8 @@ bool set_action(CommandLine::Action& current, CommandLine::Action target,
                 "--device-info / --render / --scene-info / "
                 "--scene-summary / --render-from-scene / "
                 "--render-full-scene / --render-rng-test / "
-                "--render-gradient / --render-rays / --render-sphere / "
+                "--render-accumulation-test / --render-gradient / "
+                "--render-rays / --render-sphere / "
                 "--render-relativistic / --render-scene / "
                 "--render-triangle / --render-mesh-scene / "
                 "--render-material-scene / --render-direct-lighting)";
@@ -137,6 +138,12 @@ CommandLine::ParseResult CommandLine::parse(int argc, char** argv) {
             r.config.scene_path.assign(value);
         } else if (a == "--render-rng-test") {
             if (!set_action(r.action, Action::RenderRngTest,
+                            r.error_message)) {
+                r.action = Action::Error;
+                return r;
+            }
+        } else if (a == "--render-accumulation-test") {
+            if (!set_action(r.action, Action::RenderAccumulationTest,
                             r.error_message)) {
                 r.action = Action::Error;
                 return r;
@@ -240,6 +247,7 @@ CommandLine::ParseResult CommandLine::parse(int argc, char** argv) {
      || r.action == Action::RenderFromScene
      || r.action == Action::RenderFullScene
      || r.action == Action::RenderRngTest
+     || r.action == Action::RenderAccumulationTest
      || r.action == Action::RenderGradient
      || r.action == Action::RenderRays
      || r.action == Action::RenderSphere
@@ -304,6 +312,16 @@ std::string CommandLine::usage(std::string_view argv0) {
        << "                        sample_cosine_hemisphere. Default "
                                   "output\n"
        << "                        \"output/gpu_rng_test.ppm\". "
+                                  "Requires CUDA.\n"
+       << "  --render-accumulation-test\n"
+       << "                        Stage 11B progressive-accumulation "
+                                  "validation. Loops 64 sample\n"
+       << "                        frames of per-pixel random RGB "
+                                  "through an AccumulationBuffer\n"
+       << "                        and resolves to a display image. "
+                                  "Result converges to mid-gray.\n"
+       << "                        Default output "
+                                  "\"output/gpu_accumulation_test.ppm\". "
                                   "Requires CUDA.\n"
        << "  --render-gradient     Run the GPU UV-gradient diagnostic "
                                   "and save it (requires CUDA).\n"

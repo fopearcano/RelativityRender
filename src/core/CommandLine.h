@@ -67,6 +67,18 @@ namespace rr::core {
 //                           hemisphere, cosine hemisphere). Default
 //                           output "output/gpu_rng_test.ppm".
 //                           Requires CUDA.
+//   --render-accumulation-test
+//                           Stage 11B progressive-accumulation
+//                           validation. Allocates an
+//                           AccumulationBuffer, loops 64 sample
+//                           frames of per-pixel
+//                           `(next_float, next_float, next_float,
+//                            1.0)` through `accumulate_sample`,
+//                           resolves to a display Image, and
+//                           saves PPM. Result converges to a
+//                           uniform mid-gray. Default output
+//                           "output/gpu_accumulation_test.ppm".
+//                           Requires CUDA.
 //   --render-gradient       Run the GPU UV-gradient diagnostic and
 //                           save it to <output>. Requires CUDA.
 //   --render-rays           Run the GPU camera-ray-direction
@@ -128,8 +140,9 @@ namespace rr::core {
 //
 // Action flags (--help / --version / --device-info / --render /
 // --scene-info / --scene-summary / --render-from-scene /
-// --render-full-scene / --render-rng-test / --render-gradient /
-// --render-rays / --render-sphere /
+// --render-full-scene / --render-rng-test /
+// --render-accumulation-test / --render-gradient / --render-rays /
+// --render-sphere /
 // --render-relativistic / --render-scene / --render-triangle /
 // --render-mesh-scene / --render-material-scene /
 // --render-direct-lighting) are mutually exclusive; combining them
@@ -149,6 +162,7 @@ public:
         RenderFromScene,
         RenderFullScene,
         RenderRngTest,
+        RenderAccumulationTest,
         RenderGradient,
         RenderRays,
         RenderSphere,

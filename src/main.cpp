@@ -15,18 +15,22 @@
 
 #ifdef RR_HAS_CUDA
     #include "camera/Camera.h"
+    #include "cuda/CudaAccumulation.cuh"
     #include "cuda/CudaRenderer.h"
     #include "geometry/Mesh.h"
     #include "geometry/Sphere.h"
     #include "geometry/Triangle.h"
+    #include "gpu/GpuBuffer.h"
     #include "gpu/GpuScene.h"
     #include "lighting/Light.h"
     #include "material/Material.h"
     #include "material/MaterialTypes.h"
     #include "math/Vec3.h"
     #include "relativity/RelativityParams.h"
+    #include "renderer/AccumulationBuffer.h"
     #include "scene/Scene.h"
 
+    #include <cstddef>
     #include <vector>
 #endif
 
@@ -648,6 +652,90 @@ int run_render_rng_test(const rr::core::Config& cfg) {
         return 1;
     }
     return save_image_or_error(r.image, out_path, "GPU RNG test",
+                               cfg.width, cfg.height) ? 0 : 1;
+#endif
+}
+
+// `--render-accumulation-test` dispatch. Stage 11B validation
+// path: allocate an AccumulationBuffer + a device-side sample
+// buffer, loop `kSampleCount` iterations producing a fresh
+// per-pixel `(next_float, next_float, next_float, 1.0)` sample
+// frame each iteration, accumulate, then resolve to a host Image
+// and save. Each per-pixel write happens on the device; the host
+// only owns buffer lifetimes and the iteration count. Output
+// converges to a visually uniform mid-gray.
+//
+// The orchestration lives here (rather than as a static method on
+// `CudaRenderer`) so the `rr_renderer` library that owns
+// `AccumulationBuffer` doesn't need to be linked from inside the
+// `rr_gpu` static lib - the executable already links both, so
+// the dependency direction stays one-way:
+// rr_renderer -> rr_gpu only.
+int run_render_accumulation_test(const rr::core::Config& cfg) {
+    const std::string out_path = cfg.output_path.empty()
+        ? std::string("output/gpu_accumulation_test.ppm")
+        : cfg.output_path;
+
+#ifndef RR_HAS_CUDA
+    (void)cfg;
+    rr::core::Logger::error("--render-accumulation-test requires CUDA. "
+                            "Rebuild with -DRR_ENABLE_CUDA=ON on a host "
+                            "with the CUDA Toolkit and a CUDA-capable "
+                            "GPU.");
+    return 1;
+#else
+    constexpr int kSampleCount = 64;
+    constexpr unsigned int kSeed = 0u;
+
+    rr::renderer::AccumulationBuffer accum;
+    if (!accum.resize(cfg.width, cfg.height) || !accum.valid()) {
+        rr::core::Logger::error("accumulation-test: AccumulationBuffer "
+                                "allocation failed");
+        return 1;
+    }
+
+    const std::size_t float_count =
+        static_cast<std::size_t>(cfg.width) * cfg.height * 4u;
+
+    rr::gpu::GpuBuffer<float> sample;
+    if (!sample.allocate(float_count)) {
+        rr::core::Logger::error("accumulation-test: sample buffer "
+                                "allocation failed");
+        return 1;
+    }
+
+    for (int i = 0; i < kSampleCount; ++i) {
+        if (!rr::cuda::launch_random_rgba_sample(
+                sample.device_ptr(), cfg.width, cfg.height,
+                kSeed, static_cast<unsigned int>(i))) {
+            rr::core::Logger::error("accumulation-test: sample-source "
+                                    "kernel launch failed at iteration "
+                                  + std::to_string(i));
+            return 1;
+        }
+        if (!accum.accumulate_sample(sample.device_ptr())) {
+            rr::core::Logger::error("accumulation-test: "
+                                    "accumulate_sample failed at "
+                                    "iteration " + std::to_string(i));
+            return 1;
+        }
+    }
+
+    rr::image::Image img = accum.resolve_to_image();
+    if (img.empty()) {
+        rr::core::Logger::error("accumulation-test: resolve_to_image "
+                                "returned empty");
+        return 1;
+    }
+
+    rr::core::Logger::info("accumulation-test: "
+                         + std::to_string(accum.samples_count())
+                         + " samples accumulated, "
+                         + std::to_string(cfg.width) + "x"
+                         + std::to_string(cfg.height) + " framebuffer");
+
+    return save_image_or_error(img, out_path,
+                               "GPU accumulation test",
                                cfg.width, cfg.height) ? 0 : 1;
 #endif
 }
@@ -1416,6 +1504,9 @@ int main(int argc, char** argv) {
         case CommandLine::Action::RenderRngTest:
             return run_render_rng_test(result.config);
 
+        case CommandLine::Action::RenderAccumulationTest:
+            return run_render_accumulation_test(result.config);
+
         case CommandLine::Action::RenderGradient:
             return run_render_gradient(result.config);
 
@@ -1451,8 +1542,9 @@ int main(int argc, char** argv) {
         case CommandLine::Action::Default:
             Logger::info(std::string(rr::core::kProjectName) + " "
                        + rr::core::kVersionString + " starting up.");
-            Logger::info("Stage 11A: GPU sampling system. "
-                         "Try --render-rng-test, "
+            Logger::info("Stage 11B: progressive accumulation buffer. "
+                         "Try --render-accumulation-test, "
+                         "--render-rng-test, "
                          "--render-full-scene <file>, "
                          "--render-from-scene <file>, "
                          "--scene-summary <file>, "
