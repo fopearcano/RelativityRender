@@ -1242,12 +1242,203 @@ narrow but extensible foundation.
 
 ---
 
+## 8. Any-hit program
+
+The OptiX **any-hit** program is the per-intersection
+filter: it runs once for *every* candidate intersection
+along a ray *before* OptiX commits the closest-hit, and
+decides whether the candidate counts. By calling
+`optixIgnoreIntersection()` it tells OptiX to drop the
+candidate (so the ray continues searching for a closer
+hit); by calling `optixTerminateRay()` it tells OptiX to
+abandon the rest of the search and treat the current
+candidate as final. Without either call the candidate
+proceeds toward closest-hit selection unchanged.
+
+This is fundamentally different from the **closest-hit**
+program, which runs *once* per ray, only on the finalised
+nearest hit. AH is the per-intersection visitor; CH is the
+per-ray winner.
+
+For Stage 12B's diffuse-only opaque path tracer the AH slot
+adds nothing useful; the slot exists in every HitGroup
+record whether or not we attach a program, and Stage 12B
+attaches none. The AH slot becomes essential in later
+stages — for shadow rays and alpha-tested geometry — and
+the §9 SBT layout reserves it explicitly.
+
+### 8.1 Role
+
+OptiX invokes the AH program in two scenarios, both
+gated by HitGroup-record content and per-trace ray flags:
+
+- **Per-intersection filter for opaque geometry.** Each
+  primitive intersection along the ray is offered to AH
+  before OptiX considers it for the closest-hit slot. AH
+  can `optixIgnoreIntersection()` to discard it (the ray
+  keeps searching past `t_current`); the canonical use
+  case is alpha-tested cutout geometry, where AH samples
+  an opacity texture at the hit's UV and discards the
+  intersection if the alpha is below threshold.
+- **Early termination for binary-visibility queries.**
+  When the caller doesn't care *which* primitive
+  occluded a ray, only *whether* one did, AH can
+  `optixTerminateRay()` on the first valid intersection.
+  The canonical use case is shadow rays in NEE: the
+  caller wants "is this light visible?", not "what is
+  the closest occluder?". Terminating early skips the
+  remaining traversal cost.
+
+The AH program does NOT compute shading, write radiance
+into the payload, or update throughput. Those stay in CH
+and miss. AH's only outputs are its control-flow
+intrinsics (`optixIgnoreIntersection` / `optixTerminateRay`)
+and, optionally, payload registers set ahead of an early
+terminate so the raygen can read post-trace state (for
+shadow rays: a "occluded?" bit).
+
+### 8.2 When the AH slot is used vs skipped
+
+The AH slot is **used** when at least one of the
+following is true for the ray + scene combination:
+
+| Condition                                           | Stage     |
+|-----------------------------------------------------|-----------|
+| Ray type is "shadow" (NEE visibility query)         | 12C+      |
+| Hit primitive's material has alpha-test cutout      | post-#18  |
+| Hit primitive's material is partially transparent for shadow accumulation | far-future (after a transparency model lands) |
+| Per-instance opacity overrides via SBT user-data    | far-future |
+
+The AH slot is **skipped** in every other case. Stage 12B's
+radiance ray type, against fully opaque diffuse Lambert
+materials, has no AH need — every intersection is final,
+visibility is binary by construction, and there is no
+texture system yet to drive alpha tests.
+
+OptiX exposes two complementary mechanisms for skipping
+AH:
+
+- **Per-trace ray flag `OPTIX_RAY_FLAG_DISABLE_ANYHIT`**.
+  Set on every `optixTrace` call from raygen; OptiX skips
+  AH invocation regardless of what the HitGroup record
+  contains. Stage 12B's raygen sets this flag on every
+  bounce ray.
+- **HitGroup record carries `nullptr` for AH**. With no
+  program attached, AH is a no-op even when the ray flag
+  doesn't disable it. Stage 12B's HitGroup records (sphere
+  + triangle, for the radiance ray type) carry
+  `entry_function_name_AH = nullptr` at pipeline build time.
+
+Belt-and-braces: Stage 12B uses both. The ray-flag is the
+authoritative skip; the null AH record is the safety
+net. Either alone suffices, but having both makes "did we
+mean to invoke AH here?" answerable from either side of
+the OptiX boundary.
+
+### 8.3 Minimal plan
+
+Stage 12B's AH plan is **no AH program**. Concretely:
+
+- The pipeline configuration enumerates exactly two program
+  groups for hit handling — `sphere_hitgroup` (CH only)
+  and `triangle_hitgroup` (CH only). Neither names an AH
+  entry function.
+- The raygen's `optixTrace` calls all set
+  `OPTIX_RAY_FLAG_DISABLE_ANYHIT`, and use a single ray
+  type (radiance) so the AH slot is never reachable.
+- The pipeline's `OptixPipelineCompileOptions::usesPrimitiveTypeFlags`
+  enables only the geometry types we actually use
+  (`OPTIX_PRIMITIVE_TYPE_FLAGS_TRIANGLE`,
+  `OPTIX_PRIMITIVE_TYPE_FLAGS_SPHERE` if using the
+  built-in sphere primitive). No AH-specific
+  configuration is needed.
+
+Stage 12C+ activations (in dependency order):
+
+1. **Shadow-ray AH** for NEE. Adds a second ray type
+   ("shadow"), a second miss program (writing `occluded
+   = false` to a payload bit), and an AH program for
+   each HitGroup that calls `optixTerminateRay()` on the
+   first hit. The §9 SBT layout grows from 2 HitGroup
+   records (radiance × {sphere, triangle}) to 4
+   (radiance × {sphere, triangle} × {radiance,
+   shadow}).
+2. **Alpha-test AH** when the texture system (master
+   order #18) lands. Each HitGroup whose material has
+   an opacity texture grows an AH that samples the
+   opacity at the hit's UV and calls
+   `optixIgnoreIntersection()` if the sample is below
+   the cutout threshold. The radiance ray type's
+   `OPTIX_RAY_FLAG_DISABLE_ANYHIT` is removed for those
+   HitGroups by *not* setting it on `optixTrace` (or
+   by an SBT-record-level enable; OptiX exposes both).
+3. **Transparent-shadow AH** (far future). Accumulates
+   per-hit opacity into a shadow-ray payload register
+   and ignores the intersection (so the ray continues
+   past). Useful for translucent shadows; needs a
+   real transparency model attached to materials, which
+   the project doesn't have yet.
+
+Each of those activations grows the AH program code +
+some SBT plumbing. None of them restructure §5 / §6 / §7;
+the AH slot is genuinely additive.
+
+### 8.4 Read / write summary (when AH is present)
+
+When Stage 12C+ adds an AH program, its read/write surface
+will look like this — included here so the contract is
+documented even though no AH program ships in 12B:
+
+| Surface                              | Direction       | Lifetime        |
+|--------------------------------------|-----------------|-----------------|
+| `optixGetPrimitiveIndex()`           | read            | per intersection |
+| `optixGetTriangleBarycentrics()`     | read (tri only) | per intersection |
+| `optixLaunchParams.materials` (alpha cutout) | read    | constant per launch |
+| `optixLaunchParams.mesh.{vertices, triangles}` (UVs for alpha) | read | constant per launch |
+| SBT AH-record header                 | read (implicit) | constant per pipeline |
+| SBT AH-record user-data              | read (when present) | constant per pipeline |
+| OptiX ray payload (visibility bit)   | write (shadow rays only) | per `optixTrace` |
+| `optixIgnoreIntersection()`          | call (alpha cutout)      | per intersection |
+| `optixTerminateRay()`                | call (shadow rays)       | per intersection |
+
+The AH program never writes to launch params, the SBT,
+the framebuffer, the accumulator, or the geometry / material
+arrays — same purity stance as the CH and miss programs.
+
+### 8.5 Scope: what's NOT in §8
+
+- **No transparency BSDF.** Transparent shadows need a
+  real opacity / IOR model on materials; the project
+  currently has only `MaterialParams::transmission` as a
+  reserved-but-unused float (Stage 8 reservation).
+  Activating that field is its own master-order slice.
+- **No alpha-cutout textures.** The cutout-geometry use
+  case needs the texture system (master order #18). The
+  AH program code is small (one texture sample + threshold
+  + ignore call), but the texture-binding plumbing is the
+  bulk of the work.
+- **No specialised shadow-ray throughput.** Stage 12C+
+  shadow rays return a binary visibility, not an
+  attenuation. Multi-tap stochastic visibility (for
+  partially-transparent occluders, area-light penumbra)
+  would extend the shadow-ray payload to carry an
+  accumulated transmittance instead of a single bit; that
+  is a refinement of the §8.3 step 1, not its baseline.
+
+The Stage 12B path tracer is happy to live without AH
+entirely. The slot's existence in the HitGroup record is
+preserved through Stage 12B by design — when 12C lands,
+attaching an AH program is a config-only change, not an
+SBT-layout change.
+
+---
+
 ## Sections to come
 
 Future Stage 12A sub-stages will append (one per slice or
 small group of slices):
 
-- Any-hit / Intersection program design
+- Intersection program design
 - Acceleration structures (GAS, IAS, build flags, refit vs
   rebuild)
 - Shader Binding Table layout (records per ray type, per

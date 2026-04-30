@@ -3682,6 +3682,7 @@ sub-stages, appended to the same file.** No code is touched.
 | 12A.2.1  | OPTIX_BACKEND_PLAN.md §5 (Raygen) | ✅      |
 | 12A.2.2  | OPTIX_BACKEND_PLAN.md §6 (Miss)  | ✅      |
 | 12A.2.3  | OPTIX_BACKEND_PLAN.md §7 (Closest-hit) | ✅ |
+| 12A.2.4  | OPTIX_BACKEND_PLAN.md §8 (Any-hit) | ✅ |
 | 12A.x    | remaining program / AS / SBT / data-flow / file-layout / risks sections | pending |
 | 12B      | minimum-viable OptiX backend     | pending |
 | 12C+     | feature parity with CUDA backend | pending |
@@ -3881,14 +3882,84 @@ sections (§8 AH / §9 SBT / §10+ remain pending).**
   edits are two markdown files.
 - Update docs/BUILD_PLAN.md — **yes**, this entry.
 
+## Stage 12A.2.4 — OptiX any-hit program design
+
+**Scope of this slice (Stage 12A.2.4): documentation-only.
+Append §8 "Any-hit program" to
+`docs/OPTIX_BACKEND_PLAN.md` covering role (per-
+intersection filter via `optixIgnoreIntersection` /
+`optixTerminateRay`), use-cases (NEE shadow rays,
+alpha-test cutout, transparent shadows), Stage 12B's
+explicit "no AH program" choice with the
+`OPTIX_RAY_FLAG_DISABLE_ANYHIT` + null AH-record belt-and-
+braces, and the dependency-ordered activation roadmap for
+12C+. No code; no other sections (§9 SBT / §10+ remain
+pending).**
+
+### What ships
+
+- `docs/OPTIX_BACKEND_PLAN.md` §8 with subsections 8.1
+  Role (per-intersection filter; explicit contrast with
+  CH; AH does not shade / accumulate / update throughput),
+  8.2 When the AH slot is used vs skipped (use-case
+  table + Stage 12B's belt-and-braces skip via
+  `OPTIX_RAY_FLAG_DISABLE_ANYHIT` + null AH record), 8.3
+  Minimal plan (Stage 12B = no AH; 12C+ activations in
+  dependency order: shadow-ray AH for NEE → alpha-test
+  AH alongside the texture system → transparent-shadow
+  AH after a transparency model lands), 8.4 Read/write
+  summary for the future AH program (documented even
+  though no AH ships in 12B, so the contract is
+  available when 12C activates), 8.5 Scope (no
+  transparency BSDF, no alpha textures, no stochastic
+  shadow throughput).
+- The footer's first outstanding-items bullet narrows
+  from "Any-hit / Intersection program design" to
+  "Intersection program design".
+- This BUILD_PLAN entry + status-table row.
+
+### Architectural decisions worth highlighting
+
+- **Stage 12B ships no AH program.** The radiance ray
+  type against fully opaque diffuse Lambert materials has
+  no AH need — every intersection is final, visibility
+  is binary by construction, and the project has no
+  texture system yet to drive alpha tests.
+- **Belt-and-braces skip.** Stage 12B's raygen sets
+  `OPTIX_RAY_FLAG_DISABLE_ANYHIT` on every `optixTrace`,
+  AND the HitGroup records carry `entry_function_name_AH
+  = nullptr`. Either alone suffices; both make the skip
+  authoritative from the host *and* the SBT side.
+- **Activation roadmap is additive.** Each future AH use
+  case (shadow rays in 12C+, alpha cutout post-#18,
+  transparent shadows far-future) adds a program +
+  SBT-record entry + (where needed) a new ray type, but
+  does not restructure §5 / §6 / §7. The AH slot's
+  existence in HitGroup records is preserved through
+  Stage 12B by design.
+- **Slot-only docs are still useful.** §8.4's read/write
+  matrix documents the future AH program's contract even
+  though no AH ships in 12B — when 12C activates, the
+  shape is already specified.
+
+### Hard-rule audit
+
+- Do not add other sections — **yes**, only §8 was
+  appended; the footer was narrowed by exactly one item.
+- Documentation only — **yes**, no source under `src/`,
+  `tests/`, or `CMakeLists.txt` is touched. The only
+  edits are two markdown files.
+- Update docs/BUILD_PLAN.md — **yes**, this entry.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
 
-- continue 12A.2: append §8 (Any-hit) and §9 (SBT) to
-  `OPTIX_BACKEND_PLAN.md`, one focused section per sub-
-  stage (12A.2.4, 12A.2.5, ...) matching the
-  12A.2.1 / 12A.2.2 / 12A.2.3 cadence;
+- continue 12A.2: append §9 (Shader Binding Table) to
+  `OPTIX_BACKEND_PLAN.md`, then continue with §10+ (AS,
+  data flows, integrations, file layout, risks) one
+  focused section per sub-stage matching the
+  12A.2.1 / 12A.2.2 / 12A.2.3 / 12A.2.4 cadence;
 - *or* (if the priority is path-tracer feature breadth
   instead of backend swap) direct-light sampling (NEE),
   non-diffuse materials, multi-mesh upload, or relativistic-
