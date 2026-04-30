@@ -234,6 +234,23 @@ int run_scene_info(const rr::core::Config& cfg) {
         }
         return "unknown";
     };
+    const auto& meshes = result.scene.meshes;
+    Logger::info("  meshes:");
+    Logger::info("    count             : " + std::to_string(meshes.size()));
+    if (!meshes.empty()) {
+        const auto& mesh = meshes.front();
+        Logger::info("    [0]:");
+        Logger::info("      name            : "
+                   + (mesh.object.name.empty() ? std::string("(unnamed)")
+                                               : mesh.object.name));
+        Logger::info("      vertex_count    : "
+                   + std::to_string(mesh.geometry.vertex_count()));
+        Logger::info("      triangle_count  : "
+                   + std::to_string(mesh.geometry.triangle_count()));
+        Logger::info("      material_id     : "
+                   + std::to_string(mesh.geometry.material_id));
+    }
+
     Logger::info("  lights:");
     Logger::info("    count             : " + std::to_string(lts.size()));
     if (!lts.empty()) {
@@ -1050,7 +1067,7 @@ int main(int argc, char** argv) {
         case CommandLine::Action::Default:
             Logger::info(std::string(rr::core::kProjectName) + " "
                        + rr::core::kVersionString + " starting up.");
-            Logger::info("Stage 10B.7: parse lights. "
+            Logger::info("Stage 10B.8: parse inline meshes. "
                          "Try --scene-info <file>, --device-info, "
                          "--render-gradient, --render-rays, "
                          "--render-sphere, --render-relativistic, "

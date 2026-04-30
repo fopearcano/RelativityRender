@@ -495,6 +495,50 @@ mesh today must pre-bake the transform into the vertex positions.
 This restriction lifts when per-vertex transform support lands
 (planned alongside instancing).
 
+### 9.5 Stage 10B.8 status notes
+
+Stage 10B.8 promotes `rr::scene::SceneMesh` from a placeholder
+shell (`{object, source_path}`) to a real authoring entry that
+composes `rr::geometry::Mesh` alongside the metadata, mirroring
+the `SceneMaterial` / `SceneLight` pattern. The parser writes
+into `SceneMesh::geometry`; the kernel-side mesh upload
+(`GpuScene::upload_mesh`) still takes `rr::geometry::Mesh`
+directly. Threading the loaded mesh through the upload path is
+the final 10B sub-stage's job.
+
+Implemented in this stage:
+
+- `name` (string, optional).
+- Inline `vertices` array per §9.2: required `position`
+  (Vec3), optional `normal` (Vec3, **not** auto-normalised; the
+  renderer expects unit-length normals), optional `uv`
+  (Vec2). Empty vertex arrays are accepted - the resulting
+  mesh is empty per §9.
+- Inline `triangles` array per §9.3: each entry is a length-3
+  array of non-negative integers fitting in `uint32_t`.
+  Indices are validated against the already-populated vertex
+  count per §12 #6 in strict reject-file mode.
+- `material_id` (canonical) or `materialId` (camelCase
+  shorthand consistent with the §8.1 sphere shorthand).
+  Validated `-1` or in `[0, materials.size())` per §12 #5,
+  reject-file mode.
+- `transform` per §11: `position`, `rotation_radians` (note:
+  the C++ field is `euler_rotation_radians`; the spec name
+  wins on the wire), `scale` with all-positive validation.
+
+Out of scope for Stage 10B.8 (deferred to the final 10B
+sub-stage):
+
+- `source_path`: the spec already labels this as
+  informational; the parser does not consume it today. Kept
+  on the `SceneMesh` shell for forward compatibility with the
+  external-asset loader.
+- `visible` on the `SceneObject` wrapper: same partial-
+  implementation posture as 10B.6 / 10B.7.
+
+Tools that emit `.rrscene` files MUST emit canonical
+snake_case.
+
 ## 10. `lights`
 
 Each entry maps to `rr::scene::SceneLight { object, data }`, where

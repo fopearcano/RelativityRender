@@ -1,0 +1,49 @@
+{
+  "version": "1.0.0",
+
+  "render_settings": {
+    "width":  640,
+    "height": 360
+  },
+
+  "materials": [
+    { "id": 0, "name": "neutral", "baseColor": [0.65, 0.65, 0.65] }
+  ],
+
+  "meshes": [
+    {
+      "name":       "ground-quad",
+      "materialId": 0,
+      "transform": {
+        "position":         [0.0, 0.0, 0.0],
+        "rotation_radians": [0.0, 0.0, 0.0],
+        "scale":            [1.0, 1.0, 1.0]
+      },
+      "vertices": [
+        { "position": [-3.0, -3.0, -6.0], "normal": [0.0, 0.0, 1.0], "uv": [0.0, 0.0] },
+        { "position": [ 3.0, -3.0, -6.0], "normal": [0.0, 0.0, 1.0], "uv": [1.0, 0.0] },
+        { "position": [ 3.0,  3.0, -6.0], "normal": [0.0, 0.0, 1.0], "uv": [1.0, 1.0] },
+        { "position": [-3.0,  3.0, -6.0], "normal": [0.0, 0.0, 1.0], "uv": [0.0, 1.0] }
+      ],
+      "triangles": [
+        [0, 1, 2],
+        [0, 2, 3]
+      ]
+    },
+    {
+      "name": "tetrahedron",
+      "vertices": [
+        { "position": [ 0.0,  1.0, -4.0] },
+        { "position": [-1.0, -1.0, -4.0] },
+        { "position": [ 1.0, -1.0, -4.0] },
+        { "position": [ 0.0,  0.0, -2.5] }
+      ],
+      "triangles": [
+        [0, 1, 2],
+        [0, 2, 3],
+        [0, 3, 1],
+        [1, 3, 2]
+      ]
+    }
+  ]
+}

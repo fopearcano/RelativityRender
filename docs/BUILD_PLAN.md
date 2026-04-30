@@ -2352,24 +2352,162 @@ and 10B.6 (`visible` / `transform`).
   three spheres, no `lights` block) still loads with
   `lights.count = 0`.
 
+## Stage 10B.8 — parse inline meshes
+
+**Scope of this slice (Stage 10B.8): promote `rr::scene::SceneMesh`
+from a placeholder shell (`{object, source_path}`) to a real
+authoring entry composing `rr::geometry::Mesh`, then add a meshes
+schema mapper that reads the canonical §9 `name` / `vertices` /
+`triangles` / `material_id` (or `materialId` shorthand) /
+`transform` (§11) onto each entry. After this stage every
+top-level v1.0 section has a parser.**
+
+### What ships
+
+- `src/scene/Scene.h` — `SceneMesh` promoted to
+  `{object, source_path, geometry}` where `geometry` is an
+  `rr::geometry::Mesh`. Includes `geometry/Mesh.h`. The host
+  scene container's `meshes` vector is unchanged in shape;
+  `rr_scene` already PUBLIC-links `rr_geometry` so no
+  CMakeLists edits are needed. Existing call sites are
+  unaffected because `SceneMesh` was not consumed outside its
+  own declaration before this stage.
+- `src/io/SceneLoader.cpp` — added:
+  - `to_vec2` helper (a Vec3-shaped twin sized for the §9.2
+    `uv` slot) that keeps the array-shape error messages
+    specific.
+  - `apply_transform` for §11 Transform objects: `position`,
+    `rotation_radians` (mapped to `euler_rotation_radians` in
+    C++), `scale` (each component validated `> 0`).
+  - `apply_mesh_vertices`: walks the `vertices` array,
+    enforcing `position` required, `normal` / `uv` optional;
+    normals are NOT auto-normalised per §9.2.
+  - `apply_mesh_triangles`: walks the `triangles` array,
+    validating each entry is a length-3 array of non-negative
+    integers fitting in `uint32_t`, with indices in
+    `[0, vertices.size())` per §12 #6.
+  - `apply_mesh` (single entry): glues `name`, optional
+    `material_id` / `materialId` (validated `-1` or in
+    `[0, materials.size())` per §12 #5, strict reject-file
+    mode), optional §11 `transform`, then the vertex / triangle
+    arrays. Vertex parsing happens before triangle parsing so
+    the index range check sees the canonical count.
+  - `apply_meshes` (array driver): clears + reserves
+    `scene.meshes`, walks entries through `apply_mesh`,
+    threads `materials.size()` through for the §12 #5 check.
+- `src/io/SceneLoader.cpp::parse` — wires `apply_meshes` in
+  after `apply_lights`. After this stage the parser has a
+  schema mapper for every top-level v1.0 section.
+- `src/main.cpp::run_scene_info` — prints mesh count and the
+  first mesh's `name` / `vertex_count` / `triangle_count` /
+  `material_id` under a `meshes:` heading. Empty arrays still
+  print `count : 0` and skip the per-entry block.
+- `scenes/test_mesh.rrscene` — two-mesh fixture:
+  - `[0]` ground-quad (4 vertices, 2 triangles, with the
+    `materialId` shorthand and an explicit identity
+    `transform` to exercise the §11 mapper).
+  - `[1]` tetrahedron (4 vertices, 4 triangles, no transform,
+    no material reference - exercises the all-defaults path).
+- `docs/RRSCENE_FORMAT.md` §9.5 — new status block
+  documenting the SceneMesh promotion, the implemented
+  fields, the deferred ones (`source_path`, `visible`), and
+  the strict reject-file stance for §12 #5 / §12 #6.
+
+### Naming-tension resolution
+
+Two minor reconciliations:
+
+- The user prompt's `materialId` (camelCase) is accepted as a
+  shorthand for the canonical §9 `material_id`, consistent
+  with the §8.1 sphere shorthand.
+- The §11 transform object names the rotation field
+  `rotation_radians` (snake_case) but the C++ struct stores it
+  as `euler_rotation_radians`. The wire name wins on the file
+  side; the parser does the rename when populating the POD.
+
+`source_path` and `SceneObject::visible` are §9 v1.0 fields
+the prompt scope excluded; same partial-implementation posture
+as 10B.5 (`transmission`), 10B.6 (`visible` / `transform` for
+spheres), and 10B.7 (`area_width` / `area_height`).
+
+### SceneMesh promotion vs. the "no GPU changes" rule
+
+Earlier 10B sub-stages carried a "no GPU changes" rule. This
+sub-stage's prompt drops that rule and explicitly anticipates
+structural changes ("transform if supported by existing
+Mesh/Scene structures"). The promotion is host-side only:
+`SceneMesh` was not previously consumed by the GPU upload
+path (which takes `rr::geometry::Mesh` directly via
+`GpuScene::upload_mesh`), and `rr_scene` already PUBLIC-links
+`rr_geometry`. The `--render-mesh-scene` and
+`--render-material-scene` / `--render-direct-lighting`
+demos still construct `geometry::Mesh` instances locally;
+threading the loaded `SceneMesh::geometry` through to the
+upload path is the final 10B sub-stage's job, not this one.
+
+### Hard-rule audit
+
+- Do not render yet — **yes**, the only consumer of the
+  parser is `--scene-info`, which only prints. The `SceneMesh`
+  promotion is host data only; no GPU upload path is reached.
+- No server, no C4D — **yes**, no source under any
+  hypothetical server / DCC bridge directory; this slice is
+  exclusively `src/scene/Scene.h`, `src/io/SceneLoader.cpp`,
+  `src/main.cpp`, two doc files, and the new fixture.
+- Must compile — **yes**, host-only build is clean under
+  `-Wall -Wextra -Wpedantic`, no warnings; `ctest` reports
+  3/3.
+
+### Verified at the CLI
+
+- `--scene-info scenes/test_mesh.rrscene` prints
+  `meshes.count = 2` and the `[0]` block matches the
+  fixture's `ground-quad` byte-for-byte
+  (`vertex_count = 4`, `triangle_count = 2`, `material_id = 0`).
+- A triangle index of `5` against a 2-vertex mesh → exit 1,
+  ".triangles[0][2] (5) is out of range [0, 2)" (§12 #6).
+- A length-4 triangle → exit 1, "must have exactly 3
+  elements (got 4)".
+- A negative or fractional triangle index → exit 1, "must be
+  a non-negative integer fitting in uint32_t".
+- A vertex missing `position` → exit 1,
+  ".vertices[0] is missing required 'position'".
+- A mesh with no `vertices` and no `triangles` parses fine
+  (per §9: empty meshes are accepted; counts print as 0/0).
+- `materialId = 3` against a one-material file → exit 1,
+  ".material_id (3) is out of range [0, 1)" (§12 #5).
+- `transform.scale = [0, 1, 1]` → exit 1, "components must
+  be > 0".
+- `uv = [0, 1, 2]` (length 3) → exit 1, "must have exactly 2
+  elements (got 3)".
+- The Stage 10B.7 fixture (`scenes/test_lights.rrscene`,
+  three lights, no `meshes` block) still loads with
+  `meshes.count = 0`.
+
 ## Next stage
 
-**Stage 10B.8 — parse meshes.** Scope:
+**Stage 10B.9 (final 10B slice) — `--render <file>` + writer +
+deferred fields.** Scope:
 
-- Add `apply_meshes` schema reader: maps the §9 inline
-  `vertices` + `triangles` arrays onto `rr::geometry::Mesh`
-  data inside `rr::scene::SceneMesh`, validating per-vertex
-  required fields (`position`) and per-triangle index ranges
-  (§12 #6).
-- Extend `--scene-info` to print mesh count + the first
-  mesh's vertex / triangle counts.
-- Add `scenes/test_meshes.rrscene` fixture.
+- Wire `--render <file>` in `main.cpp` to:
+  `SceneLoader::load(path)` → build `GpuScene` from the
+  loaded `Scene` (camera, relativity, materials, spheres,
+  meshes, lights) → `CudaRenderer::render_scene` → save to
+  `--output` (or `RenderSettings::output_path` when no
+  `--output` is given).
+- Implement `SceneWriter::save(path, scene)` and
+  `SceneWriter::serialize(scene)` so a loaded scene can
+  round-trip. Emit canonical names only (no shorthands).
+- Round out the deferred fields: `transmission` (§7),
+  `visible` / `transform` on `SceneObject` wrappers (§8 / §9
+  / §10), `area_width` / `area_height` (§10), `source_path`
+  (§9). Each becomes a single line in its mapper.
+- Add `tests/io_tests.cpp` exercising round-trip + each §12
+  validation rule.
 
-After 10B.8, every top-level v1.0 section has a mapper. The
-`--render <file>` end-to-end wiring, the writer
-(`SceneWriter::save`), and the deferred fields
-(`transmission` / `visible` / `transform` / `area_width` /
-`area_height`) join in the final 10B sub-stage.
+After 10B.9, every v1.0 schema field has a mapper, the loader
+and writer round-trip, and `--render <file>` is the canonical
+end-to-end CLI path.
 
 ## Constraints carried forward
 

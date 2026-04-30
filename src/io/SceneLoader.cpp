@@ -1,9 +1,13 @@
 #include "io/SceneLoader.h"
 
 #include "camera/Camera.h"
+#include "geometry/Mesh.h"
 #include "geometry/Sphere.h"
+#include "geometry/Triangle.h"
 #include "lighting/Light.h"
 #include "material/MaterialTypes.h"
+#include "math/Transform.h"
+#include "math/Vec2.h"
 #include "math/Vec3.h"
 #include "relativity/RelativityParams.h"
 
@@ -499,6 +503,35 @@ bool to_float(const JsonValue& v, float& out, std::string& err,
         return false;
     }
     out = static_cast<float>(n);
+    return true;
+}
+
+// Read a length-2 JSON array of finite numbers into a Vec2.
+// Mirrors `to_vec3` but for the per-vertex `uv` slot in mesh
+// data; kept narrow so the array-shape error remains specific
+// rather than bleeding the Vec3 message.
+bool to_vec2(const JsonValue& v, rr::math::Vec2& out, std::string& err,
+             const char* field) {
+    if (v.kind != JsonKind::Array) {
+        err = std::string("field '") + field
+            + "' must be a JSON array of 2 numbers";
+        return false;
+    }
+    if (v.arr.size() != 2) {
+        err = std::string("field '") + field
+            + "' must have exactly 2 elements (got "
+            + std::to_string(v.arr.size()) + ")";
+        return false;
+    }
+    float uv[2] = {0.0f, 0.0f};
+    const char* labels[2] = { "[0]", "[1]" };
+    for (int i = 0; i < 2; ++i) {
+        const std::string elem_field = std::string(field) + labels[i];
+        if (!to_float(v.arr[i], uv[i], err, elem_field.c_str())) {
+            return false;
+        }
+    }
+    out = rr::math::Vec2{uv[0], uv[1]};
     return true;
 }
 
@@ -1242,6 +1275,254 @@ bool apply_lights(const JsonValue& arr,
     return true;
 }
 
+// Apply a §11 Transform JSON object onto an `rr::math::Transform`.
+// All three fields are optional with the spec defaults; invalid
+// `scale` (non-finite or non-positive components) is rejected per
+// §11. The spec field name `rotation_radians` lands on the C++
+// field `euler_rotation_radians`.
+bool apply_transform(const JsonValue& obj,
+                     rr::math::Transform& out,
+                     std::string& err,
+                     const char* entry_label) {
+    if (obj.kind != JsonKind::Object) {
+        err = std::string(entry_label) + " must be a JSON object";
+        return false;
+    }
+    if (const auto* v = obj.find("position")) {
+        if (!to_vec3(*v, out.position, err,
+                     (std::string(entry_label) + ".position").c_str())) {
+            return false;
+        }
+    }
+    if (const auto* v = obj.find("rotation_radians")) {
+        if (!to_vec3(*v, out.euler_rotation_radians, err,
+                     (std::string(entry_label) + ".rotation_radians").c_str())) {
+            return false;
+        }
+    }
+    if (const auto* v = obj.find("scale")) {
+        const std::string field = std::string(entry_label) + ".scale";
+        rr::math::Vec3 scale{1.0f, 1.0f, 1.0f};
+        if (!to_vec3(*v, scale, err, field.c_str())) return false;
+        if (!(scale.x > 0.0f && scale.y > 0.0f && scale.z > 0.0f)) {
+            err = field + " components must be > 0";
+            return false;
+        }
+        out.scale = scale;
+    }
+    return true;
+}
+
+// Apply a single mesh entry's `vertices` array onto `out_mesh`.
+// Per-vertex layout is §9.2: required `position`, optional
+// `normal` / `uv`. Normals are NOT auto-normalised here - the
+// renderer expects unit-length normals at draw time and the spec
+// (§9.2) names this explicitly so authors take responsibility.
+bool apply_mesh_vertices(const JsonValue& arr,
+                         rr::geometry::Mesh& out_mesh,
+                         std::string& err,
+                         const char* entry_label) {
+    if (arr.kind != JsonKind::Array) {
+        err = std::string(entry_label) + ".vertices must be a JSON array";
+        return false;
+    }
+    out_mesh.vertices.clear();
+    out_mesh.vertices.reserve(arr.arr.size());
+    for (std::size_t i = 0; i < arr.arr.size(); ++i) {
+        const std::string label =
+            std::string(entry_label) + ".vertices[" + std::to_string(i) + "]";
+        const auto& v = arr.arr[i];
+        if (v.kind != JsonKind::Object) {
+            err = label + " must be a JSON object";
+            return false;
+        }
+        rr::geometry::Vertex vx;
+        const auto* pos_v = v.find("position");
+        if (pos_v == nullptr) {
+            err = label + " is missing required 'position'";
+            return false;
+        }
+        if (!to_vec3(*pos_v, vx.position, err,
+                     (label + ".position").c_str())) {
+            return false;
+        }
+        if (const auto* nv = v.find("normal")) {
+            if (!to_vec3(*nv, vx.normal, err,
+                         (label + ".normal").c_str())) return false;
+        }
+        if (const auto* uv = v.find("uv")) {
+            if (!to_vec2(*uv, vx.uv, err,
+                         (label + ".uv").c_str())) return false;
+        }
+        out_mesh.vertices.push_back(vx);
+    }
+    return true;
+}
+
+// Apply a single mesh entry's `triangles` array onto `out_mesh`.
+// Each triangle is a length-3 array of non-negative integers
+// fitting in `uint32_t`. Indices are validated against the
+// already-populated vertex count per §12 #6.
+bool apply_mesh_triangles(const JsonValue& arr,
+                          rr::geometry::Mesh& out_mesh,
+                          std::string& err,
+                          const char* entry_label) {
+    if (arr.kind != JsonKind::Array) {
+        err = std::string(entry_label) + ".triangles must be a JSON array";
+        return false;
+    }
+    const std::size_t vcount = out_mesh.vertices.size();
+    out_mesh.triangles.clear();
+    out_mesh.triangles.reserve(arr.arr.size());
+    for (std::size_t i = 0; i < arr.arr.size(); ++i) {
+        const std::string label =
+            std::string(entry_label) + ".triangles[" + std::to_string(i) + "]";
+        const auto& t = arr.arr[i];
+        if (t.kind != JsonKind::Array) {
+            err = label + " must be a JSON array of 3 vertex indices";
+            return false;
+        }
+        if (t.arr.size() != 3) {
+            err = label + " must have exactly 3 elements (got "
+                + std::to_string(t.arr.size()) + ")";
+            return false;
+        }
+        std::uint32_t vidx[3] = {0, 0, 0};
+        for (int k = 0; k < 3; ++k) {
+            const auto& iv = t.arr[k];
+            const std::string ifield = label + "[" + std::to_string(k) + "]";
+            if (iv.kind != JsonKind::Number) {
+                err = ifield + " must be an integer vertex index";
+                return false;
+            }
+            const double n = iv.n;
+            if (!std::isfinite(n) || n != std::floor(n) || n < 0.0
+             || n > static_cast<double>(std::numeric_limits<std::uint32_t>::max())) {
+                err = ifield + " must be a non-negative integer fitting "
+                             + "in uint32_t";
+                return false;
+            }
+            const std::uint32_t idx = static_cast<std::uint32_t>(n);
+            if (vcount == 0
+             || static_cast<std::size_t>(idx) >= vcount) {       // §12 #6
+                err = ifield + " (" + std::to_string(idx)
+                    + ") is out of range [0, " + std::to_string(vcount) + ")";
+                return false;
+            }
+            vidx[k] = idx;
+        }
+        out_mesh.triangles.push_back(rr::geometry::Triangle{
+            vidx[0], vidx[1], vidx[2]});
+    }
+    return true;
+}
+
+// Apply a single meshes-array entry onto `out`. Stage 10B.8
+// surface: name, inline vertices + triangles, material_id (or
+// materialId shorthand), and the §11 transform. visible and
+// source_path are spec-§9 fields but the prompt scope excluded
+// them; they remain at SceneObject / SceneMesh defaults.
+bool apply_mesh(const JsonValue& obj,
+                std::size_t materials_count,
+                rr::scene::SceneMesh& out,
+                std::string& err,
+                const char* entry_label) {
+    if (obj.kind != JsonKind::Object) {
+        err = std::string(entry_label) + " must be a JSON object";
+        return false;
+    }
+
+    // name (optional, default "").
+    if (const auto* v = obj.find("name")) {
+        if (!to_string(*v, out.object.name, err,
+                       (std::string(entry_label) + ".name").c_str())) {
+            return false;
+        }
+    }
+
+    // material_id / materialId (optional integer; -1 or in
+    // [0, materials_count)). Same shape as the sphere mapper's
+    // material reference; reject-file mode on out-of-range.
+    if (const auto* v = obj.find_or("material_id", "materialId")) {
+        if (v->kind != JsonKind::Number) {
+            err = std::string(entry_label) + ".material_id must be an integer";
+            return false;
+        }
+        const double idx_d = v->n;
+        if (!std::isfinite(idx_d) || idx_d != std::floor(idx_d)) {
+            err = std::string(entry_label) + ".material_id must be an integer";
+            return false;
+        }
+        const long long idx_ll = static_cast<long long>(idx_d);
+        if (idx_ll < -1
+         || idx_ll > static_cast<long long>(std::numeric_limits<int>::max())) {
+            err = std::string(entry_label)
+                + ".material_id must fit in an int and be >= -1";
+            return false;
+        }
+        const int idx = static_cast<int>(idx_ll);
+        if (idx >= 0
+         && static_cast<std::size_t>(idx) >= materials_count) {
+            err = std::string(entry_label) + ".material_id ("
+                + std::to_string(idx)
+                + ") is out of range [0, " + std::to_string(materials_count)
+                + ")";
+            return false;
+        }
+        out.geometry.material_id = idx;
+    }
+
+    // transform (optional; §11). Maps onto Mesh::transform so the
+    // authoring-time transform travels with the geometry payload
+    // when later stages thread it through the GPU upload.
+    if (const auto* v = obj.find("transform")) {
+        if (!apply_transform(*v, out.geometry.transform, err,
+                             (std::string(entry_label) + ".transform").c_str())) {
+            return false;
+        }
+    }
+
+    // vertices + triangles (both optional per §9; either alone
+    // makes the mesh "empty" which the spec MUST accept). Vertex
+    // count is captured before triangle parsing because
+    // apply_mesh_triangles validates indices against it (§12 #6).
+    if (const auto* v = obj.find("vertices")) {
+        if (!apply_mesh_vertices(*v, out.geometry, err, entry_label)) {
+            return false;
+        }
+    }
+    if (const auto* v = obj.find("triangles")) {
+        if (!apply_mesh_triangles(*v, out.geometry, err, entry_label)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+// Apply the `meshes` JSON array onto `scene.meshes`. Stage 10B.8
+// surface; per-entry validation runs through `apply_mesh`.
+bool apply_meshes(const JsonValue& arr,
+                  std::size_t materials_count,
+                  std::vector<rr::scene::SceneMesh>& out,
+                  std::string& err) {
+    if (arr.kind != JsonKind::Array) {
+        err = "'meshes' must be a JSON array";
+        return false;
+    }
+    out.clear();
+    out.reserve(arr.arr.size());
+    for (std::size_t i = 0; i < arr.arr.size(); ++i) {
+        const std::string label = "meshes[" + std::to_string(i) + "]";
+        rr::scene::SceneMesh m;
+        if (!apply_mesh(arr.arr[i], materials_count, m, err,
+                        label.c_str())) {
+            return false;
+        }
+        out.push_back(std::move(m));
+    }
+    return true;
+}
+
 // Slurp `path` into a string; returns false on read failure.
 bool read_text_file(const std::string& path, std::string& out,
                     std::string& err) {
@@ -1414,10 +1695,29 @@ LoadResult parse(const std::string& text) {
         }
     }
 
-    // Stage 10B.7 schema scope ends here. The only remaining top-
-    // level key (`meshes`) is intentionally ignored - it was
-    // syntax-checked by the JSON parser pass and will be mapped
-    // onto `scene` in a follow-up sub-stage.
+    // meshes (optional). Stage 10B.8 surface: name, inline
+    // vertices + triangles, material_id / materialId, and the
+    // §11 transform. Cross-section validation: §12 #5
+    // (material_id range) and §12 #6 (triangle indices in range)
+    // both in strict reject-file mode. Empty meshes (zero
+    // vertices or zero triangles) are accepted per §9.
+    if (const JsonValue* mh_v = root.find("meshes")) {
+        std::string apply_err;
+        if (!apply_meshes(*mh_v,
+                          result.scene.materials.size(),
+                          result.scene.meshes, apply_err)) {
+            result.error_message = apply_err;
+            return result;
+        }
+    }
+
+    // Stage 10B.8 closes out the per-section schema mappers.
+    // Every top-level v1.0 section now has a parser; the only
+    // remaining surface for the final 10B sub-stage is the
+    // `--render <file>` end-to-end wiring + `SceneWriter::save`
+    // + the deferred fields (`transmission`, `visible`,
+    // `transform` on SceneObject wrappers, `area_*` on lights,
+    // and `source_path` on meshes).
 
     result.ok = true;
     return result;

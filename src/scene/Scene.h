@@ -1,6 +1,7 @@
 #pragma once
 
 #include "camera/Camera.h"
+#include "geometry/Mesh.h"
 #include "geometry/Sphere.h"
 #include "lighting/Light.h"
 #include "material/MaterialTypes.h"
@@ -48,14 +49,20 @@ struct SceneSphere {
 
 // Mesh entry.
 //
-// Stage 6A scaffolding: only the authoring metadata is present.
-// `source_path` is reserved for external-asset references (e.g. an
-// .obj path) once the loader lands. The geometry payload
-// (vertices / triangles / per-mesh transform / material id) joins
-// at master module 12, which introduces `rr::geometry::Mesh`.
+// Stage 6A scaffolding shipped this as a placeholder shell
+// (`{object, source_path}`). Stage 10B.8 promotes it to a real
+// authoring entry that carries the `rr::geometry::Mesh` payload
+// alongside the SceneObject metadata, mirroring the
+// `SceneMaterial` / `SceneLight` pattern. The kernel-side mesh
+// upload (`GpuScene::upload_mesh`) still consumes
+// `rr::geometry::Mesh` directly; the parser writes into
+// `geometry` and a future stage threads it through the upload
+// path. `source_path` remains for the eventual external-asset
+// loader; v1 parsers treat it as informational metadata.
 struct SceneMesh {
-    SceneObject object;
-    std::string source_path;
+    SceneObject         object;
+    std::string         source_path;
+    rr::geometry::Mesh  geometry;
 };
 
 // Material entry.
