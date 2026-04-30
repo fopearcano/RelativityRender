@@ -3713,6 +3713,7 @@ sub-stages, appended to the same file.** No code is touched.
 | 13B.1    | GPU texture upload (GpuTexture; bytes + width/height/format; safe reset; no sampling, no kernel) | ✅ |
 | 13B.2    | GPU texture sampling (sampleTextureNearest, clamp-to-edge; --render-texture-sample-test) | ✅ |
 | 13B.3    | Material texture integration (baseColorTextureId / useBaseColorTexture; GpuScene textures; --render-textured-material) | ✅ |
+| 14A.1    | AOV data model (AOVType: Beauty/Normal/Depth/Albedo/DopplerFactor/SearchlightFactor; AOV class; CudaAOV.cuh re-export; no integration) | ✅ |
 
 ## Stage 12A.2.1 — OptiX raygen program design
 
@@ -7328,6 +7329,204 @@ saves the framebuffer.**
   remain byte-identical because their
   materials default to
   `useBaseColorTexture = false`.
+
+## Stage 14A.1 — AOV data model
+
+**Scope of this slice (Stage 14A.1; master order
+#19): introduce the host-side data model for
+render passes / AOVs (Arbitrary Output
+Variables). No renderer integration, no kernel
+hook, no per-pass framebuffer, no GPU output, no
+disk write path. The data model lays the
+foundation that subsequent 14A+ sub-stages
+populate, allocate, fill from the kernel, and
+save.
+
+The pre-Stage-14 visual confirmation of the
+Stage 13 textured-material output remains
+deferred (the audit host has no CUDA toolchain;
+see `docs/STAGE_13_VISUAL_CONFIRMATION.md`). 14A.1
+deliberately does not modify any texture-system
+code - the slice ships only new files + a single
+addition to the rr_renderer source list.**
+
+### What ships
+
+- `src/renderer/AOV.{h,cpp}` (new):
+  - `enum class rr::renderer::AOVType` with the
+    six values the prompt requires:
+    `Beauty`, `Normal`, `Depth`, `Albedo`,
+    `DopplerFactor`, `SearchlightFactor`.
+    Underlying `std::uint32_t` for stable
+    serialised layout. Enumerator naming is
+    PascalCase, matching every other
+    project-wide enum (`LightType`,
+    `TextureKind`, `ImageTextureFormat`); the
+    prompt's mixed-case type list is treated as
+    conceptual.
+  - `using AOVId = std::int32_t` plus
+    `kInvalidAOVId = -1` sentinel - mirrors
+    `TextureId` / `MaterialIndex` / handle
+    conventions elsewhere in the project.
+  - `class AOV` with `id_` / `type_` / `name_`
+    private fields, `id()` / `type()` /
+    `name()` / `component_count()` const
+    accessors, `set_id` / `set_name` setters,
+    and six static factories
+    (`make_beauty(name = {})`,
+    `make_normal(name = {})`,
+    `make_depth(name = {})`,
+    `make_albedo(name = {})`,
+    `make_doppler_factor(name = {})`,
+    `make_searchlight_factor(name = {})`)
+    that pre-populate `type_` and default
+    `name_` to the lowercase form of the
+    type when the caller passes an empty
+    string.
+  - Free helpers
+    `int aov_component_count(AOVType)
+    noexcept` (3 for Beauty / Normal /
+    Albedo, 1 for Depth / DopplerFactor /
+    SearchlightFactor, 0 for an unknown
+    enumerator) and
+    `std::string_view aov_type_name(AOVType)
+    noexcept` (returns `"beauty"`,
+    `"normal"`, `"depth"`, `"albedo"`,
+    `"doppler_factor"`,
+    `"searchlight_factor"`, or `"unknown"`).
+- `src/cuda/CudaAOV.cuh` (new): thin re-export
+  of the host header, mirroring the
+  `CudaMaterial.cuh` / `CudaLight.cuh` /
+  Stage 13A's `CudaTexture.cuh` pattern. No
+  device-side descriptor, no `RR_HD inline`
+  write helper - the eventual renderer
+  integration adds those when the kernel
+  actually writes per-pass output.
+- `CMakeLists.txt`:
+  - `rr_renderer` STATIC library gains
+    `src/renderer/AOV.cpp` in its source list.
+    No new library; the AOV data model is a
+    natural sibling of `AccumulationBuffer`
+    inside the existing renderer-pieces lib.
+    No new dependency edge: the AOV header
+    only needs `<cstdint>` / `<string>` /
+    `<string_view>`, which the existing
+    rr_renderer transitive set already
+    satisfies.
+  - Stage label bumped to "Stage 14A.1: AOV
+    data model" in both the `project(...)`
+    description and the project-banner status
+    message.
+- `docs/BUILD_PLAN.md`: this entry +
+  status-table row for 14A.1.
+
+### Architectural decisions worth highlighting
+
+- **Tagged class, not polymorphism.** `AOV`
+  carries `AOVType` as a discriminator and a
+  shared field set; no virtual functions, no
+  derived class per type. This matches the
+  existing `Light` / `Texture` / `Material`
+  pattern - flat data that uploads to the GPU
+  cleanly when the renderer integration sub-
+  stage adds upload logic.
+- **Component count on the data model, not on
+  a separate registry.** The number of float
+  channels per pass (3 for vector AOVs, 1 for
+  scalar AOVs) is a compile-time fact of the
+  pass type; encoding it as a free function
+  + a class accessor lets the eventual
+  renderer-integration sub-stage allocate a
+  per-pass framebuffer the right size without
+  hard-coding the dispatch in three places.
+- **Stable lowercase name function.**
+  `aov_type_name` returns a `string_view`
+  into a static constant and is the single
+  source of truth for the lowercase
+  identifier each pass writes to disk and
+  appears in scene files / log lines. Future
+  scene-format work (`.rrscene` AOV
+  declarations) consumes it directly.
+- **Default name from `aov_type_name`.** Each
+  `make_*` factory falls back to the
+  type's lowercase name when the caller
+  passes an empty string, so a default-
+  constructed `AOV::make_beauty()` already
+  has an authoring-friendly identifier.
+- **No renderer integration yet.** The
+  prompt's "Do not integrate into renderer
+  yet / No GPU output yet" rule is satisfied
+  by adding only types + free helpers +
+  factories. No `CudaSceneView` slot, no
+  kernel hook, no `GpuBuffer` allocation, no
+  PPM writer.
+- **rr_renderer is the natural home.** The
+  user listed the path as `src/renderer/`,
+  matching the existing rr_renderer library
+  that owns `AccumulationBuffer` and
+  `Hit.h`. Adding a separate `rr_aov` lib
+  would split a single-concern data model
+  across libraries with no payoff today;
+  rr_renderer's existing transitive deps
+  (`rr_image rr_gpu rr_pathtracer`) cover
+  everything the future integration will
+  need.
+- **CudaAOV.cuh is a thin re-export.** Same
+  pattern Stage 13A used for `CudaTexture
+  .cuh`: include the host header so kernels
+  can `#include "cuda/CudaAOV.cuh"` to
+  signal intent today, and add device-side
+  descriptors / `RR_HD inline` write
+  helpers in subsequent sub-stages without
+  shifting the include shape consumers
+  pick up.
+
+### Hard-rule audit
+
+- Do not integrate into renderer yet -
+  **yes**, no `CudaSceneView` slot, no
+  kernel hook, no per-pass framebuffer,
+  no `PathTracer` / `CudaRenderer`
+  reference to `AOV` or `AOVType`.
+- No GPU output yet - **yes**, no
+  `__global__` writes a per-pass channel,
+  no `cudaMemcpy` for AOV data, no PPM
+  writer for AOV files.
+- No server - **yes**, no IPC / socket /
+  protocol.
+- No C4D - **yes**, no Cinema 4D
+  headers / bridges.
+- Must compile - **yes**, OFF + ON
+  reconfigures both build clean (no
+  warnings, no errors under `-Wall
+  -Wextra -Wpedantic`); ctest 4/4
+  passes both ways.
+- Update docs/BUILD_PLAN.md - **yes**,
+  this entry + status-table row.
+- Do not modify texture code - **yes**,
+  no file under `src/texture/` or
+  `src/gpu/GpuTexture.*` is touched, the
+  Stage 13B.3 kernel branch is
+  unchanged, and every existing `--render-*`
+  output (including
+  `--render-textured-material`) remains
+  byte-identical.
+
+### Verified at the build
+
+- `cmake -DRELATIVITYRENDER_ENABLE_OPTIX=
+  OFF ..` (clean reconfigure): builds
+  the new AOV.cpp inside rr_renderer; no
+  warnings / errors; banner shows
+  "Stage 14A.1: AOV data model";
+  ctest 4/4 passes.
+- `cmake -DRELATIVITYRENDER_ENABLE_OPTIX=
+  ON ..` (clean reconfigure): same
+  AOV.cpp build; OptiX scaffold compiles
+  (with the expected 12B.4 SDK-not-found
+  warning); ctest 4/4 passes. AOV data
+  model is orthogonal to the OptiX flag
+  and to `RR_ENABLE_CUDA`.
 
 ## Next stage
 
