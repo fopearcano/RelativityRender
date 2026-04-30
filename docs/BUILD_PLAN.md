@@ -3704,6 +3704,7 @@ sub-stages, appended to the same file.** No code is touched.
 | 12A.x    | remaining IS section (Intersection program) | pending |
 | 12B.1    | RELATIVITYRENDER_ENABLE_OPTIX CMake option (flag-only) | ✅ |
 | 12B.2    | OptiX file skeleton (rr_optix; OptixBackend.{h,cpp}, OptixRenderer.{h,cpp}; placeholders) | ✅ |
+| 12B.3    | Conditional OptiX build wiring (rr_optix gated on the option; OFF byte-identical to pre-12B) | ✅ |
 | 12B      | minimum-viable OptiX backend     | pending |
 | 12C+     | feature parity with CUDA backend | pending |
 
@@ -5825,6 +5826,131 @@ the option OFF and ON.**
   in subsequent 12B sub-stages)` line.
   `librr_optix.a` rebuilds with the new compile
   definition; executable rebuilds; ctest 4/4
+  unchanged.
+
+## Stage 12B.3 — Conditional OptiX build wiring
+
+**Scope of this slice (Stage 12B.3): refine
+12B.2's CMake so the `src/optix/` sources compile
+ONLY when `RELATIVITYRENDER_ENABLE_OPTIX=ON`. With the
+option OFF the build is byte-identical to pre-12B (no
+`rr_optix` target exists, no `OptixBackend.cpp` /
+`OptixRenderer.cpp` compilation, the executable's
+link line is unchanged from Stage 11C). With the
+option ON the rr_optix STATIC library is created with
+the placeholder sources + the
+`RELATIVITYRENDER_ENABLE_OPTIX` PUBLIC compile
+definition; the executable links it conditionally.
+No real OptiX SDK headers are required at any state.**
+
+### What ships
+
+- `CMakeLists.txt`:
+  - The whole `add_library(rr_optix STATIC ...)` +
+    `target_include_directories` +
+    `rr_apply_warnings` +
+    `target_compile_definitions` block now sits
+    inside `if(RELATIVITYRENDER_ENABLE_OPTIX) ...
+    endif()`. When OFF, the target does not exist;
+    when ON, the target is created with the same
+    contents Stage 12B.2 declared.
+  - The main `target_link_libraries(RelativityRender
+    PRIVATE rr_gpu rr_image ... rr_renderer)` line
+    drops the trailing `rr_optix` token; immediately
+    below, a new
+    `if(RELATIVITYRENDER_ENABLE_OPTIX)
+    target_link_libraries(RelativityRender PRIVATE
+    rr_optix) endif()` block adds the conditional
+    link.
+  - Stage label bumped to "Stage 12B.3: OptiX
+    conditional build wiring" in both the
+    `project(...)` description and the project-banner
+    status message. The 12B.1-era status message
+    that fires under ON keeps its 12B.2 phrasing
+    ("Stage 12B.2 file skeleton compiles, SDK /
+    programs / SBT / AS wiring lands in subsequent
+    12B sub-stages") because that statement is still
+    accurate post-12B.3 (the file skeleton's content
+    didn't change; only when it gets compiled).
+- `docs/BUILD_PLAN.md`: this entry + status-table
+  row for 12B.3.
+
+### Architectural decisions worth highlighting
+
+- **OFF is exactly pre-12B.** Verified by
+  enumerating compile artifacts after a clean
+  `cmake -DRELATIVITYRENDER_ENABLE_OPTIX=OFF .. &&
+  cmake --build . -j` — no `librr_optix.a`, no
+  `OptixBackend.cpp.o`, no `OptixRenderer.cpp.o`,
+  no `CMakeFiles/rr_optix.dir/` directory, no
+  trace of the rr_optix target anywhere. The
+  executable's link line is byte-identical to
+  Stage 11C.
+- **Pattern follows rr_gpu's CUDA gating.**
+  `rr_gpu` already gates its `.cu` translation units
+  via `if(RR_ENABLE_CUDA) target_sources(rr_gpu
+  PRIVATE ...) endif()`. The rr_optix gating uses
+  the same mechanism but at the library level
+  (the entire `add_library` is conditional)
+  because the OFF case has *zero* sources to
+  compile, whereas rr_gpu always has its host-side
+  TUs and just adds CUDA TUs. Both paths achieve
+  the same outcome: a clean build on hosts without
+  the corresponding SDK.
+- **Conditional link line, not always-on with
+  generator expressions.** A more clever CMake
+  pattern would have used
+  `target_link_libraries(RelativityRender PRIVATE
+  $<$<TARGET_EXISTS:rr_optix>:rr_optix>)` to make
+  the link unconditional but evaluate to nothing
+  when the target doesn't exist. Stage 12B.3
+  prefers the explicit `if/endif` form because it
+  reads more clearly to a maintainer who is not
+  fluent in CMake generator expressions, and the
+  cost is one extra block.
+- **No source changes.** `src/optix/OptixBackend.{h,cpp}`
+  and `src/optix/OptixRenderer.{h,cpp}` are
+  byte-identical to Stage 12B.2. Only the build
+  wiring around them changes.
+
+### Hard-rule audit
+
+- Do not include real OptiX SDK headers yet —
+  **yes**, the placeholder sources from 12B.2
+  contain only preprocessor macro checks; no
+  `#include <optix.h>` / `<optix_stubs.h>` /
+  `<optix_function_table_definition.h>` anywhere.
+  No `find_package(OptiX)` invocation in CMake.
+- Do not implement rendering — **yes**,
+  `OptixRenderer::render()` still always returns
+  `ok = false`; `OptixBackend::isCompiled()`
+  still reports the macro state only.
+- OFF build works exactly as before — **yes**,
+  zero `src/optix/` artifacts compile when OFF;
+  the executable's link line drops `rr_optix`
+  back to the pre-12B form; ctest 4/4 passes.
+- ON build compiles scaffold without real OptiX
+  headers — **yes**, the rr_optix STATIC library
+  builds clean (no warnings, no errors); the
+  executable links cleanly; ctest 4/4 passes.
+- Update docs/BUILD_PLAN.md — **yes**, this entry
+  + status-table row.
+
+### Verified at the build
+
+- `cmake -DRELATIVITYRENDER_ENABLE_OPTIX=OFF ..`
+  (clean reconfigure with `rm -rf
+  CMakeCache.txt CMakeFiles`): banner shows the
+  four existing status lines; no OptiX line; no
+  `rr_optix` target in the build graph;
+  `find . -path "*/rr_optix*" -o -name "Optix*"`
+  returns empty; ctest 4/4 passes.
+- `cmake -DRELATIVITYRENDER_ENABLE_OPTIX=ON ..`
+  (clean reconfigure): banner adds the refreshed
+  OptiX line; `librr_optix.a` builds with the
+  `RELATIVITYRENDER_ENABLE_OPTIX` compile
+  definition propagated to the two .cpp.o files;
+  the executable links rr_optix; ctest 4/4
   unchanged.
 
 ## Next stage

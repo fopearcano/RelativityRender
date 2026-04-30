@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.20)
 
 project(RelativityRender
     VERSION     0.1.0
-    DESCRIPTION "RelativityRender - GPU renderer platform (Stage 12B.2: OptiX file skeleton)"
+    DESCRIPTION "RelativityRender - GPU renderer platform (Stage 12B.3: OptiX conditional build wiring)"
     LANGUAGES   CXX
 )
 
@@ -33,7 +33,7 @@ option(RELATIVITYRENDER_ENABLE_OPTIX
 
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
-message(STATUS "RelativityRender ${PROJECT_VERSION} (Stage 12B.2: OptiX file skeleton)")
+message(STATUS "RelativityRender ${PROJECT_VERSION} (Stage 12B.3: OptiX conditional build wiring)")
 
 message(STATUS "  Build type   : ${CMAKE_BUILD_TYPE}")
 message(STATUS "  C++ standard : ${CMAKE_CXX_STANDARD}")
@@ -222,25 +222,28 @@ target_include_directories(rr_renderer PUBLIC src)
 target_link_libraries(rr_renderer PUBLIC rr_image rr_gpu rr_pathtracer)
 rr_apply_warnings(rr_renderer)
 
-# rr_optix: OptiX backend file skeleton (Stage 12B.2). Placeholder
-# `OptixBackend::isCompiled()` + `OptixRenderer::render()` only.
+# rr_optix: OptiX backend file skeleton. Stage 12B.3 makes the
+# entire library conditional on RELATIVITYRENDER_ENABLE_OPTIX so
+# the OFF build never compiles any `src/optix/` source - byte-
+# identical to the pre-12B state. When ON, the library aggregates
+# the placeholder Stage 12B.2 sources (OptixBackend.cpp +
+# OptixRenderer.cpp) and exports the RELATIVITYRENDER_ENABLE_OPTIX
+# compile definition PUBLICly so consumers reading
+# `OptixBackend::isCompiled()` see the right answer.
+#
 # No OptiX SDK dependency, no `<optix.h>` include, no
-# `find_package(OptiX)`. The library compiles regardless of the
-# RELATIVITYRENDER_ENABLE_OPTIX option's value; when the option is
-# ON we add a PUBLIC compile definition (also named
-# `RELATIVITYRENDER_ENABLE_OPTIX`) so consumers reading
-# `OptixBackend::isCompiled()` see the right answer. Subsequent
-# 12B sub-stages add the remaining `src/optix/` files
-# (OptixPrograms.cu / OptixSBT.h / OptixAccel.h /
-# OptixLaunchParams.h per OPTIX_BACKEND_PLAN.md §20-§23) and the
-# real OptiX SDK wiring.
-add_library(rr_optix STATIC
-    src/optix/OptixBackend.cpp
-    src/optix/OptixRenderer.cpp
-)
-target_include_directories(rr_optix PUBLIC src)
-rr_apply_warnings(rr_optix)
+# `find_package(OptiX)` - the placeholder sources contain only
+# preprocessor macro checks. Subsequent 12B sub-stages add the
+# remaining `src/optix/` files (OptixPrograms.cu / OptixSBT.h /
+# OptixAccel.h / OptixLaunchParams.h per OPTIX_BACKEND_PLAN.md
+# §20-§23) and the real OptiX SDK wiring.
 if(RELATIVITYRENDER_ENABLE_OPTIX)
+    add_library(rr_optix STATIC
+        src/optix/OptixBackend.cpp
+        src/optix/OptixRenderer.cpp
+    )
+    target_include_directories(rr_optix PUBLIC src)
+    rr_apply_warnings(rr_optix)
     # PUBLIC so consumers of rr_optix see the same macro state
     # the library was compiled against. Today only OptixBackend.cpp
     # itself reads the macro; future sub-stages add CLI handlers
@@ -344,7 +347,14 @@ add_executable(RelativityRender
 )
 target_include_directories(RelativityRender PRIVATE src)
 target_link_libraries(RelativityRender PRIVATE
-    rr_gpu rr_image rr_camera rr_geometry rr_relativity rr_material rr_lighting rr_scene rr_io rr_renderer rr_optix)
+    rr_gpu rr_image rr_camera rr_geometry rr_relativity rr_material rr_lighting rr_scene rr_io rr_renderer)
+# Stage 12B.3: rr_optix is only created when OptiX support is
+# requested (see the rr_optix block above), so the link must be
+# conditional too. When OFF, the executable's link line is
+# byte-identical to pre-12B builds.
+if(RELATIVITYRENDER_ENABLE_OPTIX)
+    target_link_libraries(RelativityRender PRIVATE rr_optix)
+endif()
 rr_apply_warnings(RelativityRender)
 
 # Tests. The project does not yet have a third-party test framework;
