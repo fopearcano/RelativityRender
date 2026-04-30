@@ -280,6 +280,48 @@ int run_scene_info(const rr::core::Config& cfg) {
     return 0;
 }
 
+// `--scene-summary` dispatch. Stage 10B.9 verification path: loads
+// the file via the same parser as `--scene-info` and prints a
+// compact one-section summary - resolution, material / sphere /
+// mesh / light counts, and the scalar `|beta|` of the observer's
+// 3-velocity. No render, no GPU; intentionally smaller than
+// `--scene-info`'s exhaustive dump so a full v1 scene's load
+// status fits on a single screen.
+int run_scene_summary(const rr::core::Config& cfg) {
+    using rr::core::Logger;
+
+    if (cfg.scene_path.empty()) {
+        Logger::error("--scene-summary requires a file path");
+        return 2;
+    }
+
+    const auto result = rr::io::load(cfg.scene_path);
+    if (!result.ok) {
+        std::string msg = "scene load failed: " + result.error_message;
+        if (result.error_line > 0) {
+            msg += " (line " + std::to_string(result.error_line)
+                +  ", column " + std::to_string(result.error_column) + ")";
+        }
+        Logger::error(msg);
+        return 1;
+    }
+
+    const auto& s   = result.scene;
+    const auto& v   = s.observer.velocity;
+    const float beta = std::sqrt(v.x*v.x + v.y*v.y + v.z*v.z);
+
+    Logger::info("scene file: " + cfg.scene_path);
+    Logger::info("  resolution     : "
+               + std::to_string(s.render_settings.width) + "x"
+               + std::to_string(s.render_settings.height));
+    Logger::info("  materials      : " + std::to_string(s.materials.size()));
+    Logger::info("  spheres        : " + std::to_string(s.spheres.size()));
+    Logger::info("  meshes         : " + std::to_string(s.meshes.size()));
+    Logger::info("  lights         : " + std::to_string(s.lights.size()));
+    Logger::info("  |beta|         : " + std::to_string(beta));
+    return 0;
+}
+
 // `--render-gradient` dispatch. Width/height come from Config; output
 // path defaults to "output/gpu_gradient.ppm" when --output is unset.
 int run_render_gradient(const rr::core::Config& cfg) {
@@ -1032,6 +1074,9 @@ int main(int argc, char** argv) {
         case CommandLine::Action::SceneInfo:
             return run_scene_info(result.config);
 
+        case CommandLine::Action::SceneSummary:
+            return run_scene_summary(result.config);
+
         case CommandLine::Action::RenderGradient:
             return run_render_gradient(result.config);
 
@@ -1067,8 +1112,9 @@ int main(int argc, char** argv) {
         case CommandLine::Action::Default:
             Logger::info(std::string(rr::core::kProjectName) + " "
                        + rr::core::kVersionString + " starting up.");
-            Logger::info("Stage 10B.8: parse inline meshes. "
-                         "Try --scene-info <file>, --device-info, "
+            Logger::info("Stage 10B.9: full scene load test. "
+                         "Try --scene-summary <file>, "
+                         "--scene-info <file>, --device-info, "
                          "--render-gradient, --render-rays, "
                          "--render-sphere, --render-relativistic, "
                          "--render-scene, --render-triangle, "

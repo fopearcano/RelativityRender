@@ -2484,30 +2484,143 @@ upload path is the final 10B sub-stage's job, not this one.
   three lights, no `meshes` block) still loads with
   `meshes.count = 0`.
 
+## Stage 10B.9 — full scene load test
+
+**Scope of this slice (Stage 10B.9): a verification slice that
+exercises every per-section mapper landed in 10B.2 - 10B.8 on a
+single integrated fixture, plus a compact CLI summary printer
+that confirms the load reached the host `Scene` container with
+the expected counts.** No render path; no writer; no deferred
+fields. The 10B.8 BUILD_PLAN entry's "Next stage" projection
+was wider than the actual prompt — Stage 10B.9 is intentionally
+narrow per the master rule "Do only that scope."
+
+### What ships
+
+- `scenes/test_full_scene.rrscene` — the integration fixture.
+  Single `.rrscene` v1 file with **every top-level section
+  present**:
+  - `version` (1.0.0)
+  - `render_settings` (1280x720 + samples / max_depth /
+    output_path)
+  - `camera` (using the §5.1 `forward` + `fovDegrees`
+    shorthands)
+  - `relativity` (using the §6.1 `enabled` master gate +
+    `betaVelocity` + `velocityDirection` polar-form shorthand
+    + the three `*Strength` shorthands)
+  - `materials` (5 entries spanning diffuse / emissive / no-
+    emission shapes; mixes §7.1 camelCase shorthands with
+    canonical snake_case)
+  - `spheres` (4 entries, mixing §8.1 `materialId` shorthand
+    and canonical `material_index`)
+  - `meshes` (1 entry: 4-vertex / 2-triangle ground-quad,
+    full §9.2 vertex layout including `normal` + `uv`)
+  - `lights` (3 entries: directional + point + environment,
+    matching the `--render-direct-lighting` demo so authors
+    can compare load output against the hard-coded scene)
+- `src/core/CommandLine.{h,cpp}` — new `Action::SceneSummary`
+  enumerator + `--scene-summary <file>` parsing branch
+  (mirroring `--scene-info`'s shape: action + path argument,
+  exclusive with other action flags). Usage block extended
+  with the new flag's description; the action-collision error
+  string includes `--scene-summary` so authors who try to
+  combine actions get a complete list.
+- `src/main.cpp::run_scene_summary` — handler that calls
+  `rr::io::load(path)` and on success prints a compact
+  one-section summary:
+  ```
+    resolution     : 1280x720
+    materials      : 5
+    spheres        : 4
+    meshes         : 1
+    lights         : 3
+    |beta|         : 0.300000
+  ```
+  `|beta|` is `length(observer.velocity)`, which collapses the
+  Vec3 form into the scalar speed authors are likely to
+  reason about. On parse failure the same `error_line` /
+  `error_column` diagnostic the `--scene-info` handler uses
+  is reported, so the new action is a drop-in for either
+  handler at the CLI.
+- `src/main.cpp` default-action hint — extended to mention
+  `--scene-summary <file>` alongside `--scene-info <file>`.
+
+### Why a separate `--scene-summary` instead of reusing `--scene-info`?
+
+`--scene-info` already prints every parsed field; it is the
+exhaustive view useful while a per-section mapper is being
+written. The Stage 10B.9 prompt asks for a *summary* with six
+specific lines. Mixing a "compact summary" mode into
+`--scene-info` would either bloat the existing handler with a
+flag or quietly change its output. A second action keeps both
+views available without coupling: `--scene-info` for full
+field dumps, `--scene-summary` for the integration check that
+the load completed and produced the expected entity counts.
+
+### Hard-rule audit
+
+- Do not render yet — **yes**, `--scene-summary` only loads
+  and prints. No `CudaRenderer` call, no `GpuScene` upload,
+  no save. The render-action handlers (`--render-*`) are
+  byte-identical to Stage 10B.8.
+- No server, no C4D — **yes**, no source under any server /
+  DCC bridge directory; this slice is exclusively the
+  fixture, the new CLI action plumbing in `core/`, the new
+  handler in `main.cpp`, the BUILD_PLAN entry, and the CMake
+  status string.
+- Must compile — **yes**, host-only build is clean under
+  `-Wall -Wextra -Wpedantic`, no warnings; `ctest` reports
+  3/3.
+
+### Verified at the CLI
+
+- `--scene-summary scenes/test_full_scene.rrscene` exits 0
+  and prints `1280x720 / 5 / 4 / 1 / 3 / 0.300000` matching
+  the fixture exactly.
+- `--scene-summary` without a path → exit 2, "missing value
+  after --scene-summary" + usage block. Same shape as
+  `--scene-info`'s missing-path response.
+- `--scene-summary x --scene-info y` → exit 2, "cannot
+  combine action flags ..." error including `--scene-summary`
+  in the listed flags. Confirms the action-set error string
+  was updated.
+- `--scene-summary /tmp/missing.rrscene` → exit 1, "scene
+  file does not exist: ..." (the same error the loader
+  produces today).
+- `--help` shows the new flag with its full description in
+  the usage block.
+- Every prior fixture (`test_render_settings`, `test_camera`,
+  `test_relativity`, `test_materials`, `test_spheres`,
+  `test_lights`, `test_mesh`) still loads cleanly through
+  both `--scene-info` and the new `--scene-summary`. No
+  regressions across 10B.2 - 10B.8.
+
+### Stage 10B status after this slice
+
+| Sub-stage | Surface                          | Status |
+|-----------|----------------------------------|:------:|
+| 10B.1     | `rr_io` scaffold + `sceneFileExists` | ✅ |
+| 10B.2     | `version` + `render_settings`    | ✅ |
+| 10B.3     | `camera`                         | ✅ |
+| 10B.4     | `relativity`                     | ✅ |
+| 10B.5     | `materials`                      | ✅ |
+| 10B.6     | `spheres`                        | ✅ |
+| 10B.7     | `lights`                         | ✅ |
+| 10B.8     | inline `meshes` + SceneMesh promotion | ✅ |
+| 10B.9     | full-scene fixture + `--scene-summary` | ✅ |
+
+Every top-level v1.0 section now has a mapper *and* a
+verified end-to-end load path through a single integrated
+fixture.
+
 ## Next stage
 
-**Stage 10B.9 (final 10B slice) — `--render <file>` + writer +
-deferred fields.** Scope:
-
-- Wire `--render <file>` in `main.cpp` to:
-  `SceneLoader::load(path)` → build `GpuScene` from the
-  loaded `Scene` (camera, relativity, materials, spheres,
-  meshes, lights) → `CudaRenderer::render_scene` → save to
-  `--output` (or `RenderSettings::output_path` when no
-  `--output` is given).
-- Implement `SceneWriter::save(path, scene)` and
-  `SceneWriter::serialize(scene)` so a loaded scene can
-  round-trip. Emit canonical names only (no shorthands).
-- Round out the deferred fields: `transmission` (§7),
-  `visible` / `transform` on `SceneObject` wrappers (§8 / §9
-  / §10), `area_width` / `area_height` (§10), `source_path`
-  (§9). Each becomes a single line in its mapper.
-- Add `tests/io_tests.cpp` exercising round-trip + each §12
-  validation rule.
-
-After 10B.9, every v1.0 schema field has a mapper, the loader
-and writer round-trip, and `--render <file>` is the canonical
-end-to-end CLI path.
+The remaining 10B work (writer, `--render <file>` end-to-end
+wiring, deferred fields like `transmission` / `visible` /
+`transform` on `SceneObject` wrappers / `area_width` /
+`area_height` / `source_path`, plus `tests/io_tests.cpp`
+exercising round-trip + each §12 rule) lands in a follow-up
+sub-stage when prompted; this slice only ships verification.
 
 ## Constraints carried forward
 

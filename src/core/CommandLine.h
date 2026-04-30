@@ -22,6 +22,13 @@ namespace rr::core {
 //                           output_path), and exit. No render. Pure
 //                           host code; works without CUDA. Stage
 //                           10B.2 surface.
+//   --scene-summary <file>  Load a `.rrscene` file and print a
+//                           compact summary (resolution, material
+//                           count, sphere count, mesh count, light
+//                           count, |beta|). Stage 10B.9 verifies a
+//                           full v1 scene loads end-to-end. No
+//                           render. Pure host code; works without
+//                           CUDA.
 //   --render-gradient       Run the GPU UV-gradient diagnostic and
 //                           save it to <output>. Requires CUDA.
 //   --render-rays           Run the GPU camera-ray-direction
@@ -82,7 +89,8 @@ namespace rr::core {
 //   --height <int>          Render height in pixels (default 720).
 //
 // Action flags (--help / --version / --device-info / --render /
-// --scene-info / --render-gradient / --render-rays / --render-sphere /
+// --scene-info / --scene-summary / --render-gradient / --render-rays /
+// --render-sphere /
 // --render-relativistic / --render-scene / --render-triangle /
 // --render-mesh-scene / --render-material-scene /
 // --render-direct-lighting) are mutually exclusive; combining them
@@ -98,6 +106,7 @@ public:
         DeviceInfo,
         Render,
         SceneInfo,
+        SceneSummary,
         RenderGradient,
         RenderRays,
         RenderSphere,
