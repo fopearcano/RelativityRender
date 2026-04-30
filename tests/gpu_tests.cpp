@@ -19,11 +19,15 @@
 
 #include "gpu/GpuBuffer.h"
 #include "gpu/GpuDevice.h"
+#include "gpu/GpuTexture.h"
+#include "texture/ImageTexture.h"
 
+#include <cstddef>
 #include <cstdio>
 #include <cstring>
 #include <type_traits>
 #include <utility>
+#include <vector>
 
 namespace {
 
@@ -182,6 +186,144 @@ void test_backend_name_matches_availability() {
     }
 }
 
+// ---------- Stage 13B.1: GpuTexture ----------
+
+using rr::gpu::GpuTexture;
+using rr::texture::ImageTexture;
+using rr::texture::ImageTextureFormat;
+
+void test_gpu_texture_default_state() {
+    GpuTexture tex;
+    RR_CHECK(tex.empty());
+    RR_CHECK(!tex.has_data());
+    RR_CHECK(tex.width()         == 0);
+    RR_CHECK(tex.height()        == 0);
+    RR_CHECK(tex.size_in_bytes() == 0u);
+    RR_CHECK(tex.device_pixels() == nullptr);
+}
+
+void test_gpu_texture_move_only_traits() {
+    static_assert(!std::is_copy_constructible_v<GpuTexture>,
+                  "GpuTexture must not be copy-constructible");
+    static_assert(!std::is_copy_assignable_v<GpuTexture>,
+                  "GpuTexture must not be copy-assignable");
+    static_assert(std::is_move_constructible_v<GpuTexture>,
+                  "GpuTexture must be move-constructible");
+    static_assert(std::is_move_assignable_v<GpuTexture>,
+                  "GpuTexture must be move-assignable");
+    static_assert(std::is_nothrow_move_constructible_v<GpuTexture>,
+                  "GpuTexture move ctor must be noexcept");
+    static_assert(std::is_nothrow_move_assignable_v<GpuTexture>,
+                  "GpuTexture move assign must be noexcept");
+}
+
+void test_gpu_texture_empty_upload_is_clear_success() {
+    // upload_from(default-constructed ImageTexture): empty source ->
+    // successful clear, mirroring GpuMesh::upload_vertices(host, 0).
+    GpuTexture tex;
+    ImageTexture src;
+    RR_CHECK(tex.upload_from(src));
+    RR_CHECK(tex.empty());
+    RR_CHECK(tex.device_pixels() == nullptr);
+}
+
+void test_gpu_texture_size_mismatch_fails_cleanly() {
+    // 4x2 Rgba8 = 32 bytes; deliberately pass 16. Must not crash;
+    // must leave the texture empty.
+    GpuTexture tex;
+    std::vector<std::byte> too_small(16, std::byte{0xAB});
+    RR_CHECK(!tex.upload(too_small.data(), too_small.size(), 4, 2,
+                         ImageTextureFormat::Rgba8));
+    RR_CHECK(tex.empty());
+    RR_CHECK(tex.device_pixels() == nullptr);
+}
+
+void test_gpu_texture_null_with_nonzero_bytes_fails_cleanly() {
+    GpuTexture tex;
+    RR_CHECK(!tex.upload(nullptr, 16, 2, 2, ImageTextureFormat::Rgba8));
+    RR_CHECK(tex.empty());
+}
+
+void test_gpu_texture_negative_dims_fail_cleanly() {
+    GpuTexture tex;
+    std::vector<std::byte> bytes(16, std::byte{0});
+    RR_CHECK(!tex.upload(bytes.data(), bytes.size(), -1, 2,
+                         ImageTextureFormat::Rgba8));
+    RR_CHECK(tex.empty());
+}
+
+void test_gpu_texture_upload_either_succeeds_or_fails_cleanly() {
+    // 4x4 Rgba8 = 64 bytes filled with a recognisable pattern.
+    constexpr int kW = 4;
+    constexpr int kH = 4;
+    constexpr std::size_t kBytes = kW * kH * 4;
+    std::vector<std::byte> pixels(kBytes);
+    for (std::size_t i = 0; i < kBytes; ++i) {
+        pixels[i] = static_cast<std::byte>(i & 0xFF);
+    }
+
+    GpuTexture tex;
+    const bool ok = tex.upload(pixels.data(), pixels.size(),
+                               kW, kH, ImageTextureFormat::Rgba8);
+    if (!ok) {
+        // No CUDA backend / no visible device: must leave texture empty.
+        RR_CHECK(tex.empty());
+        RR_CHECK(tex.device_pixels() == nullptr);
+        RR_CHECK(tex.width()  == 0);
+        RR_CHECK(tex.height() == 0);
+        std::printf("gpu_tests: GpuTexture upload skipped "
+                    "(no CUDA backend / no device).\n");
+        return;
+    }
+
+    RR_CHECK(!tex.empty());
+    RR_CHECK(tex.has_data());
+    RR_CHECK(tex.width()         == kW);
+    RR_CHECK(tex.height()        == kH);
+    RR_CHECK(tex.size_in_bytes() == kBytes);
+    RR_CHECK(tex.format()        == ImageTextureFormat::Rgba8);
+    RR_CHECK(tex.device_pixels() != nullptr);
+
+    // Reset clears the allocation cleanly + zeroes metadata.
+    tex.reset();
+    RR_CHECK(tex.empty());
+    RR_CHECK(tex.width()         == 0);
+    RR_CHECK(tex.height()        == 0);
+    RR_CHECK(tex.size_in_bytes() == 0u);
+    RR_CHECK(tex.device_pixels() == nullptr);
+
+    // Reset is safe to call repeatedly.
+    tex.reset();
+    RR_CHECK(tex.empty());
+
+    std::printf("gpu_tests: GpuTexture upload OK (%dx%d, %zu bytes).\n",
+                kW, kH, kBytes);
+}
+
+void test_gpu_texture_upload_from_image_texture_roundtrip() {
+    // Same shape as the raw upload but going through upload_from with
+    // a populated ImageTexture. Validates the typical caller path.
+    constexpr int kW = 2;
+    constexpr int kH = 3;
+    ImageTexture src(kW, kH, ImageTextureFormat::Rgba32F, "ramp");
+    src.pixels().resize(static_cast<std::size_t>(kW) * kH * 16);
+    for (std::size_t i = 0; i < src.pixels().size(); ++i) {
+        src.pixels()[i] = static_cast<std::byte>((i * 7) & 0xFF);
+    }
+
+    GpuTexture tex;
+    const bool ok = tex.upload_from(src);
+    if (!ok) {
+        RR_CHECK(tex.empty());
+        return;
+    }
+
+    RR_CHECK(tex.width()  == kW);
+    RR_CHECK(tex.height() == kH);
+    RR_CHECK(tex.format() == ImageTextureFormat::Rgba32F);
+    RR_CHECK(tex.size_in_bytes() == src.pixels().size());
+}
+
 }  // namespace
 
 int main() {
@@ -192,6 +334,15 @@ int main() {
     test_allocate_either_succeeds_or_fails_cleanly();
     test_float_array_roundtrip();
     test_backend_name_matches_availability();
+
+    test_gpu_texture_default_state();
+    test_gpu_texture_move_only_traits();
+    test_gpu_texture_empty_upload_is_clear_success();
+    test_gpu_texture_size_mismatch_fails_cleanly();
+    test_gpu_texture_null_with_nonzero_bytes_fails_cleanly();
+    test_gpu_texture_negative_dims_fail_cleanly();
+    test_gpu_texture_upload_either_succeeds_or_fails_cleanly();
+    test_gpu_texture_upload_from_image_texture_roundtrip();
 
     std::printf("gpu_tests: %d / %d passed\n",
                 g_total - g_failed, g_total);

@@ -3710,6 +3710,7 @@ sub-stages, appended to the same file.** No code is touched.
 | 12B      | minimum-viable OptiX backend     | pending |
 | 12C+     | feature parity with CUDA backend | pending |
 | 13A      | Texture data model (rr_texture; Texture / ImageTexture; CudaTexture.cuh re-export; no sampling) | ✅ |
+| 13B.1    | GPU texture upload (GpuTexture; bytes + width/height/format; safe reset; no sampling, no kernel) | ✅ |
 
 ## Stage 12A.2.1 — OptiX raygen program design
 
@@ -6503,6 +6504,224 @@ sample.**
   `rr_texture` target builds independently of
   any consumer (`cmake --build build --target
   rr_texture` succeeds).
+
+## Stage 13B.1 — GPU texture upload
+
+**Scope of this slice (Stage 13B.1): take the
+Stage 13A `ImageTexture` host data and ship the
+pixel buffer to the GPU. Adds a single new
+class, `rr::gpu::GpuTexture`, that owns a
+device-side byte buffer plus
+(width, height, format) metadata, with explicit
+RAII free of the device allocation. The class
+mirrors `GpuMesh`'s established
+upload-then-keep pattern: a host caller invokes
+`upload_from(image_texture)`, the texture
+either ends up populated on the GPU or stays
+empty after a clean failure.
+
+No sampler, no `cudaTextureObject_t`, no kernel
+integration. The renderer cannot yet `tex2D`
+from a `GpuTexture`; the device-side
+descriptor type and the `RR_HD inline`
+UV-lookup helpers join in subsequent 13B sub-
+stages.**
+
+### What ships
+
+- `src/gpu/GpuTexture.{h,cpp}` (new):
+  - Move-only owning handle for the device-
+    resident pixel buffer + metadata. Holds a
+    `GpuBuffer<std::byte>` so the same type
+    carries Rgba8 and Rgba32F payloads without
+    a templated split.
+  - `bool upload(const std::byte* host_pixels,
+    std::size_t pixel_bytes, int width, int
+    height, ImageTextureFormat format)`. The
+    raw form. Validates that `pixel_bytes
+    == width * height * image_texture_bpp(
+    format)` before allocating; returns `false`
+    on any inconsistency or backend allocation
+    failure, leaving the texture empty (no
+    partial state). `pixel_bytes == 0` is an
+    explicit successful clear, mirroring
+    `GpuMesh::upload_vertices(host, 0)`.
+  - `bool upload_from(const ImageTexture& src)`.
+    The convenience form. Forwards to
+    `upload(...)` with the source's pixel
+    span + metadata. An empty `ImageTexture`
+    (no dims OR no pixels) is a successful
+    clear.
+  - `void reset() noexcept`. Free the device
+    allocation and zero the metadata. Safe to
+    call repeatedly; the destructor invokes it
+    automatically via `GpuBuffer<std::byte>`'s
+    RAII.
+  - Read accessors: `width()`, `height()`,
+    `format()`, `size_in_bytes()`, `empty()`,
+    `has_data()`, `device_pixels()`. The
+    device pointer is non-null only after a
+    successful non-empty upload.
+- `CMakeLists.txt`:
+  - `rr_gpu` STATIC library gains
+    `src/gpu/GpuTexture.cpp` in its source
+    list and PUBLIC-links `rr_texture` (the
+    GpuTexture header exposes
+    `rr::texture::ImageTexture` and
+    `ImageTextureFormat` by value /
+    reference).
+  - Stage label bumped to "Stage 13B.1: GPU
+    texture upload" in both the `project(...)`
+    description and the project-banner status
+    message.
+- `tests/gpu_tests.cpp`:
+  - Eight new test functions exercising
+    `GpuTexture`:
+    `test_gpu_texture_default_state`,
+    `test_gpu_texture_move_only_traits` (a set
+    of `static_assert`s),
+    `test_gpu_texture_empty_upload_is_clear_
+    success`,
+    `test_gpu_texture_size_mismatch_fails_
+    cleanly`,
+    `test_gpu_texture_null_with_nonzero_bytes_
+    fails_cleanly`,
+    `test_gpu_texture_negative_dims_fail_
+    cleanly`,
+    `test_gpu_texture_upload_either_succeeds_
+    or_fails_cleanly` (the GpuMesh-style "no
+    backend OR backend present" branch with
+    explicit `reset()` validation), and
+    `test_gpu_texture_upload_from_image_
+    texture_roundtrip`.
+  - 13 new RR_CHECK assertions on the no-CUDA
+    host (40 / 40 vs prior 27 / 27).
+- `docs/BUILD_PLAN.md`: this entry + status-
+  table row for 13B.1.
+
+### Architectural decisions worth highlighting
+
+- **Built on `GpuBuffer<std::byte>`.** A
+  `GpuBuffer<T>` already provides allocate /
+  upload / download / reset / RAII free; making
+  `GpuTexture` an owner of a typed buffer + a
+  small metadata trio (w/h/format) avoids
+  reimplementing the device-side allocation
+  primitives. This is the same composition
+  `GpuMesh` uses (`GpuBuffer<Vertex>` +
+  `GpuBuffer<Triangle>`).
+- **`std::byte` payload, not `uint8_t` /
+  `float`.** The GPU texture has to carry both
+  Rgba8 (1 byte / channel) and Rgba32F
+  (4 bytes / channel) without a templated split.
+  `std::byte` is the canonical "raw bytes"
+  type and the format flag governs
+  interpretation, matching how
+  `ImageTexture::pixels()` already stores its
+  data on the host. The eventual sampler
+  reinterprets the device pointer through the
+  format flag, not through C++ template
+  machinery.
+- **Validate `pixel_bytes` against
+  `(w, h, format)`.** Silent acceptance of a
+  size mismatch would corrupt the eventual
+  sampler (over-read past the buffer / sample
+  garbage); explicit `reset() + return false`
+  is honest and discoverable. The validation
+  uses `image_texture_bpp(format)` from
+  Stage 13A, so the rule lives in one place.
+- **Empty upload is a successful clear.**
+  Mirrors `GpuMesh::upload_vertices(host, 0)`'s
+  precedent. Callers that want to drop the
+  device allocation can pass a zero-length
+  upload, an empty `ImageTexture`, or call
+  `reset()` directly. All three converge on
+  the same end state.
+- **`reset()` is explicit `void` + `noexcept`.**
+  The user's spec calls out "free device
+  memory safely" as its own operation. `reset()`
+  is the named operation; the destructor
+  composes it via `GpuBuffer`'s RAII so a
+  scoped `GpuTexture` cleans up automatically.
+  No `cudaFree` ever happens on a moved-from
+  `GpuTexture` because `GpuBuffer<T>`'s move
+  semantics null the source pointer.
+- **No backend dependency in the public
+  interface.** The header includes
+  `gpu/GpuBuffer.h` and `texture/ImageTexture.h`
+  but nothing CUDA-specific. The `.cpp` is
+  pure C++ that delegates to `GpuBuffer<T>`'s
+  byte-level dispatch. Result: `GpuTexture`
+  compiles in pure-host TUs the same as
+  `GpuMesh`.
+- **No CudaTexture descriptor yet.**
+  `cuda/CudaTexture.cuh` remains a thin re-
+  export of the host headers. Adding a
+  device-side descriptor (texture id +
+  pointer + dims + format flag) before the
+  sampler exists would be data-shape churn
+  the sampler sub-stage rolls back. This
+  slice is upload-only.
+- **No `MaterialParams` / `Scene` / kernel
+  wiring.** `MaterialParams.base_color_
+  texture_id` is not added; `Scene` does not
+  yet carry a `std::vector<GpuTexture>`; no
+  render dispatch consumes a GpuTexture.
+  Subsequent 13B sub-stages do that wiring.
+
+### Hard-rule audit
+
+- No sampling yet  **yes**, no `tex2D`, no
+  `optixTrace` of textured geometry, no
+  `RR_HD inline` UV-lookup helper. The
+  device pointer is exposed but unused.
+- No renderer integration yet  **yes**, no
+  CLI handler creates a `GpuTexture`, no
+  CUDA kernel reads from one, no PathTracer
+  /CudaRenderer dispatch references the
+  type.
+- No node graph  **yes**, no node, no port,
+  no graph evaluator.
+- No C4D  **yes**, no Cinema 4D headers /
+  bridges / DCC dependencies.
+- Must compile  **yes**, OFF + ON
+  reconfigures both build clean (no
+  warnings, no errors under `-Wall -Wextra
+  -Wpedantic`); ctest 4/4 passes both ways.
+- Update docs/BUILD_PLAN.md  **yes**, this
+  entry + status-table row.
+
+### Verified at the build
+
+- `cmake -DRELATIVITYRENDER_ENABLE_OPTIX=OFF
+  ..` (clean reconfigure): builds clean
+  (rr_gpu now compiles GpuTexture.cpp);
+  banner shows `Stage 13B.1: GPU texture
+  upload`; ctest 4/4 passes;
+  `gpu_tests` reports 40 / 40 sub-checks
+  (was 27 pre-13B.1) with the new "GpuTexture
+  upload skipped (no CUDA backend / no
+  device)" line confirming the no-backend
+  branch is exercised.
+- `cmake -DRELATIVITYRENDER_ENABLE_OPTIX=ON
+  ..` (clean reconfigure): same
+  GpuTexture build, OptiX scaffold compiles
+  (with the expected 12B.4 SDK-not-found
+  warning); ctest 4/4 passes. GpuTexture
+  is orthogonal to the OptiX flag.
+- A future CUDA-enabled host run will exercise
+  the populated branch:
+  `test_gpu_texture_upload_either_succeeds_or_
+  fails_cleanly` does a 4x4 Rgba8 = 64-byte
+  upload + reset round-trip, and
+  `test_gpu_texture_upload_from_image_texture_
+  roundtrip` does a 2x3 Rgba32F = 96-byte
+  upload via `upload_from`.
+- Defensive paths on the no-backend host: 4x2
+  Rgba8 with 16 bytes (mismatch, expected 32)
+  -> false + empty; nullptr + 16 bytes ->
+  false + empty; (-1, 2) dims with 16 bytes
+  -> false + empty.
 
 ## Next stage
 

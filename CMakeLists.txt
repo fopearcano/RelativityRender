@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.20)
 
 project(RelativityRender
     VERSION     0.1.0
-    DESCRIPTION "RelativityRender - GPU renderer platform (Stage 13A: texture data model)"
+    DESCRIPTION "RelativityRender - GPU renderer platform (Stage 13B.1: GPU texture upload)"
     LANGUAGES   CXX
 )
 
@@ -33,7 +33,7 @@ option(RELATIVITYRENDER_ENABLE_OPTIX
 
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
-message(STATUS "RelativityRender ${PROJECT_VERSION} (Stage 13A: texture data model)")
+message(STATUS "RelativityRender ${PROJECT_VERSION} (Stage 13B.1: GPU texture upload)")
 
 message(STATUS "  Build type   : ${CMAKE_BUILD_TYPE}")
 message(STATUS "  C++ standard : ${CMAKE_CXX_STANDARD}")
@@ -378,12 +378,16 @@ add_library(rr_gpu STATIC
     src/gpu/GpuBuffer.cpp
     src/gpu/GpuScene.cpp
     src/gpu/GpuMesh.cpp
+    src/gpu/GpuTexture.cpp
 )
 target_include_directories(rr_gpu PUBLIC src)
 # rr_gpu's GpuScene exposes Camera / Observer / RelativityParams /
 # Sphere / MaterialParams / Light by value; PUBLIC-link those
 # modules so consumers see the complete types via gpu/GpuScene.h.
-target_link_libraries(rr_gpu PUBLIC rr_camera rr_relativity rr_geometry rr_material rr_lighting)
+# rr_texture is PUBLIC because GpuTexture's upload_from(ImageTexture&)
+# / metadata accessors expose `rr::texture::ImageTexture` and
+# `ImageTextureFormat` in its header.
+target_link_libraries(rr_gpu PUBLIC rr_camera rr_relativity rr_geometry rr_material rr_lighting rr_texture)
 rr_apply_warnings(rr_gpu)
 
 if(RR_ENABLE_CUDA)
