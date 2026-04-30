@@ -4247,6 +4247,30 @@ point.
 
 ---
 
+## 18. OptiX backend files
+
+The first piece of the planned `src/optix/` directory
+is the OptiX device-context lifecycle owner. This is the
+analogue of `cuda/CudaContext.{h,cpp}` for the OptiX
+backend: a single host-only file pair that owns
+`OptixDeviceContext` creation + destruction, log-callback
+registration, and the runtime availability query that
+the higher-level OptiX renderer uses to gate its dispatch.
+
+| File                          | Purpose                                                                              |
+|-------------------------------|--------------------------------------------------------------------------------------|
+| `src/optix/OptixBackend.h`    | Host-only declarations for the OptiX device-context lifecycle: `OptixBackend::initialize` / `shutdown` / `is_available` / `device_context()` accessors. CUDA-Runtime-free + OptiX-Runtime-free header so any TU can include it without pulling `<optix.h>` onto its include path. |
+| `src/optix/OptixBackend.cpp`  | Host-only implementation: wraps `optixInit` + `optixDeviceContextCreate` under `#ifdef RR_HAS_OPTIX`, mirrors the `cuda/CudaContext.cpp` pattern (compiled by the host C++ compiler with `<optix.h>` included). Returns honest "OptiX unavailable" failures when the backend isn't compiled in or the runtime fails to initialise. |
+
+The pair lives in `src/optix/` rather than mingled into
+`src/cuda/` so the OptiX runtime headers (`<optix.h>`,
+`<optix_stubs.h>`, `<optix_function_table_definition.h>`)
+stay isolated from the CUDA-only TUs. Future file-pair
+sub-stages append the other modules (renderer, programs,
+SBT, AS, launch-params) into the same directory.
+
+---
+
 ## Sections to come
 
 Future Stage 12A sub-stages will append (one per slice or

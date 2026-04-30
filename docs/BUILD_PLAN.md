@@ -3692,7 +3692,8 @@ sub-stages, appended to the same file.** No code is touched.
 | 12A.3.6  | OPTIX_BACKEND_PLAN.md §15 (Launch parameters consolidation) | ✅ |
 | 12A.4.1  | OPTIX_BACKEND_PLAN.md §16 (Migration strategy) | ✅ |
 | 12A.4.2  | OPTIX_BACKEND_PLAN.md §17 (Path tracing integration) | ✅ |
-| 12A.x    | remaining IS / file-layout / migration-risks sections | pending |
+| 12A.4.3.1 | OPTIX_BACKEND_PLAN.md §18 (OptiX backend files) | ✅ |
+| 12A.x    | remaining IS / file-layout sub-stages / migration-risks | pending |
 | 12B      | minimum-viable OptiX backend     | pending |
 | 12C+     | feature parity with CUDA backend | pending |
 
@@ -4855,6 +4856,69 @@ pending).**
 - Do not add other sections — **yes**, only §17 was
   appended; the footer dropped exactly the matching
   item ("Path-tracing integration").
+- Documentation only — **yes**, no source under
+  `src/`, `tests/`, or `CMakeLists.txt` is touched.
+  The only edits are two markdown files.
+- Update docs/BUILD_PLAN.md — **yes**, this entry.
+
+## Stage 12A.4.3.1 — OptiX backend files
+
+**Scope of this slice (Stage 12A.4.3.1): documentation-only.
+Append §18 "OptiX backend files" to
+`docs/OPTIX_BACKEND_PLAN.md` listing exactly the two files
+the user prompt names — `src/optix/OptixBackend.h` and
+`src/optix/OptixBackend.cpp` — with a one-line purpose
+each. First sub-stage in the 12A.4.3.x file-pair
+sequence; subsequent sub-stages append further file
+groups (renderer, programs, SBT, AS, launch-params) into
+the same `src/optix/` directory. No code; no other
+files; no other sections.**
+
+### What ships
+
+- `docs/OPTIX_BACKEND_PLAN.md` §18 with a focused
+  two-row table:
+  - `src/optix/OptixBackend.h` — host-only
+    declarations for the OptiX device-context lifecycle
+    (`initialize` / `shutdown` / `is_available` /
+    `device_context()`); CUDA-Runtime-free +
+    OptiX-Runtime-free header.
+  - `src/optix/OptixBackend.cpp` — host-only
+    implementation gated on `RR_HAS_OPTIX`; wraps
+    `optixInit` + `optixDeviceContextCreate`; mirrors
+    `cuda/CudaContext.cpp`'s pattern.
+  Plus a short paragraph noting the deliberate
+  separation from `src/cuda/` (OptiX runtime headers
+  stay isolated; future file-pair sub-stages append
+  into the same directory).
+- The footer is untouched — "Planned module / file
+  layout" stays pending until the full file layout is
+  documented across the future 12A.4.3.x sub-stages.
+  This slice covers only the OptixBackend pair.
+- This BUILD_PLAN entry + status-table row.
+
+### Architectural decisions worth highlighting
+
+- **`src/optix/` is a sibling of `src/cuda/`, not a
+  subdirectory.** The OptiX runtime headers stay
+  isolated from CUDA-only TUs. Mirrors the existing
+  `src/cuda/` pattern: a focused subdirectory for one
+  backend's source. Future master-order #17 OptiX
+  growth slots in here without disturbing
+  `src/cuda/`'s contents.
+- **OptixBackend mirrors CudaContext.** Same
+  responsibility (device-context lifecycle), same
+  pattern (host-only `.cpp`, host-only `.h` that does
+  not pull the runtime headers onto consumers'
+  include paths). The two backends share
+  architectural shape so an implementer reading one
+  understands the other.
+
+### Hard-rule audit
+
+- Do not add other files — **yes**, only the
+  OptixBackend pair was listed; the prompt's "Do not
+  add other files" was respected.
 - Documentation only — **yes**, no source under
   `src/`, `tests/`, or `CMakeLists.txt` is touched.
   The only edits are two markdown files.
