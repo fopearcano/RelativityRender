@@ -3684,7 +3684,8 @@ sub-stages, appended to the same file.** No code is touched.
 | 12A.2.3  | OPTIX_BACKEND_PLAN.md §7 (Closest-hit) | ✅ |
 | 12A.2.4  | OPTIX_BACKEND_PLAN.md §8 (Any-hit) | ✅ |
 | 12A.2.5  | OPTIX_BACKEND_PLAN.md §9 (Shader Binding Table) | ✅ |
-| 12A.x    | remaining IS / AS / data-flow / integration / file-layout / risks sections | pending |
+| 12A.3.1  | OPTIX_BACKEND_PLAN.md §10 (Acceleration structures) | ✅ |
+| 12A.x    | remaining IS / data-flow / integration / file-layout / risks sections | pending |
 | 12B      | minimum-viable OptiX backend     | pending |
 | 12C+     | feature parity with CUDA backend | pending |
 
@@ -4052,18 +4053,119 @@ no other sections (§10+ remain pending).**
   edits are two markdown files.
 - Update docs/BUILD_PLAN.md — **yes**, this entry.
 
+## Stage 12A.3.1 — OptiX acceleration-structure design
+
+**Scope of this slice (Stage 12A.3.1): documentation-only.
+Append §10 "Acceleration structures" to
+`docs/OPTIX_BACKEND_PLAN.md` covering the per-mesh GAS +
+IAS hierarchy (canonical OptiX layout, multi-mesh-friendly),
+GAS construction recipes for sphere and triangle build
+inputs, IAS construction with per-instance descriptors
+(transform, sbtOffset, instanceId, visibilityMask), the
+deliberate identity-transform choice for Stage 12B (parity
+with the CUDA backend's world-space-vertices convention),
+build flags (PREFER_FAST_TRACE; ALLOW_UPDATE / COMPACTION
+deferred), the rebuild-vs-refit decision matrix, a minimal
+forward-pointer for motion blur, and an explicit scope
+list of deferred features (compaction, per-primitive
+HitGroup variation, OMM/DMM). No code; no other sections
+(§11 Camera / §12 Material / §13 Light / §14 Relativity
+data + remaining IS / file-layout / risks all remain
+pending).**
+
+### What ships
+
+- `docs/OPTIX_BACKEND_PLAN.md` §10 with subsections 10.1
+  Two-tier AS hierarchy (ASCII diagram of root IAS over
+  sphere GAS + per-mesh GASes, with sbtOffset bindings
+  matching §9.4), 10.2 GAS construction (10.2.1 sphere
+  GAS using OptiX 7.5+'s built-in sphere primitive +
+  zero-copy strided pointer trick on the existing
+  `Sphere` POD; 10.2.2 mesh GAS using the built-in
+  triangle primitive + zero-copy strided pointer trick
+  on `Vertex` and `Triangle` PODs; 10.2.3 geometry
+  flags), 10.3 IAS construction (concrete `OptixInstance`
+  setup with sbtOffset = 0/1 mapping to §9.4's HitGroup
+  records), 10.4 How transforms are applied (Stage 12B's
+  identity-transform choice, the rationale - parity with
+  CUDA-backend's world-space-vertices convention - and
+  the activation path when both backends switch in sync),
+  10.5 Build flags (PREFER_FAST_TRACE; explicit deferral
+  of ALLOW_UPDATE + ALLOW_COMPACTION + their
+  consequences), 10.6 Rebuild vs refit (decision matrix
+  + rebuild-only choice for Stage 12B's static scenes +
+  activation paths for vertex animation and interactive
+  sphere editing), 10.7 Motion blur minimal forward-
+  pointer (no `OptixMotionOptions` in 12B; activation
+  recipe documented for the future motion-blur slice),
+  10.8 Read/write summary, 10.9 Scope (compaction,
+  per-primitive HitGroup variation, OMM/DMM all
+  deferred).
+- The footer's outstanding-items bullet list drops only
+  "Acceleration structures (GAS, IAS, build flags,
+  refit vs rebuild)" — every other future item is
+  preserved.
+- This BUILD_PLAN entry + status-table row.
+
+### Architectural decisions worth highlighting
+
+- **Per-mesh GAS + IAS, not concatenated triangle GAS.**
+  Stage 12B commits to the canonical OptiX layout: one
+  GAS per mesh, plus a single sphere GAS, all wrapped
+  in one IAS. This is forward-compatible with multi-mesh
+  upload (carried-forward from 10B.11), per-instance
+  transforms (when the §11 transform field activates),
+  and motion blur (when shutter time lands), without
+  restructuring.
+- **Identity transforms for Stage 12B parity.** Even
+  though the per-mesh GAS + IAS architecture supports
+  per-mesh transforms, Stage 12B writes identity on
+  every `OptixInstance::transform`. The reason is the
+  CUDA backend's current "vertices are world-space"
+  convention (`RRSCENE_FORMAT.md` §9.4); applying the
+  transform in OptiX while CUDA ignores it would
+  introduce silent backend behaviour drift. The
+  activation slice flips both backends in sync.
+- **Zero-copy strided pointer reuse.** Both GAS variants
+  reuse the existing CUDA-side device pointers
+  (`GpuScene::device_spheres()`, `GpuMesh::device_*`)
+  with appropriate strides. No additional uploads, no
+  data duplication; the OptiX backend reads the same
+  arrays the CUDA kernel does.
+- **Static-scene rebuild-only.** Stage 12B's path
+  tracer targets static scenes; rebuild on load,
+  reuse the AS unchanged across renders. ALLOW_UPDATE
+  + refit activate later (animation, interactive
+  editing) without invalidating the §10 architecture.
+- **Motion blur slot reserved.** No
+  `OptixMotionOptions` set in Stage 12B; activation
+  path documented as additive (camera shutter fields +
+  multi-key transforms + raygen time sampling). The
+  GAS / IAS hierarchy survives motion-blur addition
+  without restructuring.
+
+### Hard-rule audit
+
+- Do not add other sections — **yes**, only §10 was
+  appended; the footer dropped exactly the matching
+  item ("Acceleration structures").
+- Documentation only — **yes**, no source under `src/`,
+  `tests/`, or `CMakeLists.txt` is touched. The only
+  edits are two markdown files.
+- Update docs/BUILD_PLAN.md — **yes**, this entry.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
 
-- continue 12A: append §10+ (Intersection program,
-  Acceleration structures, Material data flow, Camera
-  data flow, Relativity integration, Path-tracing
-  integration, planned module/file layout, migration
-  risks) to `OPTIX_BACKEND_PLAN.md`, one focused section
-  per sub-stage matching the
-  12A.2.1 / 12A.2.2 / 12A.2.3 / 12A.2.4 / 12A.2.5
-  cadence;
+- continue 12A: append §11+ (Camera data, Material data,
+  Light data, Relativity parameter data, then
+  Intersection program / Path-tracing integration /
+  planned module-file layout / migration risks) to
+  `OPTIX_BACKEND_PLAN.md`, one focused section per
+  sub-stage matching the
+  12A.2.1 / 12A.2.2 / 12A.2.3 / 12A.2.4 / 12A.2.5 /
+  12A.3.1 cadence;
 - *or* (if the priority is path-tracer feature breadth
   instead of backend swap) direct-light sampling (NEE),
   non-diffuse materials, multi-mesh upload, or relativistic-

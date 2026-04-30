@@ -1772,14 +1772,410 @@ documented here is additive against that baseline.
 
 ---
 
+## 10. Acceleration structures
+
+OptiX's traversal performance comes from its **acceleration
+structures** (BVHs the runtime walks during `optixTrace`).
+This section documents the AS hierarchy RelativityRender
+plans for Stage 12B and the data flow that drives it: which
+GpuScene uploads feed which GAS, how the IAS wraps them,
+how transforms are applied (or deliberately not, to
+preserve CUDA-backend parity), and the rebuild-vs-refit
+decision for the static-scene workloads Stage 12B targets.
+
+§10 also finalises the two pieces §9 forward-pointed to:
+how `sbtOffset` gets attached to a GAS at build time, and
+where the single `OptixTraversableHandle` consumed by
+`optixTrace` (`optixLaunchParams.scene_handle` in §5.2.1)
+comes from.
+
+### 10.1 Two-tier AS hierarchy: GAS + IAS
+
+Stage 12B uses the canonical OptiX two-tier layout:
+
+```
+                            IAS
+                         (root handle)
+                       /             \
+                     /                 \
+              [instance: sphere]     [instance: mesh_0]
+              transform = identity   transform = identity
+              sbtOffset = 0          sbtOffset = 1
+                  |                       |
+                  v                       v
+              sphere_GAS            mesh_0_GAS
+              (all spheres)         (single mesh's
+                                     vertices + tris)
+```
+
+- **GAS (Geometry Acceleration Structure)** holds
+  primitives of a single type. RelativityRender uses two
+  GAS variants:
+  - One **sphere GAS** built from the entire
+    `GpuScene::device_spheres()` array via OptiX 7.5+'s
+    built-in sphere primitive (`OPTIX_PRIMITIVE_TYPE_SPHERE`,
+    `OptixBuildInputSphereArray`). One GAS for all
+    spheres, regardless of count.
+  - One **mesh GAS per visible non-empty mesh** built
+    from that mesh's `GpuMesh::device_vertices()` +
+    `device_triangles()` via the built-in triangle
+    primitive (`OptixBuildInputTriangleArray`). Stage
+    12B's `GpuScene::upload_mesh` single-slot constraint
+    means at most one mesh GAS today; multi-mesh growth
+    (carried-forward from 10B.11) makes this an N-GAS
+    list naturally.
+- **IAS (Instance Acceleration Structure)** wraps the
+  GAS handles into a single traversable handle that the
+  raygen passes to `optixTrace`. The IAS holds an array
+  of `OptixInstance` descriptors — one per GAS — each
+  carrying its own transform and `sbtOffset`.
+
+The single `OptixTraversableHandle` for the IAS root is
+what gets stored in `optixLaunchParams.scene_handle`. The
+raygen passes that handle to `optixTrace`; OptiX walks the
+IAS, picks the per-instance transform + GAS handle, walks
+the GAS's BVH, and dispatches into the right HitGroup
+record for the hit primitive.
+
+### 10.2 GAS construction
+
+Both GAS variants follow the same three-step OptiX pattern
+(`optixAccelComputeMemoryUsage` → allocate output + temp
+buffers → `optixAccelBuild`):
+
+#### 10.2.1 Sphere GAS
+
+```cpp
+OptixBuildInputSphereArray sphere_input{};
+sphere_input.vertexBuffers       = &device_sphere_centers;  // device pointer
+sphere_input.vertexStrideInBytes = sizeof(Sphere);          // POD stride
+sphere_input.numVertices         = scene.sphere_count();
+sphere_input.radiusBuffers       = &device_sphere_radii;    // can alias above
+sphere_input.radiusStrideInBytes = sizeof(Sphere);
+sphere_input.singleRadius        = 0;                       // per-sphere radii
+sphere_input.flags               = &kSphereGeomFlags;       // 1 entry
+sphere_input.numSbtRecords       = 1;                       // one HitGroup
+
+OptixBuildInput input{};
+input.type = OPTIX_BUILD_INPUT_TYPE_SPHERES;
+input.sphereArray = sphere_input;
+```
+
+The `Sphere` POD's `center` (Vec3) and `radius` (float)
+fields sit at known offsets in the struct, which lets the
+sphere GAS reuse the same device pointer for both
+vertex and radius arrays with appropriate strides — a
+zero-copy upload on top of the existing
+`GpuScene::upload_spheres`.
+
+`numSbtRecords = 1` means every primitive in this GAS
+binds to the same HitGroup record at trace time (the
+sphere CH from §9.4). No per-primitive HitGroup variation
+in Stage 12B; that's a future BSDF-dispatch slice's
+concern.
+
+#### 10.2.2 Mesh GAS (per mesh)
+
+```cpp
+OptixBuildInputTriangleArray triangle_input{};
+triangle_input.vertexFormat        = OPTIX_VERTEX_FORMAT_FLOAT3;
+triangle_input.vertexStrideInBytes = sizeof(rr::geometry::Vertex);
+triangle_input.numVertices         = mesh.vertex_count();
+triangle_input.vertexBuffers       = &device_mesh_vertices;  // strided POD
+
+triangle_input.indexFormat         = OPTIX_INDICES_FORMAT_UNSIGNED_INT3;
+triangle_input.indexStrideInBytes  = sizeof(rr::geometry::Triangle);
+triangle_input.numIndexTriplets    = mesh.triangle_count();
+triangle_input.indexBuffer         = device_mesh_triangles;
+
+triangle_input.flags               = &kTriangleGeomFlags;    // 1 entry
+triangle_input.numSbtRecords       = 1;                      // one HitGroup
+```
+
+The strided pointer trick works the same way: the
+existing `Vertex` POD's `position` (Vec3) sits at offset 0,
+so the triangle build input reads positions directly from
+the existing `GpuMesh::device_vertices()` upload without a
+copy. Per-vertex normals + UVs are at later offsets in the
+same POD; the CH program reads them via the same device
+pointer (per §7.6.2's recipe).
+
+The triangle indices follow the same shape: `Triangle`
+POD is three `uint32_t` fields, exactly the
+`OPTIX_INDICES_FORMAT_UNSIGNED_INT3` layout, no
+intermediate copy.
+
+#### 10.2.3 Geometry flags
+
+Each build input takes a `flags` array (one entry per SBT
+record covered, 1 for Stage 12B). Stage 12B sets:
+
+- `OPTIX_GEOMETRY_FLAG_NONE` for triangle meshes (default;
+  per-intersection AH calls allowed if attached, which
+  Stage 12B doesn't attach — see §8).
+- `OPTIX_GEOMETRY_FLAG_NONE` for spheres (same default).
+
+Future stages activate `OPTIX_GEOMETRY_FLAG_DISABLE_ANYHIT`
+on geometries the user knows are opaque-no-cutout, which
+lets OptiX skip even the AH dispatch overhead. Stage 12B
+relies on the per-trace `OPTIX_RAY_FLAG_DISABLE_ANYHIT`
+for the same effect, so the geometry-flag default suffices.
+
+### 10.3 IAS construction
+
+The IAS wraps the GAS handles into a single traversable.
+For Stage 12B with one sphere GAS + at most one mesh GAS:
+
+```cpp
+OptixInstance instances[2] = {};
+
+// Instance 0: sphere GAS, identity transform, sphere HitGroup.
+instances[0].instanceId        = 0;
+instances[0].sbtOffset         = 0;
+instances[0].visibilityMask    = 0xFF;
+instances[0].flags             = OPTIX_INSTANCE_FLAG_NONE;
+instances[0].traversableHandle = sphere_gas_handle;
+write_identity_3x4(instances[0].transform);
+
+// Instance 1: mesh GAS, identity transform (Stage 12B), triangle HitGroup.
+instances[1].instanceId        = 1;
+instances[1].sbtOffset         = 1;
+instances[1].visibilityMask    = 0xFF;
+instances[1].flags             = OPTIX_INSTANCE_FLAG_NONE;
+instances[1].traversableHandle = mesh_gas_handle;
+write_identity_3x4(instances[1].transform);
+
+OptixBuildInput ias_input{};
+ias_input.type                       = OPTIX_BUILD_INPUT_TYPE_INSTANCES;
+ias_input.instanceArray.instances    = device_instances_buffer;
+ias_input.instanceArray.numInstances = 2;
+```
+
+`OptixInstance::sbtOffset` is what §9.6's HitGroup index
+math reads — sphere instance gets 0 (binds to the sphere
+HitGroup record at index 0 in §9.4's table), mesh instance
+gets 1 (binds to the triangle HitGroup record at index 1).
+Stage 12C+ multi-ray-type expansion doubles these offsets
+(per §9.5.1).
+
+`instanceId` is the per-instance opaque cookie the CH can
+read via `optixGetInstanceId()`. Stage 12B uses 0 for
+sphere, 1 for mesh; future multi-mesh growth uses
+`instanceId` as the index into a `launch_params.meshes[]`
+array (per §9.5.2's launch-params-routed alternative).
+
+`visibilityMask = 0xFF` means "visible to all ray types";
+Stage 12B has only one ray type so the value is
+unconstrained, but `0xFF` is the safe default.
+
+### 10.4 How transforms are applied
+
+The IAS instance transform is a 3×4 row-major affine
+matrix that OptiX applies at trace time: when an
+`optixTrace` ray enters an instance's bounding region,
+OptiX transforms the ray into the GAS's local space using
+the instance's inverse transform, runs the GAS traversal
+in local space, and reports hit positions / normals back
+in world space. This is the per-instance transform
+RelativityRender's §11 `transform` field on `SceneMesh` is
+designed to drive.
+
+**Stage 12B writes identity transforms on every
+instance.** The reason is parity with the CUDA backend:
+the existing `k_render_scene` reads vertex positions in
+world space directly (per `RRSCENE_FORMAT.md` §9.4's
+mesh-renderer note — "the per-mesh `transform` is
+uploaded but not applied"). If the OptiX backend started
+applying the transform, the same `.rrscene` file would
+render differently between the two backends — a silent
+behaviour change neither backend audited for.
+
+The activation path, when both backends switch in sync,
+is one well-understood change per backend:
+
+- **Convert `Transform` to 3×4 matrix.** Standard
+  composition: `M = T · R · S` where `T` is translation
+  from `transform.position`, `R` is XYZ-Euler rotation
+  from `transform.euler_rotation_radians` (per
+  `RRSCENE_FORMAT.md` §11's intrinsic-XYZ convention),
+  `S` is non-uniform scale from `transform.scale`. The
+  conversion lives in a new `rr::math::transform_matrix`
+  helper used by both backends.
+- **Vertex positions become local-space.** The mesh's
+  uploaded vertex positions are interpreted as
+  local-space (already true for any mesh that doesn't
+  pre-bake the transform). The IAS instance transform
+  carries the conversion to world space.
+- **CUDA backend symmetry.** The CUDA `k_render_scene`
+  has to learn to apply the transform during
+  intersection — either by transforming the ray into
+  local space before the per-mesh triangle loop, or by
+  transforming each vertex to world space at hit time
+  (less efficient). The Stage 9B kernel design doesn't
+  do either today.
+
+§10 documents the architecture; the activation slice is
+its own scoped change. Stage 12B's identity-transform
+choice is a deliberate compatibility floor, not a
+limitation of the OptiX hierarchy.
+
+### 10.5 Build flags
+
+`optixAccelBuild` takes flags describing how the AS will
+be used. Stage 12B picks:
+
+- `OPTIX_BUILD_FLAG_PREFER_FAST_TRACE` — prioritise
+  traversal performance over build cost. This is the
+  default for static scenes (offline rendering) and the
+  right pick for path-tracing workloads where the AS is
+  built once per scene load and traced billions of times
+  per render.
+
+Stage 12B does NOT set:
+
+- `OPTIX_BUILD_FLAG_ALLOW_UPDATE` — required for
+  refit (see §10.6). Costs ~30% more memory and makes
+  initial builds slightly slower. Stage 12B targets
+  static scenes; refit is a future-slice concern.
+- `OPTIX_BUILD_FLAG_ALLOW_COMPACTION` — enables the
+  optional post-build compaction pass that typically
+  shrinks the AS by 20-30%. Stage 12B skips this for
+  simplicity; production-quality memory budgets should
+  enable it once the activation path is uncomplicated.
+
+`OPTIX_BUILD_OPERATION_BUILD` is the build operation
+type for both initial GAS and IAS construction; Stage 12B
+never uses `OPTIX_BUILD_OPERATION_UPDATE`.
+
+### 10.6 Rebuild vs refit
+
+Two AS-mutation operations OptiX exposes for animated
+scenes:
+
+| Operation | When to use                                    | Cost                  | Constraint                        |
+|-----------|------------------------------------------------|-----------------------|-----------------------------------|
+| Rebuild   | Topology changes; first-time build             | Full build cost       | None                              |
+| Refit     | Per-vertex position changes only (animation)   | ~10× faster than rebuild | Requires `ALLOW_UPDATE` build flag; topology must not change |
+
+Refit's contract: OptiX preserves the BVH structure from
+the previous build and only updates the bounding boxes at
+the leaves and internal nodes. This is correct as long as
+the BVH split planes still produce reasonable spatial
+locality after the position update. Animation that moves
+vertices a lot (e.g., a character walking across the
+scene) eventually drifts the BVH out of locality and
+traversal performance degrades; the canonical fix is
+"refit for N frames, rebuild on frame N+1, repeat".
+
+**Stage 12B uses rebuild only.** Static scenes mean every
+AS is built once at scene load and reused unchanged for
+every render. Refit becomes useful in two future slices:
+
+- **Vertex animation** (master order #22 / animation
+  slice) — mesh vertex positions change per frame; refit
+  per frame avoids the O(triangles) full-build cost.
+  Activates `OPTIX_BUILD_FLAG_ALLOW_UPDATE` on mesh GASes.
+- **Interactive sphere editing** (interactive viewer
+  slice) — the artist drags a sphere; refit the sphere
+  GAS in microseconds rather than rebuilding it. Same
+  flag activation.
+
+Neither slice exists yet. §10 documents the architecture;
+the activation slices flip the build-flag bit per their
+scope.
+
+### 10.7 Motion blur (minimal note)
+
+OptiX supports motion blur via `OptixMotionOptions` on
+both GAS build inputs (deformable geometry) and IAS
+instances (motion transforms). The motion options describe
+how the AS varies over a `[t_min, t_max]` interval; the
+runtime's `optixTrace` takes a per-ray time parameter
+(implicit in OptiX 7+ via the SBT) and the BVH traversal
+interpolates accordingly.
+
+**Stage 12B does not use motion blur.** No
+`OptixMotionOptions` are set on any GAS or IAS; the
+single AS represents a single point in time, the camera
+is shutter-zero, every ray queries the same BVH. The
+existing `GpuCamera` POD has no shutter/time fields.
+
+When motion blur lands (its own master-order slice,
+post-#22), the activation path is:
+
+- Add shutter time fields to `GpuCamera` (`shutter_open`,
+  `shutter_close`).
+- Set `OptixMotionOptions::numKeys = 2`,
+  `timeBegin = shutter_open`, `timeEnd = shutter_close`,
+  `flags = OPTIX_MOTION_FLAG_NONE` on instances that
+  move during the shutter window.
+- Provide multi-key transforms (one per key) for IAS
+  instances that animate; multi-key vertex buffers for
+  GASes that deform.
+- Raygen samples a random time in `[shutter_open,
+  shutter_close]` per primary ray (advancing the existing
+  `pathtracer::Rng`) and threads the time through
+  `optixTrace`'s built-in time argument.
+
+§10's GAS + IAS architecture survives the addition without
+restructuring; motion options are an additive build-input
+field.
+
+### 10.8 Read / write summary
+
+| Surface                                | Direction       | Lifetime              |
+|----------------------------------------|-----------------|-----------------------|
+| `GpuScene::device_spheres()`           | read at GAS build | per scene load (rebuild) |
+| `GpuMesh::device_vertices()`           | read at GAS build | per scene load        |
+| `GpuMesh::device_triangles()`          | read at GAS build | per scene load        |
+| GAS output buffer (`GpuBuffer<u8>`)    | write at GAS build | per scene load        |
+| GAS temp buffer                        | write at GAS build, freed after build | scratch         |
+| IAS instance descriptors (host-built, uploaded) | write at IAS build | per scene load |
+| IAS output buffer (`GpuBuffer<u8>`)    | write at IAS build | per scene load       |
+| `OptixTraversableHandle` (root)        | host stores; uploaded into `optixLaunchParams.scene_handle` | per scene load |
+
+The AS itself is read-only at trace time — every
+`optixTrace` walks the IAS + GAS without modifying them.
+Stage 12B's static-scene posture means the buffers also
+don't change between renders.
+
+### 10.9 Scope: what's NOT in §10
+
+Three AS-related concerns this section deliberately
+defers:
+
+- **Compaction.** `OPTIX_BUILD_FLAG_ALLOW_COMPACTION` +
+  the post-build `optixAccelCompact` call shrink the AS
+  by 20-30%. Stage 12B's small scenes don't make this
+  worth the complexity; production memory budgets
+  activate it.
+- **Per-primitive HitGroup variation.** A triangle GAS
+  build input with `numSbtRecords > 1` plus a
+  `sbtIndexOffsetBuffer` per triangle lets different
+  triangles in the same mesh bind to different HitGroup
+  records. Useful when one mesh contains primitives with
+  different materials at different draw boundaries; the
+  current `Mesh::material_id` is per-mesh, so the feature
+  is unused. Master order #13 (material expansion)
+  may activate it.
+- **Opacity Micromaps (OMM) / Displacement Micromaps
+  (DMM).** OptiX 7.6+ features for sub-triangle alpha
+  and displacement. Both deferred until the texture
+  system + alpha-test path lands (master order #18).
+
+The Stage 12B AS is a deliberately simple two-tier
+hierarchy: one sphere GAS, one mesh GAS, one IAS wrapping
+both with identity transforms. Every future expansion
+listed above is additive against that baseline.
+
+---
+
 ## Sections to come
 
 Future Stage 12A sub-stages will append (one per slice or
 small group of slices):
 
 - Intersection program design
-- Acceleration structures (GAS, IAS, build flags, refit vs
-  rebuild)
 - Material data flow (per-record vs constant-memory vs
   launch-param)
 - Camera data flow
