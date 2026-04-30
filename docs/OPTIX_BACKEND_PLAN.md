@@ -374,12 +374,227 @@ The codebase's CUDA-only kernel set becomes the project's
 
 ---
 
+## 5. Raygen program
+
+The OptiX **raygen** program is the per-pixel entry point of an
+`optixLaunch`. One thread is dispatched per launch index; for
+RelativityRender's 2D framebuffer that maps to one thread per
+pixel, exactly mirroring the Stage 11C CUDA path-tracer kernel
+(`k_pathtrace_sample`) — the OptiX migration replaces the
+`<<<grid, block>>>` launch with `optixLaunch`, but the unit of
+parallelism does not change.
+
+### 5.1 Role
+
+The raygen program owns three responsibilities on the GPU:
+
+1. **Generate the primary ray** for its launch index `(x, y)`,
+   with sub-pixel jitter sampled from the per-pixel
+   `pathtracer::Rng`. This is the same maths as
+   `generate_primary_ray` in `CudaPathTracer.cu` (mirrors
+   `rr::camera::generate_camera_ray` with the +0.5 centre
+   offset replaced by the random jitter so the spp loop
+   produces stratified-by-default anti-aliasing).
+
+2. **Drive the iterative bounce loop**: for each bounce in
+   `[0, max_bounces)`, call `optixTrace` against the scene
+   acceleration structure, read the populated payload, fold
+   the hit's contribution into the running radiance + update
+   the throughput, sample the next bounce direction with
+   `pathtracer::sample_cosine_hemisphere`, and continue. On
+   miss, fold in the environment fallback and break. This
+   logic is host-of-shading: the closest-hit program (§7,
+   future sub-stage) only writes hit data into the payload,
+   leaving every shading decision to the raygen.
+
+3. **Write per-sample radiance** to the per-launch output
+   buffer at the pixel's offset. One sample per launch — the
+   spp loop stays on the host (one `optixLaunch` per sample,
+   accumulated through the existing Stage 11B
+   `AccumulationBuffer`). This is identical to the Stage 11C
+   CUDA orchestration shape; the migration changes the launch
+   primitive, not the spp partitioning.
+
+The bounce loop is **iterative**. OptiX 7+ supports recursive
+trace calls via continuation-call stacks, but production path
+tracers iterate to bound stack growth on wide divergence. The
+raygen carries `radiance` and `throughput` as thread-local
+floats across the loop iterations; only the per-bounce *hit
+data* travels through OptiX's payload registers.
+
+### 5.2 Inputs
+
+The raygen program reads two distinct input surfaces:
+
+#### 5.2.1 Constant-memory `optixLaunchParams`
+
+A single, statically-sized POD bound to a fixed device symbol
+at pipeline link time, populated by the host before each
+`optixLaunch`. RelativityRender's planned struct (subject to
+refinement when Stage 12B ships):
+
+```cpp
+struct OptixLaunchParams {
+    // Output (write-only from the raygen)
+    float*                              sample_pixels;    // device pointer, w*h*4 floats
+    int                                 width;
+    int                                 height;
+
+    // Per-launch sample / RNG state
+    unsigned int                        seed;
+    unsigned int                        sample_index;     // changes between launches
+    int                                 max_bounces;
+
+    // Scene
+    OptixTraversableHandle              scene_handle;     // GAS / IAS root for optixTrace
+    const rr::material::MaterialParams* materials;        // device pointer
+    int                                 material_count;
+
+    // Camera (host POD; identical to GpuCamera)
+    rr::camera::GpuCamera               camera;
+
+    // Relativity (host POD; consumed by raygen for primary-ray aberration)
+    rr::relativity::Observer            observer;
+    rr::relativity::RelativityParams    params;
+
+    // Environment fallback for misses (raygen consumes; the miss
+    // program just signals "no hit" via the payload)
+    rr::math::Vec3                      env_color;
+    float                               env_intensity;
+};
+```
+
+The struct is 1:1 with the data the Stage 11C CUDA kernel
+already takes by value as launch arguments — the migration is
+moving fields from kernel arguments to a constant-memory POD,
+not adding new state.
+
+#### 5.2.2 SBT raygen record
+
+Every OptiX program is reached through a Shader Binding Table
+record. The raygen record's slot is a single SBT entry, of the
+form `[OptixProgramGroup header (32 B)] + [user-data
+payload]`. For Stage 12B the user-data payload is **empty**:
+the raygen reads everything it needs from
+`optixLaunchParams`, so the record carries only the program-
+group identifier. This keeps the raygen launch dirt-cheap (no
+per-launch SBT rebuilds for the most common state changes).
+Future expansion can put per-launch overrides in the user-data
+slot — denoiser blend factors, debug-overlay flags, etc. —
+without touching the program code.
+
+The SBT layout in full lands in §9 (a future sub-stage). For
+this section: the raygen record exists, has zero user data,
+and is built once per pipeline.
+
+### 5.3 Outputs
+
+The raygen program produces two output streams across two
+distinct lifetimes:
+
+#### 5.3.1 Per-bounce ray payload (transient)
+
+The OptiX **ray payload** is the per-`optixTrace`-call slot of
+typed registers (up to 32 32-bit registers in OptiX 7.6+) that
+the raygen, miss, and closest-hit programs use as their shared
+per-ray scratchpad. The raygen sets initial payload values
+*before* each `optixTrace` (typically zero / sentinel; the
+miss / CH programs overwrite the relevant slots) and reads the
+payload *after* the call returns to decide what to do next.
+
+The payload is **not** the radiance/throughput accumulators —
+those are thread-local floats living in the raygen's stack
+frame across the bounce loop iterations. The payload's job is
+exclusively to carry hit data (closest-hit `t`, world position
++ normal, material index) or the miss flag back to the raygen.
+This separation keeps the radiance accumulation logic in one
+place (raygen) and the hit-data marshalling local to its
+producer (CH / miss).
+
+The exact register assignment is a §7 / §6 concern (closest-
+hit and miss define the payload contract); the raygen consumes
+whatever they produce.
+
+#### 5.3.2 Per-sample output buffer (persistent)
+
+After the bounce loop exits, the raygen writes the per-sample
+radiance estimate to the output sample buffer:
+
+```cpp
+const int idx = (y * params.width + x) * 4;
+params.sample_pixels[idx + 0] = radiance.x;
+params.sample_pixels[idx + 1] = radiance.y;
+params.sample_pixels[idx + 2] = radiance.z;
+params.sample_pixels[idx + 3] = 1.0f;
+```
+
+The host then folds this buffer into the Stage 11B
+`AccumulationBuffer` via `accumulate_sample(...)`, exactly as
+Stage 11C does for the CUDA path tracer. After
+`samples_per_pixel` such launches the host calls
+`resolve_to_image` and saves the PPM. **Nothing about the
+accumulation chain changes for the OptiX migration** — the
+raygen produces the same Rgba32F sample-buffer format the CUDA
+kernel already produces.
+
+### 5.4 Read / write summary
+
+| Surface                              | Direction      | Lifetime                      |
+|--------------------------------------|----------------|-------------------------------|
+| `optixLaunchParams`                  | read           | constant per launch           |
+| SBT raygen record header             | read (implicit)| constant per pipeline         |
+| SBT raygen record user-data          | (none in 12B)  | n/a                           |
+| OptiX ray payload (per `optixTrace`) | write before / read after each trace | per-bounce |
+| `pathtracer::Rng` thread-local state | read/write     | per-pixel, per-launch         |
+| `radiance`, `throughput` floats      | read/write     | per-pixel, per-launch         |
+| `params.sample_pixels` (output)      | write (once at end) | persistent across launches |
+
+The raygen does not write to `optixLaunchParams` (the host
+owns that). It does not write to the SBT (the host builds the
+SBT once per pipeline). The only persistent device-memory
+write is to the sample buffer, and it happens once per
+thread, at the end of the bounce loop.
+
+### 5.5 All per-pixel work stays on the GPU
+
+The raygen program enforces RelativityRender's project-wide
+rule that no per-pixel / per-ray work runs on the CPU. Concretely:
+
+- The host orchestration (`PathTracer::render` will grow an
+  OptiX path; see §11 file-layout, future sub-stage) only:
+  allocates buffers (`AccumulationBuffer`, sample
+  `GpuBuffer<float>`), populates `optixLaunchParams`, calls
+  `optixLaunch` once per sample, and drives `accumulate_sample`
+  + `resolve_to_image`. No per-pixel host loop, no host
+  intersection code, no host shading.
+- The raygen program owns every step from "I am pixel `(x, y)`,
+  sample `s`" through "here is my radiance estimate" — primary
+  ray gen, RNG seed, jitter, the entire bounce loop, the
+  cosine-hemisphere sampling, the throughput math, the
+  emission accumulation, the environment-fallback evaluation,
+  and the output write.
+- The closest-hit and miss programs (§6, §7 — future sub-stages)
+  fill in *their* slices of the per-ray work also on the GPU.
+
+This keeps the migration honest against the Stage 11 audit's
+items 6 and 8 (ray paths fully GPU-side; no CPU ray tracing or
+sample accumulation): once OptiX ships, the same audit
+questions still answer PASS, just against a different
+device-side implementation. The CPU's role does not change
+between the CUDA and OptiX backends — both backends fit
+within the master rule that the CPU may only "orchestrate
+execution / parse-load scenes / manage IO / upload to GPU /
+launch CUDA/OptiX kernels / receive framebuffers / save image
+files".
+
+---
+
 ## Sections to come
 
 Future Stage 12A sub-stages will append (one per slice or
 small group of slices):
 
-- Raygen / Miss / Closest-hit / Intersection program design
+- Miss / Closest-hit / Any-hit / Intersection program design
 - Acceleration structures (GAS, IAS, build flags, refit vs
   rebuild)
 - Shader Binding Table layout (records per ray type, per

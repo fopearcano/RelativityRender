@@ -3679,19 +3679,54 @@ sub-stages, appended to the same file.** No code is touched.
 | Stage    | Surface                          | Status |
 |----------|----------------------------------|:------:|
 | 12A.1    | OPTIX_BACKEND_PLAN.md §1-§4      | ✅      |
-| 12A.x    | program / AS / SBT / data-flow / file-layout / risks sections | pending |
+| 12A.2.1  | OPTIX_BACKEND_PLAN.md §5 (Raygen) | ✅      |
+| 12A.x    | remaining program / AS / SBT / data-flow / file-layout / risks sections | pending |
 | 12B      | minimum-viable OptiX backend     | pending |
 | 12C+     | feature parity with CUDA backend | pending |
+
+## Stage 12A.2.1 — OptiX raygen program design
+
+**Scope of this slice (Stage 12A.2.1): documentation-only.
+Append §5 "Raygen program" to `docs/OPTIX_BACKEND_PLAN.md`
+covering role, inputs (`optixLaunchParams` constant-memory
+struct + SBT raygen record), outputs (per-bounce ray payload
++ persistent per-sample output buffer), the read/write
+matrix per surface, and the all-per-pixel-work-on-GPU
+commitment. No code; no other sections (§6 miss / §7 CH / §8
+AH / §9 SBT / §10+ remain pending).**
+
+### What ships
+
+- `docs/OPTIX_BACKEND_PLAN.md` §5 with subsections 5.1 Role,
+  5.2 Inputs (5.2.1 launch params, 5.2.2 SBT raygen record),
+  5.3 Outputs (5.3.1 ray payload, 5.3.2 sample output
+  buffer), 5.4 Read/write summary table, 5.5 All per-pixel
+  work stays on the GPU.
+- The footer's first outstanding-items bullet narrows from
+  "Raygen / Miss / Closest-hit / Intersection program
+  design" to "Miss / Closest-hit / Any-hit / Intersection
+  program design", reflecting that Raygen is now in the
+  body and that future sub-stages will also cover Any-hit
+  (per the user's planned 12A.2 surface).
+- This BUILD_PLAN entry + status-table row.
+
+### Hard-rule audit
+
+- Do not implement code — **yes**, no source under `src/`,
+  `tests/`, or `CMakeLists.txt` is touched. The only edits
+  are two markdown files.
+- Documentation only — **yes**, this is the same posture as
+  Stages 12A.1 and the Stage 11 audit.
+- Update docs/BUILD_PLAN.md — **yes**, this entry.
 
 ## Next stage
 
 When prompted, the natural follow-ups are:
 
-- additional Stage 12A sub-stages appending the design
-  sections listed in `OPTIX_BACKEND_PLAN.md`'s "Sections to
-  come" footer (raygen / miss / CH program designs, AS, SBT,
-  material + camera data flows, relativity / path-tracing
-  integration, file layout, migration risks);
+- continue 12A.2: append §6 (Miss), §7 (Closest-hit), §8
+  (Any-hit), and §9 (SBT) to `OPTIX_BACKEND_PLAN.md`,
+  one focused section per sub-stage (12A.2.2, 12A.2.3, ...)
+  matching the 12A.2.1 cadence;
 - *or* (if the priority is path-tracer feature breadth
   instead of backend swap) direct-light sampling (NEE),
   non-diffuse materials, multi-mesh upload, or relativistic-
