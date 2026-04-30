@@ -330,6 +330,16 @@ __global__ void k_render_scene(float* pixels, int width, int height,
         if (h.hit) {
             best                = h;
             best.material_index = mesh.material_id;
+            // Stage 13B.3: interpolate per-vertex UVs at the hit
+            // point so a textured material can sample at the
+            // correct surface coordinate. The triangle's
+            // barycentric weights are populated by
+            // `intersect_triangle`; the third weight is implicit.
+            const float w0 = 1.0f - h.bary_u - h.bary_v;
+            const auto uv0 = mesh.vertices[tri.v0].uv;
+            const auto uv1 = mesh.vertices[tri.v1].uv;
+            const auto uv2 = mesh.vertices[tri.v2].uv;
+            best.uv = uv0 * w0 + uv1 * h.bary_u + uv2 * h.bary_v;
             t_max               = h.t;
         }
     }
@@ -357,7 +367,24 @@ __global__ void k_render_scene(float* pixels, int width, int height,
          && best.material_index < scene.material_count
          && scene.materials != nullptr) {
             const auto& mat = scene.materials[best.material_index];
-            albedo   = mat.baseColor;
+
+            // Stage 13B.3: when the material has a texture binding
+            // and the id is in range, sample at the hit's UV;
+            // otherwise fall back to the flat baseColor. Out-of-
+            // range ids deliberately fall back rather than
+            // resolving to the safe-fallback magenta inside
+            // `sampleTextureNearest` - a kernel-level guard keeps
+            // the failure mode "use baseColor" rather than "render
+            // magenta", which is gentler for authoring mistakes.
+            if (mat.useBaseColorTexture
+             && mat.baseColorTextureId >= 0
+             && mat.baseColorTextureId < scene.texture_count
+             && scene.textures != nullptr) {
+                albedo = rr::cuda::sampleTextureNearest(
+                    scene.textures[mat.baseColorTextureId], best.uv);
+            } else {
+                albedo = mat.baseColor;
+            }
             emission = mat.emissionColor * mat.emissionStrength;
         }
 

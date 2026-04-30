@@ -89,6 +89,33 @@ bool GpuScene::upload_lights(const rr::lighting::Light* host,
     return true;
 }
 
+bool GpuScene::upload_textures(const rr::texture::ImageTexture* host,
+                               std::size_t                      count) {
+    if (count == 0) {
+        textures_.clear();
+        return true;
+    }
+    if (host == nullptr) {
+        textures_.clear();
+        return false;
+    }
+    // Build a fresh vector then swap into place. If any upload
+    // fails the partial result is dropped before it touches the
+    // scene's persistent state.
+    std::vector<GpuTexture> staged;
+    staged.reserve(count);
+    for (std::size_t i = 0; i < count; ++i) {
+        GpuTexture gt;
+        if (!gt.upload_from(host[i])) {
+            return false;  // staged drops out of scope, freeing any
+                           // partially-uploaded device buffers.
+        }
+        staged.push_back(std::move(gt));
+    }
+    textures_ = std::move(staged);
+    return true;
+}
+
 void GpuScene::reset_device() noexcept {
     spheres_.reset();
     sphere_count_ = 0;
@@ -101,6 +128,9 @@ void GpuScene::reset_device() noexcept {
     material_count_ = 0;
     lights_.reset();
     light_count_ = 0;
+    // GpuTexture's destructor frees its device allocation; clearing
+    // the vector frees every uploaded texture in one shot.
+    textures_.clear();
 }
 
 void GpuScene::clear() noexcept {

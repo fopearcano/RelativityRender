@@ -40,6 +40,17 @@ struct MaterialParams {
     // shading systems. Keeping the field here means the upload
     // buffer layout is forward-compatible without ABI churn.
     float          transmission     = 0.0f;
+
+    // Stage 13B.3 (master order #18) base-colour texture binding.
+    // When `useBaseColorTexture` is true and `baseColorTextureId`
+    // indexes into the scene-side texture table, the kernel samples
+    // the texture at the hit point's UV and substitutes the result
+    // for `baseColor`. Otherwise the flat `baseColor` value is
+    // used. No mipmap, no wrap-mode metadata, no normal / metallic
+    // / roughness texture slots - those join in subsequent
+    // sub-stages.
+    int            baseColorTextureId  = -1;     // index into scene.textures, -1 = none
+    bool           useBaseColorTexture = false;  // gate; false uses flat baseColor
 };
 
 }

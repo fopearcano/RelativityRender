@@ -54,7 +54,8 @@ bool set_action(CommandLine::Action& current, CommandLine::Action target,
                 "--render-relativistic / --render-scene / "
                 "--render-triangle / --render-mesh-scene / "
                 "--render-material-scene / --render-direct-lighting / "
-                "--render-texture-sample-test)";
+                "--render-texture-sample-test / "
+                "--render-textured-material)";
         return false;
     }
     current = target;
@@ -220,6 +221,12 @@ CommandLine::ParseResult CommandLine::parse(int argc, char** argv) {
                 r.action = Action::Error;
                 return r;
             }
+        } else if (a == "--render-textured-material") {
+            if (!set_action(r.action, Action::RenderTexturedMaterial,
+                            r.error_message)) {
+                r.action = Action::Error;
+                return r;
+            }
         } else if (a == "--output") {
             if (!take_value(argc, argv, i, a, value, r.error_message)) {
                 r.action = Action::Error;
@@ -276,7 +283,8 @@ CommandLine::ParseResult CommandLine::parse(int argc, char** argv) {
      || r.action == Action::RenderMeshScene
      || r.action == Action::RenderMaterialScene
      || r.action == Action::RenderDirectLighting
-     || r.action == Action::RenderTextureSampleTest) {
+     || r.action == Action::RenderTextureSampleTest
+     || r.action == Action::RenderTexturedMaterial) {
         if (auto err = r.config.validate(); !err.empty()) {
             r.action        = Action::Error;
             r.error_message = std::move(err);
@@ -399,6 +407,17 @@ std::string CommandLine::usage(std::string_view argv0) {
        << "                        kernel that samples it per-pixel "
                                   "via sampleTextureNearest. Default\n"
        << "                        output output/gpu_texture_sample_test.ppm "
+                                  "(requires CUDA).\n"
+       << "  --render-textured-material\n"
+       << "                        Stage 13B.3 material-texture "
+                                  "integration: build the multi-sphere\n"
+       << "                        + quad scene; the quad's neutral "
+                                  "material is replaced with one whose\n"
+       << "                        useBaseColorTexture flag is set "
+                                  "and baseColorTextureId points at\n"
+       << "                        an uploaded 2x2 four-colour "
+                                  "reference texture. Default output\n"
+       << "                        output/gpu_textured_material.ppm "
                                   "(requires CUDA).\n"
        << "  --output <path>       Write the rendered image to <path>.\n"
        << "                        Default for --render-gradient is "

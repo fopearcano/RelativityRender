@@ -145,6 +145,24 @@ namespace rr::core {
 //                           output
 //                           "output/gpu_texture_sample_test.ppm".
 //                           Requires CUDA.
+//   --render-textured-material
+//                           Stage 13B.3 material-texture
+//                           integration. Builds the multi-sphere
+//                           + quad scene with the same five-
+//                           material palette as
+//                           `--render-material-scene`, but the
+//                           quad's "neutral" material is
+//                           replaced with one whose
+//                           `useBaseColorTexture` flag is set
+//                           and `baseColorTextureId` points at
+//                           an uploaded 2x2 four-colour
+//                           reference texture. The kernel
+//                           samples the texture at the hit
+//                           point's interpolated UV; the spheres
+//                           keep their flat baseColors. Default
+//                           output
+//                           "output/gpu_textured_material.ppm".
+//                           Requires CUDA.
 //   --output <path>         Write the rendered image to <path>.
 //                           Default for --render-gradient is
 //                           "output/gpu_gradient.ppm";
@@ -173,10 +191,10 @@ namespace rr::core {
 // --render-gradient / --render-rays / --render-sphere /
 // --render-relativistic / --render-scene / --render-triangle /
 // --render-mesh-scene / --render-material-scene /
-// --render-direct-lighting / --render-texture-sample-test) are
-// mutually exclusive; combining them is a parse error. The
-// remaining flags configure `Config` and are accepted regardless
-// of action.
+// --render-direct-lighting / --render-texture-sample-test /
+// --render-textured-material) are mutually exclusive; combining
+// them is a parse error. The remaining flags configure `Config`
+// and are accepted regardless of action.
 
 class CommandLine {
 public:
@@ -203,6 +221,7 @@ public:
         RenderMaterialScene,
         RenderDirectLighting,
         RenderTextureSampleTest,
+        RenderTexturedMaterial,
         Error,          // parse failure; see `error_message`
     };
 

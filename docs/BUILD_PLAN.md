@@ -3712,6 +3712,7 @@ sub-stages, appended to the same file.** No code is touched.
 | 13A      | Texture data model (rr_texture; Texture / ImageTexture; CudaTexture.cuh re-export; no sampling) | ✅ |
 | 13B.1    | GPU texture upload (GpuTexture; bytes + width/height/format; safe reset; no sampling, no kernel) | ✅ |
 | 13B.2    | GPU texture sampling (sampleTextureNearest, clamp-to-edge; --render-texture-sample-test) | ✅ |
+| 13B.3    | Material texture integration (baseColorTextureId / useBaseColorTexture; GpuScene textures; --render-textured-material) | ✅ |
 
 ## Stage 12A.2.1 — OptiX raygen program design
 
@@ -7001,6 +7002,332 @@ device.**
   four solid colour quadrants
   (top-left red, top-right green, bottom-
   left blue, bottom-right yellow).
+
+## Stage 13B.3 — Material texture integration
+
+**Scope of this slice (Stage 13B.3): wire the
+Stage 13A / 13B.1 / 13B.2 texture pipeline up
+to the material system so a hit's base colour
+can come from a sampled texture instead of the
+flat `baseColor` value. Two new fields on
+`MaterialParams`, a per-scene texture upload
+path on `GpuScene`, a `DeviceTextureView` slot
+on `CudaSceneView`, triangle-UV interpolation
+in the kernel, and a per-material albedo
+branch that calls `sampleTextureNearest(...)`
+when the gate is set.
+
+A new CLI action, `--render-textured-material`,
+demonstrates the wiring end-to-end on the same
+multi-sphere + quad scene `--render-material-
+scene` already uses, with one material upgraded
+to reference an uploaded 2x2 four-colour
+reference texture (red / green / blue /
+yellow). Output:
+`output/gpu_textured_material.ppm`. All
+sampling runs on the GPU; the host only
+synthesises the source data, uploads it, and
+saves the framebuffer.**
+
+### What ships
+
+- `src/material/MaterialTypes.h`: two new fields
+  on `MaterialParams`:
+  - `int baseColorTextureId = -1` - index into
+    the scene-side texture table; -1 means "no
+    texture bound".
+  - `bool useBaseColorTexture = false` - the
+    gate. False short-circuits to the existing
+    flat-`baseColor` shading path so every
+    other CLI action stays byte-identical
+    (`MaterialParams`'s default-constructed
+    state matches its pre-13B.3 behaviour).
+- `src/gpu/GpuScene.{h,cpp}`:
+  - New owning slot `std::vector<GpuTexture>
+    textures_` plus `upload_textures(host,
+    count)` / `textures()` / `texture_count()`
+    accessors. Upload is all-or-nothing: a
+    failed per-texture upload drops the whole
+    staged batch before it touches the
+    persistent state, so the scene's texture
+    set is never partially populated.
+  - `reset_device()` / `clear()` clear the
+    texture vector alongside every other
+    device allocation.
+  - The header now includes `gpu/GpuTexture.h`
+    and `texture/ImageTexture.h`; `<vector>`
+    joins the include list for the new field.
+- `src/cuda/CudaScene.cuh`: `CudaSceneView`
+  gains `const rr::cuda::DeviceTextureView*
+  textures` + `int texture_count`. Header
+  picks up `cuda/CudaTexture.cuh` for the
+  `DeviceTextureView` definition. Empty +
+  null is an explicit valid state and matches
+  the existing "no upload" semantics for
+  every other view slot.
+- `src/cuda/CudaTestKernel.cu`: two changes
+  in `k_render_scene`:
+  - **Triangle UV interpolation.** When a
+    triangle hit becomes the new closest
+    candidate, the kernel reads the three
+    `mesh.vertices[tri.v*].uv` values and
+    interpolates them with the
+    barycentric weights `(1 - bary_u -
+    bary_v, bary_u, bary_v)`. The
+    interpolated UV is stored on `Hit.uv`
+    so the shading branch reads it
+    directly.
+  - **Textured-albedo branch.** Inside the
+    "have a material" path: when
+    `mat.useBaseColorTexture` is true,
+    the texture id is in
+    `[0, scene.texture_count)`, and
+    `scene.textures != nullptr`, the
+    albedo is set to
+    `sampleTextureNearest(scene.textures
+    [mat.baseColorTextureId], best.uv)`.
+    Otherwise the existing
+    `albedo = mat.baseColor` path runs.
+    The else-branch keeps the kernel
+    backward-compatible with every action
+    that uploads zero textures (no
+    behavioural drift).
+- `src/cuda/CudaRenderer.cu`: `render_scene`
+  builds the device-side texture-view array
+  at launch time. Walks the scene's
+  `GpuTexture` vector, snapshots each into
+  a host `DeviceTextureView`, and uploads
+  the whole array via a stack-local
+  `GpuBuffer<DeviceTextureView>`. The
+  buffer outlives the synchronous
+  `run_kernel_render` call (which does
+  `cudaDeviceSynchronize` before it
+  returns), so the kernel sees a valid
+  device pointer for the whole launch.
+  When the scene has no textures the array
+  stays empty and the view's `textures` /
+  `texture_count` remain at their default
+  null / 0.
+- `src/main.cpp`:
+  - New handler
+    `run_render_textured_material(cfg)`. The
+    OFF branch returns the standard
+    requires-CUDA error + exit 1; the ON
+    branch builds the same multi-sphere +
+    quad layout as
+    `run_render_material_scene`, replaces
+    the quad's "neutral" material with a
+    textured variant
+    (`useBaseColorTexture = true`,
+    `baseColorTextureId = 0`,
+    `baseColor = (0.65, 0.65, 0.65)` as a
+    debug fallback), uploads a single 2x2
+    RGBA8 four-colour reference texture
+    (red / green / blue / yellow), then
+    dispatches via
+    `CudaRenderer::render_scene(...)` and
+    saves
+    `output/gpu_textured_material.ppm`.
+  - Quad UVs flipped so `(0, 0)` lands at
+    the top-left vertex and `(1, 1)` at the
+    bottom-right - matching
+    `--render-texture-sample-test`'s UV
+    convention so the four colour quadrants
+    appear in the expected screen-space
+    arrangement on the quad.
+  - New include of `texture/ImageTexture.h`
+    + `<cstring>` for the synthetic
+    pattern's `std::memcpy`.
+  - Wired into the action dispatch
+    (`switch (action) { ... case
+    Action::RenderTexturedMaterial: ... }`).
+  - The Default-action banner / hint line
+    is updated to mention the new action
+    and the stage label is bumped.
+- `src/core/CommandLine.{h,cpp}`:
+  - New `Action::RenderTexturedMaterial`
+    enum value.
+  - Parser entry recognising
+    `--render-textured-material` and
+    routing through `set_action(...)` so it
+    is mutually exclusive with every other
+    action flag.
+  - `Config::validate()` is invoked for the
+    new action.
+  - Usage text gains a paragraph describing
+    the action.
+  - Header doc-comment block + the
+    "mutually exclusive" enumeration list
+    pick up the new flag.
+- `CMakeLists.txt`: stage label bumped to
+  "Stage 13B.3: material texture integration"
+  in both the `project(...)` description and
+  the project-banner status message. No new
+  source files (`rr_gpu` already PUBLIC-links
+  `rr_texture` from Stage 13B.1; the new
+  `gpu/GpuScene.cpp` changes compile in the
+  existing rr_gpu translation unit).
+- `docs/BUILD_PLAN.md`: this entry +
+  status-table row for 13B.3.
+
+### Architectural decisions worth highlighting
+
+- **Two flat fields on `MaterialParams`, not a
+  nested texture-binding struct.** Adding
+  `baseColorTextureId` + `useBaseColorTexture`
+  as siblings keeps the host POD layout cache-
+  friendly + bitwise-uploadable; no separate
+  upload buffer for "the texture-binding part
+  of MaterialParams". Future texture slots
+  (normal / metallic / roughness) follow the
+  same pattern with their own
+  `<channel>TextureId` + `use<channel>Texture`
+  pairs - one slot's bug doesn't entangle
+  another's.
+- **Default `useBaseColorTexture = false` keeps
+  every existing action byte-identical.** No
+  CLI command except `--render-textured-
+  material` populates a non-default value;
+  every other handler builds materials whose
+  texture gate is off, so the kernel takes
+  the existing `albedo = mat.baseColor`
+  branch and produces the same output as
+  before 13B.3. Backward compatibility is a
+  consequence of the default, not a separate
+  code path.
+- **Out-of-range id falls back to flat
+  baseColor, not magenta.** `sampleTextureNear-
+  est` returns magenta for an invalid view
+  (Stage 13B.2 contract), but the kernel-level
+  guard inside the shading branch checks the
+  id range *before* calling the sampler. An
+  authoring mistake (id out of range) shows
+  the material's fallback `baseColor` rather
+  than collapsing to magenta - gentler when
+  someone forgets to upload a texture, and
+  the magenta path still fires for "actually
+  null pixels" inside the sampler itself.
+- **`GpuScene` owns a `std::vector<GpuTexture>`,
+  not the device-side view array.**
+  `DeviceTextureView` lives in `rr::cuda` and
+  is CUDA-specific; rr_gpu is the backend-
+  agnostic layer. The kernel-side view array
+  is built inside `CudaRenderer.cu` (which
+  already has `<cuda_runtime.h>`) from the
+  `GpuTexture` accessors. Keeps the future
+  OptiX backend able to build its own view
+  representation (with `cudaTextureObject_t`
+  or `optix*` handles) without rr_gpu
+  knowing about either backend.
+- **All-or-nothing upload.**
+  `upload_textures` stages every entry in a
+  fresh local vector and only swaps it into
+  the persistent `textures_` slot after the
+  whole batch succeeds. A mid-batch failure
+  drops the partial result via the stack
+  vector's destructor; the scene's previous
+  texture state is untouched. Same "no
+  partial state" guarantee every other
+  `upload_*` method offers.
+- **Triangle UV interpolation, not sphere
+  UV.** Sphere texturing needs a spherical-
+  to-UV mapping (`atan2 / asin`); the spec
+  says "sample texture using UV" without
+  prescribing primitive support. Stage 13B.3
+  ships triangle UV (the quad's authored
+  per-vertex UVs are already there in the
+  `Vertex` POD) so a textured material on a
+  mesh works end-to-end. Sphere UVs are a
+  small follow-up the next sub-stage can
+  bolt on without changing the texture
+  pipeline.
+- **`UvFlipped` quad in the new handler.**
+  The pre-13B.3 `quad` uploaded by
+  `run_render_material_scene` has
+  `(0, 0)` at the bottom-left vertex
+  (origin = world-space convention). The new
+  handler flips the UVs so `(0, 0)` lands at
+  the top-left vertex - matching
+  `Image`'s row-major / top-left origin and
+  `--render-texture-sample-test`'s mapping.
+  Result: the four quadrant colours appear
+  in screen-space at the expected positions
+  (red top-left of the quad, etc.).
+- **Backward-compatible kernel.** The
+  `k_render_scene` function compiles + runs
+  on every existing CLI action without
+  behaviour change. The new texture branch
+  is gated on three independent conditions
+  (the material flag, the id range, and a
+  non-null texture pointer); failing any
+  one drops back to the flat-baseColor
+  path that ships today.
+
+### Hard-rule audit
+
+- No node graph - **yes**, no node, no port,
+  no graph evaluator. The texture binding
+  is a pair of flat fields on
+  `MaterialParams`.
+- No advanced filtering - **yes**, the only
+  sampler in use is `sampleTextureNearest`
+  (Stage 13B.2). No bilinear, no trilinear,
+  no anisotropic, no mipmaps.
+- No C4D - **yes**, no Cinema 4D headers /
+  bridges.
+- No server - **yes**, no IPC / socket /
+  protocol.
+- All sampling GPU-side - **yes**, the only
+  caller of `sampleTextureNearest` remains
+  the CUDA `__global__ k_render_scene`
+  kernel; the host never invokes it on
+  output pixels.
+- Update docs/BUILD_PLAN.md - **yes**, this
+  entry + status-table row.
+
+### Verified at the build
+
+- `cmake -DRELATIVITYRENDER_ENABLE_OPTIX=
+  OFF ..` (clean reconfigure): builds
+  clean (no warnings / errors under
+  `-Wall -Wextra -Wpedantic`); banner
+  shows "Stage 13B.3: material texture
+  integration"; ctest 4/4 passes.
+- `cmake -DRELATIVITYRENDER_ENABLE_OPTIX=
+  ON ..` (clean reconfigure): same
+  result; OptiX scaffold compiles (with
+  the expected 12B.4 SDK-not-found
+  warning); ctest 4/4 passes. Material
+  texture integration is orthogonal to
+  the OptiX flag.
+- `--render-textured-material` on the no-
+  CUDA host returns the standard
+  requires-CUDA error string and exits 1.
+- `--help` lists the new action.
+- Mutual exclusion: `--render-textured-
+  material --render-rng-test` is rejected
+  at parse time with the full action-
+  list error message including the new
+  flag.
+- A future CUDA-enabled host run will
+  exercise the populated branch:
+  `CudaRenderer::render_scene(...)` builds
+  the texture-view array; the kernel
+  interpolates UVs at the quad triangles;
+  the shading branch samples the 2x2
+  reference texture; the resulting
+  `output/gpu_textured_material.ppm`
+  shows the textured quad behind three
+  flat-coloured spheres + the emissive
+  ground sphere, with the four texture
+  quadrants visible across the quad
+  (red / green / blue / yellow under the
+  Stage 13B.2 UV convention). Existing
+  `--render-material-scene` /
+  `--render-direct-lighting` outputs
+  remain byte-identical because their
+  materials default to
+  `useBaseColorTexture = false`.
 
 ## Next stage
 

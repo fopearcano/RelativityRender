@@ -169,6 +169,36 @@ CudaRenderer::Result CudaRenderer::render_scene(const rr::gpu::GpuScene& scene,
     view.lights      = scene.device_lights();
     view.light_count = static_cast<int>(scene.light_count());
 
+    // Stage 13B.3: build the device-side texture-view array from
+    // the GpuScene's per-texture device pixel buffers + metadata.
+    // The flat array lives on this stack frame; `run_kernel_render`
+    // is synchronous (it calls `cudaDeviceSynchronize`) so the
+    // GpuBuffer outlives the launch + download. When the scene has
+    // no textures uploaded the array stays empty and the view's
+    // `textures` pointer is nullptr / `texture_count` is 0; the
+    // kernel falls back to flat `baseColor` for every material.
+    rr::gpu::GpuBuffer<rr::cuda::DeviceTextureView> texture_views_dev;
+    const auto& host_textures = scene.textures();
+    if (!host_textures.empty()) {
+        std::vector<rr::cuda::DeviceTextureView> host_views;
+        host_views.reserve(host_textures.size());
+        for (const auto& gt : host_textures) {
+            host_views.push_back(rr::cuda::DeviceTextureView{
+                /*pixels=*/gt.device_pixels(),
+                /*width =*/gt.width(),
+                /*height=*/gt.height(),
+                /*format=*/gt.format(),
+            });
+        }
+        if (!texture_views_dev.upload(host_views.data(), host_views.size())) {
+            Result fail;
+            fail.message = "texture-view upload failed";
+            return fail;
+        }
+        view.textures      = texture_views_dev.device_ptr();
+        view.texture_count = static_cast<int>(host_views.size());
+    }
+
     return run_kernel_render(width, height,
         [view](float* device_pixels, int w, int h) {
             launch_render_scene(device_pixels, w, h, view, /*stream=*/nullptr);

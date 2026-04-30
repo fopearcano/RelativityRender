@@ -5,11 +5,14 @@
 #include "geometry/Sphere.h"
 #include "gpu/GpuBuffer.h"
 #include "gpu/GpuMesh.h"
+#include "gpu/GpuTexture.h"
 #include "lighting/Light.h"
 #include "material/MaterialTypes.h"
 #include "relativity/RelativityParams.h"
+#include "texture/ImageTexture.h"
 
 #include <cstddef>
+#include <vector>
 
 namespace rr::geometry { struct Mesh; }
 
@@ -90,6 +93,21 @@ public:
     [[nodiscard]] bool upload_lights(const rr::lighting::Light* host,
                                      std::size_t                count);
 
+    // Upload `count` `ImageTexture` entries (Stage 13B.3; master
+    // order #18). Each entry becomes a separate `GpuTexture` whose
+    // device pixel buffer is owned by this scene; the kernel-side
+    // view array (one `DeviceTextureView` per upload) is built
+    // by the renderer at launch time from the accessors below.
+    // `MaterialParams::baseColorTextureId` indexes into this array.
+    //
+    // `count == 0` (or `host == nullptr` with `count == 0`) clears
+    // the texture set and is always a success. Non-empty uploads
+    // require a working GPU backend; any per-texture upload
+    // failure aborts the whole batch and resets the texture set
+    // to empty (no partial state).
+    [[nodiscard]] bool upload_textures(const rr::texture::ImageTexture* host,
+                                       std::size_t                      count);
+
     // Free every device allocation owned by this scene. Does NOT
     // touch the host snapshots (camera / observer / params) - call
     // `clear()` for the full reset.
@@ -128,6 +146,19 @@ public:
     }
     [[nodiscard]] std::size_t light_count() const noexcept { return light_count_; }
 
+    // Per-texture accessors for the renderer. Each `GpuTexture`
+    // exposes its device pixel pointer + dimensions + format; the
+    // renderer (CudaRenderer.cu) walks this array to build a
+    // device-side `DeviceTextureView` table the kernel reads via
+    // `MaterialParams::baseColorTextureId`. Both accessors return
+    // empty / 0 when no texture upload has happened.
+    [[nodiscard]] const std::vector<GpuTexture>& textures() const noexcept {
+        return textures_;
+    }
+    [[nodiscard]] std::size_t texture_count() const noexcept {
+        return textures_.size();
+    }
+
     [[nodiscard]] bool has_camera()     const noexcept { return has_camera_; }
     [[nodiscard]] bool has_relativity() const noexcept { return has_relativity_; }
 
@@ -146,6 +177,15 @@ private:
 
     GpuBuffer<rr::lighting::Light>    lights_{};
     std::size_t                       light_count_    = 0;
+
+    // Per-texture device storage. `GpuTexture` is move-only and
+    // owns its `GpuBuffer<std::byte>`; storing them in a
+    // `std::vector` is fine because the vector only ever moves
+    // them. The kernel-side flat `DeviceTextureView` table is
+    // NOT held here - the renderer builds it at launch time from
+    // these entries' device pointers + metadata, keeping rr_gpu
+    // free of CUDA-specific types.
+    std::vector<GpuTexture>           textures_{};
 
     bool                              has_camera_     = false;
     bool                              has_relativity_ = false;

@@ -15,6 +15,7 @@
 
 #include "camera/CameraRay.h"
 #include "cuda/CudaMesh.cuh"
+#include "cuda/CudaTexture.cuh"   // DeviceTextureView for the texture array slot
 #include "geometry/Sphere.h"
 #include "lighting/Light.h"
 #include "material/MaterialTypes.h"
@@ -53,6 +54,17 @@ struct CudaSceneView {
     // diagnostics".
     const rr::lighting::Light*        lights        = nullptr;
     int                               light_count   = 0;
+
+    // Texture array. Stage 13B.3 wiring (master order #18). The
+    // kernel reads `textures[mat.baseColorTextureId]` whenever
+    // `mat.useBaseColorTexture` is true and the id is in
+    // `[0, texture_count)`; otherwise it falls back to
+    // `mat.baseColor`. `nullptr` + `texture_count == 0` is
+    // allowed and means "no textures uploaded - every material
+    // uses its flat baseColor", preserving backward compatibility
+    // with every existing CLI action.
+    const rr::cuda::DeviceTextureView* textures      = nullptr;
+    int                                texture_count = 0;
 };
 
 }
