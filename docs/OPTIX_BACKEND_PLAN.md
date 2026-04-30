@@ -4473,6 +4473,104 @@ the separation:
 
 ---
 
+## 26. First implementation milestone
+
+The smallest working OptiX target: the implementation
+slice that proves the OptiX pipeline + AS build + SBT
+layout + program dispatch all work end-to-end, before
+any rendering complexity is introduced. This is the
+first compilable milestone after §1-§25's design work
+is settled.
+
+The success criteria, exactly as the user's prompt
+specifies:
+
+- **OptiX builds and initializes.** `OptixBackend::initialize`
+  (§18) successfully creates an `OptixDeviceContext`
+  on a CUDA-and-OptiX-enabled host; `is_available()`
+  returns true; the log callback registers without
+  error. The build system (CMake gating on
+  `RR_ENABLE_OPTIX`) compiles `src/optix/`'s six
+  files (§18-§23) without warnings.
+- **One triangle GAS + IAS.** `OptixAccel.h`'s
+  `build_mesh_gas` (§22) constructs a GAS from a
+  single hardcoded triangle's vertex + index data.
+  `build_ias` wraps it in an IAS with one
+  `OptixInstance` (identity transform per §10.4,
+  `sbtOffset = 0` per §9.4). The root
+  `OptixTraversableHandle` lands in
+  `optixLaunchParams.scene_handle` (§15.1, §23) and
+  is consumed by the raygen's `optixTrace` call.
+- **Raygen + miss + closest-hit wired.**
+  `OptixPrograms.cu` (§20) compiles to PTX/OptiXIR;
+  the three program entry functions are linked into
+  the OptiX pipeline; the SBT records (§9.4 / §21)
+  pack their program-group identifiers; `optixLaunch`
+  dispatches into the right program for each pixel +
+  hit/miss outcome. No any-hit per §8.3.
+- **Render flat-colored triangle.** The closest-hit
+  program writes a flat colour (e.g., solid red) into
+  the payload's emission slots; the miss program
+  writes a sky tint (e.g., light blue) into the same
+  slots; the raygen reads the payload and writes to
+  the per-sample output buffer. NO bounce loop, NO
+  Lambert albedo, NO Doppler/searchlight, NO RNG
+  jitter, NO `AccumulationBuffer`. Each pixel = one
+  ray = one program dispatch = one colour write.
+- **Output image matches basic CUDA triangle test.**
+  The image produced by the OptiX milestone visually
+  matches the existing `--render-triangle` CUDA
+  diagnostic (Stage 7C; a single front-facing
+  equilateral triangle at z = -3, normal-as-colour
+  shading currently — for this milestone the OptiX
+  output uses the flat colour described above, and a
+  follow-up sub-stage activates normal-as-colour
+  shading to bring the two diagnostics into byte-
+  level parity once the basic OptiX dispatch is
+  proven).
+
+This milestone is §16.3's "Step A — intersections only,
+debug shape, not shipped" with one refinement: the user
+specifies a flat colour shade rather than a normal-as-
+RGB shade. Both produce a recognisable image when the
+triangle is hit + the sky on miss; the flat colour is
+trivially simpler to write into the payload and easier
+to verify by visual inspection ("is the triangle the
+right colour?" rather than "is the encoded normal
+correct?"). Activating the normal-as-RGB shade is a
+follow-up that costs one extra closest-hit line.
+
+What's NOT in this milestone (everything else, listed
+explicitly to keep the milestone scope tight):
+
+- No spp loop, no `AccumulationBuffer` integration —
+  one launch, one sample per pixel, one PPM saved
+  directly from the per-sample buffer.
+- No materials, no lights, no relativity (`observer.
+  velocity = 0`, all `enable_*` toggles default to
+  off).
+- No spheres, no multi-mesh — exactly one triangle in
+  exactly one mesh GAS.
+- No CLI flag user-facing surface — the milestone is
+  a development-time validation, possibly via a
+  hidden `--render-optix-triangle` flag or a unit
+  test rather than a shipping CLI action.
+- No CUDA-vs-OptiX side-by-side regression framework
+  (§16.5) — manual visual comparison against
+  `--render-triangle` is enough at this stage.
+
+When this milestone passes, the OptiX backend's
+*infrastructure* is proven correct. Stage 12B's full
+path tracer (§17.1) becomes a layered addition on top:
+add the spp loop + accumulation, add the bounce loop +
+RNG jitter + cosine-hemisphere sampling, add the
+material + relativity integrations, add the sphere
+GAS alongside the triangle GAS. Each addition can be
+introduced + validated against the previous milestone
+without re-validating the OptiX pipeline itself.
+
+---
+
 ## Sections to come
 
 Future Stage 12A sub-stages will append (one per slice or

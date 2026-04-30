@@ -3700,6 +3700,7 @@ sub-stages, appended to the same file.** No code is touched.
 | 12A.4.3.6 | OPTIX_BACKEND_PLAN.md §23 (Launch params)        | ✅ |
 | 12A.4.3.7 | OPTIX_BACKEND_PLAN.md §24 (Separation from CUDA) | ✅ |
 | 12A.4.4   | OPTIX_BACKEND_PLAN.md §25 (Risks)                | ✅ |
+| 12A.4.5   | OPTIX_BACKEND_PLAN.md §26 (First implementation milestone) | ✅ |
 | 12A.x    | remaining IS / CMake integration sections | pending |
 | 12B      | minimum-viable OptiX backend     | pending |
 | 12C+     | feature parity with CUDA backend | pending |
@@ -5489,6 +5490,111 @@ sections.**
 - No prose — **yes**, the body is bullet-only with
   no intro paragraph, no scope subsection, no
   closing notes.
+- Documentation only — **yes**, no source under
+  `src/`, `tests/`, or `CMakeLists.txt` is touched.
+  The only edits are two markdown files.
+- Update docs/BUILD_PLAN.md — **yes**, this entry.
+
+## Stage 12A.4.5 — First implementation milestone
+
+**Scope of this slice (Stage 12A.4.5): documentation-only.
+Append §26 "First implementation milestone" to
+`docs/OPTIX_BACKEND_PLAN.md` — the smallest working
+OptiX target after all the design work in §1-§25. The
+milestone proves the OptiX pipeline + AS build + SBT
+layout + program dispatch all work end-to-end before
+any rendering complexity (spp loop, bounce loop,
+materials, lights, relativity, accumulation) is
+introduced. No code; no other sections.**
+
+### What ships
+
+- `docs/OPTIX_BACKEND_PLAN.md` §26 with the user
+  prompt's five success criteria expanded into
+  concrete checklist items:
+  - **OptiX builds and initializes** — `OptixBackend::
+    initialize` (§18) creates `OptixDeviceContext`;
+    CMake gating on `RR_ENABLE_OPTIX` compiles the
+    six `src/optix/` files (§18-§23) without
+    warnings.
+  - **One triangle GAS + IAS** — `build_mesh_gas`
+    (§22) consumes one hardcoded triangle's vertex +
+    index data; `build_ias` wraps it with identity
+    transform per §10.4 and `sbtOffset = 0` per §9.4;
+    root `OptixTraversableHandle` lands in
+    `optixLaunchParams.scene_handle` (§15.1, §23).
+  - **Raygen + miss + closest-hit wired** —
+    `OptixPrograms.cu` (§20) compiles to PTX/OptiXIR;
+    pipeline links the three program entry
+    functions; SBT records (§9.4 / §21) pack
+    program-group identifiers; `optixLaunch`
+    dispatches into the right program for each
+    pixel + hit/miss outcome. No AH per §8.3.
+  - **Render flat-colored triangle** — CH writes
+    flat colour (e.g., solid red) into payload
+    emission slots; miss writes sky tint (e.g.,
+    light blue); raygen reads payload and writes
+    output buffer. NO bounce loop, NO Lambert
+    albedo, NO Doppler/searchlight, NO RNG jitter,
+    NO AccumulationBuffer.
+  - **Output image matches basic CUDA triangle
+    test** — visual match with the existing
+    `--render-triangle` Stage 7C diagnostic; flat-
+    colour-vs-normal-as-colour difference noted as
+    a one-line follow-up to bring the two
+    diagnostics to byte-level parity once OptiX
+    dispatch is proven.
+  Plus a closing paragraph relating the milestone
+  to §16.3's three-step model (this is Step A with
+  a flat-colour refinement) and an explicit
+  what's-NOT-in-this-milestone list (no spp loop,
+  no materials/lights/relativity, no spheres, no
+  multi-mesh, no CLI flag user-facing surface, no
+  CUDA-vs-OptiX regression framework).
+- The footer is untouched — §26 is a milestone
+  capstone (similar to §15 / §17 / §24's role), not
+  on the original outstanding-items list.
+- This BUILD_PLAN entry + status-table row.
+
+### Architectural decisions worth highlighting
+
+- **Smallest-working-target framing.** §26 is
+  deliberately the *minimum* infrastructure
+  validation, not the full Stage 12B path tracer.
+  Each addition listed in "what's NOT in this
+  milestone" becomes a follow-up sub-slice with its
+  own validation; the OptiX pipeline doesn't have
+  to be re-validated against any of them once §26
+  passes.
+- **Flat colour > normal-as-RGB for first
+  validation.** §16.3's Step A used normal-as-RGB
+  as the placeholder shade; the user's prompt
+  specifies flat colour. Flat colour is simpler to
+  write (one CH constant) and easier to verify by
+  visual inspection ("is the triangle red?" vs
+  "are the encoded normal components correct?").
+  Activating normal-as-RGB to match Step A's
+  spec is a one-line CH follow-up.
+- **No CLI surface yet.** The milestone is
+  development-time validation — possibly a hidden
+  `--render-optix-triangle` flag or a unit test —
+  rather than a user-facing flag. The first
+  user-facing OptiX flag (`--render-pathtrace-optix`
+  per §16.4) lands when Step C / Stage 12B is
+  ready.
+- **Layered addition strategy.** When §26 passes,
+  Stage 12B's full path tracer becomes a layered
+  addition: spp loop + accumulation, then bounce
+  loop + RNG, then materials + relativity, then
+  sphere GAS. Each addition can be introduced and
+  validated against the previous milestone without
+  re-validating the OptiX pipeline itself.
+
+### Hard-rule audit
+
+- Do not add other sections — **yes**, only §26 was
+  appended; the footer is unchanged because §26 was
+  not on the original outstanding-items list.
 - Documentation only — **yes**, no source under
   `src/`, `tests/`, or `CMakeLists.txt` is touched.
   The only edits are two markdown files.
