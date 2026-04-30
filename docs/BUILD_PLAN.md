@@ -3608,22 +3608,104 @@ No cycles. `rr_renderer` is the canonical home for host-side
 renderer glue that needs both `rr_image` and `rr_gpu`; both
 the accumulation buffer and the path tracer fit there.
 
+## Stage 12A.1 — OptiX motivation
+
+**Scope of this slice (Stage 12A.1; master order #17, "OptiX
+upgrade path"): documentation only. Creates
+`docs/OPTIX_BACKEND_PLAN.md` with the four motivation
+sections required by the prompt - Purpose, why naive CUDA
+triangle loops are not enough, why OptiX matters for serious
+scenes, what remains CUDA-only for now. The rest of the
+OptiX design (programs, AS, SBT, data flows, integrations,
+file layout, migration risks) lands in subsequent 12A.x
+sub-stages, appended to the same file.** No code is touched.
+
+### What ships
+
+- `docs/OPTIX_BACKEND_PLAN.md` (new, ~250 lines):
+  - **§1 Purpose** - frames the document, declares
+    Stage 12A as planning-only, names master order #17, and
+    lists what's deliberately deferred to later sub-stages.
+  - **§2 Why naive CUDA triangle loops are not enough** -
+    quantifies the project's current `O(spheres + triangles)`
+    closest-hit walk in `CudaPathTracer.cu::closest_hit` and
+    `CudaTestKernel.cu::k_render_scene`. Worked example: a
+    1280x720 image at 16spp, 4 bounces, 100k triangles =
+    ~5.9T intersection tests/frame, on the order of
+    minutes/frame on modern hardware vs. milliseconds with a
+    BVH. Documents the compounding single-mesh-slot
+    constraint from Stage 10B.11 and the wasted spatial
+    coherence + idle RT-core silicon.
+  - **§3 Why OptiX matters for serious scenes** - five
+    concrete affordances OptiX provides: BVH-accelerated
+    `optixTrace` (O(log N)), RT-core hardware traversal on
+    Turing+, the programmable program model (raygen / miss /
+    CH / AH / IS) mapping cleanly onto the path tracer's
+    existing hit-shade-bounce structure, multi-ray-type SBT
+    (radiance / shadow), and instancing-via-IAS that solves
+    the multi-mesh problem as a side-effect of the
+    architecture rather than as bespoke code.
+  - **§4 What remains CUDA-only for now** - explicit
+    "moves vs stays" boundary. Stays unchanged: scene
+    parser, `Scene` data model, `GpuScene` uploads, image
+    IO, `pathtracer::Rng` / `Sampling`, `AccumulationBuffer`,
+    every Stage 6-9 / 11A-B diagnostic kernel, the
+    `--render-scene` / mesh / material / direct-lighting
+    reference paths (which become the OptiX backend's
+    correctness baseline). Migration boundary: OptiX
+    replaces the closest-hit walk + intersection primitives
+    + the path-tracer launcher, period. Justifies keeping
+    the CUDA path tracer indefinitely as a regression
+    baseline + non-OptiX-host fallback + new-feature
+    testbed.
+  - Closing "Sections to come" list naming each future
+    sub-stage's contribution to the same document.
+
+### Hard-rule audit
+
+- Do not implement code - **yes**, only `docs/`
+  modifications (new `OPTIX_BACKEND_PLAN.md`, this entry in
+  `BUILD_PLAN.md`). No source code touched.
+- Documentation only - **yes**, no `src/` or `tests/`
+  changes; build / ctest unchanged.
+- Update `docs/BUILD_PLAN.md` - **yes**, this entry.
+- Master engineering rule "do not jump to advanced systems
+  early" - **honoured**. The plan is being written before
+  the implementation; the plan itself will be staged across
+  multiple sub-stages so each stays narrow.
+
+### Status of the OptiX migration after this slice
+
+| Stage    | Surface                          | Status |
+|----------|----------------------------------|:------:|
+| 12A.1    | OPTIX_BACKEND_PLAN.md §1-§4      | ✅      |
+| 12A.x    | program / AS / SBT / data-flow / file-layout / risks sections | pending |
+| 12B      | minimum-viable OptiX backend     | pending |
+| 12C+     | feature parity with CUDA backend | pending |
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
 
-- direct-light sampling (next-event estimation) so the path
-  tracer picks up illumination from non-emissive light
-  primitives (point / directional / area), with a
-  multiple-importance combine against the BRDF sample;
-- non-diffuse materials (specular, metal, transmission) +
-  a real BSDF dispatch in the kernel;
-- multi-mesh upload on `GpuScene`;
-- relativistic-perception integration: aberrate primary +
-  bounce rays, fold Doppler / searchlight back into the
-  emission / environment evaluations;
-- `SceneWriter::save` / `serialize` for round-trip + a
-  `tests/io_tests.cpp` covering round-trip and each §12 rule.
+- additional Stage 12A sub-stages appending the design
+  sections listed in `OPTIX_BACKEND_PLAN.md`'s "Sections to
+  come" footer (raygen / miss / CH program designs, AS, SBT,
+  material + camera data flows, relativity / path-tracing
+  integration, file layout, migration risks);
+- *or* (if the priority is path-tracer feature breadth
+  instead of backend swap) direct-light sampling (NEE),
+  non-diffuse materials, multi-mesh upload, or relativistic-
+  perception integration into the path tracer;
+- *or* the post-Stage-11 follow-ups still pending:
+  multi-mesh upload on `GpuScene`, `SceneWriter::save`,
+  `tests/io_tests.cpp`.
+
+The order between the OptiX-design sub-stages and any
+feature follow-ups is the operator's call. The Stage 11
+audit (`docs/STAGE_11_AUDIT.md`) recommends running the
+Stage 11 artifacts on a CUDA host first to validate the
+existing kernels before committing to a backend swap; that
+recommendation is unchanged.
 
 ## Constraints carried forward
 
