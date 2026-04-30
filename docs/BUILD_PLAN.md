@@ -3705,6 +3705,7 @@ sub-stages, appended to the same file.** No code is touched.
 | 12B.1    | RELATIVITYRENDER_ENABLE_OPTIX CMake option (flag-only) | ✅ |
 | 12B.2    | OptiX file skeleton (rr_optix; OptixBackend.{h,cpp}, OptixRenderer.{h,cpp}; placeholders) | ✅ |
 | 12B.3    | Conditional OptiX build wiring (rr_optix gated on the option; OFF byte-identical to pre-12B) | ✅ |
+| 12B.4    | OptiX SDK path detection (OPTIX_ROOT / OPTIX_SDK_DIR; sets RELATIVITYRENDER_OPTIX_SDK_FOUND) | ✅ |
 | 12B      | minimum-viable OptiX backend     | pending |
 | 12C+     | feature parity with CUDA backend | pending |
 
@@ -5951,6 +5952,181 @@ No real OptiX SDK headers are required at any state.**
   `RELATIVITYRENDER_ENABLE_OPTIX` compile
   definition propagated to the two .cpp.o files;
   the executable links rr_optix; ctest 4/4
+  unchanged.
+
+## Stage 12B.4 — OptiX SDK path detection
+
+**Scope of this slice (Stage 12B.4): add CMake-side
+detection of an OptiX SDK install. When
+`RELATIVITYRENDER_ENABLE_OPTIX=ON`, probe the
+candidate paths the user can pass (`-DOPTIX_ROOT=...`
+or `-DOPTIX_SDK_DIR=...`, with the `OPTIX_ROOT`
+environment variable as a fallback) for
+`include/optix.h`. On success: set
+`RELATIVITYRENDER_OPTIX_SDK_FOUND = TRUE`, store the
+include directory in
+`RELATIVITYRENDER_OPTIX_SDK_INCLUDE_DIR`, and print a
+status line. On failure: emit a `message(WARNING ...)`
+with clear remediation guidance, and continue the
+build. This slice is detection-only - no
+`find_package(OptiX)`, no SDK include path
+propagated into rr_optix yet, no `optixInit()` /
+device-context init.**
+
+### What ships
+
+- `CMakeLists.txt`:
+  - New detection block inside the existing
+    `if(RELATIVITYRENDER_ENABLE_OPTIX)` rr_optix
+    section, before `add_library(rr_optix STATIC
+    ...)`. The block:
+    1. Builds a list of candidate paths from
+       `OPTIX_ROOT` and `OPTIX_SDK_DIR` cache
+       variables (each treated as falsy when empty).
+    2. If neither was passed, falls back to
+       `$ENV{OPTIX_ROOT}` (the canonical NVIDIA env-
+       variable name).
+    3. Walks the candidates and stops at the first
+       path where `${path}/include/optix.h` exists.
+    4. On success: sets
+       `RELATIVITYRENDER_OPTIX_SDK_FOUND = TRUE`,
+       stores the include directory in
+       `RELATIVITYRENDER_OPTIX_SDK_INCLUDE_DIR`,
+       prints `OptiX SDK    : ${path}
+       (include/optix.h located)` as a status line.
+    5. On failure (no candidates, or candidates set
+       but `optix.h` not found in any of them):
+       leaves both variables in their FALSE / empty
+       state and emits a `message(WARNING ...)`
+       with the full remediation text.
+  - The detection block is fully wrapped in the
+    existing `if(RELATIVITYRENDER_ENABLE_OPTIX)`
+    block so OFF builds run zero detection logic.
+  - `RELATIVITYRENDER_OPTIX_SDK_FOUND` and
+    `RELATIVITYRENDER_OPTIX_SDK_INCLUDE_DIR` are
+    set unconditionally (FALSE / empty) inside the
+    ON block, so subsequent 12B sub-stages can
+    safely reference them whether or not the SDK
+    was located.
+  - Stage label bumped to "Stage 12B.4: OptiX SDK
+    path detection" in both the `project(...)`
+    description and the project-banner status
+    message.
+- `docs/BUILD_PLAN.md`: this entry + status-table
+  row for 12B.4.
+
+### Architectural decisions worth highlighting
+
+- **Detection only, no wiring.** Per the user's
+  "Do not implement OptiX context initialization
+  yet" rule: even when the SDK is located, the
+  detected include path is *not* propagated into
+  rr_optix's `target_include_directories`. Subsequent
+  sub-stages do that propagation when the
+  placeholder sources actually start consuming
+  `<optix.h>`. Today the SDK presence is purely
+  observable via the CMake variable
+  `RELATIVITYRENDER_OPTIX_SDK_FOUND`.
+- **Three discovery paths.** `-DOPTIX_ROOT=...`,
+  `-DOPTIX_SDK_DIR=...`, and `$ENV{OPTIX_ROOT}`
+  cover the three idioms operators use:
+  command-line cache variable (the user's spec
+  bullet), alias for the same (also in the user's
+  spec), and the canonical NVIDIA environment
+  variable name (added as fallback for
+  convenience; documented in the warning text).
+  All three locate the same file
+  (`<path>/include/optix.h`).
+- **Warning, not error.** The user's rule "ON
+  build may fail or warn if SDK missing, but
+  message must be clear" gives both options;
+  Stage 12B.4 chooses warn-and-continue because
+  the rr_optix file skeleton (Stage 12B.2/12B.3)
+  doesn't actually need the SDK to compile.
+  Errors out at the configure level would be
+  friendlier *if* the placeholder sources were
+  failing to compile; today they aren't.
+  Subsequent sub-stages that *do* need the SDK
+  can promote this from a warning to a fatal
+  `message(FATAL_ERROR ...)`.
+- **Clear remediation text.** The warning
+  explicitly lists the three options (-DOPTIX_ROOT
+  / -DOPTIX_SDK_DIR / OPTIX_ROOT env), the
+  expected layout (`include/optix.h`), the
+  current behaviour (build continues, file
+  skeleton compiles), and the future behaviour
+  (subsequent slices that need the SDK will
+  fail to configure). An operator who sees this
+  warning understands what to do without reading
+  the source.
+- **OFF runs zero detection logic.** The whole
+  block sits inside `if(RELATIVITYRENDER_ENABLE_
+  OPTIX)`, so an operator who doesn't request
+  OptiX never sees a probe attempt, never gets
+  a warning, never has a `RELATIVITYRENDER_OPTIX_
+  *` variable defined in their CMake variable
+  space. OFF is byte-identical to 12B.3's OFF.
+
+### Hard-rule audit
+
+- OFF build must never care about OptiX — **yes**,
+  the detection block is fully inside
+  `if(RELATIVITYRENDER_ENABLE_OPTIX)`. OFF
+  builds run zero detection logic, see no OptiX-
+  related output (no warning, no status line),
+  and have no `RELATIVITYRENDER_OPTIX_SDK_*`
+  variables defined.
+- ON build may fail or warn if SDK missing, but
+  message must be clear — **yes**, the warning
+  text explicitly lists the three discovery paths,
+  the expected file layout, what currently still
+  works, and what future sub-stages will demand.
+- Do not implement OptiX context initialization
+  yet — **yes**, no `find_package(OptiX)`, no
+  SDK include path propagated to rr_optix, no
+  `optixInit()` / `optixDeviceContextCreate()`
+  calls. Detection only.
+- Update docs/BUILD_PLAN.md — **yes**, this
+  entry + status-table row.
+
+### Verified at the build
+
+- `cmake -DRELATIVITYRENDER_ENABLE_OPTIX=OFF ..`
+  (clean reconfigure): no OptiX-related output;
+  no `Optix*` artifacts compile; ctest 4/4
+  passes. Byte-identical to 12B.3 OFF.
+- `cmake -DRELATIVITYRENDER_ENABLE_OPTIX=ON ..`
+  (clean reconfigure, no SDK passed): banner
+  prints the existing 12B.1-era "OptiX backend:
+  requested" line; `message(WARNING ...)` fires
+  with the full remediation text; build continues
+  and `librr_optix.a` builds clean; ctest 4/4
+  unchanged. The warning is a `CMake Warning at
+  CMakeLists.txt:278 (message)` with the full
+  multi-line text the user can read at the
+  configure step.
+- `cmake -DRELATIVITYRENDER_ENABLE_OPTIX=ON
+  -DOPTIX_ROOT=/tmp/fake-optix-sdk ..` (fake
+  SDK = `mkdir -p /tmp/fake-optix-sdk/include &&
+  touch /tmp/fake-optix-sdk/include/optix.h`):
+  banner prints `OptiX SDK    : /tmp/fake-optix-
+  sdk (include/optix.h located)`; no warning;
+  `RELATIVITYRENDER_OPTIX_SDK_FOUND` is TRUE;
+  `RELATIVITYRENDER_OPTIX_SDK_INCLUDE_DIR` is
+  `/tmp/fake-optix-sdk/include`. Build clean;
+  ctest 4/4 unchanged.
+- Same fake-SDK location passed via
+  `-DOPTIX_SDK_DIR=...` instead of `-DOPTIX_ROOT=...`:
+  identical detection result. Both spec'd cache
+  variables work.
+- Same fake-SDK location passed via the
+  `OPTIX_ROOT` environment variable (no
+  `-D...` arguments): identical detection result.
+  The env-variable fallback path works.
+- `cmake -DRELATIVITYRENDER_ENABLE_OPTIX=ON
+  -DOPTIX_ROOT=/nonexistent/path ..`: warning fires
+  (path was passed but `include/optix.h` doesn't
+  exist there); build continues; ctest 4/4
   unchanged.
 
 ## Next stage

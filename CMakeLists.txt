@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.20)
 
 project(RelativityRender
     VERSION     0.1.0
-    DESCRIPTION "RelativityRender - GPU renderer platform (Stage 12B.3: OptiX conditional build wiring)"
+    DESCRIPTION "RelativityRender - GPU renderer platform (Stage 12B.4: OptiX SDK path detection)"
     LANGUAGES   CXX
 )
 
@@ -33,7 +33,7 @@ option(RELATIVITYRENDER_ENABLE_OPTIX
 
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
-message(STATUS "RelativityRender ${PROJECT_VERSION} (Stage 12B.3: OptiX conditional build wiring)")
+message(STATUS "RelativityRender ${PROJECT_VERSION} (Stage 12B.4: OptiX SDK path detection)")
 
 message(STATUS "  Build type   : ${CMAKE_BUILD_TYPE}")
 message(STATUS "  C++ standard : ${CMAKE_CXX_STANDARD}")
@@ -238,6 +238,58 @@ rr_apply_warnings(rr_renderer)
 # OptixAccel.h / OptixLaunchParams.h per OPTIX_BACKEND_PLAN.md
 # §20-§23) and the real OptiX SDK wiring.
 if(RELATIVITYRENDER_ENABLE_OPTIX)
+    # Stage 12B.4: detect OptiX SDK path. The user passes
+    # `-DOPTIX_ROOT=/path/to/optix-sdk` or
+    # `-DOPTIX_SDK_DIR=/path/to/optix-sdk` at configure time; we
+    # also fall back to the `OPTIX_ROOT` environment variable
+    # (the canonical NVIDIA convention). Probe for
+    # `include/optix.h` under each candidate; set
+    # `RELATIVITYRENDER_OPTIX_SDK_FOUND` accordingly. This is
+    # detection only - no `find_package(OptiX)`, no compile-time
+    # propagation of the include path into `rr_optix`, no
+    # OptixDeviceContext init. Subsequent 12B sub-stages consume
+    # the detected path; today the placeholder rr_optix sources
+    # don't include `<optix.h>` so a "not found" warning is
+    # non-blocking.
+    set(_optix_candidates "")
+    if(OPTIX_ROOT)
+        list(APPEND _optix_candidates "${OPTIX_ROOT}")
+    endif()
+    if(OPTIX_SDK_DIR)
+        list(APPEND _optix_candidates "${OPTIX_SDK_DIR}")
+    endif()
+    if(NOT _optix_candidates AND DEFINED ENV{OPTIX_ROOT})
+        list(APPEND _optix_candidates "$ENV{OPTIX_ROOT}")
+    endif()
+
+    set(RELATIVITYRENDER_OPTIX_SDK_FOUND        FALSE)
+    set(RELATIVITYRENDER_OPTIX_SDK_INCLUDE_DIR  "")
+    foreach(_path IN LISTS _optix_candidates)
+        if(EXISTS "${_path}/include/optix.h")
+            set(RELATIVITYRENDER_OPTIX_SDK_FOUND       TRUE)
+            set(RELATIVITYRENDER_OPTIX_SDK_INCLUDE_DIR "${_path}/include")
+            message(STATUS
+                "  OptiX SDK    : ${_path} (include/optix.h located)")
+            break()
+        endif()
+    endforeach()
+
+    if(NOT RELATIVITYRENDER_OPTIX_SDK_FOUND)
+        message(WARNING
+            "RELATIVITYRENDER_ENABLE_OPTIX=ON but no OptiX SDK could "
+            "be located. Pass -DOPTIX_ROOT=/path/to/optix-sdk or "
+            "-DOPTIX_SDK_DIR=/path/to/optix-sdk (or set the "
+            "OPTIX_ROOT environment variable) so cmake can find "
+            "'include/optix.h' under the SDK install. The current "
+            "configure / build continues - Stage 12B.4 detection is "
+            "non-blocking, and the rr_optix file skeleton compiles "
+            "without the real SDK. Subsequent 12B sub-stages that "
+            "need <optix.h>, optixInit(), etc. will fail to "
+            "configure until this is resolved.")
+    endif()
+
+    unset(_optix_candidates)
+
     add_library(rr_optix STATIC
         src/optix/OptixBackend.cpp
         src/optix/OptixRenderer.cpp
