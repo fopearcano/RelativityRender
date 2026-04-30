@@ -2656,13 +2656,306 @@ slices grow on top of.
 
 ---
 
+## 13. Light data
+
+Lights are the most subtle data category in Stage 12B's
+OptiX backend: they are **uploaded but not directly
+sampled**. Stage 11C established this posture for the
+CUDA path tracer (lights upload through the existing
+GpuScene chain; the kernel relies on emissive surfaces +
+the env-fallback colour for illumination); the OptiX
+migration inherits the posture verbatim. §13 documents
+the data flow that exists today, the env-light → env-
+fallback bridge that links scene-authored environments
+to the miss program's input, and the planned NEE
+integration that makes lights a first-class radiance
+contributor in 12C+.
+
+### 13.1 Source
+
+Lights flow from host to device through the existing
+parser → upload chain, identical in shape to materials
+(§12.1):
+
+```
+.rrscene file ("lights" array)
+              │
+              │  Stage 10B.7 parser (apply_lights)
+              ▼
+rr::scene::Scene::lights  (vector<SceneLight>)
+              │  flatten the .data field (.object metadata dropped at upload)
+              ▼
+flat rr::lighting::Light[] (host-side temp)
+              │  GpuScene::upload_lights(host, count)
+              ▼
+GpuScene's device_lights_ (GpuBuffer<Light>)
+              │  GpuScene::device_lights()
+              ▼
+optixLaunchParams.lights (device pointer + count)
+              │  read by closest-hit when NEE activates
+              ▼
+Light POD (consumed by future direct-lighting evaluation)
+```
+
+The OptiX backend reuses every step verbatim. The Light
+POD itself was finalised in Stage 9A; the upload path
+in 9B; the parser in 10B.7. Stage 12B adds exactly the
+launch-params pointer assignment.
+
+### 13.2 Light POD field list
+
+The `Light` POD lives in `lighting/Light.h` and uses a
+flat type-discriminated layout (no union; no virtual
+dispatch) so it travels through `GpuBuffer<Light>` and
+constant-memory broadcasts cleanly:
+
+| Field        | Type        | Size | Purpose                                                           |
+|--------------|-------------|-----:|-------------------------------------------------------------------|
+| `type`       | LightType (i32) |  4 B | Discriminator: 0=Point, 1=Directional, 2=Area, 3=Environment   |
+| `color`      | Vec3        | 12 B | Linear-space RGB radiance (HDR allowed; intensity multiplies)     |
+| `intensity`  | float       |  4 B | Scalar multiplier on `color`                                      |
+| `position`   | Vec3        | 12 B | World-space anchor — used by Point and Area, ignored otherwise    |
+| `direction`  | Vec3        | 12 B | Unit direction — used by Directional and Area, ignored otherwise  |
+| `area_width` | float       |  4 B | Area-rectangle local-frame extent (Area placeholder)              |
+| `area_height`| float       |  4 B | Area-rectangle local-frame extent (Area placeholder)              |
+
+Total: **52 bytes** per light.
+
+The four supported types from §10 of `RRSCENE_FORMAT.md`:
+
+- **Point** — `position` is the world-space emitter location;
+  `color * intensity / d²` falloff at the receiver. NEE samples
+  this as a single deterministic shadow ray (no direction
+  sampling needed; the emitter is a delta in space).
+- **Directional** — `direction` is the photons' propagation
+  direction (a unit vector); receivers use `-direction` as
+  the to-light vector. `color * intensity * max(0, N · -dir)`
+  with no falloff. NEE samples this as a single deterministic
+  shadow ray (the emitter is a delta in direction).
+- **Area** (placeholder) — `position` + `direction` define
+  the rectangle's anchor + surface normal; `area_width` /
+  `area_height` are the local-frame extents. Stage 9 marks
+  this as a placeholder; the kernel currently skips area
+  lights. NEE will sample area lights stochastically (one
+  random point on the rectangle per shadow ray; PDF over
+  area-element).
+- **Environment** — `color * intensity` is a flat sky tint
+  in Stage 12B; HDR env-maps are the §13.4 / §6.6 future
+  expansion. Stage 12B's environment light is the bridge
+  between scene-authored env data and the miss program's
+  `env_color` / `env_intensity` input (see §13.4).
+
+### 13.3 Stage 12B status: uploaded but not sampled
+
+This subsection is honest accounting: in Stage 12B's path
+tracer, **scene lights upload to the device but the kernel
+never reads them at trace time**. The reasons are
+structural:
+
+- **Stage 11C is diffuse-only with no NEE** (per the
+  Stage 11C prompt's "Keep materials simple" + "No MIS
+  yet"). The path tracer relies on:
+  - Emissive surface hits (Material's
+    `emissionColor * emissionStrength`, modulated by
+    Doppler/searchlight in §7.5) for direct + indirect
+    illumination from emissive geometry.
+  - The miss program's `env_color * env_intensity`
+    fallback (§6.4) for the environment radiance.
+- **The upload is forward-compatible.** The host already
+  uploads lights via `GpuScene::upload_lights`; the
+  device-side `Light` array is in place for NEE to
+  consume. The host populates
+  `optixLaunchParams.lights` / `light_count` per launch
+  (a single device-pointer write, costs nothing). When
+  NEE activates in 12C+, no new upload path is needed —
+  the data is already there.
+
+The honest framing matters: Stage 12B does not silently
+drop scene lights, nor does it pretend lights are
+contributing when they aren't. The CLI render summary
+(`run_render_pathtrace` in `main.cpp`) already reports
+the uploaded light count alongside the sphere /
+material / mesh counts, so the operator sees that lights
+were parsed and uploaded even though they aren't
+directly contributing to the radiance estimate.
+
+### 13.4 Environment light → env-fallback bridge
+
+The `Environment` light type is the special case worth
+documenting in detail because it does — through a
+host-side step — flow into the path tracer's radiance
+output today, despite §13.3's "uploaded but not sampled"
+caveat.
+
+The flow:
+
+```
+scene.lights[*]  (some of which may have type == Environment)
+        │
+        │  host scan at scene-load time
+        │  (proposed; not yet shipped in 11C handler)
+        ▼
+PathTraceConfig.environment_color
+PathTraceConfig.environment_intensity
+        │
+        │  PathTracer::render writes them into
+        ▼
+optixLaunchParams.env_color
+optixLaunchParams.env_intensity
+        │
+        │  miss program reads, applies §6.4 Doppler/searchlight
+        ▼
+miss-radiance contribution → raygen accumulator (per §6.3)
+```
+
+The host-side scan picks the first `Environment` light
+in `scene.lights` and copies its `color * intensity` into
+the `PathTraceConfig`. If no environment light is
+authored, `PathTraceConfig`'s defaults apply (the moderate
+cool sky tint Stage 11C set). The kernel reads
+`env_color * env_intensity`, not the lights array — so
+even when the scene lights are "not sampled", the
+*environment one* still routes its data to the miss
+program through the explicit env-fallback channel.
+
+The Stage 11C `--render-pathtrace` handler does NOT
+implement this scan today; it uses the
+`PathTraceConfig` defaults verbatim. Activating the scan
+is a small host-side change documented as a deferred
+follow-up in the Stage 11C BUILD_PLAN entry. §13.4 is
+the design contract that change will implement against.
+
+#### 13.4.1 Future: HDR env-map textures
+
+The bounded `env_color * env_intensity` model maps
+unidirectional sky tint to a single radiance value per
+miss. Stage 12B's environment-light plumbing is
+adequate for this. When the texture system (master
+order #18) lands, the env light grows:
+
+- A device-side `cudaTextureObject_t` field on `Light`
+  (or a separate parallel array indexed by
+  `LightType::Environment` light id) carrying the HDR
+  panoramic environment map.
+- The miss program reads `optixGetWorldRayDirection()`,
+  decodes a (longitude, latitude) UV against the env
+  map, samples the texture, multiplies by `intensity`,
+  applies §6.4 Doppler/searchlight as today, writes
+  the result to the payload.
+- The current `env_color` field becomes the fallback
+  when no env-map texture is bound (preserves Stage 12B
+  behaviour for env-mapless scenes).
+
+The miss program's pure `(direction, launch_params) →
+radiance` shape (§6.3) extends to env-maps without
+restructuring; the only change is the env_color load
+becoming a textured sample.
+
+### 13.5 Where lights are evaluated: closest-hit (NEE, future)
+
+When NEE activates in 12C+ (per §7.8 / §8.3 / §9.5.1's
+shadow-ray expansion), light evaluation lives primarily
+in the **closest-hit program**, with help from the
+raygen and the any-hit shadow program:
+
+| Step                                 | Program | Stage 12C+ flow                                                                  |
+|--------------------------------------|---------|----------------------------------------------------------------------------------|
+| Pick a light to sample               | raygen  | uniform sample over `[0, light_count)`; passed to CH via payload or recomputed   |
+| Generate shadow ray (origin + dir)   | CH      | `origin = hit.position + N·ε`; `direction = light.position - origin` (point/area) or `-light.direction` (directional) |
+| Evaluate visibility                  | AH (shadow ray-type) | calls `optixTerminateRay()` on first hit; payload visibility bit cleared if occluded |
+| BRDF × cos / pdf                     | CH      | `albedo / π` for Lambert; cos(N, L); 1/d² for point lights; PDF = uniform-light selection × per-light delta |
+| Doppler / searchlight modulation     | CH      | applied to the light's `color * intensity` exactly like emission in §7.5; same helpers, same gating |
+| Write contribution to payload        | CH      | added to `payload.emission` slots; raygen multiplies by throughput               |
+
+The shadow-ray expansion grows the SBT to 7 records
+(per §9.5.1) and adds the AH program (per §8.3 step 1).
+The closest-hit program grows §7.4's evaluation step
+with a new "direct lighting" block evaluated *before*
+the cos-hemisphere bounce sample (so the throughput
+update on the next bounce reflects the BRDF × albedo
+already, and direct lighting is added to radiance
+without double-multiplying).
+
+#### 13.5.1 Per-light-type evaluation specifics
+
+- **Point light**: shadow ray from `hit.position` toward
+  `light.position`; `t_max = length(light.position -
+  hit.position)`. Contribution =
+  `(albedo / π) * cos(N, L) * (color * intensity) / d²`
+  modulated by Doppler. Visibility = AH-determined.
+- **Directional light**: shadow ray from `hit.position`
+  toward `-light.direction`; `t_max = inf`. Contribution =
+  `(albedo / π) * max(0, N · -direction) * color * intensity`
+  modulated by Doppler. Visibility = AH-determined.
+- **Area light**: stochastic sample of a point on the
+  rectangle (using `pathtracer::Rng`); shadow ray to
+  the sampled point; PDF = `1 / (area_width * area_height)`
+  divided by the cos / r² Jacobian of the area-to-solid-
+  angle mapping. Stage 12C+ marks this as PLACEHOLDER
+  until the area-light sampling slice ships.
+- **Environment light**: NOT sampled by NEE shadow rays
+  in 12C+ — environment radiance arrives via the miss
+  program when bounce rays escape the scene (§6 / §13.4).
+  A future expansion (master order post-#18) could add
+  env-map importance sampling to NEE for HDR env-maps,
+  but the simple fallback shape stays through 12C.
+
+### 13.6 Read / write summary
+
+| Surface                                 | Direction                     | Lifetime        |
+|-----------------------------------------|-------------------------------|-----------------|
+| `Scene::lights` (host vector)           | host read/write               | persistent      |
+| flat `Light[]` (host temp)              | host write at upload time     | per scene load  |
+| `GpuScene::device_lights_` buffer       | host write at upload time     | per scene load  |
+| `optixLaunchParams.lights` ptr          | host write per launch         | per launch      |
+| `optixLaunchParams.light_count`         | host write per launch         | per launch      |
+| `optixLaunchParams.lights[*]` (device read) | (Stage 12B: never)        | n/a in 12B      |
+| `optixLaunchParams.lights[*]` (device read) | (Stage 12C+ NEE: per shadow ray) | per NEE sample |
+| `optixLaunchParams.env_color/env_intensity` (Stage 12B miss) | device read | per miss        |
+
+The Stage 12B reads from `lights[*]` are deliberately
+absent — no program in Stage 12B's pipeline dereferences
+the lights array. The data is uploaded for forward
+compatibility; the consumers join in 12C+.
+
+### 13.7 Scope: what's NOT in §13
+
+Three light-related concerns this section deliberately
+defers:
+
+- **NEE direct-light sampling.** Per §7.8 / §8.3 / §9.5.1
+  / §13.5: the shadow-ray expansion adds a second ray
+  type, an AH program, and a new direct-lighting block
+  in the closest-hit. This is a substantial slice of
+  its own; §13 documents the contract the slice
+  implements against. Stage 12C+.
+- **HDR env-map textures.** Per §6.6 / §13.4.1: needs
+  the texture system (master order #18). The miss
+  program's pure-function shape extends to env-maps
+  without restructuring.
+- **Multiple importance sampling (MIS).** When NEE +
+  BSDF sampling both contribute to the same pixel, MIS
+  weights combine them with reduced variance. Stage
+  12C+ NEE is *direct-lighting-only*; MIS lands when
+  non-Lambert BSDFs make the BSDF sampling alternative
+  meaningful (post master order #13).
+
+The Stage 12B light data flow — parser →
+GpuScene::upload_lights → launch-params pointer +
+optional environment-light → env-fallback bridge — is a
+stable foundation that the NEE slice grows on top of.
+Lights are uploaded today; lit images through them join
+when the rest of the pipeline (shadow rays, MIS,
+non-Lambert BSDFs) catches up.
+
+---
+
 ## Sections to come
 
 Future Stage 12A sub-stages will append (one per slice or
 small group of slices):
 
 - Intersection program design
-- Light data flow
 - Relativity integration (where aberration / Doppler /
   searchlight live across the program model)
 - Path-tracing integration (iterative bounce loop in raygen,

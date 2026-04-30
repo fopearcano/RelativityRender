@@ -3687,7 +3687,8 @@ sub-stages, appended to the same file.** No code is touched.
 | 12A.3.1  | OPTIX_BACKEND_PLAN.md §10 (Acceleration structures) | ✅ |
 | 12A.3.2  | OPTIX_BACKEND_PLAN.md §11 (Camera data) | ✅ |
 | 12A.3.3  | OPTIX_BACKEND_PLAN.md §12 (Material data) | ✅ |
-| 12A.x    | remaining IS / Light / Relativity data + integration / file-layout / risks sections | pending |
+| 12A.3.4  | OPTIX_BACKEND_PLAN.md §13 (Light data) | ✅ |
+| 12A.x    | remaining IS / Relativity data + integration / file-layout / risks sections | pending |
 | 12B      | minimum-viable OptiX backend     | pending |
 | 12C+     | feature parity with CUDA backend | pending |
 
@@ -4336,17 +4337,120 @@ sections (§13 Light, §14 Relativity, plus IS / file-layout
   edits are two markdown files.
 - Update docs/BUILD_PLAN.md — **yes**, this entry.
 
+## Stage 12A.3.4 — OptiX light data design
+
+**Scope of this slice (Stage 12A.3.4): documentation-only.
+Append §13 "Light data" to `docs/OPTIX_BACKEND_PLAN.md`
+covering the existing parser → GpuScene::upload_lights →
+device pointer pipeline (reused verbatim from the CUDA
+backend), the explicit Light POD field list with per-type
+field semantics for Point / Directional / Area /
+Environment, the honest "uploaded but not sampled" Stage
+12B status, the environment-light → env-fallback bridge
+that links scene-authored env data to the miss program's
+input, and the planned NEE integration covering where
+each light type will be evaluated when 12C+ activates
+shadow rays. No code; no other sections (§14 Relativity
+data, plus IS / file-layout / risks remain pending).**
+
+### What ships
+
+- `docs/OPTIX_BACKEND_PLAN.md` §13 with subsections 13.1
+  Source (parser → flatten → GpuScene::upload_lights →
+  device pointer pipeline shared verbatim with the CUDA
+  backend; OptiX adds only the launch-params pointer
+  assignment), 13.2 Light POD field list (52 B total:
+  type discriminator + color/intensity + position +
+  direction + area_*; per-type field semantics for the
+  four LightTypes), 13.3 Stage 12B status: uploaded but
+  not sampled (honest accounting - the kernel never
+  reads optixLaunchParams.lights[*] today; emissive
+  surfaces + env-fallback are the only illumination
+  sources; the upload is forward-compatible work for
+  NEE), 13.4 Environment light → env-fallback bridge
+  (host-side scan picks first Environment light, copies
+  color×intensity into PathTraceConfig.environment_*;
+  scene-authored env data flows to the miss program
+  through this explicit channel; the scan itself is a
+  deferred follow-up from Stage 11C BUILD_PLAN), 13.4.1
+  Future HDR env-map textures (master order #18 path),
+  13.5 Where lights are evaluated (closest-hit /
+  any-hit / raygen NEE choreography for 12C+; per-step
+  table; per-light-type evaluation specifics for Point /
+  Directional / Area / Environment), 13.5.1 Per-light-
+  type evaluation specifics (delta-spatial point lights,
+  delta-direction directional lights, stochastic-area
+  lights, env-via-miss-program), 13.6 Read/write summary
+  (Stage 12B reads from lights[*] are deliberately
+  absent), 13.7 Scope (NEE direct-light sampling, HDR
+  env-map textures, MIS all deferred).
+- The footer drops "Light data flow" — every other
+  future item is preserved.
+- This BUILD_PLAN entry + status-table row.
+
+### Architectural decisions worth highlighting
+
+- **Reuse the existing Light POD verbatim.** The parser
+  → GpuScene::upload_lights → device pointer chain is
+  the same path Stage 9B's k_render_scene reads
+  (direct-lighting demo) and Stage 11C's
+  k_pathtrace_sample uploads-but-ignores. The OptiX
+  migration touches the *consumption* side, not the
+  upload or POD layout. The 52-byte flat type-
+  discriminated POD travels through GpuBuffer<Light>
+  and constant-memory broadcasts cleanly without union
+  trickery.
+- **Stage 12B uploads but does not sample.** This is
+  honest accounting, not a stub: the lights array in
+  optixLaunchParams.lights is set per launch, but the
+  kernel never dereferences it. Stage 11C's "no MIS /
+  no NEE" posture means emissive surfaces + the
+  env-fallback are the only illumination sources;
+  scene-authored point / directional / area lights are
+  forward-compatible work waiting for 12C+ NEE.
+- **Environment light is the special case.** Through a
+  host-side scan (deferred follow-up from Stage 11C),
+  the first Environment light's color×intensity flows
+  into PathTraceConfig.environment_color/intensity,
+  which the host writes into optixLaunchParams.env_*
+  per launch. The miss program (§6.4) reads them and
+  applies Doppler/searchlight. So scene-authored env
+  data DOES flow to the renderer today — through the
+  explicit env-fallback channel, not the lights array.
+- **NEE evaluation distributed across CH/AH/raygen.**
+  When 12C+ activates the shadow-ray expansion (§9.5.1):
+  raygen picks a light (uniform sampling over
+  [0, light_count)), CH generates the shadow ray +
+  evaluates BRDF×cos/pdf + applies §7.5-style Doppler
+  modulation to the light's contribution, AH (shadow
+  ray-type) does the visibility query via
+  optixTerminateRay. Per-light-type specifics
+  documented for Point (delta-spatial, 1/d²),
+  Directional (delta-direction, no falloff), Area
+  (stochastic placeholder), Environment (NOT sampled
+  via NEE shadow rays - stays on the miss-program path).
+
+### Hard-rule audit
+
+- Do not add other sections — **yes**, only §13 was
+  appended; the footer dropped exactly the matching
+  item ("Light data flow").
+- Documentation only — **yes**, no source under `src/`,
+  `tests/`, or `CMakeLists.txt` is touched. The only
+  edits are two markdown files.
+- Update docs/BUILD_PLAN.md — **yes**, this entry.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
 
-- continue 12A: append §13+ (Light data, Relativity
-  parameter data, then Intersection program / Path-
-  tracing integration / planned module-file layout /
-  migration risks) to `OPTIX_BACKEND_PLAN.md`, one
-  focused section per sub-stage matching the
+- continue 12A: append §14 (Relativity parameter data),
+  then Intersection program / Path-tracing integration /
+  planned module-file layout / migration risks to
+  `OPTIX_BACKEND_PLAN.md`, one focused section per sub-
+  stage matching the
   12A.2.1 / 12A.2.2 / 12A.2.3 / 12A.2.4 / 12A.2.5 /
-  12A.3.1 / 12A.3.2 / 12A.3.3 cadence;
+  12A.3.1 / 12A.3.2 / 12A.3.3 / 12A.3.4 cadence;
 - *or* (if the priority is path-tracer feature breadth
   instead of backend swap) direct-light sampling (NEE),
   non-diffuse materials, multi-mesh upload, or relativistic-
