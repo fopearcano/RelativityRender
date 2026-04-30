@@ -3698,6 +3698,7 @@ sub-stages, appended to the same file.** No code is touched.
 | 12A.4.3.4 | OPTIX_BACKEND_PLAN.md §21 (SBT)                  | ✅ |
 | 12A.4.3.5 | OPTIX_BACKEND_PLAN.md §22 (Acceleration)         | ✅ |
 | 12A.4.3.6 | OPTIX_BACKEND_PLAN.md §23 (Launch params)        | ✅ |
+| 12A.4.3.7 | OPTIX_BACKEND_PLAN.md §24 (Separation from CUDA) | ✅ |
 | 12A.x    | remaining IS / CMake integration / migration-risks | pending |
 | 12B      | minimum-viable OptiX backend     | pending |
 | 12C+     | feature parity with CUDA backend | pending |
@@ -5312,6 +5313,82 @@ other files; no other sections.**
 - Do not add other files — **yes**, only
   `OptixLaunchParams.h` was listed; the prompt's
   "Do not add other files" was respected.
+- Documentation only — **yes**, no source under
+  `src/`, `tests/`, or `CMakeLists.txt` is touched.
+  The only edits are two markdown files.
+- Update docs/BUILD_PLAN.md — **yes**, this entry.
+
+## Stage 12A.4.3.7 — Separation from CUDA
+
+**Scope of this slice (Stage 12A.4.3.7): documentation-only.
+Append §24 "Separation from CUDA" to
+`docs/OPTIX_BACKEND_PLAN.md` as a strict 4-bullet
+constraints capstone consolidating the separation theme
+established across §16 (parallel migration), §19 (renderer
+mirrors CudaRenderer), §22 (zero-copy data reuse).
+Closing slice in the 12A.4.3.x file-layout sequence. No
+code; no other sections.**
+
+### What ships
+
+- `docs/OPTIX_BACKEND_PLAN.md` §24 with exactly four
+  bullets matching the user prompt:
+  - **CUDA renderer remains separate** — Stage 11C
+    path tracer keeps working unchanged; CUDA-only
+    TUs are not touched by the migration.
+  - **OptiX is an optional backend** — gated on
+    `RR_ENABLE_OPTIX` parallel to `RR_ENABLE_CUDA`;
+    requires-OptiX error mirrors the requires-CUDA
+    pattern.
+  - **Shared scene/material data reused** — both
+    backends read the same `GpuScene::device_*()`
+    accessors; Stage 11B's AccumulationBuffer is
+    byte-for-byte unchanged across backends; §10.2's
+    zero-copy strided pointer reuse makes the same
+    device pointers serve both `CudaSceneView` and
+    `OptixBuildInput*` / `optixLaunchParams.*`.
+  - **No duplication of high-level scene structures**
+    — the `Scene` / `SceneSphere` / `SceneMesh` /
+    `SceneMaterial` / `SceneLight` types in
+    `rr_scene` stay canonical; no parallel
+    `OptixScene` / `OptixMaterial` hierarchy. The
+    one new device-side POD that lives in
+    `src/optix/` is `OptixLaunchParams.h` (§23),
+    composed out of existing PODs without
+    duplicating their definitions.
+- The footer is untouched — §24 is a constraints
+  capstone (similar to §15 / §17's role), not on the
+  original outstanding-items list.
+- This BUILD_PLAN entry + status-table row.
+
+### Architectural decisions worth highlighting
+
+- **Strict 4-bullet shape.** The user prompt specified
+  "Max 4 bullet points"; §24's body is exactly the
+  four bullets the prompt named, no more, no less.
+- **Capstone consolidating prior commitments.** Each
+  bullet cross-references where the underlying
+  decision was originally made (§16 for backend
+  separation, §19 for renderer mirroring, §22 for
+  zero-copy data reuse, §23 for the one new POD that
+  is genuinely device-side). §24 doesn't introduce
+  new architectural decisions — it consolidates the
+  separation theme into a single readable summary.
+- **No new POD hierarchies.** The one OptiX-specific
+  POD (`OptixLaunchParams`) is composed of existing
+  PODs (`GpuCamera`, `Observer`, `RelativityParams`,
+  `MaterialParams`, `Light`, `Sphere`). Adding the
+  OptiX backend does not introduce parallel scene-
+  graph types; the migration's CPU-side surface
+  changes are exactly the new `src/optix/` files
+  documented in §18-§23 and (eventually) the CMake
+  glue that builds them.
+
+### Hard-rule audit
+
+- Max 4 bullet points — **yes**, exactly four bullets
+  in §24's body, matching the user prompt's bullets
+  one-for-one.
 - Documentation only — **yes**, no source under
   `src/`, `tests/`, or `CMakeLists.txt` is touched.
   The only edits are two markdown files.

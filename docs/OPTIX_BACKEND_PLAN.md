@@ -4405,6 +4405,63 @@ constant-memory bridge between them.
 
 ---
 
+## 24. Separation from CUDA
+
+The OptiX backend is structured as a clean parallel
+addition rather than a rewrite. Four constraints define
+the separation:
+
+- **CUDA renderer remains separate.** The Stage 11C path
+  tracer (`pathtracer/PathTracer.{h,cpp}`,
+  `cuda/CudaPathTracer.{cu,cuh}`, the `--render-pathtrace`
+  CLI action) keeps working unchanged after the OptiX
+  backend ships. CUDA-only TUs (`cuda/CudaTestKernel.cu`,
+  `cuda/CudaRenderer.{h,cu}`, `cuda/CudaAccumulation.{cu,cuh}`,
+  `cuda/CudaRngTestKernel.cu`) are not touched by the
+  migration; the new code lives in `src/optix/` per
+  §18-§23.
+
+- **OptiX is an optional backend.** Activation gates on a
+  new `RR_ENABLE_OPTIX` CMake option parallel to the
+  existing `RR_ENABLE_CUDA`. When OFF (the default on
+  non-NVIDIA build hosts and on CUDA-only hosts), no
+  OptiX source compiles, no OptiX symbols link, and the
+  `--render-pathtrace-optix` CLI action returns the
+  standard "requires OptiX. Rebuild with
+  -DRR_ENABLE_OPTIX=ON ..." error structurally
+  identical to the existing requires-CUDA pattern. The
+  CUDA path tracer continues to work as the default
+  path on every supported host.
+
+- **Shared scene/material data reused.** Both backends
+  read from the same `GpuScene::device_*()` accessors
+  (camera POD, observer + relativity params, sphere /
+  mesh / material / light arrays) per §12.1 / §13.1's
+  "reuses the existing parser → upload chain verbatim"
+  commitment. The Stage 11B `AccumulationBuffer` is
+  byte-for-byte unchanged across backends per §17.5.
+  The §10.2 "zero-copy strided pointer reuse" makes
+  the `GpuMesh` / `GpuBuffer<Sphere>` device pointers
+  serve both `CudaSceneView` (CUDA) and
+  `OptixBuildInput*` / `optixLaunchParams.*` (OptiX).
+
+- **No duplication of high-level scene structures.**
+  The `Scene` / `SceneSphere` / `SceneMesh` /
+  `SceneMaterial` / `SceneLight` types in `rr_scene`
+  stay the canonical authoring API; the parser
+  (`rr_io`) is the canonical loader; `GpuScene` is the
+  canonical upload owner. Adding the OptiX backend
+  does not introduce a parallel `OptixScene` /
+  `OptixMaterial` / `OptixLight` type hierarchy. The
+  one new device-side POD that *does* live in
+  `src/optix/` is `OptixLaunchParams.h` (§23) — the
+  per-launch state struct — and even it is composed
+  out of existing PODs (`GpuCamera`, `Observer`,
+  `RelativityParams`, `MaterialParams`, `Light`,
+  `Sphere`) without duplicating their definitions.
+
+---
+
 ## Sections to come
 
 Future Stage 12A sub-stages will append (one per slice or
