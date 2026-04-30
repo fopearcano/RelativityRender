@@ -3686,7 +3686,8 @@ sub-stages, appended to the same file.** No code is touched.
 | 12A.2.5  | OPTIX_BACKEND_PLAN.md §9 (Shader Binding Table) | ✅ |
 | 12A.3.1  | OPTIX_BACKEND_PLAN.md §10 (Acceleration structures) | ✅ |
 | 12A.3.2  | OPTIX_BACKEND_PLAN.md §11 (Camera data) | ✅ |
-| 12A.x    | remaining IS / Material / Light / Relativity data + integration / file-layout / risks sections | pending |
+| 12A.3.3  | OPTIX_BACKEND_PLAN.md §12 (Material data) | ✅ |
+| 12A.x    | remaining IS / Light / Relativity data + integration / file-layout / risks sections | pending |
 | 12B      | minimum-viable OptiX backend     | pending |
 | 12C+     | feature parity with CUDA backend | pending |
 
@@ -4238,17 +4239,114 @@ risks remain pending).**
   edits are two markdown files.
 - Update docs/BUILD_PLAN.md — **yes**, this entry.
 
+## Stage 12A.3.3 — OptiX material data design
+
+**Scope of this slice (Stage 12A.3.3): documentation-only.
+Append §12 "Material data" to
+`docs/OPTIX_BACKEND_PLAN.md` covering the existing parser
+→ GpuScene::upload_materials → device pointer pipeline
+(reused verbatim from the CUDA backend), the explicit
+MaterialParams POD field list with sizes + Stage 12B
+consumption status per field, the two-indirection material
+id lookup at hit time (primitive metadata → material_index
+→ launch_params.materials[i]), and the closest-hit BSDF
+evaluation location with a forward-pointer to the BSDF
+dispatch slice (master order #13). No code; no other
+sections (§13 Light, §14 Relativity, plus IS / file-layout
+/ risks remain pending).**
+
+### What ships
+
+- `docs/OPTIX_BACKEND_PLAN.md` §12 with subsections 12.1
+  Source (parser → flatten → GpuScene::upload_materials
+  → device pointer pipeline shared verbatim with the
+  CUDA backend; no new upload path or POD), 12.2
+  MaterialParams POD field list (44 B total: baseColor +
+  emissionColor + emissionStrength + roughness + metallic
+  + specular + transmission; explicit "Stage 12B uses?"
+  column showing only baseColor + emissionColor +
+  emissionStrength are consumed today), 12.3 Material id
+  lookup at hit time (the two-indirection chain:
+  primitive.material_* via launch_params.spheres[idx] /
+  launch_params.mesh.material_id → material_index →
+  launch_params.materials[idx]; explicit
+  closest-hit code path matching §7.6's recipe; rationale
+  for launch-params route over SBT user-data covering
+  HitGroup table inflation, per-material edit cost,
+  CUDA-backend parity), 12.4 BSDF evaluation location:
+  closest-hit (Stage 12B Lambert is `throughput *=
+  baseColor`; future BSDF dispatch grows the §7.4
+  evaluation step with a switch on bsdf_type using the
+  currently-unused roughness / metallic / specular
+  fields), 12.5 Routing summary (table showing every
+  surface's stores-material-data status), 12.6
+  Read/write summary, 12.7 Scope (real BSDF dispatch =
+  master order #13, texture-driven material params =
+  master order #18, spectral materials far-future).
+- The footer drops "Material data flow (per-record vs
+  constant-memory vs launch-param)" — every other future
+  item is preserved.
+- This BUILD_PLAN entry + status-table row.
+
+### Architectural decisions worth highlighting
+
+- **Reuse the existing MaterialParams POD verbatim.** The
+  parser → GpuScene::upload_materials → device pointer
+  chain is the same path Stage 9B's k_render_scene and
+  Stage 11C's k_pathtrace_sample already use. The OptiX
+  migration touches the *consumption* side (closest-hit
+  reads through optixLaunchParams.materials[]), not the
+  upload or POD layout.
+- **Two-indirection lookup, not one.** §12.3 makes the
+  chain explicit: primitive metadata carries the
+  material *index*, which indexes the launch-params
+  materials array. The "via SBT/hit record" framing in
+  the user prompt is real — the *hit record* (the
+  primitive's metadata in launch params) is the first
+  indirection; the launch-params materials array is the
+  second.
+- **Launch-params route (not SBT user-data).** Inherits
+  §9.2's general decision; §12.3 documents the
+  material-specific recap: HitGroup table inflation
+  would defeat the SBT's compact 128-byte footprint
+  (§9.4); per-material edits via launch-params are a
+  single 44-byte cudaMemcpy with no SBT rebuild;
+  CUDA-backend parity (the CUDA backend reads through
+  the same device pointer).
+- **Stage 12B reads only 28 of 44 POD bytes.** baseColor
+  (12 B) + emissionColor (12 B) + emissionStrength (4 B)
+  = 28 B consumed; roughness + metallic + specular +
+  transmission (16 B total) upload but are ignored.
+  Activating them is the BSDF-dispatch slice's job; the
+  upload path is already in place.
+- **BSDF dispatch lives in CH.** §7.4's Lambert
+  evaluation grows a switch on bsdf_type when master
+  order #13 lands. The 7-of-32 unused payload registers
+  (per §7.3's 13/32 budget) give headroom for additional
+  payload state (sampled PDF for MIS, per-BSDF sampling
+  hints).
+
+### Hard-rule audit
+
+- Do not add other sections — **yes**, only §12 was
+  appended; the footer dropped exactly the matching
+  item ("Material data flow").
+- Documentation only — **yes**, no source under `src/`,
+  `tests/`, or `CMakeLists.txt` is touched. The only
+  edits are two markdown files.
+- Update docs/BUILD_PLAN.md — **yes**, this entry.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
 
-- continue 12A: append §12+ (Material data, Light data,
-  Relativity parameter data, then Intersection program /
-  Path-tracing integration / planned module-file layout /
+- continue 12A: append §13+ (Light data, Relativity
+  parameter data, then Intersection program / Path-
+  tracing integration / planned module-file layout /
   migration risks) to `OPTIX_BACKEND_PLAN.md`, one
   focused section per sub-stage matching the
   12A.2.1 / 12A.2.2 / 12A.2.3 / 12A.2.4 / 12A.2.5 /
-  12A.3.1 / 12A.3.2 cadence;
+  12A.3.1 / 12A.3.2 / 12A.3.3 cadence;
 - *or* (if the priority is path-tracer feature breadth
   instead of backend swap) direct-light sampling (NEE),
   non-diffuse materials, multi-mesh upload, or relativistic-

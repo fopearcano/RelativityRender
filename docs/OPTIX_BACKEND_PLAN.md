@@ -2386,14 +2386,282 @@ bind covers it.
 
 ---
 
+## 12. Material data
+
+Materials are the second-largest device-side data surface
+in Stage 12B (after the AS itself): one `MaterialParams`
+POD per scene material, indexed by `material_index` at
+hit time. §7.2.2 / §7.4 already documented the
+closest-hit's material *consumption*; §9.2 fixed the
+routing decision (launch-params arrays, not SBT
+user-data); §12 consolidates the field list, the index
+lookup path from the user's "via SBT/hit record" bullet,
+and the BSDF-evaluation-location commitment.
+
+### 12.1 Source
+
+Materials flow from host to device through the existing
+parser → upload chain:
+
+```
+.rrscene file ("materials" array)
+              │
+              │  Stage 10B.5 parser (apply_materials)
+              ▼
+rr::scene::Scene::materials  (vector<SceneMaterial>)
+              │  flatten the .params field
+              ▼
+flat MaterialParams[] (host-side temp; in main.cpp's render handler)
+              │  GpuScene::upload_materials(host, count)
+              ▼
+GpuScene's device_materials_ (GpuBuffer<MaterialParams>)
+              │  GpuScene::device_materials()
+              ▼
+optixLaunchParams.materials (device pointer + count)
+              │  read by closest-hit at hit time
+              ▼
+MaterialParams (POD, consumed by §7.4 Lambert evaluation)
+```
+
+The OptiX backend reuses every step from "Stage 10B.5
+parser" through "`GpuScene::device_materials()` returns
+the device pointer" verbatim. No new upload path, no new
+materials POD, no new authoring API. The migration adds
+exactly one wire: the device pointer from
+`GpuScene::device_materials()` is stored into
+`optixLaunchParams.materials` once per launch, alongside
+`material_count` from `GpuScene::material_count()`.
+
+This is the same data the CUDA backend's
+`CudaSceneView` carries by value (Stage 9B
+`k_render_scene` and Stage 11C `k_pathtrace_sample` both
+read `scene.materials[idx]`); the OptiX backend reads the
+same array through the same device pointer.
+
+### 12.2 MaterialParams POD field list
+
+The POD lives in `material/MaterialTypes.h` and is the
+exact shape the closest-hit program reads:
+
+| Field             | Type  | Size | Purpose                                                              | Stage 12B uses? |
+|-------------------|-------|-----:|----------------------------------------------------------------------|:---------------:|
+| `baseColor`       | Vec3  | 12 B | Diffuse albedo; CH writes to payload, raygen multiplies into throughput | yes             |
+| `emissionColor`   | Vec3  | 12 B | Emission base colour                                                 | yes             |
+| `emissionStrength`| float |  4 B | Emission scalar multiplier; combined with `emissionColor` for radiance | yes           |
+| `roughness`       | float |  4 B | BRDF roughness in `[0, 1]` (0 = mirror, 1 = fully rough)             | **no**          |
+| `metallic`        | float |  4 B | Conductor blend in `[0, 1]` (0 = dielectric, 1 = conductor)          | **no**          |
+| `specular`        | float |  4 B | Dielectric F0 scale in `[0, 1]`                                      | **no**          |
+| `transmission`    | float |  4 B | Reserved-but-unused glass / refraction placeholder (Stage 8 reservation) | **no**      |
+
+Total: **44 bytes** per material.
+
+Stage 12B's "diffuse only" posture (per §7.4 and the
+Stage 11C prompt) means only the first three fields
+(`baseColor`, `emissionColor`, `emissionStrength`) are
+*consumed* by the closest-hit. The other four
+(`roughness`, `metallic`, `specular`, `transmission`)
+are uploaded by the parser, kept in the POD's payload,
+and ignored at trace time. Activating them is a future
+BSDF-dispatch slice (§12.4); the upload pipeline does
+not change.
+
+### 12.3 Material id lookup at hit time
+
+The user's "material id lookup via SBT/hit record" bullet
+deserves a precise answer: Stage 12B performs the lookup
+through the **launch-params route**, not the SBT
+user-data route, per §9.2's chosen architecture. The
+exact closest-hit code path (already sketched in §7.6) is:
+
+```cpp
+// In the closest-hit program for a sphere hit (§7.6.1):
+const unsigned int prim_idx = optixGetPrimitiveIndex();
+const Sphere s              = optixLaunchParams.spheres[prim_idx];
+const int material_index    = s.material_index;
+
+// In the closest-hit program for a triangle hit (§7.6.2):
+const auto& mesh         = optixLaunchParams.mesh;
+const int material_index = mesh.material_id;
+
+// Material lookup is shared across both cases:
+const int mat_count = optixLaunchParams.material_count;
+const MaterialParams m = (material_index >= 0 && material_index < mat_count
+                          && optixLaunchParams.materials != nullptr)
+                       ? optixLaunchParams.materials[material_index]
+                       : MaterialParams{};   // neutral grey diffuse default
+```
+
+The chain is **two indirections**:
+
+1. **Primitive → material_index.** The primitive's
+   metadata carries the index. Sphere POD has
+   `material_index` (Stage 6A); SceneMesh has
+   `material_id` (Stage 7A's `Mesh::material_id` promoted
+   to `SceneMesh` in Stage 10B.8). The CH reads the index
+   via `optixGetPrimitiveIndex()` for spheres or
+   straight from the mesh metadata for triangles.
+
+2. **material_index → MaterialParams.** Index into
+   `optixLaunchParams.materials[]` with a defensive
+   range check; out-of-range indices fall back to
+   `MaterialParams{}` (the neutral grey diffuse default
+   the CUDA backend already uses, per Stage 11C
+   `material_for`).
+
+**Why launch-params, not SBT user-data.** §9.2 covered
+this in detail; the material-specific recap:
+
+- The HitGroup table has 2 records in Stage 12B (sphere
+  + triangle). Routing per-material data through the
+  SBT would require either inflating the HitGroup table
+  to one record per `(primitive, material)` pair (which
+  defeats the SBT's compact 128-byte footprint per §9.4)
+  OR routing through `optixGetSbtDataPointer()` which
+  returns the same 32-byte HitGroup record for *every*
+  hit on the same primitive type — useless for per-
+  primitive material variation.
+- The launch-params route gives O(1) per-hit lookup
+  with one global-memory load + one cached index load.
+  No SBT rebuild on per-material edits (interactive
+  workflow); the host can `cudaMemcpy` a single 44-byte
+  slot in `materials[]` and the next launch sees the
+  update.
+- The CUDA backend already uses this exact lookup path
+  in `k_render_scene` (Stage 9B) and `k_pathtrace_sample`
+  (Stage 11C). The OptiX backend reads the same data
+  through the same device pointer, so a fixture renders
+  identically across both backends (modulo the
+  acceleration-structure traversal, which is the whole
+  reason for the migration).
+
+When materials grow into the thousands per scene (a
+production-grade asset library), the SBT-data route
+becomes worth its complexity — see §9.2's "future option"
+discussion. Stage 12B's material count is small enough
+(typically ≤ 32 per `.rrscene` fixture) that the
+launch-params route is unequivocally the right call.
+
+### 12.4 BSDF evaluation location: closest-hit
+
+BSDF evaluation lives in the **closest-hit program**, per
+§7.4. Stage 12B implements **pure Lambert diffuse**: the
+CH writes `baseColor` to the payload's `albedo.*` slots,
+the raygen multiplies throughput by the albedo on the
+next bounce. The cos-weighted hemisphere sampling
+(`pathtracer::sample_cosine_hemisphere`) makes the BRDF
+evaluation collapse to a single multiplication; no
+explicit BRDF call is needed.
+
+When the BSDF dispatch lands (master order #13), the CH
+program's §7.4 evaluation step grows a small switch on
+the material's BSDF type:
+
+```cpp
+// Pseudocode for the future BSDF dispatch in CH (§7.4 extension):
+switch (m.bsdf_type) {
+case BsdfType::Lambert:
+    payload_albedo  = m.baseColor;
+    payload_pdf     = pdf_cosine_hemisphere(cos_theta);
+    payload_sample_hint = SampleHint::CosineHemisphere;
+    break;
+case BsdfType::Specular:
+    // ... mirror sample, delta PDF, ...
+    break;
+case BsdfType::Microfacet:
+    // ... GGX sample using m.roughness + m.metallic + m.specular, ...
+    break;
+}
+```
+
+The `roughness`, `metallic`, `specular` fields enter the
+evaluation here. The §11.x payload register layout
+(§7.3) has 7 unused registers in Stage 12B's 13-of-32
+budget, which gives plenty of headroom for the additional
+payload state (sampled PDF for MIS, per-BSDF sampling
+hints for raygen-side direction generation).
+
+The BSDF dispatch sits **inside** the closest-hit
+program; the program-level routing across raygen / miss /
+CH / AH does not change. §7.4's Lambert evaluation is
+the foundation; non-diffuse BSDFs are an additive
+extension within the same program.
+
+### 12.5 Routing summary
+
+For clarity, the §9.2 / §12.3 routing rule for material
+data:
+
+| Surface                                  | Stores material data?       |
+|------------------------------------------|-----------------------------|
+| `optixLaunchParams.materials`            | **yes** (primary route; device pointer + count) |
+| SBT raygen record                        | no                          |
+| SBT miss record                          | no                          |
+| SBT HitGroup records (12B: empty)        | no                          |
+| SBT HitGroup records (future: per-record material POD) | maybe (post-#13 / post-#18) |
+| GAS / IAS                                | no (geometry only)          |
+| Constant-memory broadcast (other than launch-params) | no              |
+
+Stage 12B materials live exclusively in
+`optixLaunchParams.materials`. Future routing changes are
+additive — moving some materials into per-record SBT
+data does not require migrating *all* materials; the
+launch-params array stays the canonical source for
+fallback indices.
+
+### 12.6 Read / write summary
+
+| Surface                                | Direction                     | Lifetime           |
+|----------------------------------------|-------------------------------|--------------------|
+| `Scene::materials` (host vector)       | host read/write               | persistent         |
+| flat `MaterialParams[]` (host temp)    | host write at upload time     | per scene load     |
+| `GpuScene::device_materials_` buffer   | host write at upload time     | per scene load     |
+| `optixLaunchParams.materials` ptr      | host write per launch         | per launch         |
+| `optixLaunchParams.material_count`     | host write per launch         | per launch         |
+| `optixLaunchParams.materials[*]` (device read) | device read (CH program) | per hit            |
+
+The materials buffer is read-only at trace time. Per-
+material edits between launches are a single `cudaMemcpy`
+of one slot (44 bytes) plus a launch-params re-bind; no
+SBT, AS, or pipeline rebuild.
+
+### 12.7 Scope: what's NOT in §12
+
+Three material-related concerns this section deliberately
+defers:
+
+- **Real BSDF dispatch.** Activating `roughness`,
+  `metallic`, `specular` in the closest-hit. Master
+  order #13. The §12.4 sketch shows the integration
+  point; the implementation is its own slice.
+- **Texture-driven material parameters.** `base_color`
+  / `roughness` / `normal` / `emission` driven by
+  textures sampled at the hit's UV. Master order #18
+  (texture system). Adds device-side `cudaTextureObject_t`
+  arrays to `optixLaunchParams` and a per-hit texture
+  sample call inside the CH; routing of the
+  *texture-binding handles* mirrors materials' routing
+  (launch-params arrays, indexed by id).
+- **Spectral materials.** Wavelength-dependent BRDF
+  responses for accurate dispersion / iridescence.
+  Far-future; would extend `MaterialParams` with a
+  spectral coefficient array. The launch-params route
+  scales to per-material spectral data without
+  restructuring.
+
+Each of these is additive against the §12.1-§12.6
+contract. The Stage 12B material data flow — parser →
+GpuScene::upload_materials → launch-params pointer →
+CH index lookup — is a stable foundation that future
+slices grow on top of.
+
+---
+
 ## Sections to come
 
 Future Stage 12A sub-stages will append (one per slice or
 small group of slices):
 
 - Intersection program design
-- Material data flow (per-record vs constant-memory vs
-  launch-param)
 - Light data flow
 - Relativity integration (where aberration / Doppler /
   searchlight live across the program model)
