@@ -3693,6 +3693,7 @@ sub-stages, appended to the same file.** No code is touched.
 | 12A.4.1  | OPTIX_BACKEND_PLAN.md §16 (Migration strategy) | ✅ |
 | 12A.4.2  | OPTIX_BACKEND_PLAN.md §17 (Path tracing integration) | ✅ |
 | 12A.4.3.1 | OPTIX_BACKEND_PLAN.md §18 (OptiX backend files) | ✅ |
+| 12A.4.3.2 | OPTIX_BACKEND_PLAN.md §19 (OptiX renderer files) | ✅ |
 | 12A.x    | remaining IS / file-layout sub-stages / migration-risks | pending |
 | 12B      | minimum-viable OptiX backend     | pending |
 | 12C+     | feature parity with CUDA backend | pending |
@@ -4918,6 +4919,84 @@ files; no other sections.**
 
 - Do not add other files — **yes**, only the
   OptixBackend pair was listed; the prompt's "Do not
+  add other files" was respected.
+- Documentation only — **yes**, no source under
+  `src/`, `tests/`, or `CMakeLists.txt` is touched.
+  The only edits are two markdown files.
+- Update docs/BUILD_PLAN.md — **yes**, this entry.
+
+## Stage 12A.4.3.2 — OptiX renderer files
+
+**Scope of this slice (Stage 12A.4.3.2): documentation-only.
+Append §19 "OptiX renderer files" to
+`docs/OPTIX_BACKEND_PLAN.md` listing exactly the two files
+the user prompt names — `src/optix/OptixRenderer.h` and
+`src/optix/OptixRenderer.cpp` — with a one-line purpose
+each. Second sub-stage in the 12A.4.3.x file-pair
+sequence; subsequent sub-stages append the remaining
+file groups (programs, SBT, AS, launch-params) into the
+same `src/optix/` directory. No code; no other files; no
+other sections.**
+
+### What ships
+
+- `docs/OPTIX_BACKEND_PLAN.md` §19 with a focused
+  two-row table:
+  - `src/optix/OptixRenderer.h` — host-facing
+    declarations for the OptiX render orchestrator:
+    `OptixRenderer::Result` matching the existing
+    `CudaRenderer::Result` shape, plus the public
+    render entry points the `rr_renderer` host code
+    dispatches into. CUDA-Runtime-free +
+    OptiX-Runtime-free header.
+  - `src/optix/OptixRenderer.cpp` — host-only
+    implementation gated on `RR_HAS_OPTIX`. Owns the
+    OptiX pipeline lifecycle + program-group
+    construction (consuming `OptixBackend`'s device
+    context, the embedded PTX from `OptixPrograms.cu`,
+    the SBT from `OptixSBT.h`, the AS from
+    `OptixAccel.h`), drives `optixLaunch` per spp
+    iteration, feeds the per-sample buffer into the
+    existing Stage 11B `AccumulationBuffer` (per
+    §17.5's "accumulation buffer remains shared with
+    CUDA path").
+  Plus a short paragraph noting OptixRenderer's
+  position in the layer stack (above OptixBackend §18,
+  below PathTracer::render in rr_renderer; consumes
+  the future file-pair sub-stages' modules).
+- The footer is untouched — "Planned module / file
+  layout" stays pending until the full file layout is
+  documented across the remaining 12A.4.3.x sub-stages
+  (programs, SBT, AS, launch-params remain to come).
+- This BUILD_PLAN entry + status-table row.
+
+### Architectural decisions worth highlighting
+
+- **OptixRenderer mirrors CudaRenderer's role.** Same
+  responsibility (host-facing render orchestration),
+  same pattern (host-facing `.h` that doesn't pull
+  runtime headers; gated `.cpp` implementation).
+  Where CudaRenderer drives `<<<...>>>` kernel launches,
+  OptixRenderer drives `optixLaunch`. The two share
+  architectural shape and the `Result { ok, image,
+  message }` POD across `CudaRenderer.h` and
+  `OptixRenderer.h`.
+- **Layer position.** OptixRenderer sits above
+  `OptixBackend` (§18; consumes the device context)
+  and below `PathTracer::render` in the `rr_renderer`
+  static library (which dispatches between CUDA and
+  OptiX backends per the §16 migration strategy).
+- **Stable host-facing surface.** As future
+  sub-stages refine the internals (programs, SBT,
+  AS, launch-params), the `OptixRenderer.h` API stays
+  stable. Consumers (`PathTracer.cpp`, `main.cpp` CLI
+  handlers) link against the header and ride the
+  internal evolution.
+
+### Hard-rule audit
+
+- Do not add other files — **yes**, only the
+  OptixRenderer pair was listed; the prompt's "Do not
   add other files" was respected.
 - Documentation only — **yes**, no source under
   `src/`, `tests/`, or `CMakeLists.txt` is touched.

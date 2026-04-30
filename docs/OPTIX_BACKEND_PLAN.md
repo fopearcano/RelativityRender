@@ -4271,6 +4271,31 @@ SBT, AS, launch-params) into the same directory.
 
 ---
 
+## 19. OptiX renderer files
+
+The second piece of the planned `src/optix/` directory
+is the host-facing high-level rendering API, analogous to
+`cuda/CudaRenderer.{h,cu}` for the CUDA backend. This is
+where the OptiX-specific render orchestration lives:
+pipeline + program-group construction, SBT build, AS
+build, and the per-launch `optixLaunch` driving from
+inside `PathTracer::render` (or a sibling host-side
+renderer).
+
+| File                          | Purpose                                                                              |
+|-------------------------------|--------------------------------------------------------------------------------------|
+| `src/optix/OptixRenderer.h`   | Host-facing declarations for the OptiX render orchestrator: `OptixRenderer::Result` (matching the existing `CudaRenderer::Result` shape), and the public render entry points the `rr_renderer` host code dispatches into. CUDA-Runtime-free + OptiX-Runtime-free header so consumers (`PathTracer.cpp`, `main.cpp` CLI handlers) can include it without pulling `<optix.h>`. |
+| `src/optix/OptixRenderer.cpp` | Host-only implementation gated on `RR_HAS_OPTIX`. Owns the OptiX pipeline lifecycle + program-group construction (consuming `OptixBackend`'s device context, the embedded PTX from `OptixPrograms.cu`, the SBT from `OptixSBT.h`, the AS from `OptixAccel.h`), drives `optixLaunch` per spp iteration, and feeds the per-sample buffer into the existing Stage 11B `AccumulationBuffer` (per §17.5's "accumulation buffer remains shared with CUDA path"). |
+
+The pair sits one layer above `OptixBackend` (§18) and
+one layer below `PathTracer::render` (in `rr_renderer`).
+Future file-pair sub-stages append the remaining
+`src/optix/` modules (programs, SBT, AS, launch-params)
+that `OptixRenderer.cpp` consumes; the header stays a
+stable host-facing surface as those internals shift.
+
+---
+
 ## Sections to come
 
 Future Stage 12A sub-stages will append (one per slice or
