@@ -48,7 +48,8 @@ bool set_action(CommandLine::Action& current, CommandLine::Action target,
         error = "cannot combine action flags (--help / --version / "
                 "--device-info / --render / --scene-info / "
                 "--scene-summary / --render-from-scene / "
-                "--render-gradient / --render-rays / --render-sphere / "
+                "--render-full-scene / --render-gradient / "
+                "--render-rays / --render-sphere / "
                 "--render-relativistic / --render-scene / "
                 "--render-triangle / --render-mesh-scene / "
                 "--render-material-scene / --render-direct-lighting)";
@@ -114,6 +115,17 @@ CommandLine::ParseResult CommandLine::parse(int argc, char** argv) {
             r.config.scene_path.assign(value);
         } else if (a == "--render-from-scene") {
             if (!set_action(r.action, Action::RenderFromScene,
+                            r.error_message)) {
+                r.action = Action::Error;
+                return r;
+            }
+            if (!take_value(argc, argv, i, a, value, r.error_message)) {
+                r.action = Action::Error;
+                return r;
+            }
+            r.config.scene_path.assign(value);
+        } else if (a == "--render-full-scene") {
+            if (!set_action(r.action, Action::RenderFullScene,
                             r.error_message)) {
                 r.action = Action::Error;
                 return r;
@@ -220,6 +232,7 @@ CommandLine::ParseResult CommandLine::parse(int argc, char** argv) {
      || r.action == Action::SceneInfo
      || r.action == Action::SceneSummary
      || r.action == Action::RenderFromScene
+     || r.action == Action::RenderFullScene
      || r.action == Action::RenderGradient
      || r.action == Action::RenderRays
      || r.action == Action::RenderSphere
@@ -266,6 +279,15 @@ std::string CommandLine::usage(std::string_view argv0) {
                                   "comes from the scene's\n"
        << "                        render_settings; --width / --height "
                                   "are ignored. Requires CUDA.\n"
+       << "  --render-full-scene <file>\n"
+       << "                        Like --render-from-scene, but also "
+                                  "uploads the first visible\n"
+       << "                        non-empty mesh (single-mesh GpuScene "
+                                  "slot today; multi-mesh\n"
+       << "                        support is a future slice). Default "
+                                  "output\n"
+       << "                        \"output/from_scene_full.ppm\". "
+                                  "Requires CUDA.\n"
        << "  --render-gradient     Run the GPU UV-gradient diagnostic "
                                   "and save it (requires CUDA).\n"
        << "  --render-rays         Run the GPU camera-ray "

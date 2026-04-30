@@ -2768,17 +2768,189 @@ remaining 10B work (mesh upload from `SceneMesh::geometry`,
 `tests/io_tests.cpp`) lands in follow-up sub-stages when
 prompted.
 
+## Stage 10B.11 — render full loaded scene
+
+**Scope of this slice (Stage 10B.11): the parser now drives the
+GPU renderer for a complete `.rrscene` v1 file - camera +
+relativity + materials + spheres + meshes + lights all
+uploaded through `GpuScene` before
+`CudaRenderer::render_scene`. Stage 10B.10's
+`--render-from-scene` deferred meshes per its prompt; Stage
+10B.11 lifts that restriction in a sibling action.**
+
+### What ships
+
+- `src/core/CommandLine.{h,cpp}` — new
+  `Action::RenderFullScene` enumerator +
+  `--render-full-scene <file>` parsing branch. Mirrors
+  `--render-from-scene`'s shape (path argument, exclusive with
+  other action flags). Usage block extended; the action-
+  collision error string lists `--render-full-scene` so
+  authors get the full set of conflicting flags.
+- `src/main.cpp::run_render_full_scene` — the new handler. The
+  first half is identical to `run_render_from_scene` (load,
+  resolution from `render_settings`, output-path precedence,
+  flatten visible spheres / materials / lights, gate on
+  `RR_HAS_CUDA`). The new half:
+  - Walks `scene.meshes` once to find the **first visible
+    non-empty mesh** (`SceneObject::visible == true` AND
+    `Mesh::empty() == false`). Both filters are independent;
+    a hidden mesh is skipped, an empty mesh (per §9 acceptable
+    state) is skipped silently.
+  - Calls `gpu_scene.upload_mesh(*first_mesh)` once, gated on
+    a non-null pointer. The kernel reads the mesh slot only
+    when it has triangle data, so a missing mesh upload is
+    fine.
+  - When the file authors more than one visible non-empty
+    mesh, logs an info-level note explaining that the
+    `GpuScene` mesh slot holds exactly one mesh and the
+    follow-ups are uploaded to no slot (matching the
+    `GpuScene::upload_mesh` header comment, "Multi-mesh
+    support is a future slice").
+  - Logs an authoring-friendly summary line:
+    `N sphere(s), M material(s), L light(s), K mesh(es)
+    uploaded (authored A, visible+non-empty V)` plus the
+    framebuffer source.
+  - Output-path precedence: `--output` >
+    `scene.render_settings.output_path` >
+    `output/from_scene_full.ppm` (the Stage 10B.11 default
+    matching the prompt's specified output).
+- `src/main.cpp` default-action hint — extended to mention
+  `--render-full-scene <file>` first. Stage label bumped to
+  10B.11 in `CMakeLists.txt` and the startup banner.
+
+### Why a sibling action instead of extending `--render-from-scene`?
+
+`--render-from-scene` (Stage 10B.10) was scoped explicitly
+"sphere-only - meshes deferred"; that's part of its CLI
+surface and `--help` text. Retroactively widening its
+behaviour would either silently change the output of an
+existing flag or require a per-flag mode toggle. A sibling
+action keeps both views available without coupling: existing
+sphere-only renders run the 10B.10 path unchanged, full-scene
+renders run the 10B.11 path. The two share their loader,
+resolution policy, output-path precedence, and the entire
+upload chain except for the mesh slot; the duplication is in
+the per-stage scoped wording rather than in genuinely
+divergent logic.
+
+### Single-mesh constraint (carried forward, not introduced)
+
+`GpuScene::upload_mesh(const Mesh&)` accepts exactly one mesh
+today; calling it again replaces the slot. That constraint
+predates Stage 10B (it was the initial Stage 7B / 11 surface)
+and is documented in the function's own header comment
+("Multi-mesh support is a future slice"). Stage 10B.11
+**does not** change it - that would be a non-trivial GPU-side
+change touching `GpuScene` / `CudaSceneView` /
+`k_render_scene` and is outside this slice's "no GPU changes"
+spirit. The handler instead surfaces the constraint at the
+CLI: a file with one mesh renders fully; a file with several
+non-empty visible meshes renders the first and logs the
+restriction. The Stage 10B.11 fixture
+(`scenes/test_full_scene.rrscene`) authors exactly one mesh,
+so this case is fully covered today.
+
+### Build-host constraint (this environment)
+
+Same as Stage 10B.10: the local build environment for this
+branch has no CUDA toolchain and no GPU, so
+`--render-full-scene` returns the standard "requires CUDA.
+Rebuild with -DRR_ENABLE_CUDA=ON ..." error in the host-only
+build. On a CUDA-enabled host:
+
+```
+cmake -S . -B build-cuda -DRR_ENABLE_CUDA=ON
+cmake --build build-cuda -j
+build-cuda/bin/RelativityRender \
+    --render-full-scene scenes/test_full_scene.rrscene
+```
+
+writes `output/from_scene_full.ppm` at the fixture's authored
+1280x720 resolution. CPU touches each pixel only as the
+`Image::set_pixel` callback during PPM save; ray-gen, sphere
+intersection, triangle intersection, material lookup,
+direct-lighting evaluation, Doppler, and searchlight all run
+inside the existing `k_render_scene` kernel via `GpuScene`.
+
+A CPU fallback would directly violate the prompt's
+"GPU renders all pixels/rays/intersections/materials/lights"
+rule and the master "No CPU ray tracing as production path"
+rule, so it is not shipped.
+
+### Hard-rule audit
+
+- CPU parses and uploads only — **yes**, the host code only
+  calls `rr::io::load` and `GpuScene::upload_*`. No
+  per-pixel / per-ray / per-vertex / per-triangle loops; the
+  mesh selector loop walks `scene.meshes` to pick the first
+  visible non-empty entry, which is metadata work, not
+  geometry processing.
+- GPU renders all pixels / rays / intersections / materials /
+  lights — **yes**, every per-pixel step happens inside
+  `k_render_scene`. Stage 9B audited that kernel for full
+  GPU coverage including triangle intersection, material
+  lookup, direct lighting, and the relativistic pipeline;
+  nothing in this slice changes it.
+- No server, no C4D — **yes**, no source under any such
+  directory.
+- Must compile and produce output — host-only build is clean
+  under `-Wall -Wextra -Wpedantic`, no warnings; `ctest`
+  reports 3/3. The "produce output" half is contingent on a
+  CUDA-enabled host per the constraint above; verified in
+  this environment by walking the parser → GpuScene upload
+  chain to the CUDA gate (which is the stop-line a
+  CUDA-disabled host hits before the kernel launch).
+
+### Verified at the CLI (host-only build)
+
+- `--render-full-scene scenes/test_full_scene.rrscene` →
+  exit 1, "requires CUDA. Rebuild with -DRR_ENABLE_CUDA=ON
+  ..." (same shape as every other render action).
+- `--render-full-scene /tmp/missing.rrscene` → exit 1, "scene
+  load failed: scene file does not exist: ..." (parser runs
+  before the CUDA gate; authoring errors surface even on a
+  host-only host).
+- `--render-full-scene a --render-from-scene b` → exit 2,
+  "cannot combine action flags ..." with both render-scene
+  flags listed.
+- `--help` shows the new flag with its full description
+  including the single-mesh-slot caveat and the Stage 10B.11
+  default output path.
+
+### Stage 10B status after this slice
+
+| Sub-stage | Surface                          | Status |
+|-----------|----------------------------------|:------:|
+| 10B.1     | `rr_io` scaffold + `sceneFileExists` | ✅ |
+| 10B.2     | `version` + `render_settings`    | ✅ |
+| 10B.3     | `camera`                         | ✅ |
+| 10B.4     | `relativity`                     | ✅ |
+| 10B.5     | `materials`                      | ✅ |
+| 10B.6     | `spheres`                        | ✅ |
+| 10B.7     | `lights`                         | ✅ |
+| 10B.8     | inline `meshes` + SceneMesh promotion | ✅ |
+| 10B.9     | full-scene fixture + `--scene-summary` | ✅ |
+| 10B.10    | `--render-from-scene` (sphere path)    | ✅ |
+| 10B.11    | `--render-full-scene` (full path, single-mesh slot) | ✅ |
+
+The parser is now wired into the GPU renderer end-to-end for
+every v1.0 schema section. The CPU role for an authored
+render is exactly: parse the file, flatten the wrappers,
+upload to `GpuScene`, save the framebuffer.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
-- thread `SceneMesh::geometry` through `GpuScene::upload_mesh`
-  inside `--render-from-scene` so authored meshes also render;
-- ship `SceneWriter::save` / `serialize` for round-trip;
-- round out the deferred fields (`transmission`, `visible`,
-  `transform` on `SceneObject` wrappers, `area_width` /
-  `area_height`, `source_path`);
-- add `tests/io_tests.cpp` exercising round-trip + each §12
-  rule.
+
+- multi-mesh upload on `GpuScene` so files with several
+  meshes render every one (the fixture-level constraint
+  surfacing today);
+- `SceneWriter::save` / `serialize` for round-trip + a
+  `tests/io_tests.cpp` covering round-trip and each §12 rule;
+- round out the deferred fields (`transmission`, `visible`
+  / `transform` on `SceneObject` wrappers, `area_width` /
+  `area_height`, `source_path`).
 
 ## Constraints carried forward
 

@@ -46,6 +46,19 @@ namespace rr::core {
 //                           Resolution comes from the scene's
 //                           `render_settings`; `--width` /
 //                           `--height` are ignored. Requires CUDA.
+//   --render-full-scene <file>
+//                           Like `--render-from-scene`, but also
+//                           uploads the first visible non-empty
+//                           mesh from the file (single-mesh GpuScene
+//                           slot today; multi-mesh support is a
+//                           future slice). Stage 10B.11 surface:
+//                           the parser fully drives the GPU
+//                           renderer for camera / relativity /
+//                           materials / spheres / meshes / lights.
+//                           Output path precedence: `--output` >
+//                           scene's `render_settings.output_path` >
+//                           "output/from_scene_full.ppm". Requires
+//                           CUDA.
 //   --render-gradient       Run the GPU UV-gradient diagnostic and
 //                           save it to <output>. Requires CUDA.
 //   --render-rays           Run the GPU camera-ray-direction
@@ -107,7 +120,8 @@ namespace rr::core {
 //
 // Action flags (--help / --version / --device-info / --render /
 // --scene-info / --scene-summary / --render-from-scene /
-// --render-gradient / --render-rays / --render-sphere /
+// --render-full-scene / --render-gradient / --render-rays /
+// --render-sphere /
 // --render-relativistic / --render-scene / --render-triangle /
 // --render-mesh-scene / --render-material-scene /
 // --render-direct-lighting) are mutually exclusive; combining them
@@ -125,6 +139,7 @@ public:
         SceneInfo,
         SceneSummary,
         RenderFromScene,
+        RenderFullScene,
         RenderGradient,
         RenderRays,
         RenderSphere,

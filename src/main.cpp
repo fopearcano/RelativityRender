@@ -460,6 +460,166 @@ int run_render_from_scene(const rr::core::Config& cfg) {
 #endif
 }
 
+// `--render-full-scene` dispatch. Stage 10B.11 - the first action
+// that drives the GPU renderer for a complete `.rrscene` file:
+// camera + relativity + materials + spheres + meshes + lights all
+// parsed by the loader and uploaded to `GpuScene` before
+// `CudaRenderer::render_scene` produces the framebuffer.
+//
+// Compared to `--render-from-scene` (Stage 10B.10), this handler
+// also calls `gpu_scene.upload_mesh(...)` for the first visible
+// non-empty mesh in `scene.meshes`. The current `GpuScene` mesh
+// slot holds exactly one mesh (multi-mesh upload is a future
+// slice; see `GpuScene::upload_mesh`'s header comment); when a
+// file authors more than one non-empty mesh the handler logs the
+// constraint and uploads only the first. Empty meshes (vertex
+// or triangle count zero per §9) are skipped silently.
+//
+// Output path precedence: `--output` >
+// `scene.render_settings.output_path` >
+// "output/from_scene_full.ppm" (the Stage 10B.11 default).
+// Resolution comes from the scene's `render_settings`; `--width`
+// / `--height` are intentionally ignored, same policy as
+// `--render-from-scene`.
+int run_render_full_scene(const rr::core::Config& cfg) {
+    using rr::core::Logger;
+
+    if (cfg.scene_path.empty()) {
+        Logger::error("--render-full-scene requires a file path");
+        return 2;
+    }
+
+    const auto loaded = rr::io::load(cfg.scene_path);
+    if (!loaded.ok) {
+        std::string msg = "scene load failed: " + loaded.error_message;
+        if (loaded.error_line > 0) {
+            msg += " (line " + std::to_string(loaded.error_line)
+                +  ", column " + std::to_string(loaded.error_column) + ")";
+        }
+        Logger::error(msg);
+        return 1;
+    }
+
+    const auto& scene  = loaded.scene;
+    const int   width  = scene.render_settings.width;
+    const int   height = scene.render_settings.height;
+
+    const std::string out_path =
+        !cfg.output_path.empty()                ? cfg.output_path
+      : !scene.render_settings.output_path.empty()
+                                                ? scene.render_settings.output_path
+                                                : std::string("output/from_scene_full.ppm");
+
+#ifndef RR_HAS_CUDA
+    (void)scene;
+    (void)width;
+    (void)height;
+    (void)out_path;
+    Logger::error("--render-full-scene requires CUDA. Rebuild with "
+                  "-DRR_ENABLE_CUDA=ON on a host with the CUDA Toolkit "
+                  "and a CUDA-capable GPU.");
+    return 1;
+#else
+    // Visible spheres + materials + visible lights flatten the
+    // same way they do in `--render-from-scene` (Stage 10B.10);
+    // see that handler's comments for the rationale.
+    std::vector<rr::geometry::Sphere> sphere_pods;
+    sphere_pods.reserve(scene.spheres.size());
+    for (const auto& s : scene.spheres) {
+        if (s.object.visible) sphere_pods.push_back(s.geometry);
+    }
+    std::vector<rr::material::MaterialParams> material_pods;
+    material_pods.reserve(scene.materials.size());
+    for (const auto& m : scene.materials) material_pods.push_back(m.params);
+    std::vector<rr::lighting::Light> light_pods;
+    light_pods.reserve(scene.lights.size());
+    for (const auto& l : scene.lights) {
+        if (l.object.visible) light_pods.push_back(l.data);
+    }
+
+    // Pick the first visible non-empty mesh for the upload slot.
+    // Multi-mesh support is on `GpuScene`'s deferred list; the
+    // single-slot constraint is documented in
+    // `GpuScene::upload_mesh`'s header comment.
+    const rr::geometry::Mesh* mesh_to_upload = nullptr;
+    std::size_t mesh_total          = 0;
+    std::size_t mesh_visible_filled = 0;
+    for (const auto& sm : scene.meshes) {
+        ++mesh_total;
+        if (!sm.object.visible) continue;
+        if (sm.geometry.empty()) continue;
+        ++mesh_visible_filled;
+        if (mesh_to_upload == nullptr) mesh_to_upload = &sm.geometry;
+    }
+
+    rr::gpu::GpuScene gpu_scene;
+    if (!gpu_scene.upload_camera(scene.camera)) {
+        Logger::error("render-full-scene failed: upload_camera");
+        return 1;
+    }
+    if (!gpu_scene.upload_relativity(scene.observer, scene.relativity)) {
+        Logger::error("render-full-scene failed: upload_relativity");
+        return 1;
+    }
+    if (!sphere_pods.empty()) {
+        if (!gpu_scene.upload_spheres(sphere_pods.data(),
+                                      sphere_pods.size())) {
+            Logger::error("render-full-scene failed: upload_spheres");
+            return 1;
+        }
+    }
+    if (!material_pods.empty()) {
+        if (!gpu_scene.upload_materials(material_pods.data(),
+                                        material_pods.size())) {
+            Logger::error("render-full-scene failed: upload_materials");
+            return 1;
+        }
+    }
+    if (!light_pods.empty()) {
+        if (!gpu_scene.upload_lights(light_pods.data(), light_pods.size())) {
+            Logger::error("render-full-scene failed: upload_lights");
+            return 1;
+        }
+    }
+    if (mesh_to_upload != nullptr) {
+        if (!gpu_scene.upload_mesh(*mesh_to_upload)) {
+            Logger::error("render-full-scene failed: upload_mesh");
+            return 1;
+        }
+        if (mesh_visible_filled > 1) {
+            Logger::info("note: file authored "
+                       + std::to_string(mesh_visible_filled)
+                       + " visible non-empty mesh(es); GpuScene's "
+                         "single-mesh slot uploaded only the first. "
+                         "Multi-mesh support is a future slice.");
+        }
+    }
+
+    auto r = rr::cuda::CudaRenderer::render_scene(gpu_scene, width, height);
+    if (!r.ok) {
+        Logger::error("render-full-scene failed: " + r.message);
+        return 1;
+    }
+
+    Logger::info("scene file       : " + cfg.scene_path);
+    Logger::info("scene-render-full: "
+               + std::to_string(sphere_pods.size())   + " sphere(s), "
+               + std::to_string(material_pods.size()) + " material(s), "
+               + std::to_string(light_pods.size())    + " light(s), "
+               + std::to_string(mesh_to_upload != nullptr ? 1 : 0)
+               + " mesh(es) uploaded "
+               + "(authored "  + std::to_string(mesh_total)
+               + ", visible+non-empty " + std::to_string(mesh_visible_filled)
+               + ")");
+    Logger::info("framebuffer      : "
+               + std::to_string(width) + "x" + std::to_string(height)
+               + " (from render_settings)");
+
+    return save_image_or_error(r.image, out_path, "GPU full-scene-from-file",
+                               width, height) ? 0 : 1;
+#endif
+}
+
 // `--render-gradient` dispatch. Width/height come from Config; output
 // path defaults to "output/gpu_gradient.ppm" when --output is unset.
 int run_render_gradient(const rr::core::Config& cfg) {
@@ -1218,6 +1378,9 @@ int main(int argc, char** argv) {
         case CommandLine::Action::RenderFromScene:
             return run_render_from_scene(result.config);
 
+        case CommandLine::Action::RenderFullScene:
+            return run_render_full_scene(result.config);
+
         case CommandLine::Action::RenderGradient:
             return run_render_gradient(result.config);
 
@@ -1253,8 +1416,9 @@ int main(int argc, char** argv) {
         case CommandLine::Action::Default:
             Logger::info(std::string(rr::core::kProjectName) + " "
                        + rr::core::kVersionString + " starting up.");
-            Logger::info("Stage 10B.10: render loaded sphere scene. "
-                         "Try --render-from-scene <file>, "
+            Logger::info("Stage 10B.11: render full loaded scene. "
+                         "Try --render-full-scene <file>, "
+                         "--render-from-scene <file>, "
                          "--scene-summary <file>, "
                          "--scene-info <file>, --device-info, "
                          "--render-gradient, --render-rays, "
