@@ -3703,6 +3703,7 @@ sub-stages, appended to the same file.** No code is touched.
 | 12A.4.5   | OPTIX_BACKEND_PLAN.md §26 (First implementation milestone) | ✅ |
 | 12A.x    | remaining IS section (Intersection program) | pending |
 | 12B.1    | RELATIVITYRENDER_ENABLE_OPTIX CMake option (flag-only) | ✅ |
+| 12B.2    | OptiX file skeleton (rr_optix; OptixBackend.{h,cpp}, OptixRenderer.{h,cpp}; placeholders) | ✅ |
 | 12B      | minimum-viable OptiX backend     | pending |
 | 12C+     | feature parity with CUDA backend | pending |
 
@@ -5701,6 +5702,129 @@ message.**
   requested (-DRELATIVITYRENDER_ENABLE_OPTIX=ON;
   flag-only in 12B.1, no OptiX sources / headers
   wired yet)`. Build still clean; ctest 4/4
+  unchanged.
+
+## Stage 12B.2 — OptiX file skeleton
+
+**Scope of this slice (Stage 12B.2): create the four
+file pair `src/optix/OptixBackend.{h,cpp}` +
+`src/optix/OptixRenderer.{h,cpp}` as placeholders
+that compile with no OptiX SDK dependency.
+`OptixBackend::isCompiled()` returns the state of the
+`RELATIVITYRENDER_ENABLE_OPTIX` compile-time macro;
+`OptixRenderer::render()` exists but always returns
+failure with an honest "not implemented" message.
+Wires a new `rr_optix` STATIC library into the
+CMake build; the executable links it but no existing
+code calls into it. Must compile and pass ctest with
+the option OFF and ON.**
+
+### What ships
+
+- `src/optix/OptixBackend.h` — host-only declaration
+  of `class OptixBackend` with one static method
+  `isCompiled()`. CUDA-Runtime-free,
+  OptiX-Runtime-free; consumers can include without
+  pulling any backend headers.
+- `src/optix/OptixBackend.cpp` — host-only
+  implementation that returns
+  `#ifdef RELATIVITYRENDER_ENABLE_OPTIX ? true :
+  false`. Pure preprocessor query; no OptiX runtime
+  calls, no device probing.
+- `src/optix/OptixRenderer.h` — host-only
+  declaration of `class OptixRenderer` with a
+  `Result { bool ok, std::string message }` POD
+  matching (a subset of) the eventual
+  `CudaRenderer::Result` shape. The placeholder
+  Result intentionally omits the `image` field —
+  future sub-stages grow it when OptiX produces
+  pixels.
+- `src/optix/OptixRenderer.cpp` — host-only
+  implementation of `render()` that always returns
+  `ok = false`, with the message string varying
+  between two states (macro defined vs not defined).
+- `CMakeLists.txt`:
+  - New `rr_optix` STATIC library aggregating the
+    two `.cpp` files. `target_include_directories
+    (rr_optix PUBLIC src)`. No deps beyond
+    `<string>`.
+  - `if(RELATIVITYRENDER_ENABLE_OPTIX)
+    target_compile_definitions(rr_optix PUBLIC
+    RELATIVITYRENDER_ENABLE_OPTIX) endif()` —
+    threads the option flag through as a compile
+    definition (PUBLIC so consumers see the same
+    state).
+  - Executable link list extended with `rr_optix`.
+  - 12B.1's status message refreshed to the more
+    accurate "Stage 12B.2 file skeleton compiles,
+    SDK / programs / SBT / AS wiring lands in
+    subsequent 12B sub-stages".
+  - Stage label bumped to "Stage 12B.2: OptiX file
+    skeleton".
+
+### Architectural decisions worth highlighting
+
+- **`isCompiled()` reports the macro, not SDK
+  availability.** The current contract is the
+  weakest honest claim: `true` means
+  "`-DRELATIVITYRENDER_ENABLE_OPTIX=ON` was passed
+  to CMake". Future slices that wire
+  `find_package(OptiX)` + `optixInit` checks will
+  tighten the contract; for now `isCompiled()` is
+  a pure preprocessor query.
+- **`OptixRenderer::Result` omits `image`.** The
+  user prompt said "OptixRenderer exists but does
+  not render". The placeholder Result honours that
+  literally — no `Image` field, because the
+  placeholder cannot produce one. Adding the field
+  later when OptiX produces real pixels is a
+  trivial extension.
+- **No OptiX SDK include.** Per the user's "No
+  OptiX SDK dependency yet" rule: zero
+  `#include <optix.h>` / `<optix_stubs.h>` etc.
+  anywhere in the new files. The `<string>` include
+  in `OptixRenderer.h` is standard library only.
+- **Linked but unused.** `rr_optix` is on the
+  executable's link list, but no existing main.cpp
+  / CLI handler calls into it. The static linker
+  treats the placeholder symbols as dead code and
+  strips them; the `RelativityRender` binary is
+  byte-near-identical to before. Future slices add
+  the call sites.
+
+### Hard-rule audit
+
+- No OptiX SDK dependency yet — **yes**, no OptiX
+  SDK headers anywhere; no `find_package(OptiX)`;
+  the `<string>` include is standard library only.
+- No raygen/miss/hit programs — **yes**, no
+  `OptixPrograms.cu` / `OptixSBT.h` / `OptixAccel.h`
+  / `OptixLaunchParams.h` files exist (future 12B
+  sub-stages per OPTIX_BACKEND_PLAN.md §20-§23).
+- CUDA renderer remains primary — **yes**, no
+  source under `src/cuda/`, `src/pathtracer/`, or
+  `src/renderer/` is touched. Stage 11C path tracer
+  unchanged.
+- Must compile with OptiX OFF — **yes**, host-only
+  build is clean under `-Wall -Wextra -Wpedantic`,
+  no warnings; ctest 4/4 passes. ON is also clean.
+- Update docs/BUILD_PLAN.md — **yes**, this entry +
+  status-table row.
+
+### Verified at the build
+
+- `cmake -DRELATIVITYRENDER_ENABLE_OPTIX=OFF ..`:
+  banner shows the four existing status lines; no
+  OptiX line. `librr_optix.a` builds with no
+  warnings; executable links cleanly; ctest 4/4
+  passes.
+- `cmake -DRELATIVITYRENDER_ENABLE_OPTIX=ON ..`:
+  banner adds the refreshed `OptiX backend:
+  requested (...; Stage 12B.2 file skeleton
+  compiles, SDK / programs / SBT / AS wiring lands
+  in subsequent 12B sub-stages)` line.
+  `librr_optix.a` rebuilds with the new compile
+  definition; executable rebuilds; ctest 4/4
   unchanged.
 
 ## Next stage
