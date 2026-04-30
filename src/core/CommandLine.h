@@ -129,6 +129,22 @@ namespace rr::core {
 //                           and the relativistic Doppler /
 //                           searchlight pipeline are applied on
 //                           top. Requires CUDA.
+//   --render-texture-sample-test
+//                           Stage 13B.2 GPU texture-sampling
+//                           validation. Synthesises a 2x2 RGBA8
+//                           four-colour pattern (red / green /
+//                           blue / yellow) on the host, uploads
+//                           it via `rr::gpu::GpuTexture`, and
+//                           launches the GPU kernel that maps
+//                           every output pixel to UV ->
+//                           `sampleTextureNearest(view, uv)` ->
+//                           framebuffer. With clamp-to-edge
+//                           nearest sampling the result is four
+//                           solid colour quadrants; any other
+//                           pattern indicates a bug. Default
+//                           output
+//                           "output/gpu_texture_sample_test.ppm".
+//                           Requires CUDA.
 //   --output <path>         Write the rendered image to <path>.
 //                           Default for --render-gradient is
 //                           "output/gpu_gradient.ppm";
@@ -157,9 +173,10 @@ namespace rr::core {
 // --render-gradient / --render-rays / --render-sphere /
 // --render-relativistic / --render-scene / --render-triangle /
 // --render-mesh-scene / --render-material-scene /
-// --render-direct-lighting) are mutually exclusive; combining them
-// is a parse error. The remaining flags configure `Config` and are
-// accepted regardless of action.
+// --render-direct-lighting / --render-texture-sample-test) are
+// mutually exclusive; combining them is a parse error. The
+// remaining flags configure `Config` and are accepted regardless
+// of action.
 
 class CommandLine {
 public:
@@ -185,6 +202,7 @@ public:
         RenderMeshScene,
         RenderMaterialScene,
         RenderDirectLighting,
+        RenderTextureSampleTest,
         Error,          // parse failure; see `error_message`
     };
 

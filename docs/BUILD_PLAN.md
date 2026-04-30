@@ -3711,6 +3711,7 @@ sub-stages, appended to the same file.** No code is touched.
 | 12C+     | feature parity with CUDA backend | pending |
 | 13A      | Texture data model (rr_texture; Texture / ImageTexture; CudaTexture.cuh re-export; no sampling) | ✅ |
 | 13B.1    | GPU texture upload (GpuTexture; bytes + width/height/format; safe reset; no sampling, no kernel) | ✅ |
+| 13B.2    | GPU texture sampling (sampleTextureNearest, clamp-to-edge; --render-texture-sample-test) | ✅ |
 
 ## Stage 12A.2.1 — OptiX raygen program design
 
@@ -6722,6 +6723,284 @@ stages.**
   -> false + empty; nullptr + 16 bytes ->
   false + empty; (-1, 2) dims with 16 bytes
   -> false + empty.
+
+## Stage 13B.2 — GPU texture sampling
+
+**Scope of this slice (Stage 13B.2): add the
+minimum device-side sampler the renderer can
+build on, plus a CUDA validation action that
+proves end-to-end (host upload -> device
+sampler -> framebuffer download -> PPM)
+correctness. The GPU samples; the CPU only
+uploads the source texture and saves the
+output.
+
+The sampler is `RR_HD inline` so it would be
+compilable in either context, but every actual
+caller is a CUDA `__global__` kernel - per the
+master rule, all per-pixel work runs on the
+device.**
+
+### What ships
+
+- `src/cuda/CudaTexture.cuh` (rewritten,
+  same path as the Stage 13A re-export):
+  - `DeviceTextureView` POD: `const std::byte*
+    pixels`, `int width`, `int height`,
+    `ImageTextureFormat format`. Default
+    construction yields a "no texture" view
+    (null pointer, zero dims).
+  - `device_texture_view_valid(view)`:
+    `RR_HD inline bool` checking
+    `pixels != nullptr && width > 0 &&
+    height > 0`.
+  - `sampleTextureNearest(view, uv)`:
+    `RR_HD inline rr::math::Vec3`. UV in
+    `[0, 1] x [0, 1]` with origin at the
+    top-left texel; UVs outside the unit
+    square are clamp-to-edge'd. Quantises to
+    the nearest texel via
+    `tx = static_cast<int>(u * width)` (with
+    end-of-range clamping). Format dispatch:
+    `Rgba32F` reads four floats per texel and
+    returns the first three; `Rgba8` reads
+    four unsigned bytes per texel and divides
+    each by 255. Alpha is dropped.
+  - **Safe fallback**: when the view is
+    invalid, returns `(1, 0, 1)` magenta.
+    The kernel never crashes; the failure
+    is visible in the output framebuffer.
+  - The header still depends only on
+    `<cstddef>`, `RR_HD` (from
+    `math/MathUtils.h`), `Vec2`/`Vec3`, and
+    the host-side `Texture` / `ImageTexture`
+    headers. No `<cuda_runtime.h>` include is
+    required because `RR_HD` paints the
+    function with `__host__ __device__` when
+    compiled by nvcc.
+- `src/cuda/CudaTextureSampleTestKernel.cu`
+  (new): `__global__ k_texture_sample_test`
+  + host-callable `launch_texture_sample_test`.
+  Per pixel: compute `uv = (x / (W-1),
+  y / (H-1))`, call `sampleTextureNearest(
+  view, uv)`, write `(rgb, 1)` to the
+  Rgba32F framebuffer.
+- `src/cuda/CudaKernels.cuh`: includes the
+  new `cuda/CudaTexture.cuh` (so kernels TUs
+  pick up `DeviceTextureView` along with
+  every other view type) and declares
+  `launch_texture_sample_test(...)`.
+- `src/cuda/CudaRenderer.{h,cu}`: new entry
+  point `CudaRenderer::render_texture_sample_
+  test(width, height)`. Builds the synthetic
+  `ImageTexture` host-side, uploads it via
+  `rr::gpu::GpuTexture`, snapshots its device
+  pointer + dims + format into a
+  `DeviceTextureView`, and dispatches via
+  the existing `run_kernel_render` scaffold.
+  The synthetic source is a 2x2 RGBA8 four-
+  colour pattern: red, green, blue, yellow
+  - chosen so the post-sampling output is
+  exactly four solid quadrants under nearest-
+  clamp addressing, leaving any UV-mapping or
+  format-decode bug visually obvious.
+- `src/main.cpp`:
+  - New `run_render_texture_sample_test(cfg)`
+    handler. Mirrors the
+    `run_render_rng_test` shape: the OFF
+    branch returns the standard requires-CUDA
+    error string and exit code 1; the ON
+    branch calls
+    `CudaRenderer::render_texture_sample_
+    test(...)` and saves the result to
+    `cfg.output_path` or the default
+    `"output/gpu_texture_sample_test.ppm"`.
+  - `run_render_texture_sample_test` is wired
+    into the action dispatch (`switch (action)
+    { ... case Action::RenderTextureSampleTest
+    : ... }`).
+  - `Action::Default`'s startup-banner hint
+    line is updated to mention the new
+    action and the stage label is bumped to
+    "Stage 13B.2: GPU texture sampling".
+- `src/core/CommandLine.{h,cpp}`:
+  - New `Action::RenderTextureSampleTest`
+    enum value.
+  - Parser entry recognising
+    `--render-texture-sample-test` and
+    routing through `set_action(...)` so it
+    is mutually exclusive with every other
+    action flag.
+  - `Config::validate()` is invoked for the
+    new action (matches the GPU-render
+    actions that need positive width / height).
+  - Usage text gains a paragraph describing
+    the action.
+  - Header doc-comment block + the
+    "mutually exclusive" enumeration list
+    pick up the new flag.
+- `CMakeLists.txt`:
+  - `rr_gpu` (CUDA-on branch) gains
+    `src/cuda/CudaTextureSampleTestKernel.cu`
+    in its source list. rr_gpu already
+    PUBLIC-links `rr_texture` (Stage 13B.1),
+    so no extra link edge.
+  - Stage label bumped to "Stage 13B.2: GPU
+    texture sampling" in both the
+    `project(...)` description and the
+    project-banner status message.
+- `docs/BUILD_PLAN.md`: this entry +
+  status-table row for 13B.2.
+
+### Architectural decisions worth highlighting
+
+- **`RR_HD inline` sampler in a header.**
+  The per-pixel sampler must inline into the
+  kernel call site; making it a header
+  function lets nvcc fold the dispatch
+  through `__device__` codegen. The same
+  function is callable from a host TU
+  (currently unused) which makes a future
+  CPU-side validator straightforward without
+  a duplicate implementation.
+- **`DeviceTextureView` as a flat POD.**
+  Pointer + 3 small fields = 16 bytes (well
+  under any launch-arg buffer limit). Passed
+  by value into the kernel like
+  `CudaSceneView` and `CudaMeshView`. The
+  view *references* the GpuTexture's
+  device buffer; lifetime is the caller's
+  responsibility (the host-side
+  `render_texture_sample_test` keeps the
+  GpuTexture alive across the launch +
+  download).
+- **Clamp-to-edge, not wrap.** The user's
+  spec said "clamp or wrap UVs
+  consistently"; clamp was chosen because:
+  (a) it requires no per-texture metadata
+  (no wrap-mode flag yet), (b) it never
+  folds the texture against itself (a
+  wrap-mode bug would mask a UV-mapping
+  bug under wrap), and (c) it matches the
+  default of every modern hardware sampler
+  (`GL_CLAMP_TO_EDGE` /
+  `D3D11_TEXTURE_ADDRESS_CLAMP`). Once a
+  per-texture wrap-mode field lands, the
+  helper becomes `sampleTextureNearest(
+  view, uv, wrap_mode)`.
+- **Magenta safe fallback.** A null
+  pointer / zero-dim texture would crash
+  on dereference; instead the helper
+  returns a recognisable colour. Magenta
+  is the conventional "missing texture"
+  signal across DCC tools and game
+  engines, and it cannot be confused
+  with the four reference colours
+  (red / green / blue / yellow) of the
+  validation pattern.
+- **2x2 reference pattern.** The smallest
+  texture that produces an unambiguous
+  visual signal under nearest-clamp
+  sampling: each output corner pixel
+  lands in exactly one quadrant, and a
+  UV-axis swap, channel swap, format
+  decoding bug, or off-by-one indexing
+  bug all produce visibly wrong results
+  rather than subtle colour drift.
+- **Sampler returns RGB, not RGBA.** The
+  validation kernel writes opaque output
+  (alpha = 1). Returning `Vec3` matches
+  every other kernel-side colour
+  pipeline in the project (the relativity
+  / lighting / path-tracer kernels all
+  pass colour as `Vec3`). A future
+  alpha-aware caller can read the source
+  bytes directly or add a sibling
+  `sampleTextureNearestRgba` later.
+- **Validation lives in a dedicated CLI
+  action.** Mirrors the precedent of
+  `--render-rng-test` (Stage 11A) and
+  `--render-accumulation-test` (Stage 11B)
+  - one CLI action per validation
+  artifact, no implicit invocation. The
+  output PPM has a stable, documented
+  path so a regression test can compare
+  byte-for-byte.
+- **No material / scene / mesh wiring.**
+  `MaterialParams` is unchanged; `Scene`
+  carries no texture table; the kernel
+  doesn't read `Vertex.uv`. Stage 13B.2
+  is the *sampler*; its consumers join
+  in subsequent sub-stages.
+
+### Hard-rule audit
+
+- GPU samples texture - **yes**, the only
+  caller of `sampleTextureNearest` is a
+  CUDA `__global__` kernel
+  (`k_texture_sample_test`). The CPU never
+  invokes the function on output pixels.
+- CPU only uploads texture and saves
+  output - **yes**, the host-side
+  `render_texture_sample_test` builds the
+  16-byte synthetic source, calls
+  `GpuTexture::upload_from(src)`, hands a
+  `DeviceTextureView` to the kernel, and
+  downloads + saves. Per-pixel work is
+  device-only.
+- No material integration yet - **yes**,
+  `MaterialParams` is untouched, the
+  kernel does not read any material array,
+  no `MaterialParams.base_color_texture_id`
+  field exists.
+- Must compile - **yes**, OFF + ON
+  reconfigures both build clean (no
+  warnings, no errors under `-Wall
+  -Wextra -Wpedantic`); ctest 4/4 passes
+  both ways.
+- Update docs/BUILD_PLAN.md - **yes**,
+  this entry + status-table row.
+
+### Verified at the build
+
+- `cmake -DRELATIVITYRENDER_ENABLE_OPTIX=
+  OFF ..` (clean reconfigure): builds
+  clean; banner shows "Stage 13B.2: GPU
+  texture sampling"; ctest 4/4 passes;
+  `--render-texture-sample-test` returns
+  the standard requires-CUDA error message
+  and exit code 1.
+- `cmake -DRELATIVITYRENDER_ENABLE_OPTIX=
+  ON ..` (clean reconfigure): same
+  CudaTextureSampleTestKernel.cu compiles
+  (or rather, would compile under
+  `RR_ENABLE_CUDA=ON` - in this build
+  environment CUDA is OFF so the .cu file
+  is not part of the source list).
+  OptiX scaffold compiles (with the
+  expected 12B.4 SDK-not-found warning);
+  ctest 4/4 passes. GPU texture sampling
+  is orthogonal to the OptiX flag.
+- `--help` lists the new action.
+- `--render-texture-sample-test
+  --render-rng-test` (mutual exclusion):
+  rejected at parse time with the full
+  action-list error message including
+  the new flag.
+- A future CUDA-enabled host run will
+  exercise the populated branch:
+  the call dispatches via
+  `CudaRenderer::render_texture_sample_
+  test(width, height)`, which uploads the
+  2x2 RGBA8 source, launches
+  `k_texture_sample_test`, downloads,
+  and saves
+  `output/gpu_texture_sample_test.ppm`.
+  With clamp-to-edge nearest sampling on
+  the 2x2 source the result is exactly
+  four solid colour quadrants
+  (top-left red, top-right green, bottom-
+  left blue, bottom-right yellow).
 
 ## Next stage
 

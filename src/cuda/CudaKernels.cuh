@@ -6,6 +6,7 @@
 
 #include "camera/CameraRay.h"     // GpuCamera + RR_HD generate_camera_ray
 #include "cuda/CudaScene.cuh"     // CudaSceneView (passed by value to k_render_scene)
+#include "cuda/CudaTexture.cuh"   // DeviceTextureView (passed by value to texture-sample test)
 #include "geometry/Sphere.h"      // Sphere POD passed by value to single-sphere launchers
 #include "relativity/RelativityParams.h"  // Observer + RelativityParams PODs
 
@@ -100,5 +101,20 @@ void launch_render_scene(float* device_pixels, int width, int height,
 void launch_rng_test_visualize(float* device_pixels, int width, int height,
                                unsigned int global_seed,
                                cudaStream_t stream = 0);
+
+// Host-callable launcher for the Stage 13B.2 nearest-neighbor
+// texture-sampling validation kernel. Defined in
+// `CudaTextureSampleTestKernel.cu`. For each pixel: uv = (x / (W-1),
+// y / (H-1)), then `sampleTextureNearest(view, uv)`, then write
+// (rgb, 1) to the Rgba32F framebuffer. The CPU never touches per-
+// pixel state; the host builds the `DeviceTextureView` from a
+// `GpuTexture` (which itself holds the uploaded `ImageTexture`)
+// and passes it by value as a launch argument. Clamp-to-edge UV
+// addressing; magenta fallback on an invalid view.
+void launch_texture_sample_test(float* device_pixels,
+                                int    width,
+                                int    height,
+                                DeviceTextureView view,
+                                cudaStream_t stream = 0);
 
 }

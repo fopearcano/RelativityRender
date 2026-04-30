@@ -3,15 +3,19 @@
 #include "camera/Camera.h"
 #include "cuda/CudaKernels.cuh"
 #include "cuda/CudaScene.cuh"
+#include "cuda/CudaTexture.cuh"
 #include "geometry/Sphere.h"
 #include "gpu/GpuBuffer.h"
 #include "gpu/GpuScene.h"
+#include "gpu/GpuTexture.h"
 #include "image/Image.h"
 #include "relativity/RelativityParams.h"
+#include "texture/ImageTexture.h"
 
 #include <cuda_runtime.h>
 
 #include <cstddef>
+#include <cstring>
 #include <string>
 #include <utility>
 
@@ -178,6 +182,66 @@ CudaRenderer::Result CudaRenderer::render_rng_test(int          width,
         [seed](float* device_pixels, int w, int h) {
             launch_rng_test_visualize(device_pixels, w, h, seed,
                                       /*stream=*/nullptr);
+        });
+}
+
+CudaRenderer::Result CudaRenderer::render_texture_sample_test(int width,
+                                                              int height) {
+    Result result;
+
+    if (width <= 0 || height <= 0) {
+        result.message = "invalid dimensions";
+        return result;
+    }
+
+    // Build a 2x2 RGBA8 four-colour reference texture on the host.
+    // With nearest-clamp sampling the output is exactly four solid
+    // quadrants, which makes the visual verification unambiguous:
+    //
+    //   uv (0..0.5, 0..0.5)  red    (255,   0,   0)
+    //   uv (0.5..1, 0..0.5)  green  (  0, 255,   0)
+    //   uv (0..0.5, 0.5..1)  blue   (  0,   0, 255)
+    //   uv (0.5..1, 0.5..1)  yellow (255, 255,   0)
+    //
+    // Origin is the top-left texel (uv == (0, 0)), matching `Image`
+    // and the test kernel's UV mapping.
+    constexpr int kTexW = 2;
+    constexpr int kTexH = 2;
+    rr::texture::ImageTexture tex_src(kTexW, kTexH,
+                                      rr::texture::ImageTextureFormat::Rgba8,
+                                      "stage_13B_2_test_pattern");
+    {
+        // 16 bytes total (2*2 texels * 4 bytes).
+        const unsigned char rgba_bytes[kTexW * kTexH * 4] = {
+            // (0,0): red       (1,0): green
+            255,   0,   0, 255,    0, 255,   0, 255,
+            // (0,1): blue      (1,1): yellow
+              0,   0, 255, 255,  255, 255,   0, 255,
+        };
+        tex_src.pixels().resize(sizeof rgba_bytes);
+        std::memcpy(tex_src.pixels().data(), rgba_bytes, sizeof rgba_bytes);
+    }
+
+    // Upload to the GPU. `GpuTexture` owns the device allocation
+    // for the lifetime of this call; the destructor frees it
+    // automatically when we return.
+    rr::gpu::GpuTexture gpu_tex;
+    if (!gpu_tex.upload_from(tex_src) || !gpu_tex.has_data()) {
+        result.message = "texture upload failed";
+        return result;
+    }
+
+    const DeviceTextureView view{
+        /*pixels=*/gpu_tex.device_pixels(),
+        /*width =*/gpu_tex.width(),
+        /*height=*/gpu_tex.height(),
+        /*format=*/gpu_tex.format(),
+    };
+
+    return run_kernel_render(width, height,
+        [view](float* device_pixels, int w, int h) {
+            launch_texture_sample_test(device_pixels, w, h, view,
+                                       /*stream=*/nullptr);
         });
 }
 

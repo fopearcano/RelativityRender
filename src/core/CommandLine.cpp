@@ -53,7 +53,8 @@ bool set_action(CommandLine::Action& current, CommandLine::Action target,
                 "--render-gradient / --render-rays / --render-sphere / "
                 "--render-relativistic / --render-scene / "
                 "--render-triangle / --render-mesh-scene / "
-                "--render-material-scene / --render-direct-lighting)";
+                "--render-material-scene / --render-direct-lighting / "
+                "--render-texture-sample-test)";
         return false;
     }
     current = target;
@@ -213,6 +214,12 @@ CommandLine::ParseResult CommandLine::parse(int argc, char** argv) {
                 r.action = Action::Error;
                 return r;
             }
+        } else if (a == "--render-texture-sample-test") {
+            if (!set_action(r.action, Action::RenderTextureSampleTest,
+                            r.error_message)) {
+                r.action = Action::Error;
+                return r;
+            }
         } else if (a == "--output") {
             if (!take_value(argc, argv, i, a, value, r.error_message)) {
                 r.action = Action::Error;
@@ -268,7 +275,8 @@ CommandLine::ParseResult CommandLine::parse(int argc, char** argv) {
      || r.action == Action::RenderTriangle
      || r.action == Action::RenderMeshScene
      || r.action == Action::RenderMaterialScene
-     || r.action == Action::RenderDirectLighting) {
+     || r.action == Action::RenderDirectLighting
+     || r.action == Action::RenderTextureSampleTest) {
         if (auto err = r.config.validate(); !err.empty()) {
             r.action        = Action::Error;
             r.error_message = std::move(err);
@@ -382,6 +390,15 @@ std::string CommandLine::usage(std::string_view argv0) {
        << "                        with emission and the relativistic "
                                   "Doppler / searchlight\n"
        << "                        pipeline applied on top "
+                                  "(requires CUDA).\n"
+       << "  --render-texture-sample-test\n"
+       << "                        Stage 13B.2 GPU texture-sampling "
+                                  "validation: synthesise a 2x2\n"
+       << "                        RGBA8 four-colour pattern, upload "
+                                  "it via GpuTexture, and launch the\n"
+       << "                        kernel that samples it per-pixel "
+                                  "via sampleTextureNearest. Default\n"
+       << "                        output output/gpu_texture_sample_test.ppm "
                                   "(requires CUDA).\n"
        << "  --output <path>       Write the rendered image to <path>.\n"
        << "                        Default for --render-gradient is "

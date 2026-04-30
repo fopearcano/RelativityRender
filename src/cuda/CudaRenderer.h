@@ -102,6 +102,20 @@ public:
     [[nodiscard]] static Result render_rng_test(int          width,
                                                 int          height,
                                                 unsigned int seed = 0u);
+
+    // Render the Stage 13B.2 nearest-neighbor texture-sampling
+    // validation image. Builds a small synthetic 2x2 RGBA8 four-
+    // colour test pattern (red / green / blue / yellow) on the
+    // host, uploads it via `rr::gpu::GpuTexture`, and launches
+    // the kernel that for every output pixel maps to UV ->
+    // samples the texture -> writes the resulting RGB to the
+    // framebuffer. With clamp-to-edge nearest sampling on a 2x2
+    // source the output is exactly four solid colour quadrants;
+    // any other result indicates a UV-mapping or format-decode
+    // bug. The host's only per-pixel responsibility is the final
+    // download / save; the device does the sampling work.
+    [[nodiscard]] static Result render_texture_sample_test(int width,
+                                                           int height);
 };
 
 }

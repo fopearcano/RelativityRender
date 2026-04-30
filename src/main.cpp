@@ -682,6 +682,44 @@ int run_render_rng_test(const rr::core::Config& cfg) {
 #endif
 }
 
+// `--render-texture-sample-test` dispatch. Stage 13B.2 validation
+// path: synthesise a 2x2 RGBA8 four-colour test pattern on the
+// host (CudaRenderer's job), upload it via `rr::gpu::GpuTexture`,
+// launch the kernel that maps every output pixel through
+// `sampleTextureNearest(view, uv)`, and save the resulting PPM.
+// All per-pixel work runs on the device; the host only owns the
+// upload + the final download / save.
+//
+// With clamp-to-edge nearest sampling on the 2x2 pattern the
+// output is exactly four solid colour quadrants; any other
+// pattern (banding, swapped channels, magenta = invalid view
+// fallback) is a regression in upload, sampler, or UV mapping.
+int run_render_texture_sample_test(const rr::core::Config& cfg) {
+    const std::string out_path = cfg.output_path.empty()
+        ? std::string("output/gpu_texture_sample_test.ppm")
+        : cfg.output_path;
+
+#ifndef RR_HAS_CUDA
+    (void)cfg;
+    rr::core::Logger::error("--render-texture-sample-test requires CUDA. "
+                            "Rebuild with -DRR_ENABLE_CUDA=ON on a host "
+                            "with the CUDA Toolkit and a CUDA-capable "
+                            "GPU.");
+    return 1;
+#else
+    auto r = rr::cuda::CudaRenderer::render_texture_sample_test(
+        cfg.width, cfg.height);
+    if (!r.ok) {
+        rr::core::Logger::error("texture-sample-test render failed: "
+                              + r.message);
+        return 1;
+    }
+    return save_image_or_error(r.image, out_path,
+                               "GPU texture sample test",
+                               cfg.width, cfg.height) ? 0 : 1;
+#endif
+}
+
 // `--render-accumulation-test` dispatch. Stage 11B validation
 // path: allocate an AccumulationBuffer + a device-side sample
 // buffer, loop `kSampleCount` iterations producing a fresh
@@ -1713,6 +1751,9 @@ int main(int argc, char** argv) {
         case CommandLine::Action::RenderDirectLighting:
             return run_render_direct_lighting(result.config);
 
+        case CommandLine::Action::RenderTextureSampleTest:
+            return run_render_texture_sample_test(result.config);
+
         case CommandLine::Action::Error:
             Logger::error(result.error_message);
             std::cerr << CommandLine::usage(argv[0]);
@@ -1721,8 +1762,9 @@ int main(int argc, char** argv) {
         case CommandLine::Action::Default:
             Logger::info(std::string(rr::core::kProjectName) + " "
                        + rr::core::kVersionString + " starting up.");
-            Logger::info("Stage 11C: minimal GPU path tracer. "
-                         "Try --render-pathtrace <file>, "
+            Logger::info("Stage 13B.2: GPU texture sampling. "
+                         "Try --render-texture-sample-test, "
+                         "--render-pathtrace <file>, "
                          "--render-accumulation-test, "
                          "--render-rng-test, "
                          "--render-full-scene <file>, "
