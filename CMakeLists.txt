@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.20)
 
 project(RelativityRender
     VERSION     0.1.0
-    DESCRIPTION "RelativityRender - GPU renderer platform (Stage 14A.1: AOV data model)"
+    DESCRIPTION "RelativityRender - GPU renderer platform (Stage 14A.2: GPU AOV buffers)"
     LANGUAGES   CXX
 )
 
@@ -33,7 +33,7 @@ option(RELATIVITYRENDER_ENABLE_OPTIX
 
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
-message(STATUS "RelativityRender ${PROJECT_VERSION} (Stage 14A.1: AOV data model)")
+message(STATUS "RelativityRender ${PROJECT_VERSION} (Stage 14A.2: GPU AOV buffers)")
 
 message(STATUS "  Build type   : ${CMAKE_BUILD_TYPE}")
 message(STATUS "  C++ standard : ${CMAKE_CXX_STANDARD}")
@@ -230,13 +230,17 @@ target_link_libraries(rr_pathtracer INTERFACE rr_math)
 # host-side `PathTracer` that drives the spp loop + accumulation
 # + resolve. Stage 14A.1 adds the AOV / render-pass data model
 # (`AOV.cpp`; master order #19) - data model only, no renderer
-# integration yet. Each .cpp ends up here (instead of inside the
-# header-only `rr_pathtracer` INTERFACE library) so the static-
-# lib dependency direction stays one-way:
+# integration yet. Stage 14A.2 adds the per-pass GPU buffer
+# owner (`GpuAOVBuffer.cpp`) that allocates / manages /
+# downloads device-side AOV storage; still no kernel hook.
+# Each .cpp ends up here (instead of inside the header-only
+# `rr_pathtracer` INTERFACE library) so the static-lib
+# dependency direction stays one-way:
 # rr_renderer -> rr_gpu, rr_pathtracer, rr_image, with no cycle.
 add_library(rr_renderer STATIC
     src/renderer/AccumulationBuffer.cpp
     src/renderer/AOV.cpp
+    src/renderer/GpuAOVBuffer.cpp
     src/pathtracer/PathTracer.cpp
 )
 target_include_directories(rr_renderer PUBLIC src)

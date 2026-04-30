@@ -3714,6 +3714,7 @@ sub-stages, appended to the same file.** No code is touched.
 | 13B.2    | GPU texture sampling (sampleTextureNearest, clamp-to-edge; --render-texture-sample-test) | ✅ |
 | 13B.3    | Material texture integration (baseColorTextureId / useBaseColorTexture; GpuScene textures; --render-textured-material) | ✅ |
 | 14A.1    | AOV data model (AOVType: Beauty/Normal/Depth/Albedo/DopplerFactor/SearchlightFactor; AOV class; CudaAOV.cuh re-export; no integration) | ✅ |
+| 14A.2    | GPU AOV buffers (GpuAOVBuffer; one GpuBuffer<float> per pass; allocate / reset / download; make_default_aov_set; no kernel hook) | ✅ |
 
 ## Stage 12A.2.1 — OptiX raygen program design
 
@@ -7526,6 +7527,195 @@ addition to the rr_renderer source list.**
   (with the expected 12B.4 SDK-not-found
   warning); ctest 4/4 passes. AOV data
   model is orthogonal to the OptiX flag
+  and to `RR_ENABLE_CUDA`.
+
+## Stage 14A.2 — GPU AOV buffers
+
+**Scope of this slice (Stage 14A.2; master order
+#19): introduce the host-side per-pass GPU buffer
+owner that allocates + manages + downloads device
+storage for one AOV. One `GpuAOVBuffer` instance
+per requested pass; the per-AOV component count
+(3 for vector passes, 1 for scalar passes; from
+`aov_component_count(type)`) determines the
+device buffer size. A free factory
+`make_default_aov_set()` returns the six default
+buffers in one call so a future renderer-
+integration sub-stage can allocate every declared
+pass with one statement.
+
+No kernel hook, no renderer integration, no
+automatic save path. Stage 14A.2 is the
+allocator + downloader; the kernel write side
+joins in a subsequent sub-stage.**
+
+### What ships
+
+- `src/renderer/GpuAOVBuffer.{h,cpp}` (new):
+  - `class rr::renderer::GpuAOVBuffer`. Move-only
+    owning handle for the device-side AOV buffer +
+    the AOV identity (id / type / name) it
+    represents.
+  - Constructor `explicit GpuAOVBuffer(AOV aov)`.
+    No device allocation here; the caller calls
+    `resize(width, height)` to commit memory.
+  - `bool resize(int width, int height)`. Drops
+    any prior allocation, sizes the device buffer
+    to `width * height * component_count(type)`
+    floats, returns `true` on success. `width ==
+    0 && height == 0` is an explicit successful
+    clear (mirrors `GpuMesh::upload_vertices(host,
+    0)` precedent). Negative dims, non-positive
+    component counts, or backend allocation
+    failure all leave the buffer empty.
+  - `void reset() noexcept`. Frees the device
+    allocation and zeroes the dimensions. Safe to
+    call repeatedly; the destructor invokes it
+    automatically via `GpuBuffer<float>`'s RAII.
+  - `bool download(std::vector<float>& host_dst)
+    const`. Resizes the destination to
+    `size_in_floats()`, copies device -> host,
+    returns success. Empty / invalid buffer
+    returns `false` and leaves `host_dst` empty.
+  - Read accessors: `type()`, `aov()`, `width()`,
+    `height()`, `component_count()`,
+    `size_in_floats()`, `empty()`, `has_data()`,
+    `valid()`, `device_ptr()` (const + non-
+    const). The non-const `device_ptr()` is the
+    handle the eventual kernel-write sub-stage
+    hands to `__global__` writers; today no caller
+    invokes it.
+  - Free function
+    `std::vector<GpuAOVBuffer> make_default_aov_
+    set()`. Returns one buffer per declared
+    `AOVType` (Beauty, Normal, Depth, Albedo,
+    DopplerFactor, SearchlightFactor) in that
+    order, each constructed from the
+    corresponding `AOV::make_*()` factory and not
+    yet allocated. The caller `resize()`s each
+    entry to the desired framebuffer dimensions.
+- `CMakeLists.txt`:
+  - `rr_renderer` STATIC library gains
+    `src/renderer/GpuAOVBuffer.cpp` in its source
+    list. No new library; `GpuAOVBuffer` is a
+    natural sibling of `AccumulationBuffer` (also
+    a `GpuBuffer<float>` owner with metadata)
+    inside the existing renderer-pieces lib. No
+    new dependency edge: the header includes
+    `gpu/GpuBuffer.h` + `renderer/AOV.h` + STL,
+    all of which the existing rr_renderer
+    transitive set already covers.
+  - Stage label bumped to "Stage 14A.2: GPU AOV
+    buffers".
+- `docs/BUILD_PLAN.md`: this entry +
+  status-table row for 14A.2.
+
+### Architectural decisions worth highlighting
+
+- **Single class per pass, not a fixed six-
+  buffer struct.** A `GpuAOVBuffer` carries one
+  `AOV` and one `GpuBuffer<float>`; collections
+  are `std::vector<GpuAOVBuffer>` rather than a
+  named-field struct. Adding a future AOV type
+  (e.g. ObjectId, MotionVector) is a one-line
+  addition to `AOVType` + a new factory in
+  `AOV.h`; no Buffer subclass, no new field on a
+  monolithic owner.
+- **Free factory `make_default_aov_set()`.** The
+  prompt enumerates six buffers; the factory
+  builds them all in one call with stable order,
+  so a validation handler or renderer-integration
+  sub-stage can allocate every declared pass
+  without repeating the six factory invocations.
+  Callers that want a subset (e.g. only Beauty +
+  Normal for a denoising preset) build their own
+  vector by hand.
+- **Component count drives device size.** The
+  per-pass buffer size is
+  `width * height * aov_component_count(type)`,
+  read through `AOV::component_count()`. Vector
+  passes get 3 floats / pixel; scalar passes get
+  1. The size formula lives in `aov_component_
+  count` (Stage 14A.1) so a future change to
+  pass widths only edits one switch.
+- **Move-only RAII owner.** Same pattern as
+  `AccumulationBuffer` and `GpuTexture`: the
+  buffer cannot be copied, must be move-
+  constructed / move-assigned, and frees its
+  device allocation in the destructor via
+  `GpuBuffer<float>`'s composed RAII. Lets a
+  `std::vector<GpuAOVBuffer>` own multiple
+  buffers cleanly.
+- **`make_default_aov_set()` does not allocate.**
+  Returns six default-constructed buffers that
+  the caller `resize()`s individually. This
+  keeps the factory cheap (no GPU touch) and
+  lets the caller decide framebuffer
+  dimensions; building the vector with no GPU
+  attempt is also useful in host-only test
+  environments.
+- **Honest absence under no-CUDA.** `resize`
+  returns `false` and leaves the buffer empty
+  when no GPU backend is compiled in (the
+  underlying `GpuBuffer<float>::allocate`
+  reports the same way); `download` returns
+  `false` for an empty buffer; `reset` is a
+  no-op. Same "honest absence" the rest of the
+  GPU layer offers.
+- **`download` resizes the destination.** The
+  caller passes a `std::vector<float>&` and
+  `download` sizes it to `size_in_floats()`
+  before the device-to-host copy. Mirrors how
+  `AccumulationBuffer::resolve_to_image`
+  returns a freshly-sized `Image`.
+- **No save / no kernel hook.** Stage 14A.2 is
+  the allocator + downloader, mirroring how
+  Stage 13B.1 was the texture allocator with
+  no sampler. Subsequent sub-stages add the
+  kernel write path + the per-AOV save format
+  selection (PPM channel layout for vector
+  passes, scalar PPM / EXR for 1-channel
+  passes).
+
+### Hard-rule audit
+
+- No renderer writing yet - **yes**, no
+  `__global__` writes into a `GpuAOVBuffer`,
+  no `CudaSceneView` slot, no `PathTracer` /
+  `CudaRenderer` reference to `GpuAOVBuffer`.
+- CPU only allocates / downloads / saves
+  buffers - **yes**, the host-side API surface
+  is exactly that; no host code per-pixel
+  iterates, no host code synthesises pass
+  values, no kernel writes through the
+  device pointer at this stage.
+- Must compile - **yes**, OFF + ON
+  reconfigures both build clean (no warnings,
+  no errors under `-Wall -Wextra -Wpedantic`);
+  ctest 4/4 passes both ways.
+- Update docs/BUILD_PLAN.md - **yes**, this
+  entry + status-table row.
+- Pre-Stage-14 visual confirmation note: the
+  Stage 13 textured-material output
+  verification remains deferred (audit host
+  has no CUDA toolchain, see
+  `docs/STAGE_13_VISUAL_CONFIRMATION.md`);
+  14A.2 deliberately does not modify any
+  texture-system code or kernel.
+
+### Verified at the build
+
+- `cmake -DRELATIVITYRENDER_ENABLE_OPTIX=
+  OFF ..` (clean reconfigure): `GpuAOVBuffer
+  .cpp` builds inside rr_renderer; no
+  warnings / errors; banner shows "Stage
+  14A.2: GPU AOV buffers"; ctest 4/4 passes.
+- `cmake -DRELATIVITYRENDER_ENABLE_OPTIX=
+  ON ..` (clean reconfigure): same
+  `GpuAOVBuffer.cpp` build; OptiX scaffold
+  compiles (with the expected 12B.4 SDK-not-
+  found warning); ctest 4/4 passes. GPU AOV
+  buffers are orthogonal to the OptiX flag
   and to `RR_ENABLE_CUDA`.
 
 ## Next stage
