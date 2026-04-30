@@ -3841,14 +3841,418 @@ the strategy is documented + safe.
 
 ---
 
+## 17. Path tracing integration
+
+§17 is the consolidating capstone for the program-side
+chapter (§5 - §9), analogous to §15's role for the
+data-side chapter. It puts the complete OptiX path tracer
+into a single linear narrative — what each program does
+in sequence, how the OptiX boundary connects to the host-
+side spp loop and the existing Stage 11B
+`AccumulationBuffer`, and where relativity slots into the
+per-pixel flow. An implementer should be able to read §17
+end-to-end and have a complete mental model of the
+Stage 12B path tracer without flipping back through the
+prior sections.
+
+### 17.1 Per-pixel flow at a glance
+
+For each pixel, for each spp iteration, the renderer runs
+this sequence (host-side and device-side roles
+interleaved):
+
+```
+HOST (PathTracer::render in rr_renderer):
+
+  for s = 0 .. samples_per_pixel - 1:
+    optixLaunchParams.sample_index = s
+    cudaMemcpy(d_launch_params, &optixLaunchParams, sizeof(...))
+    optixLaunch(pipeline, stream, d_launch_params, sbt, w, h, 1)
+
+    accum.accumulate_sample(sample_pixels.device_ptr())
+                    │  (Stage 11B kernel:
+                    │   acc[i] += sample[i])
+                    ▼
+                 (one frame folded into accumulator)
+
+  img = accum.resolve_to_image()
+                    │  (Stage 11B kernel: display = acc * 1/N
+                    │   + cudaMemcpy D2H)
+                    ▼
+  img.save_ppm(out_path)
+
+
+DEVICE (per optixLaunch, per pixel - the Stage 12B raygen):
+
+  rng = make_pixel_rng(x, y, sample_index, seed)
+  jitter = next_vec2(rng)
+  ray = generate_primary_ray(camera, x, y, w, h, jitter.x, jitter.y)
+
+  if params.enable_aberration:
+    ray.direction = aberrateDirection(observer.velocity, ray.direction)
+
+  throughput = (1, 1, 1)
+  radiance   = (0, 0, 0)
+
+  for bounce = 0 .. max_bounces - 1:
+    optixTrace(scene_handle, ray, ..., DISABLE_ANYHIT, ..., payload)
+
+    if payload.hit_flag == 0:                                 # MISS
+      radiance += throughput * payload.emission               # env contribution
+      break
+
+    radiance += throughput * payload.emission                 # CH-emitted radiance
+    if bounce + 1 >= max_bounces:
+      break
+
+    u2        = next_vec2(rng)
+    local_dir = sample_cosine_hemisphere(u2)
+    world_dir = align_to_normal(local_dir, payload.normal)
+    throughput = throughput * payload.albedo                  # Lambert update
+    ray.origin    = payload.position + payload.normal * 1e-4f
+    ray.direction = world_dir
+
+  sample_pixels[(y*w+x)*4 + 0..2] = radiance
+  sample_pixels[(y*w+x)*4 + 3]    = 1.0
+```
+
+This is the complete Stage 12B flow on one diagram. The
+rest of §17 zooms in on each role.
+
+### 17.2 Raygen drives primary rays + the sample loop
+
+(Per the user's first bullet; consolidates §5.)
+
+The raygen program is the per-pixel kernel and the
+**sole** orchestrator on the device side. It owns:
+
+1. **RNG seeding** from `(x, y, sample_index, seed)` via
+   `pathtracer::make_pixel_rng`. The seed advances per
+   spp iteration; per-pixel decorrelation comes from
+   the SplitMix64 mixer in `pathtracer::RNG.h`.
+2. **Sub-pixel jitter** from `pathtracer::next_vec2`
+   for anti-aliasing. The spp loop produces stratified-
+   by-default AA without explicit per-pixel sample
+   counts.
+3. **Primary ray construction** via
+   `generate_primary_ray` — same maths as
+   `rr::camera::generate_camera_ray` but with the
+   `+0.5` pixel-centre offset replaced by the random
+   jitter.
+4. **Primary aberration** (per §14.4.1): if
+   `params.enable_aberration`, transform the primary
+   direction into the observer's frame via
+   `aberrateDirection`.
+5. **Bounce loop control** — `for bounce in [0, max_bounces)`.
+   Each iteration calls `optixTrace`, reads the payload,
+   folds the contribution into the running radiance,
+   updates throughput from the payload's albedo,
+   samples the next bounce direction, advances the
+   ray. The loop terminates on miss (env contribution
+   + break) or budget exhaustion.
+6. **Per-sample output write** to
+   `optixLaunchParams.sample_pixels` at the pixel's
+   offset.
+
+The raygen does NOT own the host-side spp loop — that's
+`PathTracer::render` in `rr_renderer`. But it owns
+*everything else*. The OptiX boundary is between "raygen
+is invoked once per `optixLaunch` per pixel" and
+"PathTracer::render decides how many `optixLaunch`s to
+issue".
+
+### 17.3 Closest-hit performs BSDF + next-ray generation
+
+(Per the user's second bullet; consolidates §7.)
+
+When `optixTrace` resolves to a hit, the closest-hit
+program populates the OptiX payload with everything the
+raygen needs to evaluate the hit's contribution and
+produce the next ray. The CH owns the *shading-time*
+responsibilities; the raygen owns the *integration-time*
+responsibilities. Together they "perform next-ray
+generation" as a coordinated unit.
+
+The split (per §7.1):
+
+| Responsibility                                | Program | Why                                                  |
+|-----------------------------------------------|---------|------------------------------------------------------|
+| Hit-data extraction (t, position, normal)     | CH      | OptiX intrinsics live here                           |
+| Material lookup via index → MaterialParams    | CH      | Indexed read; needs primitive metadata + materials   |
+| Emission evaluation + Doppler/searchlight     | CH      | Emission radiance is hit-local; Doppler needs ray dir + observer.velocity |
+| Throughput update (multiply by albedo)        | raygen  | Throughput is per-thread state; lives across bounces |
+| Cosine-hemisphere direction sampling          | raygen  | Needs RNG state, which lives raygen-local            |
+| Tangent → world rotation around hit normal    | raygen  | Same RNG-locality reason                             |
+| Next ray construction (origin + direction)    | raygen  | Composed from hit data (CH-provided) + sampled dir   |
+
+The CH provides the *raw materials* — emission radiance
+(post-modulation), albedo, hit normal, hit position. The
+raygen *assembles* the next ray from those raw materials
++ its own RNG-driven hemisphere sample.
+
+This is why the user-prompt phrase "CH performs BSDF +
+next-ray generation" is true at the *logical* level
+(the BSDF evaluation + the data needed for the next ray
+both happen at hit time) but the *physical* split puts
+the actual ray construction in the raygen so the RNG
+state never has to round-trip through OptiX payload
+registers.
+
+### 17.4 Miss returns environment
+
+(Per the user's third bullet; consolidates §6.)
+
+When `optixTrace` finds no hit, the miss program writes
+the environment radiance (with §6.4 Doppler/searchlight
+modulation already applied) into the payload's emission
+slots and clears the hit flag:
+
+```
+payload.emission = env_color * env_intensity, modulated by Doppler/searchlight
+payload.hit_flag = 0
+```
+
+The raygen reads `payload.hit_flag == 0`, treats the
+emission slots as the env contribution (multiplied by
+the running throughput), accumulates into radiance, and
+breaks the bounce loop. The miss program is a pure
+function `(direction, observer, env_color, env_intensity)
+→ radiance`.
+
+The miss happens at **every bounce** that escapes the
+scene, not just the primary ray. A primary-ray miss
+gives the radiance for "what the observer sees in this
+direction at infinity"; a bounce-ray miss gives the
+indirect radiance from "what an interreflection
+direction sees at infinity". Both modulated by Doppler
+per §6.4.1's "every miss" choice.
+
+### 17.5 Accumulation buffer remains shared with CUDA path
+
+(Per the user's fourth bullet; the **novel content** in §17.)
+
+This is one of the migration's quietest wins: the OptiX
+backend reuses the Stage 11B `rr::renderer::Accumulation
+Buffer` **byte-for-byte unchanged**. No new
+accumulation infrastructure, no second resolve kernel,
+no per-backend buffer type. The integration shape:
+
+| Step                          | CUDA backend (Stage 11C)              | OptiX backend (Stage 12B)             |
+|-------------------------------|---------------------------------------|---------------------------------------|
+| Allocate sample buffer        | `GpuBuffer<float>` w·h·4 floats       | identical                             |
+| Allocate accumulation buffer  | `AccumulationBuffer::resize`          | identical                             |
+| Per-spp: produce sample frame | `<<<...>>> launch_pathtrace_sample()` | `optixLaunch(..., d_launch_params, ...)` |
+| Per-spp: accumulate           | `accum.accumulate_sample(sample.device_ptr())` | identical |
+| End: resolve                  | `accum.resolve_to_image()`            | identical                             |
+| End: save PPM                 | `Image::save_ppm`                     | identical                             |
+
+Only the third row changes between backends — the
+sample-frame producer. Everything else (allocate,
+accumulate, resolve, save) is shared.
+
+This works because `accumulate_sample` takes a *device
+pointer* to a w·h·4-float buffer in Rgba32F layout. As
+long as the OptiX raygen writes to that exact layout
+(which it does — see §5.3.2), the AccumulationBuffer
+treats CUDA-produced and OptiX-produced sample frames
+indistinguishably. The Stage 11B kernels (`k_accum_add`,
+`k_accum_resolve`) read element-wise from the device
+pointer; they do not care whether a CUDA kernel or an
+OptiX raygen wrote those bytes.
+
+The implication for the migration: an implementer
+swapping `<<<launch_pathtrace_sample>>>` for
+`optixLaunch(...)` inside `PathTracer::render` does not
+have to re-validate the accumulation chain. Stage 11B's
+correctness audit (`pathtracer_tests` covering the RNG
++ Sampling primitives, the gpu_accumulation_test
+convergence-to-mid-gray fixture) covers both backends'
+sample-frame consumers identically. The post-Stage-11
+audit's recommendation to produce the four expected
+artefacts on a CUDA host is what locks down the
+accumulation pipeline; OptiX's adoption of that pipeline
+is a structural reuse, not a new implementation.
+
+### 17.6 Relativity at raygen (direction) and in shading (radiance)
+
+(Per the user's fifth bullet; consolidates §14.4.)
+
+Relativity splits across the per-pixel flow at exactly
+two sites:
+
+| Effect          | Site                              | Operates on   | Reference |
+|-----------------|-----------------------------------|---------------|-----------|
+| **Aberration**  | raygen (primary ray only)         | direction     | §5.5, §14.4.1 |
+| **Doppler colour** | miss (env) + CH (emission); future CH (NEE) | radiance | §6.4, §7.5, §13.5 |
+| **Searchlight** | miss (env) + CH (emission); future CH (NEE) | radiance | §6.4, §7.5, §13.5 |
+
+The user's framing ("raygen for direction, shading for
+radiance") is the canonical mental model. The split is
+physical:
+
+- **Aberration** = Lorentz transformation of *which
+  photons* the observer sees. Lives at the ray's
+  origin → raygen.
+- **Doppler + searchlight** = transformation of *how*
+  those photons look. Lives at every radiance source
+  → miss (env) + CH (emission). Future NEE (12C+)
+  adds CH-side direct-light contribution Doppler.
+
+In the per-pixel sequence (§17.1):
+
+```
+raygen:
+  ray.dir = aberrateDirection(observer.velocity, ray.dir)  # ONCE, primary only
+
+bounce loop:
+  optixTrace -> CH:    payload.emission = applyDoppler...searchlight(emit, D, ...)
+  optixTrace -> miss:  payload.emission = applyDoppler...searchlight(env, D, ...)
+  raygen reads payload.emission and adds to radiance     # Doppler-modulated value flows in
+```
+
+§14.4 documented the design choice that Stage 12B
+applies aberration to the primary ray only (matches
+Stage 6-9 single-shot kernel posture, accepts the
+small physical inaccuracy that bounce-ray misses also
+get Doppler-modulated). §14.4 also documented that
+albedo is **not** Doppler-modulated — only emission
+and env radiance are. §17.6 inherits both invariants
+verbatim.
+
+### 17.7 Per-bounce sequence diagram
+
+A more granular trace through one pixel's path, showing
+the program switches and the data hand-offs:
+
+```
+[raygen, t = 0]   primary ray gen + jitter + aberration
+                  ray = primary
+                  bounce = 0
+                  throughput = (1,1,1)
+                  radiance   = (0,0,0)
+
+LOOP:
+[raygen]          if bounce >= max_bounces: exit loop
+                  optixTrace(scene_handle, ray, ..., payload)
+
+[OptiX runtime]   walk IAS → (sphere GAS or mesh GAS) → BVH traversal
+                  if no hit: dispatch [miss]
+                  else:      dispatch [closest-hit]
+
+[miss]            payload.hit_flag = 0
+                  payload.emission = applyDoppler+searchlight(env_color * env_intensity, D)
+                  return to raygen
+
+[closest-hit]     extract t, position, normal from optixGet*
+                  material_index = primitive metadata
+                  m = optixLaunchParams.materials[material_index] (or default)
+                  payload.position = position
+                  payload.normal   = normal
+                  payload.albedo   = m.baseColor
+                  payload.emission = applyDoppler+searchlight(
+                                       m.emissionColor * m.emissionStrength, D)
+                  payload.hit_flag = 1
+                  return to raygen
+
+[raygen]          if payload.hit_flag == 0:
+                    radiance += throughput * payload.emission
+                    EXIT LOOP
+
+                  radiance += throughput * payload.emission
+
+                  if bounce + 1 >= max_bounces: EXIT LOOP
+
+                  u2        = next_vec2(rng)
+                  local_dir = sample_cosine_hemisphere(u2)
+                  world_dir = align_to_normal(local_dir, payload.normal)
+                  throughput *= payload.albedo
+                  ray.origin    = payload.position + payload.normal * eps
+                  ray.direction = world_dir
+                  bounce        += 1
+                  GOTO LOOP
+
+[raygen, exit]    sample_pixels[(y*w+x)*4 + 0..2] = radiance
+                  sample_pixels[(y*w+x)*4 + 3]    = 1.0
+```
+
+The OptiX runtime's role in this diagram is the boxed
+"OptiX runtime" step: it walks the AS, picks miss vs
+closest-hit, dispatches into the right SBT record. The
+raygen never sees the AS traversal cost; it only sees
+the payload coming back. That opacity is the migration's
+performance win — the BVH traversal happens inside
+hardware-accelerated OptiX runtime code, replacing the
+linear sphere + linear triangle loops the Stage 11C
+kernel runs.
+
+### 17.8 Read / write summary across one complete path
+
+Aggregating §5 / §6 / §7 / §15's per-program tables into
+one full-path view:
+
+| Surface                              | Direction          | Frequency per pixel per launch |
+|--------------------------------------|--------------------|---------------------------------|
+| `optixLaunchParams.*` (constant memory) | device read     | many (every program invocation) |
+| `optixLaunchParams.sample_pixels[idx]` | raygen write     | once at end of path             |
+| OptiX ray payload registers          | write-then-read    | once per bounce                 |
+| `pathtracer::Rng` (raygen-local)     | read/write         | per RNG draw (jitter, hemisphere) |
+| `radiance` / `throughput` (raygen-local) | read/write     | per bounce                      |
+| AS via `optixTrace`                  | read (OptiX runtime) | per bounce                    |
+| SBT records (program identifiers)    | read (OptiX runtime) | per dispatch                  |
+| `optixLaunchParams.materials[idx]`   | CH read            | per hit                         |
+| `optixLaunchParams.spheres[idx]` / mesh | CH read         | per hit                         |
+| `optixLaunchParams.observer/params`  | raygen + miss + CH read | per relativity-using site  |
+| `optixLaunchParams.env_*`            | miss read          | per miss                        |
+
+The path-tracer host orchestration sits *outside* this
+table — its only per-launch read is the launch-params
+struct populate + cudaMemcpy + optixLaunch. Per-pixel
+state lives entirely on the device.
+
+### 17.9 Scope: what's NOT in §17
+
+Five path-tracer-related concerns this section
+deliberately defers:
+
+- **Direct light sampling (NEE).** Per §13.5 / §8.3
+  step 1: shadow rays, AH program calling
+  `optixTerminateRay`, raygen's per-bounce light
+  selection. Stage 12C+.
+- **Multiple importance sampling (MIS).** Combines
+  NEE with BSDF sampling under power heuristics for
+  reduced variance. Needs non-Lambert BSDFs to be
+  meaningful (master order #13).
+- **Russian roulette path termination.** Probabilistic
+  early termination after low-throughput bounces;
+  reduces wasted work without bias. Adds one
+  `next_float < survival_prob` check at bounce-loop
+  start; trivial on top of §17.1's loop.
+- **Adaptive sampling.** Per-pixel spp counts based on
+  variance estimates (allocates more samples to noisy
+  pixels). Needs per-pixel variance estimates in the
+  AccumulationBuffer (Stage 11B's single-counter
+  layout would extend to per-pixel; §11B BUILD_PLAN
+  noted this).
+- **Denoising.** OptiX 7+ exposes the OptiX AI
+  Denoiser (a TensorRT-based neural denoiser). Adds a
+  post-resolve step that takes the noisy
+  AccumulationBuffer output, runs the denoiser, and
+  produces a smoother frame. Master order #24.
+
+Each of these reaches into the Stage 12B path tracer's
+loop or its host orchestration; none restructure
+§17.1's per-pixel flow. The loop is the foundation;
+each of the five additions slots in at a defined
+point.
+
+---
+
 ## Sections to come
 
 Future Stage 12A sub-stages will append (one per slice or
 small group of slices):
 
 - Intersection program design
-- Path-tracing integration (iterative bounce loop in raygen,
-  payload layout, RNG state threading)
 - Planned module / file layout under `src/optix/` + CMake
   changes
 - Migration risks (toolchain, debug story, build-host

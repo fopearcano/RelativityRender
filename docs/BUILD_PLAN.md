@@ -3691,7 +3691,8 @@ sub-stages, appended to the same file.** No code is touched.
 | 12A.3.5  | OPTIX_BACKEND_PLAN.md §14 (Relativity parameter data) | ✅ |
 | 12A.3.6  | OPTIX_BACKEND_PLAN.md §15 (Launch parameters consolidation) | ✅ |
 | 12A.4.1  | OPTIX_BACKEND_PLAN.md §16 (Migration strategy) | ✅ |
-| 12A.x    | remaining IS / Path-tracing integration / file-layout / migration-risks sections | pending |
+| 12A.4.2  | OPTIX_BACKEND_PLAN.md §17 (Path tracing integration) | ✅ |
+| 12A.x    | remaining IS / file-layout / migration-risks sections | pending |
 | 12B      | minimum-viable OptiX backend     | pending |
 | 12C+     | feature parity with CUDA backend | pending |
 
@@ -4753,6 +4754,107 @@ migration risks all remain pending).**
   user's prompt scope is the strategy and §16's
   §16.7 explicitly defers the migration risks to a
   future sub-stage.
+- Documentation only — **yes**, no source under
+  `src/`, `tests/`, or `CMakeLists.txt` is touched.
+  The only edits are two markdown files.
+- Update docs/BUILD_PLAN.md — **yes**, this entry.
+
+## Stage 12A.4.2 — OptiX path-tracing integration capstone
+
+**Scope of this slice (Stage 12A.4.2): documentation-only.
+Append §17 "Path tracing integration" to
+`docs/OPTIX_BACKEND_PLAN.md` — the consolidating capstone
+for the program-side chapter (§5 - §9), analogous to §15's
+role for the data-side chapter. Puts the full path-tracer
+flow into a single linear narrative with a per-pixel
+sequence diagram, names the host/device boundary, and
+documents the structural reuse of the Stage 11B
+`AccumulationBuffer` between the CUDA and OptiX backends
+(the migration's quietest win). No code; no other sections
+(IS / planned module-file layout / migration risks remain
+pending).**
+
+### What ships
+
+- `docs/OPTIX_BACKEND_PLAN.md` §17 with subsections 17.1
+  Per-pixel flow at a glance (one-page host+device flow
+  diagram covering the spp loop on the host through the
+  bounce loop in raygen end to end), 17.2 Raygen drives
+  primary rays + the sample loop (six-item ownership
+  list consolidating §5: RNG seeding, sub-pixel jitter,
+  primary ray construction, primary aberration, bounce
+  loop control, per-sample output write), 17.3 Closest-
+  hit performs BSDF + next-ray generation (responsibility
+  table splitting CH-side shading work from raygen-side
+  integration work; explains the user-prompt phrase as
+  logical responsibility while §7's physical split keeps
+  the RNG state out of OptiX payload registers), 17.4
+  Miss returns environment (per §6's pure
+  direction-to-radiance contract; every-bounce miss
+  applies Doppler/searchlight per §6.4.1), 17.5
+  Accumulation buffer remains shared with CUDA path
+  (the migration's quietest win - the Stage 11B
+  AccumulationBuffer reuses byte-for-byte unchanged
+  between backends; a side-by-side comparison table
+  shows only the per-spp sample-frame producer differs;
+  Stage 11B's correctness audit covers both backends'
+  consumers identically), 17.6 Relativity at raygen
+  (direction) and in shading (radiance) (consolidates
+  §14.4's split with a per-effect site table; aberration
+  is one-shot at raygen primary; Doppler/searchlight is
+  per-bounce at miss + CH), 17.7 Per-bounce sequence
+  diagram (granular trace through one pixel's path
+  showing program switches and data hand-offs at the
+  OptiX-runtime boundary), 17.8 Read/write summary
+  across one complete path (aggregates the prior
+  per-program tables into a full-path view), 17.9 Scope
+  (NEE, MIS, Russian roulette, adaptive sampling,
+  denoising all explicitly deferred).
+- The footer drops "Path-tracing integration (iterative
+  bounce loop in raygen, payload layout, RNG state
+  threading)" — every other future item is preserved.
+  Remaining outstanding items: Intersection program
+  design, planned module/file layout, Migration risks.
+- This BUILD_PLAN entry + status-table row.
+
+### Architectural decisions worth highlighting
+
+- **§17 is a capstone, not a redesign.** §5/§6/§7/§9/§14
+  already established each program's role. §17
+  consolidates them into a single linear narrative an
+  implementer can read end-to-end without flipping
+  back through the prior sections.
+- **AccumulationBuffer reuse is the migration's
+  quietest win.** §17.5 documents that the Stage 11B
+  `rr::renderer::AccumulationBuffer` works byte-for-
+  byte unchanged with the OptiX raygen's sample-frame
+  output, because both backends produce sample frames
+  in identical Rgba32F layout via a device pointer.
+  The accumulate / resolve / save chain stays shared;
+  only the sample-frame *producer* differs between
+  backends.
+- **Logical vs physical CH/raygen split.** The user-
+  prompt phrase "CH performs BSDF + next-ray
+  generation" is true at the *logical* level (BSDF
+  evaluation + next-ray data both happen at hit time)
+  but §7's physical split puts the actual ray
+  construction in the raygen so the RNG state never
+  has to round-trip through OptiX payload registers.
+  §17.3 makes this clear in a responsibility table
+  rather than letting the prompt-bullet wording
+  override §7's commitment.
+- **Per-bounce sequence diagram** at §17.7 makes the
+  OptiX-runtime boundary visible — the box labelled
+  "OptiX runtime" between [raygen] and [closest-hit]
+  is where the BVH traversal happens; the raygen
+  never sees the AS traversal cost. That opacity is
+  the migration's performance win.
+
+### Hard-rule audit
+
+- Do not add other sections — **yes**, only §17 was
+  appended; the footer dropped exactly the matching
+  item ("Path-tracing integration").
 - Documentation only — **yes**, no source under
   `src/`, `tests/`, or `CMakeLists.txt` is touched.
   The only edits are two markdown files.
