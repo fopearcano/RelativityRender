@@ -3690,7 +3690,8 @@ sub-stages, appended to the same file.** No code is touched.
 | 12A.3.4  | OPTIX_BACKEND_PLAN.md §13 (Light data) | ✅ |
 | 12A.3.5  | OPTIX_BACKEND_PLAN.md §14 (Relativity parameter data) | ✅ |
 | 12A.3.6  | OPTIX_BACKEND_PLAN.md §15 (Launch parameters consolidation) | ✅ |
-| 12A.x    | remaining IS / Path-tracing integration / file-layout / risks sections | pending |
+| 12A.4.1  | OPTIX_BACKEND_PLAN.md §16 (Migration strategy) | ✅ |
+| 12A.x    | remaining IS / Path-tracing integration / file-layout / migration-risks sections | pending |
 | 12B      | minimum-viable OptiX backend     | pending |
 | 12C+     | feature parity with CUDA backend | pending |
 
@@ -4650,6 +4651,111 @@ risks remain pending).**
 - Documentation only — **yes**, no source under `src/`,
   `tests/`, or `CMakeLists.txt` is touched. The only
   edits are two markdown files.
+- Update docs/BUILD_PLAN.md — **yes**, this entry.
+
+## Stage 12A.4.1 — OptiX migration strategy
+
+**Scope of this slice (Stage 12A.4.1): documentation-only.
+Append §16 "Migration from CUDA renderer" to
+`docs/OPTIX_BACKEND_PLAN.md` covering the parallel-track
+posture (CUDA path tracer stays as reference + fallback),
+the geometry-by-geometry replacement phasing (triangles +
+spheres both via OptiX in Stage 12B, with a Phase 1 hybrid
+documented as a debugging fallback if sphere-IS hits an
+obstacle), the layered intersections → shading → path
+tracing activation order, and the explicit
+no-breaking-of-existing-flow audit boundary. No code; no
+other sections (Intersection program design, Path-tracing
+integration capstone, planned module/file layout,
+migration risks all remain pending).**
+
+### What ships
+
+- `docs/OPTIX_BACKEND_PLAN.md` §16 with subsections 16.1
+  Parallel migration: CUDA path stays as reference +
+  fallback (the dual-role split: CUDA backend as
+  correctness baseline for image regression tests, and
+  fallback for hosts without OptiX SDK / pre-RTX
+  hardware), 16.2 Geometry-by-geometry stepwise
+  replacement (three-phase table covering triangle-only,
+  triangle + sphere via built-in primitive, full
+  regression-only role for the CUDA intersection
+  helpers; Stage 12B targets phase 2 directly with
+  phase 1 as the documented fallback if sphere-IS
+  integration surfaces an obstacle), 16.3 Stepwise
+  replacement: intersections → shading → path tracing
+  (three-step layered activation: Step A intersections-
+  only with N·0.5+0.5 normal-as-RGB output,
+  Step B direct shading without bounces / accumulation,
+  Step C full path tracer = Stage 12B target; first two
+  steps are debugging milestones not shipping
+  endpoints), 16.4 No breaking of existing CLI / scene
+  flow (audit boundary listing every existing contract
+  that stays unchanged: .rrscene format, GpuScene
+  upload API, every existing CLI flag, every existing
+  test, every existing output path), 16.5 What
+  "reference" means in practice (image regression
+  framework shape; Stage 12B does NOT ship the
+  framework, but documents that the CUDA backend's
+  outputs *are* the reference), 16.6 What "fallback"
+  means in practice (--render-pathtrace continues to
+  work post-OptiX; --render-pathtrace-optix gated on
+  RR_ENABLE_OPTIX with the same shape as the existing
+  RR_ENABLE_CUDA gating; long-term reference-only
+  posture for CUDA backend post-12C/12D not committed
+  in 12B), 16.7 Scope (toolchain compatibility matrix,
+  debug story, build-system complexity all explicitly
+  deferred to a future "Migration risks" sub-stage).
+- The footer is untouched — §16 is the strategy
+  capstone; "Migration risks" stays as an outstanding
+  item for a future sub-stage covering toolchain /
+  debug / build-system specifics.
+- This BUILD_PLAN entry + status-table row.
+
+### Architectural decisions worth highlighting
+
+- **Parallel migration, not in-place rewrite.** The
+  OptiX backend is added alongside the CUDA backend.
+  Both backends remain compiled into the same executable
+  when CUDA + OptiX are both available; the user picks
+  one per render via a CLI flag. The CUDA path keeps
+  working through every sub-slice of the migration.
+- **Stage 12B targets phase 2 directly.** Both spheres
+  and triangles via OptiX (using the built-in sphere
+  primitive in OptiX 7.5+). Phase 1 (triangles via
+  OptiX, spheres still via CUDA loop in the closest-
+  hit) is documented as a fallback if sphere-IS
+  integration surfaces an obstacle, but is not the
+  baseline plan.
+- **Three-step activation order.** Steps A → B → C
+  give the implementer compilable milestones at every
+  layer of complexity (intersections without shading,
+  shading without bouncing, full path tracer). Each
+  step's output is comparable to an existing CUDA
+  diagnostic, isolating regressions to the layer they
+  are introduced.
+- **No breaking of existing flow** — strict additive
+  contract. Every existing CLI flag, every existing
+  test, every existing output path stays byte-
+  identical. The migration adds new flags and new
+  output paths; it changes nothing existing.
+- **CUDA backend's dual role post-OptiX.** Reference
+  (correctness baseline for image regression) +
+  fallback (works on pre-RTX hosts and on hosts
+  without OptiX SDK installed). Stage 12B does NOT
+  commit to a long-term "reference-only" relegation;
+  both backends are first-class through Stage 12C.
+
+### Hard-rule audit
+
+- Do not add other sections — **yes**, only §16 was
+  appended; the footer is unchanged because the
+  user's prompt scope is the strategy and §16's
+  §16.7 explicitly defers the migration risks to a
+  future sub-stage.
+- Documentation only — **yes**, no source under
+  `src/`, `tests/`, or `CMakeLists.txt` is touched.
+  The only edits are two markdown files.
 - Update docs/BUILD_PLAN.md — **yes**, this entry.
 
 ## Next stage

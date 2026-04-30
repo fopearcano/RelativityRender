@@ -3534,6 +3534,313 @@ needing to read the rest of the doc front-to-back.
 
 ---
 
+## 16. Migration from CUDA renderer
+
+§5 - §15 documented the OptiX backend's design as if the
+project were starting from scratch. §16 reverses the
+viewpoint: the project is *not* starting from scratch.
+The Stage 11C CUDA path tracer is a complete, working
+renderer that produces correct images today (modulo the
+build-host CUDA-toolchain caveat). §16 documents how the
+OptiX migration coexists with that CUDA path —
+deliberately a parallel track, not an in-place rewrite —
+so the existing renderer keeps working through every
+sub-slice of the migration and can serve as the
+correctness reference / production fallback after the
+OptiX backend ships.
+
+### 16.1 Parallel migration: CUDA path stays as reference + fallback
+
+The OptiX backend is added **alongside** the CUDA backend,
+not as a replacement. Both backends remain compiled into
+the same executable when CUDA + OptiX are both available;
+the user picks one per render via a CLI flag.
+
+The CUDA path tracer's role splits into two after the
+OptiX backend ships:
+
+- **Reference**. The CUDA backend stays the
+  correctness baseline. Image regression tests render
+  the same fixture through both backends and diff the
+  resulting PPMs; differences should be within
+  Monte-Carlo noise (a few percent per pixel for low
+  spp counts, vanishing as spp climbs). Stage 11C's
+  `pathtracer_tests` (host-side RNG / Sampling
+  invariants) keeps working unchanged; the same RNG
+  primitives drive both backends, so any device-side
+  divergence isolates to either the kernel-launch
+  path (CUDA `<<<...>>>` vs `optixLaunch`) or the
+  closest-hit semantics (linear loop vs BVH).
+- **Fallback**. The CUDA backend works on hosts where
+  OptiX is unavailable: pre-RTX hardware (compute
+  capability < 7.5), build hosts without the OptiX
+  SDK installed, environments where the OptiX 7+
+  driver-side support is missing. `--render-pathtrace`
+  continues to work in these cases, against the CUDA
+  path tracer; only `--render-pathtrace-optix` (or
+  whatever the new flag is named) requires OptiX.
+
+This dual-role structure is why §3.5 of this document
+called CUDA "the project's correctness reference" and
+OptiX "the project's performance backend". Neither
+displaces the other.
+
+### 16.2 Geometry-by-geometry stepwise replacement
+
+The user's "Start with triangles via OptiX, keep spheres
+initially in CUDA or convert later" bullet describes a
+staged geometry replacement. Three possible phases:
+
+| Phase | Triangle hits | Sphere hits | Notes                                                                 |
+|-------|---------------|-------------|-----------------------------------------------------------------------|
+| 1     | OptiX BVH     | CUDA linear loop | Hybrid intermediate; the kernel runs OptiX trace for triangles, then a CUDA-style sphere loop for sphere candidates. Useful only as a debugging shape if sphere IS turns out to be tricky to integrate. |
+| 2     | OptiX BVH     | OptiX BVH (built-in sphere primitive in 7.5+) | The Stage 12B target. Single `optixTrace` per ray covers both primitive types via the IAS (§10.1).                       |
+| 3     | OptiX BVH     | OptiX BVH   | The CUDA path tracer's `intersect_sphere` / `intersect_triangle` helpers become regression-only - reference code that the CUDA backend keeps but the OptiX backend never calls. |
+
+Stage 12B targets **phase 2 directly**; phase 1 is
+documented as an option if implementation surfaces an
+unexpected obstacle to sphere-IS integration. The
+built-in sphere primitive in OptiX 7.5+ makes phase 1's
+hybrid posture unnecessary in the common case — sphere
+GAS construction is the same shape as triangle GAS
+construction (per §10.2).
+
+The "convert later" framing is the natural fallback if
+sphere-IS-via-OptiX hits a snag: ship Phase 1 first
+(triangle GAS via OptiX, sphere intersections still in
+the OptiX raygen via the existing
+`rr::cuda::intersect_sphere` helper called per
+sphere-array entry inside the closest-hit / raygen),
+then add the sphere GAS in Stage 12B's second slice. The
+RR_HD inline `intersect_sphere` already runs on both
+host and device, so calling it from inside an OptiX
+program is mechanically straightforward.
+
+### 16.3 Stepwise replacement: intersections → shading → path tracing
+
+The user's "Stepwise replacement (intersections →
+shading → path tracing)" bullet describes a layered
+activation order through the OptiX program model. Three
+layers, each a possible debugging endpoint:
+
+#### Step A — Intersections only (debug shape, not shipped)
+
+OptiX `optixTrace` computes the closest hit; the closest-
+hit program writes minimal hit data (t, world position,
+world normal) into the payload; the raygen does
+*nothing else* — it consumes the payload and writes
+`(N · 0.5 + 0.5)` as RGB to the framebuffer. Equivalent
+to the Stage 6B `--render-sphere` diagnostic, but with
+the OptiX BVH as the traversal layer.
+
+**Purpose**: validate the OptiX pipeline + AS build +
+SBT layout end-to-end before any shading complexity is
+in the loop. If this image is wrong, the AS build is
+wrong; the rest of the renderer's complexity is not in
+play.
+
+**Status**: not a shipping endpoint. A useful shape for
+the implementer's first compilable OptiX runs; not part
+of the Stage 12B CLI surface.
+
+#### Step B — Direct shading (no bounces, no accumulation)
+
+The CH program writes Lambert albedo + emission into the
+payload; the miss program writes the env fallback (with
+Doppler/searchlight per §6.4); the raygen integrates one
+hit per pixel:
+
+```
+radiance = throughput * emission   (CH path)
+        + env_color * env_intensity  (miss path)
+```
+
+No bounce loop, no accumulation buffer, no spp loop. One
+sample per pixel, one trace per pixel. Equivalent in
+output shape to Stage 9B's `k_render_scene` shading
+output but driven through OptiX programs instead of a
+CUDA kernel.
+
+**Purpose**: validate the §6 / §7 / §14 program-level
+shading logic + Doppler/searchlight integration before
+adding the bounce loop's complexity.
+
+**Status**: not a shipping endpoint either; a milestone
+for the implementer to sanity-check the shading +
+relativity contract before Step C.
+
+#### Step C — Full path tracer (Stage 12B target)
+
+The raygen runs the iterative bounce loop (§5.1), the
+CH writes payload per §7.3's register layout, the miss
+writes env per §6.3, the host-side `PathTracer::render`
+spp loop accumulates samples through the existing Stage
+11B `AccumulationBuffer`. End-to-end equivalent of Stage
+11C's `--render-pathtrace`, but on top of the OptiX
+program model.
+
+**Status**: the Stage 12B shipping target. The CLI flag
+`--render-pathtrace-optix` (or a similar name decided
+when the implementation slice picks it) routes through
+this path; the existing `--render-pathtrace` continues
+to use the Stage 11C CUDA path.
+
+The order matters: Step A validates the OptiX
+infrastructure with no shading; Step B adds shading
+without bouncing; Step C adds the bounce loop. Each
+step's output is comparable to an existing CUDA
+diagnostic, so the implementer can spot the regression
+at the layer it is introduced rather than debugging
+the whole pipeline at once.
+
+### 16.4 No breaking of existing CLI / scene flow
+
+The migration is strictly additive at every user-facing
+surface. The contracts that stay the same:
+
+- **`.rrscene` format.** The Stage 10B parser is the
+  single source of truth for both backends. No
+  format changes, no new section types, no new
+  shorthand. Both backends consume `Scene::*` structs
+  through `GpuScene::*()` accessors.
+- **`GpuScene` upload API.** `upload_camera`,
+  `upload_relativity`, `upload_spheres`,
+  `upload_materials`, `upload_lights`, `upload_mesh`
+  all work unchanged. The OptiX backend reads the same
+  device pointers the CUDA backend does (per §9.2 /
+  §10.2's zero-copy reuse).
+- **CLI surface for existing actions.**
+  `--render-pathtrace`, `--render-from-scene`,
+  `--render-full-scene`, `--render-scene`,
+  `--render-direct-lighting`, `--render-relativistic`,
+  `--render-mesh-scene`, `--render-material-scene`,
+  `--render-triangle`, `--render-rays`,
+  `--render-sphere`, `--render-rng-test`,
+  `--render-accumulation-test` all continue to work
+  with byte-identical output. The migration adds new
+  flags; it does not change the meaning of any
+  existing one.
+- **Existing tests.** `math_tests`, `image_tests`,
+  `gpu_tests`, `pathtracer_tests` continue to pass
+  unchanged. The migration adds OptiX-specific tests
+  (when ctest infrastructure for OptiX lands —
+  itself a future slice), but does not delete or
+  rewrite existing ones.
+- **Output paths.** Existing actions write to the same
+  paths they did before. Stage 12B's
+  `--render-pathtrace-optix` writes to a *new*
+  output path (e.g., `output/pathtrace_optix_spp_*.ppm`)
+  — distinct from the CUDA path's
+  `output/pathtrace_spp_*.ppm` — so users can compare
+  the two artefacts side by side without one
+  overwriting the other.
+
+The audit boundary: anywhere in the codebase that an
+existing test, fixture, or CLI invocation produces a
+specific output, the OptiX migration leaves that
+production unchanged. The only diff a user sees after
+the migration is the existence of new flags + new
+output paths.
+
+### 16.5 What "reference" means in practice
+
+A regression test framework comparing CUDA and OptiX
+outputs is the natural artefact of this migration's
+"keep CUDA as reference" stance. The shape:
+
+- Pick a fixture (e.g.,
+  `scenes/test_full_scene.rrscene`).
+- Render through the CUDA backend at high spp (1024+);
+  call this the *reference frame*.
+- Render through the OptiX backend at the same spp.
+- Compute per-pixel L2 distance between the two
+  Rgba32F frames; aggregate as RMS error.
+- Pass threshold: a few percent (loose), tightening
+  toward zero as both backends mature.
+
+Stage 12B does NOT ship this framework; it documents
+that the CUDA backend's regression-baseline value
+*enables* it. The framework's implementation is its
+own slice when the OptiX backend stabilises enough for
+side-by-side comparisons to be meaningful.
+
+The Stage 11 audit (`docs/STAGE_11_AUDIT.md`)
+recommended running the four expected artefacts on a
+CUDA host before advancing; that recommendation
+extends here. The CUDA backend's outputs *are* the
+reference; producing them is the prerequisite for
+calling any OptiX output "correct".
+
+### 16.6 What "fallback" means in practice
+
+After the OptiX backend ships:
+
+- **`--render-pathtrace <file>`** continues to work
+  against the CUDA path tracer on every host where
+  CUDA itself works (Compute Capability ≥ 7.5 for the
+  Stage 11A/B/C kernels; pre-Turing hosts already get
+  a "requires CUDA" error today).
+- **`--render-pathtrace-optix <file>`** requires both
+  CUDA *and* the OptiX runtime/SDK. On hosts without
+  OptiX, the action returns a "requires OptiX"
+  error structurally identical to the existing
+  "requires CUDA" pattern — same Logger::error
+  message shape, same exit code.
+- The build system gates OptiX on a new
+  `RR_ENABLE_OPTIX` CMake option (parallel to the
+  existing `RR_ENABLE_CUDA`). When it is OFF (the
+  default on non-NVIDIA build hosts), the OptiX
+  source files do not compile and the
+  `--render-pathtrace-optix` action returns
+  "requires OptiX. Rebuild with -DRR_ENABLE_OPTIX=ON
+  ...". This is the host-only build path's exact
+  shape today for `--render-pathtrace`; the OptiX
+  variant just adds a second axis.
+
+The long-term picture (post Stage 12C / 12D, when the
+OptiX backend has full feature parity with the CUDA
+path tracer): the CUDA path may relegate to
+reference-only status — kept compiled, kept tested,
+but no longer the recommended user-facing path.
+Stage 12B does not make that call. Both backends are
+first-class through Stage 12C.
+
+### 16.7 Scope: what's NOT in §16
+
+Three migration-related concerns this section
+deliberately defers to a future sub-stage covering
+"Migration risks":
+
+- **Toolchain compatibility matrix.** Which OptiX
+  versions does the implementation target? OptiX 7.5+
+  for the built-in sphere primitive (§10.2.1); OptiX
+  7.6+ for the 32-payload-register layout (§7.3); OptiX
+  8.x for the latest pipeline features. The matrix
+  with driver / CUDA-toolkit / OS dependencies belongs
+  in the migration-risks sub-stage.
+- **Debug story.** OptiX programs are harder to debug
+  than CUDA kernels: limited `printf` support inside
+  some program types, no native breakpoints in
+  closest-hit / any-hit, harder to bisect issues
+  between AS build and program code. Migration-risks
+  sub-stage covers this.
+- **Build-system complexity.** OptiX programs compile
+  via PTX or OptiXIR intermediates; the CMake
+  integration (custom NVCC commands, embedded
+  PTX-as-cpp-string, pipeline linkage) is non-trivial.
+  Migration-risks sub-stage + the file-layout sub-
+  stage together cover this.
+
+§16's scope is the **strategy**: keep the CUDA path,
+add OptiX alongside it, replace geometry by geometry
+and layer by layer, never break the existing flow.
+The risks of executing that strategy belong in their
+own sub-stage. The Stage 12B implementation slice is
+where strategy meets engineering reality; for now,
+the strategy is documented + safe.
+
+---
+
 ## Sections to come
 
 Future Stage 12A sub-stages will append (one per slice or
