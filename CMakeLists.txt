@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.20)
 
 project(RelativityRender
     VERSION     0.1.0
-    DESCRIPTION "RelativityRender - GPU renderer platform (Stage 11C: minimal GPU path tracer)"
+    DESCRIPTION "RelativityRender - GPU renderer platform (Stage 12B.1: OptiX CMake option)"
     LANGUAGES   CXX
 )
 
@@ -21,14 +21,35 @@ endif()
 option(RR_BUILD_TESTS "Build tests"                                    ON)
 option(RR_ENABLE_CUDA "Enable CUDA backend (requires CUDA Toolkit)"   OFF)
 
+# Stage 12B.1: option-flag-only slice. When OFF (default) the build is
+# byte-identical to before; when ON we print a status note that OptiX
+# support has been requested. Sources, headers, and find_package(OptiX)
+# wiring land in subsequent Stage 12B sub-stages - this slice
+# deliberately does nothing else so the build stays clean on hosts
+# without the OptiX SDK.
+option(RELATIVITYRENDER_ENABLE_OPTIX
+       "Request OptiX backend (Stage 12B.1: flag-only; no sources / headers wired yet)"
+       OFF)
+
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
-message(STATUS "RelativityRender ${PROJECT_VERSION} (Stage 11C: minimal GPU path tracer)")
+message(STATUS "RelativityRender ${PROJECT_VERSION} (Stage 12B.1: OptiX CMake option)")
 
 message(STATUS "  Build type   : ${CMAKE_BUILD_TYPE}")
 message(STATUS "  C++ standard : ${CMAKE_CXX_STANDARD}")
 message(STATUS "  Build tests  : ${RR_BUILD_TESTS}")
 message(STATUS "  CUDA backend : ${RR_ENABLE_CUDA}")
+
+# Stage 12B.1: when the user has requested OptiX support, print a
+# status note acknowledging the request. This sub-stage does NOT wire
+# OptiX sources, find_package(OptiX), or any include paths - those
+# land in subsequent 12B.x slices. The flag's only effect today is
+# this message.
+if(RELATIVITYRENDER_ENABLE_OPTIX)
+    message(STATUS "  OptiX backend: requested "
+                   "(-DRELATIVITYRENDER_ENABLE_OPTIX=ON; flag-only in 12B.1, "
+                   "no OptiX sources / headers wired yet)")
+endif()
 
 # Optional CUDA toolchain. Only required when RR_ENABLE_CUDA is ON.
 # Stage 6 introduces the first .cu translation units (CudaTestKernel.cu

@@ -3701,7 +3701,8 @@ sub-stages, appended to the same file.** No code is touched.
 | 12A.4.3.7 | OPTIX_BACKEND_PLAN.md §24 (Separation from CUDA) | ✅ |
 | 12A.4.4   | OPTIX_BACKEND_PLAN.md §25 (Risks)                | ✅ |
 | 12A.4.5   | OPTIX_BACKEND_PLAN.md §26 (First implementation milestone) | ✅ |
-| 12A.x    | remaining IS / CMake integration sections | pending |
+| 12A.x    | remaining IS section (Intersection program) | pending |
+| 12B.1    | RELATIVITYRENDER_ENABLE_OPTIX CMake option (flag-only) | ✅ |
 | 12B      | minimum-viable OptiX backend     | pending |
 | 12C+     | feature parity with CUDA backend | pending |
 
@@ -5599,6 +5600,108 @@ introduced. No code; no other sections.**
   `src/`, `tests/`, or `CMakeLists.txt` is touched.
   The only edits are two markdown files.
 - Update docs/BUILD_PLAN.md — **yes**, this entry.
+
+## Stage 12B.1 — OptiX CMake option (flag-only)
+
+**Scope of this slice (Stage 12B.1): the first
+*implementation* slice in Stage 12B (every 12A.x
+sub-stage was documentation-only). Adds the
+`RELATIVITYRENDER_ENABLE_OPTIX` CMake option (defaults
+OFF). When OFF the build is byte-identical to before;
+when ON a single CMake status message acknowledges the
+request. No OptiX sources are added, no
+`find_package(OptiX)` is invoked, no headers are
+included. The flag's only effect today is the status
+message.**
+
+### What ships
+
+- `CMakeLists.txt`:
+  - New `option(RELATIVITYRENDER_ENABLE_OPTIX ... OFF)`
+    declared after `RR_ENABLE_CUDA`. The option uses
+    the `RELATIVITYRENDER_*` prefix per the user's
+    spec rather than the existing `RR_*` shorthand;
+    naming convention diverges deliberately to honour
+    the prompt verbatim.
+  - Conditional `if(RELATIVITYRENDER_ENABLE_OPTIX)`
+    block in the project banner that prints
+    `OptiX backend: requested
+    (-DRELATIVITYRENDER_ENABLE_OPTIX=ON; flag-only in
+    12B.1, no OptiX sources / headers wired yet)`.
+  - Stage label bumped from "Stage 11C: minimal GPU
+    path tracer" to "Stage 12B.1: OptiX CMake
+    option" in both the `project(...)` description
+    and the project-banner status message — the
+    first stage-label bump since Stage 11C, since
+    every 12A.x sub-stage was documentation-only.
+- `docs/BUILD_PLAN.md`: this entry + a status-table
+  row for 12B.1.
+
+### Architectural decisions worth highlighting
+
+- **Naming honours the user's prompt verbatim.** The
+  existing options use the `RR_*` prefix
+  (`RR_BUILD_TESTS`, `RR_ENABLE_CUDA`); the user's
+  prompt specifies `RELATIVITYRENDER_ENABLE_OPTIX`.
+  The new option uses the user's exact name even
+  though it diverges from the established prefix.
+  Renaming to `RR_*` for consistency would be a
+  silent override of the prompt; the current
+  divergence is documented here so a future
+  cleanup pass can decide whether to rename or
+  alias.
+- **OFF is byte-identical to before.** With the
+  default OFF state, `cmake --build` produces an
+  identical bin/RelativityRender, identical
+  static libraries, and identical ctest behaviour.
+  The only diff visible to a Stage 11C-era operator
+  is the project description string ("Stage
+  12B.1...") in `cmake ..` output.
+- **ON does nothing real yet.** The user prompt is
+  explicit: `When ON, print a CMake status message
+  that OptiX support is requested.` No `find_package`,
+  no language enable, no source list additions. The
+  option is a load-bearing flag for future 12B.x
+  slices to gate their actual OptiX wiring against,
+  not a working OptiX activation in itself.
+- **Flag is the contract.** Every future 12B.x slice
+  that adds OptiX functionality will gate on
+  `if(RELATIVITYRENDER_ENABLE_OPTIX)`; the option's
+  name is the contract those future slices read.
+  Establishing it now lets the future work be
+  additive without renaming dance.
+
+### Hard-rule audit
+
+- Do not add OptiX source files yet — **yes**, no
+  files under `src/optix/` exist; CMakeLists.txt
+  has no `add_library(rr_optix ...)` or
+  `target_sources(... src/optix/...)` lines.
+- Do not include OptiX headers yet — **yes**, no
+  `#include <optix.h>` anywhere in the tree; no
+  `find_package(OptiX)` invocation.
+- Must compile with option OFF — **yes**, host-only
+  build is clean under `-Wall -Wextra -Wpedantic`,
+  no warnings; `ctest` reports 4/4. Build with ON
+  is also clean (the only diff is the status
+  message; no source compiles differently because
+  the option does nothing else).
+- Update docs/BUILD_PLAN.md — **yes**, this entry +
+  status-table row.
+
+### Verified at the build
+
+- `cmake -DRELATIVITYRENDER_ENABLE_OPTIX=OFF ..`
+  (default): banner shows the four existing
+  status lines (Build type / C++ standard / Build
+  tests / CUDA backend); no OptiX line. Build
+  clean; ctest 4/4 passes.
+- `cmake -DRELATIVITYRENDER_ENABLE_OPTIX=ON ..`:
+  banner adds a fifth line `OptiX backend:
+  requested (-DRELATIVITYRENDER_ENABLE_OPTIX=ON;
+  flag-only in 12B.1, no OptiX sources / headers
+  wired yet)`. Build still clean; ctest 4/4
+  unchanged.
 
 ## Next stage
 
