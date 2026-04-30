@@ -2950,14 +2950,312 @@ non-Lambert BSDFs) catches up.
 
 ---
 
+## 14. Relativity parameter data
+
+The relativity parameters are the smallest scene data
+surface (28 bytes total) but the most distinctive — they
+are what makes RelativityRender different from a textbook
+GPU path tracer. §14 consolidates the relativity routing
+that §5 / §6 / §7 / §13 each touched on from one program's
+viewpoint into a single data-flow section, with explicit
+field semantics, per-program application sites, and the
+"where applied" answer the user's bullet asks for
+(raygen-for-direction vs shading-for-radiance).
+
+### 14.1 Source
+
+Relativity parameters flow from host to device through
+the existing parser → Scene → upload chain, identical in
+shape to materials (§12.1) and lights (§13.1):
+
+```
+.rrscene file ("relativity" object)
+              │
+              │  Stage 10B.4 parser (apply_relativity)
+              │  - canonical observer_velocity Vec3 OR
+              │    betaVelocity + velocityDirection shorthand
+              │    are both accepted; parser composes them into
+              │    a single Vec3
+              ▼
+rr::scene::Scene::observer  (Observer POD)
+rr::scene::Scene::relativity  (RelativityParams POD)
+              │  GpuScene::upload_relativity(observer, params)
+              │  - host snapshot only; no device buffer needed
+              ▼
+GpuScene's observer_ + params_ host members
+              │  GpuScene::observer() / .params() return-by-value
+              ▼
+optixLaunchParams.observer   (28 B host POD copy)
+optixLaunchParams.params     (16 B host POD copy)
+              │  read by raygen / miss / CH on every program invocation
+              ▼
+Observer + RelativityParams (consumed by the relativity helpers
+                             in relativity/RelativityMath.h)
+```
+
+Two notes on the path:
+
+1. **Authoring shorthands resolve at parse-time.** The
+   `.rrscene` format's §6.1 shorthand (`betaVelocity` +
+   `velocityDirection` as a polar-form alternative to the
+   canonical `observer_velocity` Vec3, plus
+   `aberrationStrength` / `dopplerStrength` /
+   `searchlightStrength` aliases) is handled entirely by
+   the Stage 10B.4 parser. By the time the data reaches
+   `Scene::observer` / `Scene::relativity` it is in the
+   canonical POD form. The OptiX backend does not see the
+   shorthand and does not need to.
+2. **No device buffer for the PODs.** Unlike materials /
+   lights / spheres / mesh data (which need
+   `GpuBuffer<T>` allocations because they are arrays),
+   the observer + params are scalar PODs that fit
+   trivially in `optixLaunchParams`'s constant-memory
+   bind. `GpuScene::upload_relativity` is host-only —
+   it copies the snapshot into the GpuScene's host
+   members; no device upload happens until the per-launch
+   `optixLaunchParams` cudaMemcpy fires.
+
+### 14.2 Observer POD field list
+
+The Observer POD lives in `relativity/RelativityParams.h`:
+
+| Field      | Type | Size | Purpose                                                                   |
+|------------|------|-----:|---------------------------------------------------------------------------|
+| `velocity` | Vec3 | 12 B | 3-velocity in c-units (each component `β = v / c`); `length(velocity) < 1` invariant |
+
+Total: **12 bytes** per observer.
+
+The parser produces a single Vec3 regardless of the
+authoring form. The user's "betaVelocity,
+velocityDirection" bullet refers to the §6.1 polar-form
+shorthand; the canonical Vec3 is what the device-side
+helpers consume.
+
+### 14.3 RelativityParams POD field list
+
+The RelativityParams POD lives in the same header:
+
+| Field                    | Type  | Size | Purpose                                                                      |
+|--------------------------|-------|-----:|------------------------------------------------------------------------------|
+| `enable_aberration`      | bool  |  1 B | Master gate on primary-ray aberration (raygen)                              |
+| `enable_doppler`         | bool  |  1 B | Master gate on Doppler colour shift (miss + CH; future CH for NEE)          |
+| `enable_searchlight`     | bool  |  1 B | Master gate on relativistic beaming (miss + CH; future CH for NEE)          |
+| `doppler_color_strength` | float |  4 B | Scalar in `[0, ∞)` mixing identity ↔ full Doppler shift                     |
+| `searchlight_strength`   | float |  4 B | Scalar in `[0, ∞)` mixing identity ↔ full intensity boost                   |
+| `max_beta`               | float |  4 B | Cap on `length(velocity)` so `γ` stays finite (parser-validated `< 1`)      |
+
+Total (with C++ padding to align the floats): **16 bytes**
+per params POD.
+
+The user's "aberration, doppler, searchlight strengths"
+bullet maps to:
+
+- **Aberration**: `enable_aberration` only (boolean).
+  The §6.4.1 design choice intentionally collapsed
+  Stage 10B.4's `aberrationStrength` shorthand onto the
+  boolean as a `> 0` gate — there is no
+  `aberration_strength` float in the POD because the
+  current relativity helpers (`aberrateDirection` in
+  `relativity/RelativityMath.h`) do not take a strength
+  parameter. Activating fractional aberration is a
+  future relativity-helper change, not a POD-layout
+  change today.
+- **Doppler**: `enable_doppler` (gate) +
+  `doppler_color_strength` (intensity blend).
+  `applyDopplerColor(color, D, strength)` lerps between
+  identity (strength = 0, no shift) and the full
+  shift (strength = 1).
+- **Searchlight**: `enable_searchlight` (gate) +
+  `searchlight_strength` (intensity blend).
+  `searchlightFactor(D, strength)` lerps between identity
+  (strength = 0) and the full beaming factor.
+
+### 14.4 Where applied: raygen for direction, shading for radiance
+
+This is the central question §14 answers. The relativistic
+modulation splits into two complementary kinds of effect,
+applied at different program sites:
+
+| Effect          | Acts on        | Program site(s)                            | Subsection refs              |
+|-----------------|----------------|--------------------------------------------|------------------------------|
+| **Aberration**  | ray direction  | raygen (primary ray only)                  | §5.5                         |
+| **Doppler colour** | radiance     | miss (env contribution) + CH (emission); future CH (direct lighting via NEE) | §6.4 + §7.5 + §13.5 |
+| **Searchlight** | radiance       | miss (env contribution) + CH (emission); future CH (direct lighting via NEE) | §6.4 + §7.5 + §13.5 |
+
+The split is physical: aberration is a Lorentz
+transformation of *directions* (changes which photons
+the observer sees), Doppler + searchlight are
+transformations of *radiance* (changes how those photons
+are seen). Aberration belongs at the ray's *origin*
+(raygen, where the primary ray's direction is generated);
+Doppler + searchlight belong at every *radiance source*
+(miss for env radiance, CH for emission, future CH for
+direct light contributions).
+
+#### 14.4.1 Aberration — raygen, primary ray only
+
+Per §5.5 + §6.4.1, Stage 12B applies `aberrateDirection`
+to the **primary ray's direction only**. Bounce rays use
+the world-frame direction returned by
+`pathtracer::sample_cosine_hemisphere` against the hit
+normal; they do not re-enter the observer's frame.
+Pseudocode in raygen:
+
+```cpp
+rr::camera::CameraRay ray = generate_primary_ray(
+    optixLaunchParams.camera, x, y, width, height,
+    jitter.x, jitter.y);
+
+if (optixLaunchParams.params.enable_aberration) {
+    ray.direction = rr::relativity::aberrateDirection(
+        optixLaunchParams.observer.velocity,
+        ray.direction);
+}
+
+// ... bounce loop with optixTrace ...
+```
+
+Bounce rays *do not* call `aberrateDirection` (per the
+§6.4.1 deliberate-choice rationale: bounces are
+world-frame photon-walks; re-entering the observer's
+frame on every bounce has no physical justification).
+
+#### 14.4.2 Doppler + searchlight — miss + closest-hit
+
+Per §6.4 (miss / env) + §7.5 (CH / emission), the
+Doppler + searchlight modulation runs on *every* miss
+and *every* emission-bearing CH invocation. Both sites
+use the same RR_HD helpers in the same canonical order
+(colour-shift first, then intensity-scale), each gated
+on its `params.enable_*` toggle:
+
+```cpp
+const Vec3& v   = optixLaunchParams.observer.velocity;
+const Vec3  dir = optixGetWorldRayDirection();
+
+// `radiance` is env_color * env_intensity (miss)
+// or  m.emissionColor * m.emissionStrength (CH).
+
+if (params.enable_doppler || params.enable_searchlight) {
+    const float D = rr::relativity::dopplerFactor(v, dir);
+    if (params.enable_doppler) {
+        radiance = rr::relativity::applyDopplerColor(
+            radiance, D, params.doppler_color_strength);
+    }
+    if (params.enable_searchlight) {
+        radiance = radiance * rr::relativity::searchlightFactor(
+            D, params.searchlight_strength);
+    }
+}
+```
+
+The "every miss / every emission hit" stance was
+explained in §6.4.1 — Stage 12B picks the simplest
+"every ray observer-frame" model, accepting the small
+physical inaccuracy that bounce-ray misses also get
+Doppler-modulated. Future stages can refine via an
+`is_primary` payload bit (per §6.4.1's option 2) if
+artifacts surface.
+
+#### 14.4.3 Future: NEE direct lighting
+
+When NEE activates in 12C+ (per §13.5), the closest-hit
+program's direct-lighting block applies the same Doppler
++ searchlight modulation to the sampled light's
+contribution before adding it to the payload's emission
+slots. The shape is identical to §14.4.2's emission
+modulation; the only difference is the radiance source
+(`light.color * light.intensity / d²` instead of
+`m.emissionColor * m.emissionStrength`). No new
+relativity helpers; same gating; same canonical order.
+
+### 14.5 Routing: launch params, not SBT
+
+Same routing decision as the camera (§11.4):
+**`optixLaunchParams.observer` and
+`optixLaunchParams.params` live in constant memory; no
+SBT records carry relativity data.** The §9.3 general
+rule applies; the relativity-specific recap:
+
+1. **Per-launch mutability.** The observer's velocity
+   changes when the user moves the observer (interactive
+   relativistic-perception editing); the
+   `enable_*` toggles change when the artist switches
+   effects on/off. Encoding either into SBT records
+   would force an SBT rebuild on every such edit.
+2. **Tiny size.** 12 B observer + 16 B params = 28 B
+   total. Trivially broadcast through constant memory;
+   reading from the same bound symbol from raygen, miss,
+   and CH costs nothing per invocation.
+3. **Program-agnostic shared state.** Raygen reads
+   `velocity` for primary aberration; miss reads
+   `velocity` + `params` for env Doppler/searchlight;
+   CH reads the same for emission Doppler/searchlight.
+   Future NEE CH adds direct-lighting Doppler. All four
+   sites read the same authoritative copy from
+   constant memory.
+
+### 14.6 Read / write summary
+
+| Surface                                | Direction                  | Lifetime           |
+|----------------------------------------|----------------------------|--------------------|
+| `Scene::observer` (host)               | host read/write            | persistent         |
+| `Scene::relativity` (host)             | host read/write            | persistent         |
+| `GpuScene::observer_ / params_` (host) | host write at upload time  | per scene load     |
+| `optixLaunchParams.observer`           | host write per launch      | per launch         |
+| `optixLaunchParams.params`             | host write per launch      | per launch         |
+| `optixLaunchParams.observer.velocity` (device read) | device read (raygen, miss, CH) | per program invocation |
+| `optixLaunchParams.params.*` (device read) | device read (raygen, miss, CH) | per program invocation |
+
+Like materials and camera, the relativity surface is
+read-only on the device side. Per-launch host updates
+(observer position, toggle changes) are a single
+launch-params re-bind with no SBT/AS/pipeline rebuild.
+
+### 14.7 Scope: what's NOT in §14
+
+Three relativity-related concerns this section
+deliberately defers:
+
+- **Float-valued aberration strength.** The current
+  POD has only `enable_aberration` (boolean), not an
+  `aberration_strength` float. §10B.4's
+  `aberrationStrength` shorthand collapses to the
+  boolean. A future slice can add the float field +
+  extend `aberrateDirection` to take a strength
+  parameter (lerping between identity and full
+  aberration); the POD layout grows by 4 B; the
+  routing stays the same.
+- **Bounce-ray relativistic effects.** §6.4.1
+  documented Stage 12B's choice to apply Doppler on
+  every miss (including bounce-ray misses). Aberration
+  is intentionally primary-only. A future "physically
+  accurate relativity" mode could split the path into
+  a primary world-frame portion + a secondary observer-
+  frame transformation, but that is a substantial
+  research-grade slice beyond Stage 12B's scope.
+- **Time-variant observers.** Motion blur with a
+  moving observer (the observer accelerates during
+  the shutter window) requires multi-key observer
+  states and per-primary-ray time sampling. Tied
+  to the §10.7 motion-blur slice; activates the
+  observer's velocity into a multi-key array.
+
+The Stage 12B relativity data flow — parser →
+GpuScene::upload_relativity → launch-params PODs →
+raygen/miss/CH per-invocation reads — is a stable
+foundation. The 28 bytes carry RelativityRender's
+unique-selling-point physics through the OptiX
+boundary unchanged.
+
+---
+
 ## Sections to come
 
 Future Stage 12A sub-stages will append (one per slice or
 small group of slices):
 
 - Intersection program design
-- Relativity integration (where aberration / Doppler /
-  searchlight live across the program model)
 - Path-tracing integration (iterative bounce loop in raygen,
   payload layout, RNG state threading)
 - Planned module / file layout under `src/optix/` + CMake

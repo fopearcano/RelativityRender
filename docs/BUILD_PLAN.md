@@ -3688,7 +3688,8 @@ sub-stages, appended to the same file.** No code is touched.
 | 12A.3.2  | OPTIX_BACKEND_PLAN.md §11 (Camera data) | ✅ |
 | 12A.3.3  | OPTIX_BACKEND_PLAN.md §12 (Material data) | ✅ |
 | 12A.3.4  | OPTIX_BACKEND_PLAN.md §13 (Light data) | ✅ |
-| 12A.x    | remaining IS / Relativity data + integration / file-layout / risks sections | pending |
+| 12A.3.5  | OPTIX_BACKEND_PLAN.md §14 (Relativity parameter data) | ✅ |
+| 12A.x    | remaining IS / Path-tracing integration / file-layout / risks sections | pending |
 | 12B      | minimum-viable OptiX backend     | pending |
 | 12C+     | feature parity with CUDA backend | pending |
 
@@ -4440,17 +4441,133 @@ data, plus IS / file-layout / risks remain pending).**
   edits are two markdown files.
 - Update docs/BUILD_PLAN.md — **yes**, this entry.
 
+## Stage 12A.3.5 — OptiX relativity parameter data design
+
+**Scope of this slice (Stage 12A.3.5): documentation-only.
+Append §14 "Relativity parameter data" to
+`docs/OPTIX_BACKEND_PLAN.md` covering the existing parser
+→ Scene → GpuScene host-snapshot pipeline (no device
+buffer needed; the PODs are scalar), the explicit Observer
++ RelativityParams field lists with per-effect
+strength/gating mapping, the central "where applied"
+answer (raygen-for-direction, miss/CH-for-radiance), the
+launch-params-not-SBT routing inheritance from §11.4, and
+the explicit `aberration_strength`-doesn't-exist-yet note.
+No code; no other sections (IS / Path-tracing integration
+/ file-layout / risks remain pending).**
+
+### What ships
+
+- `docs/OPTIX_BACKEND_PLAN.md` §14 with subsections 14.1
+  Source (parser → Scene → host-snapshot pipeline; the
+  authoring shorthands `betaVelocity`/`velocityDirection`
+  resolve at parse-time per Stage 10B.4 §6.1; no device
+  buffer needed because the PODs are scalar — the
+  per-launch optixLaunchParams cudaMemcpy is the only
+  device-side write), 14.2 Observer POD field list (just
+  `velocity` Vec3, 12 B), 14.3 RelativityParams POD field
+  list (3 bools + 3 floats; 16 B with C++ alignment;
+  per-field semantics with Stage 12B consumption status —
+  important note that there is NO `aberration_strength`
+  float in the POD because the current relativity helpers
+  don't take one; activating fractional aberration is a
+  future helper-API change, not a POD-layout change),
+  14.4 Where applied: raygen-for-direction vs
+  shading-for-radiance (the central answer to the user's
+  bullet; per-effect table mapping to program sites),
+  14.4.1 Aberration in raygen primary-only (per §5.5 +
+  §6.4.1), 14.4.2 Doppler + searchlight in miss + CH
+  (per §6.4 + §7.5), 14.4.3 Future NEE direct lighting
+  (CH grows the same Doppler/searchlight modulation for
+  light contributions; per §13.5), 14.5 Routing: launch
+  params not SBT (inherits §9.3 / §11.4; relativity-
+  specific recap covering per-launch mutability, tiny
+  size, program-agnostic shared state), 14.6 Read/write
+  summary, 14.7 Scope (float-valued aberration strength
+  deferred; bounce-ray relativistic effects deferred;
+  time-variant observers tied to motion-blur slice).
+- The footer drops "Relativity integration (where
+  aberration / Doppler / searchlight live across the
+  program model)" — every other future item is preserved.
+- This BUILD_PLAN entry + status-table row.
+
+### Architectural decisions worth highlighting
+
+- **Aberration is direction-side; Doppler/searchlight is
+  radiance-side.** §14.4 makes this split explicit. The
+  physical reasoning: aberration is a Lorentz
+  transformation of *directions* (changes which photons
+  the observer sees), Doppler/searchlight are
+  transformations of *radiance* (changes how those
+  photons are seen). Aberration belongs at the ray's
+  origin (raygen, where the primary direction is
+  generated); Doppler/searchlight belong at every
+  radiance source (miss for env, CH for emission, future
+  CH for direct lighting via NEE).
+- **Aberration is primary-only by design.** Stage 12B
+  applies `aberrateDirection` to the primary ray only;
+  bounce rays use the world-frame cosine-hemisphere
+  sample directly. Per §6.4.1's deliberate choice:
+  bounces are world-frame photon-walks; re-entering the
+  observer's frame on every bounce has no physical
+  justification.
+- **Doppler/searchlight applies to every radiance
+  source.** §6.4.1's "every miss" stance extends to
+  every emission hit and every future NEE light
+  contribution. Simplest model; matches Stage 6-9
+  single-shot kernel posture; small physical inaccuracy
+  for bounce-ray misses is acceptable in the
+  perceptual/artistic posture RelativityRender takes.
+- **No aberration_strength float in the POD.** The
+  user's bullet "aberration ... strength" maps to the
+  `enable_aberration` boolean only. §10B.4's
+  `aberrationStrength` shorthand collapses to a `> 0`
+  gate at parse-time. Activating fractional aberration
+  is a future relativity-helper change (extending
+  `aberrateDirection` to take a strength parameter),
+  not a POD-layout change today. Documented honestly
+  rather than papered over.
+- **Tiny PODs, no device buffer.** Observer is 12 B,
+  RelativityParams is 16 B, total 28 B. Both fit
+  trivially in `optixLaunchParams`'s constant-memory
+  bind. `GpuScene::upload_relativity` is host-only —
+  it copies the snapshot into GpuScene's host members;
+  the per-launch cudaMemcpy of optixLaunchParams is the
+  only device-side write.
+- **Reuses existing RR_HD helpers verbatim.**
+  `aberrateDirection`, `dopplerFactor`,
+  `applyDopplerColor`, `searchlightFactor` from
+  `relativity/RelativityMath.h` are RR_HD-friendly and
+  already validated for device-side use (Stage 9
+  audit). The OptiX programs call them directly with no
+  wrapper layer.
+
+### Hard-rule audit
+
+- Do not add other sections — **yes**, only §14 was
+  appended; the footer dropped exactly the matching
+  item ("Relativity integration").
+- Documentation only — **yes**, no source under `src/`,
+  `tests/`, or `CMakeLists.txt` is touched. The only
+  edits are two markdown files.
+- Update docs/BUILD_PLAN.md — **yes**, this entry.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
 
-- continue 12A: append §14 (Relativity parameter data),
-  then Intersection program / Path-tracing integration /
-  planned module-file layout / migration risks to
-  `OPTIX_BACKEND_PLAN.md`, one focused section per sub-
-  stage matching the
-  12A.2.1 / 12A.2.2 / 12A.2.3 / 12A.2.4 / 12A.2.5 /
-  12A.3.1 / 12A.3.2 / 12A.3.3 / 12A.3.4 cadence;
+- continue 12A: append the remaining design sections to
+  `OPTIX_BACKEND_PLAN.md` — Intersection program design
+  (currently covered inline in §10.2 / §9.4 but a
+  dedicated section becomes useful when custom IS lands),
+  Path-tracing integration (a "putting it all together"
+  capstone consolidating §5/§6/§7's bounce-loop / payload
+  / RNG threading), planned module-file layout under
+  `src/optix/` + CMake changes, migration risks
+  (toolchain / debug story / build-host requirements /
+  code duplication during transition). One focused
+  section per sub-stage matching the 12A.2.x / 12A.3.x
+  cadence;
 - *or* (if the priority is path-tracer feature breadth
   instead of backend swap) direct-light sampling (NEE),
   non-diffuse materials, multi-mesh upload, or relativistic-
