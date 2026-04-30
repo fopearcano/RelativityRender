@@ -3681,6 +3681,7 @@ sub-stages, appended to the same file.** No code is touched.
 | 12A.1    | OPTIX_BACKEND_PLAN.md §1-§4      | ✅      |
 | 12A.2.1  | OPTIX_BACKEND_PLAN.md §5 (Raygen) | ✅      |
 | 12A.2.2  | OPTIX_BACKEND_PLAN.md §6 (Miss)  | ✅      |
+| 12A.2.3  | OPTIX_BACKEND_PLAN.md §7 (Closest-hit) | ✅ |
 | 12A.x    | remaining program / AS / SBT / data-flow / file-layout / risks sections | pending |
 | 12B      | minimum-viable OptiX backend     | pending |
 | 12C+     | feature parity with CUDA backend | pending |
@@ -3790,14 +3791,104 @@ sections (§7 CH / §8 AH / §9 SBT / §10+ remain pending).**
   are two markdown files.
 - Update docs/BUILD_PLAN.md — **yes**, this entry.
 
+## Stage 12A.2.3 — OptiX closest-hit program design
+
+**Scope of this slice (Stage 12A.2.3): documentation-only.
+Append §7 "Closest-hit program" to
+`docs/OPTIX_BACKEND_PLAN.md` covering role (per-bounce
+shading + hand-off, refining the §5 / §3.x earlier "thin CH,
+fat raygen" sketch into a "fat CH for shading, fat raygen
+for integration" hybrid), inputs (built-in OptiX state +
+launch params + empty SBT user-data), outputs (the
+finalised 13-of-32-register OptiX payload layout that §5.3
+deferred), Lambert diffuse material evaluation, hit-time
+Doppler / searchlight modulation mirroring §6.4, and the
+sphere-vs-triangle per-primitive recipes. No code; no other
+sections (§8 AH / §9 SBT / §10+ remain pending).**
+
+### What ships
+
+- `docs/OPTIX_BACKEND_PLAN.md` §7 with subsections 7.1
+  Role (five pieces of CH work: hit-data extraction,
+  material lookup, emission evaluation, relativistic
+  modulation, payload write-back), 7.2 Inputs (7.2.1
+  built-in OptiX intrinsics, 7.2.2 launch params, 7.2.3
+  SBT CH record), 7.3 Outputs — the OptiX payload
+  register layout (13-slot table fixing the per-trace
+  payload contract that §5.3 / §6.3 deferred), 7.4
+  Material evaluation (Lambert diffuse only; reads only
+  baseColor + emissionColor + emissionStrength), 7.5
+  Relativistic modifiers (hit-time Doppler / searchlight
+  on emission, mirroring §6.4 verbatim with the same
+  helpers, gating, ordering; documents the
+  *direction-reuse* and *albedo-not-modulated* invariants),
+  7.6 Per-primitive-type CH (7.6.1 sphere CH, 7.6.2
+  triangle CH; both share §7.1-§7.5 verbatim and differ
+  only in hit-data extraction), 7.7 Read/write summary,
+  7.8 Scope (forward-pointers to NEE direct-light
+  sampling, non-diffuse BSDFs, surface textures).
+- The footer's first outstanding-items bullet narrows
+  from "Closest-hit / Any-hit / Intersection program
+  design" to "Any-hit / Intersection program design".
+- This BUILD_PLAN entry + status-table row.
+
+### Architectural decisions worth highlighting
+
+- **§7 supersedes §5's "thin CH" sketch.** The earlier
+  sketch had CH writing only hit geometry into the payload
+  (t, position, normal, material_index) and the raygen
+  reading those back to do all shading. §7 keeps the
+  raygen as the integration site (radiance accumulator,
+  RNG state, trace-loop control) but moves per-hit shading
+  into CH (material lookup, emission evaluation, Doppler
+  modulation). This is closer to canonical OptiX
+  path-tracer designs and lets hit-time relativistic
+  modulation live next to the analogous miss-time
+  modulation (§6.4).
+- **The payload register layout finalises here.** §5.3.1
+  and §6.3 deferred the exact slot assignment to §7. The
+  Stage 12B layout uses 13 of OptiX 7.6+'s 32 registers —
+  hit_flag (1), pos.xyz (3), nrm.xyz (3), emit.rgb (3),
+  albedo.rgb (3). Plenty of headroom for future additions
+  (UVs for textures, transmission coefficients, BRDF
+  discriminator, MIS PDFs).
+- **RNG never enters the payload.** Keeping
+  `pathtracer::Rng` raygen-local across the bounce loop
+  avoids encoding 64-bit state into payload registers and
+  preserves identical RNG advancement to Stage 11C's CUDA
+  path tracer. CH does not advance the RNG.
+- **Albedo is not Doppler-modulated.** The hit-time
+  modulation applies only to emission; albedo is a world-
+  frame surface property the raygen propagates through
+  throughput unmodified. This matches Stage 6-9 single-
+  shot kernel posture and gives the right cumulative
+  bounce-chain colour (every subsequent emission / env
+  evaluation runs through its own per-bounce Doppler).
+- **Per-mesh metadata via launch params for now.** Stage
+  12B routes sphere arrays + mesh vertex/triangle pointers
+  through `optixLaunchParams` rather than per-record SBT
+  user-data. SBT-data routing is a §9 (future sub-stage)
+  concern; deferring it keeps Stage 12B's SBT records
+  empty and lets us avoid SBT rebuilds on every scene
+  edit while the format stabilises.
+
+### Hard-rule audit
+
+- Do not add other sections — **yes**, only §7 was
+  appended; the footer was narrowed by exactly one item.
+- Documentation only — **yes**, no source under `src/`,
+  `tests/`, or `CMakeLists.txt` is touched. The only
+  edits are two markdown files.
+- Update docs/BUILD_PLAN.md — **yes**, this entry.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
 
-- continue 12A.2: append §7 (Closest-hit), §8 (Any-hit),
-  and §9 (SBT) to `OPTIX_BACKEND_PLAN.md`, one focused
-  section per sub-stage (12A.2.3, 12A.2.4, ...) matching the
-  12A.2.1 / 12A.2.2 cadence;
+- continue 12A.2: append §8 (Any-hit) and §9 (SBT) to
+  `OPTIX_BACKEND_PLAN.md`, one focused section per sub-
+  stage (12A.2.4, 12A.2.5, ...) matching the
+  12A.2.1 / 12A.2.2 / 12A.2.3 cadence;
 - *or* (if the priority is path-tracer feature breadth
   instead of backend swap) direct-light sampling (NEE),
   non-diffuse materials, multi-mesh upload, or relativistic-

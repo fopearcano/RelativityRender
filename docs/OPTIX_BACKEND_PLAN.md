@@ -840,12 +840,414 @@ Two adjacent concerns deserve forward-pointers:
 
 ---
 
+## 7. Closest-hit program
+
+The OptiX **closest-hit** program runs once per `optixTrace`
+call that resolves to a finalised intersection in
+`[t_min, t_max]`. It is the per-bounce shading site:
+material evaluation, emission Doppler modulation, hit-normal
+extraction, and the data hand-off the raygen needs to
+construct the next bounce ray.
+
+§7 supersedes the earlier "thin CH, fat raygen" sketch from
+§5 and §3.x. The earlier design had the CH writing only hit
+geometry into the payload (t, position, normal,
+material_index) and the raygen reading those back to do the
+shading. The current design moves *per-hit shading* into the
+CH while keeping *trace-loop control + RNG advance + ray
+construction* in the raygen — a "fat CH for shading, fat
+raygen for integration" hybrid that is closer to canonical
+OptiX path-tracer designs and that lets the relativistic
+modulation of emission live next to the analogous miss-time
+modulation in §6.4.
+
+### 7.1 Role
+
+For each `optixTrace` call that ends in a hit, the CH
+program owns five pieces of work:
+
+1. **Hit-data extraction.** Build the world-space hit
+   position from `optixGetWorldRayOrigin()` +
+   `optixGetWorldRayDirection() * optixGetRayTmax()`. Build
+   the world-space hit normal from the per-primitive recipe
+   (sphere: `(P - C) / r`; triangle: barycentric blend of
+   per-vertex normals — see §7.6).
+2. **Material lookup.** Read the
+   `rr::material::MaterialParams` record by index. The index
+   comes from the primitive's metadata (sphere
+   `material_index` for sphere hits; mesh `material_id` for
+   triangle hits — see §7.6).
+3. **Emission evaluation.** Compute `emission =
+   m.emissionColor * m.emissionStrength`. Stage 12B is
+   diffuse-only; that single line is the entire emission
+   model.
+4. **Relativistic modulation.** Apply Doppler colour shift
+   and searchlight beaming to `emission` using the same
+   RR_HD helpers §6.4 calls — `dopplerFactor`,
+   `applyDopplerColor`, `searchlightFactor`. Same canonical
+   ordering, same `params.enable_*` gating, same toggle
+   strengths. The hit-time modulation mirrors the miss-time
+   modulation so the relativistic-perception aesthetic is
+   consistent across radiance sources.
+5. **Payload write-back.** Write the per-hit shading result
+   to the OptiX payload: post-modulation emission (3
+   floats), surface albedo (3 floats; the diffuse base
+   colour the raygen uses to update throughput), hit normal
+   (3 floats; the raygen orients the cos-hemisphere sample
+   against this), hit position (3 floats; the raygen uses
+   it as the next ray's origin), and the hit flag (1 word;
+   set to 1 to distinguish from miss).
+
+The CH program does **not**:
+
+- advance the RNG (raygen owns RNG state across bounces);
+- sample the next bounce direction (raygen samples
+  `pathtracer::sample_cosine_hemisphere`, which advances
+  the RNG, after the trace returns);
+- construct the next ray (raygen builds it from the hit
+  data the CH wrote);
+- multiply throughput by albedo (raygen does the throughput
+  update — keeps the throughput accumulator in one place);
+- accumulate radiance (raygen does `radiance += throughput
+  * emission_from_payload` after the trace returns).
+
+This split puts shading-state at the CH (per-hit, no
+cross-bounce dependencies) and integration-state at the
+raygen (per-thread, persists across the bounce loop). The
+RNG state never leaves the raygen's stack, which avoids
+having to carry it through OptiX payload registers.
+
+### 7.2 Inputs
+
+The CH program reads three input surfaces: built-in OptiX
+state, launch params, and (for primitive-specific recipes)
+the SBT CH record.
+
+#### 7.2.1 Built-in OptiX state
+
+Available via OptiX intrinsics inside any CH program:
+
+- `optixGetWorldRayOrigin()` — ray origin at trace time.
+- `optixGetWorldRayDirection()` — ray direction at trace
+  time. Used for hit-position reconstruction *and* for the
+  Doppler factor (§7.5).
+- `optixGetRayTmax()` — the finalised closest-hit `t`. The
+  CH treats this as the hit's `t` because OptiX guarantees
+  it; manually re-deriving via `dot(P - origin, direction)`
+  costs maths and accumulates floating-point error.
+- `optixGetPrimitiveIndex()` — index of the hit primitive
+  within its GAS. Sphere CH uses it to index the sphere
+  array; triangle CH uses it to index the mesh's triangle
+  array.
+- `optixGetInstanceId()` — populated when an IAS sits above
+  a GAS (Stage 12C+ multi-mesh). For Stage 12B's single-GAS
+  layout this returns 0 and is not consulted.
+- `optixGetTriangleBarycentrics()` — the barycentric
+  `(u, v)` of the hit relative to the triangle's
+  `(v0, v1, v2)` vertex order. Triangle CH only.
+- `optixGetSphereData()` — the sphere centre + radius
+  (OptiX 7.5+ built-in sphere primitive only). Available
+  to sphere CH when the GAS uses
+  `OPTIX_PRIMITIVE_TYPE_SPHERE`.
+
+#### 7.2.2 Constant-memory `optixLaunchParams`
+
+The CH reads:
+
+- `materials` (device pointer to `MaterialParams[]`) +
+  `material_count` — for the material index → params
+  lookup.
+- `observer` (`Observer`) and `params`
+  (`RelativityParams`) — for the Doppler / searchlight
+  evaluation in §7.5. The same fields the miss program
+  consumes in §6.2.2.
+- `mesh.{vertices, triangles, ...}` (or sphere array
+  pointer) — for the per-primitive geometry recipe in
+  §7.6. Stage 12B routes per-primitive metadata through
+  launch params rather than per-record SBT data; §9
+  (future sub-stage) covers the SBT record layout that
+  will let this move out of launch params for production
+  scenes.
+
+The CH does **not** read:
+
+- `env_color` / `env_intensity` — that is the miss
+  program's domain.
+- `sample_pixels` — only the raygen writes the per-sample
+  output buffer; the CH never touches the framebuffer.
+- `seed` / `sample_index` — the RNG state and its
+  per-pixel seeding are raygen-local.
+
+#### 7.2.3 SBT CH record
+
+Stage 12B's CH record carries the program identifier and
+**no user-data payload**. All per-record metadata — sphere
+arrays, mesh vertex/triangle pointers, materials —
+currently lives in launch params (see §7.2.2 rationale).
+
+The SBT user-data slot is reserved for §9's future
+treatment, when per-mesh records (one CH record per mesh in
+a multi-mesh scene) become the natural way to thread
+per-mesh transforms + material IDs through the SBT without
+a launch-params resize on every scene edit.
+
+### 7.3 Outputs — the OptiX payload register layout
+
+§5.3.1 deferred this to §7. Stage 12B's payload uses 13 of
+OptiX 7.6+'s 32 32-bit registers:
+
+| Slot       | Reg | Type   | Filled by | Read by |
+|------------|----:|--------|-----------|---------|
+| `hit_flag` |   0 | u32    | CH (=1)/miss (=0) | raygen  |
+| `pos.x`    |   1 | f32    | CH        | raygen  |
+| `pos.y`    |   2 | f32    | CH        | raygen  |
+| `pos.z`    |   3 | f32    | CH        | raygen  |
+| `nrm.x`    |   4 | f32    | CH        | raygen  |
+| `nrm.y`    |   5 | f32    | CH        | raygen  |
+| `nrm.z`    |   6 | f32    | CH        | raygen  |
+| `emit.r`   |   7 | f32    | CH / miss | raygen  |
+| `emit.g`   |   8 | f32    | CH / miss | raygen  |
+| `emit.b`   |   9 | f32    | CH / miss | raygen  |
+| `albedo.r` |  10 | f32    | CH        | raygen  |
+| `albedo.g` |  11 | f32    | CH        | raygen  |
+| `albedo.b` |  12 | f32    | CH        | raygen  |
+
+The miss program writes the `emit.*` slots (with the
+Doppler-modulated env radiance) and clears `hit_flag`; it
+leaves `pos.*` / `nrm.*` / `albedo.*` undefined (the raygen
+breaks the bounce loop on miss without consulting them).
+The CH program writes every slot.
+
+The `hit_flag` register is intentionally first so the
+raygen can decide miss vs hit with a single load before
+fetching the rest. With 32 registers available and 13
+used, future expansion (UVs for textures, transmission
+coefficients, BRDF type discriminator, MIS PDFs) can grow
+the payload without a layout overhaul.
+
+Notes on encoding:
+
+- All floats are written via `__float_as_uint` into the
+  payload's u32 slots, read back via `__uint_as_float`.
+  This is the standard OptiX pattern; the bit cast is free.
+- The payload is **per-trace**, not per-pixel. Each
+  `optixTrace` call has its own payload lifetime; the
+  raygen pulls values out and uses them, then the next
+  trace overwrites everything.
+
+### 7.4 Material evaluation
+
+Stage 12B reads only two `MaterialParams` fields, matching
+the Stage 11C CUDA path tracer's "diffuse only" posture:
+
+- `baseColor` (Vec3) — the diffuse albedo. Written
+  unmodified to the payload's `albedo.*` slots; raygen
+  multiplies throughput by it on the next bounce.
+- `emissionColor` (Vec3) and `emissionStrength` (float) —
+  combined as `emission = emissionColor * emissionStrength`.
+  Modulated for relativity in §7.5, then written to the
+  payload's `emit.*` slots.
+
+Out of scope for §7:
+
+- `roughness`, `metallic`, `specular`, `transmission` are
+  uploaded by the parser (Stage 10B.5) and read by the host
+  side, but the CH program ignores them. A real BSDF
+  dispatch is a follow-up master-order module (#13 material
+  expansion); the CH grows a small switch then.
+- Texture sampling (`base_color_texture_id` etc., reserved
+  in `RRSCENE_FORMAT.md` §14) needs the texture system
+  (master order #18) to land first.
+
+The default material for an out-of-range index is the same
+neutral grey diffuse `MaterialParams{}` returns — Stage 11C
+established this convention; the CH preserves it.
+
+### 7.5 Relativistic modifiers
+
+The hit-site Doppler / searchlight modulation mirrors §6.4
+exactly. Same RR_HD helpers from
+`relativity/RelativityMath.h`, same canonical order
+(colour shift first, then intensity scale), same
+`params.enable_*` gating:
+
+```cpp
+const Vec3& v   = launch_params.observer.velocity;
+const Vec3  dir = optixGetWorldRayDirection();
+
+Vec3 emission = m.emissionColor * m.emissionStrength;
+
+if (launch_params.params.enable_doppler ||
+    launch_params.params.enable_searchlight) {
+    const float D = rr::relativity::dopplerFactor(v, dir);
+    if (launch_params.params.enable_doppler) {
+        emission = rr::relativity::applyDopplerColor(
+            emission, D, launch_params.params.doppler_color_strength);
+    }
+    if (launch_params.params.enable_searchlight) {
+        emission = emission * rr::relativity::searchlightFactor(
+            D, launch_params.params.searchlight_strength);
+    }
+}
+```
+
+Two design notes that distinguish hit-time from miss-time
+modulation:
+
+1. **Direction reuse.** Both §6.4 and §7.5 evaluate
+   `dopplerFactor(v, ray_dir)` against the same launch
+   params. The factor depends on `dot(v, dir)` so it is
+   identical at all hits along a single primary ray's
+   bounce chain — same `v` (per launch), and `dir` only
+   changes between bounces. There is no opportunity to
+   share the factor across bounces because the ray
+   direction changes; each bounce starts a fresh trace
+   with a new `dir`.
+
+2. **Albedo is *not* modulated.** Doppler shifts only the
+   *emitted* radiance, not the surface's reflective
+   response. `albedo` is a property of the material in the
+   world frame, not a radiance carrier. The raygen's
+   `throughput *= albedo` step on the next bounce
+   propagates the unmodified albedo; the cumulative effect
+   on the bounce-chain colour is right because every
+   subsequent emission / env evaluation goes through its
+   own per-bounce Doppler modulation.
+
+This matches the Stage 6-9 single-shot kernel posture
+where Doppler is applied to direct lighting + emission,
+not to the base colour. The path-tracer integration
+inherits the same physics interpretation.
+
+### 7.6 Per-primitive-type closest-hit
+
+Stage 12B's HitGroup table has one record per primitive
+type — a sphere CH and a triangle CH — both bound to the
+radiance ray type. The two share §7.1-§7.5 verbatim and
+differ only in §7.1 step 1 (hit-data extraction):
+
+#### 7.6.1 Sphere CH
+
+```cpp
+const float t = optixGetRayTmax();
+const Vec3 ray_o = optixGetWorldRayOrigin();
+const Vec3 ray_d = optixGetWorldRayDirection();
+const Vec3 P = ray_o + ray_d * t;
+
+// Geometry: sphere index + per-sphere POD.
+const unsigned int idx = optixGetPrimitiveIndex();
+// Stage 12B: launch_params.spheres is the device pointer
+// uploaded by GpuScene::upload_spheres. Future SBT-data
+// layouts (§9) move this pointer into per-record data.
+const Sphere s = launch_params.spheres[idx];
+
+const Vec3 N = (P - s.center) * (1.0f / s.radius);
+const int  material_index = s.material_index;
+```
+
+When OptiX 7.5+'s built-in sphere primitive
+(`OPTIX_PRIMITIVE_TYPE_SPHERE`) is used, the same data is
+available via `optixGetSphereData()` without the
+launch-params load. The choice is a §10 (acceleration
+structures, future sub-stage) concern; the CH's read site
+is otherwise unchanged.
+
+#### 7.6.2 Triangle CH
+
+```cpp
+const float t = optixGetRayTmax();
+const Vec3  P = optixGetWorldRayOrigin()
+              + optixGetWorldRayDirection() * t;
+
+const unsigned int prim = optixGetPrimitiveIndex();
+const float2 bc = optixGetTriangleBarycentrics();
+// 1 - u - v is implicit; u maps to v1, v maps to v2.
+const float w0 = 1.0f - bc.x - bc.y;
+const float w1 = bc.x;
+const float w2 = bc.y;
+
+// Mesh metadata via launch params for Stage 12B.
+const auto& mesh = launch_params.mesh;
+const auto& tri  = mesh.triangles[prim];
+const Vec3 n0 = mesh.vertices[tri.v0].normal;
+const Vec3 n1 = mesh.vertices[tri.v1].normal;
+const Vec3 n2 = mesh.vertices[tri.v2].normal;
+const Vec3 N  = normalize(n0 * w0 + n1 * w1 + n2 * w2);
+const int  material_index = mesh.material_id;
+```
+
+The mesh's `material_id` overrides any per-vertex
+material index; this matches Stage 9B's
+`k_render_scene` behaviour where mesh hits rewrite
+`Hit::material_index` to `mesh.material_id` on the
+closest-hit candidate. UV / per-vertex colour / tangent
+interpolation joins the same recipe when the texture
+stage lands; the per-vertex `Vertex` POD already carries
+`uv` (Stage 7A).
+
+### 7.7 Read / write summary
+
+| Surface                              | Direction       | Lifetime               |
+|--------------------------------------|-----------------|------------------------|
+| `optixGetWorldRayOrigin()`           | read            | per `optixTrace`       |
+| `optixGetWorldRayDirection()`        | read            | per `optixTrace`       |
+| `optixGetRayTmax()`                  | read            | per `optixTrace`       |
+| `optixGetPrimitiveIndex()`           | read            | per `optixTrace`       |
+| `optixGetTriangleBarycentrics()`     | read (tri only) | per `optixTrace`       |
+| `optixLaunchParams.materials`        | read            | constant per launch    |
+| `optixLaunchParams.spheres` /        | read            | constant per launch    |
+| `optixLaunchParams.mesh.{vertices,   |                 |                        |
+|  triangles, material_id}`            |                 |                        |
+| `optixLaunchParams.observer`         | read            | constant per launch    |
+| `optixLaunchParams.params`           | read            | constant per launch    |
+| SBT CH-record header                 | read (implicit) | constant per pipeline  |
+| SBT CH-record user-data              | (none in 12B)   | n/a                    |
+| OptiX ray payload (all slots)        | write           | per `optixTrace`       |
+
+The CH writes nothing to launch params, the SBT, the
+framebuffer, the accumulation buffer, or any of the
+materials / spheres / mesh arrays. It is a pure function
+`(hit context, launch_params) -> payload`.
+
+### 7.8 Scope: what's NOT in §7
+
+Three adjacent concerns that the CH program will eventually
+host but that Stage 12B explicitly defers:
+
+- **Direct light sampling (NEE).** A future ray type would
+  spawn shadow rays from the hit point toward sampled
+  scene lights, with an AH program for visibility. The CH
+  program would compute the direct-lighting contribution
+  via `BRDF * cos / pdf` and add it to the payload's
+  emission slots. This needs the shadow-ray miss program
+  §6.6 forward-points to, the AH program covered in §8
+  (future sub-stage), and the per-ray-type SBT layout
+  covered in §9 (future sub-stage).
+- **Non-diffuse BSDFs.** Specular / metallic / transmission
+  evaluation grows the CH past the diffuse-only Lambert
+  path. The MaterialParams fields are already plumbed
+  through the parser; the CH grows a small switch +
+  per-BSDF sample / eval / pdf calls. Adding a payload
+  slot for the chosen sampling PDF (for MIS) is a natural
+  follow-on once the BSDF dispatch lands.
+- **Surface textures.** UV-driven base-colour /
+  normal-map / emission-map evaluations need the texture
+  system (master order #18). The vertex `uv` data is
+  already interpolated in §7.6.2's recipe; the CH grows a
+  texture sample call when the texture system arrives.
+
+Each of these reaches the CH program; none of them
+restructure the §7.1-§7.7 contract. The Stage 12B CH is a
+narrow but extensible foundation.
+
+---
+
 ## Sections to come
 
 Future Stage 12A sub-stages will append (one per slice or
 small group of slices):
 
-- Closest-hit / Any-hit / Intersection program design
+- Any-hit / Intersection program design
 - Acceleration structures (GAS, IAS, build flags, refit vs
   rebuild)
 - Shader Binding Table layout (records per ray type, per
