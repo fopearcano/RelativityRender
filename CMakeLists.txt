@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.20)
 
 project(RelativityRender
     VERSION     0.1.0
-    DESCRIPTION "RelativityRender - GPU renderer platform (Stage 12B.5: OptiX availability report)"
+    DESCRIPTION "RelativityRender - GPU renderer platform (Stage 13A: texture data model)"
     LANGUAGES   CXX
 )
 
@@ -33,7 +33,7 @@ option(RELATIVITYRENDER_ENABLE_OPTIX
 
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
-message(STATUS "RelativityRender ${PROJECT_VERSION} (Stage 12B.5: OptiX availability report)")
+message(STATUS "RelativityRender ${PROJECT_VERSION} (Stage 13A: texture data model)")
 
 message(STATUS "  Build type   : ${CMAKE_BUILD_TYPE}")
 message(STATUS "  C++ standard : ${CMAKE_CXX_STANDARD}")
@@ -156,6 +156,24 @@ add_library(rr_lighting STATIC
 target_include_directories(rr_lighting PUBLIC src)
 target_link_libraries(rr_lighting PUBLIC rr_math)
 rr_apply_warnings(rr_lighting)
+
+# rr_texture: texture data model (Stage 13A; master order #18).
+# Host-side `Texture` POD (constant-colour or image reference) +
+# `ImageTexture` (width/height/format + a placeholder pixel
+# buffer). No sampler, no GPU upload, no UV lookup; the BSDF
+# wiring (a future `MaterialParams.base_color_texture_id` etc.)
+# and the device-side `cudaTextureObject_t` lifecycle land in
+# subsequent 13B+ sub-stages. The same `Texture` POD will be the
+# launch-argument form for the eventual sampler;
+# `cuda/CudaTexture.cuh` is a thin re-export today, mirroring
+# `CudaMaterial.cuh` / `CudaLight.cuh`.
+add_library(rr_texture STATIC
+    src/texture/Texture.cpp
+    src/texture/ImageTexture.cpp
+)
+target_include_directories(rr_texture PUBLIC src)
+target_link_libraries(rr_texture PUBLIC rr_math)
+rr_apply_warnings(rr_texture)
 
 # rr_relativity: header-only relativity math leaf.
 #
@@ -410,7 +428,7 @@ add_executable(RelativityRender
 )
 target_include_directories(RelativityRender PRIVATE src)
 target_link_libraries(RelativityRender PRIVATE
-    rr_gpu rr_image rr_camera rr_geometry rr_relativity rr_material rr_lighting rr_scene rr_io rr_renderer)
+    rr_gpu rr_image rr_camera rr_geometry rr_relativity rr_material rr_lighting rr_texture rr_scene rr_io rr_renderer)
 # Stage 12B.3: rr_optix is only created when OptiX support is
 # requested (see the rr_optix block above), so the link must be
 # conditional too. When OFF, the executable's link line is

@@ -3709,6 +3709,7 @@ sub-stages, appended to the same file.** No code is touched.
 | 12B.5    | OptiX availability report (--device-info: build enabled / SDK found / renderer status) | ✅ |
 | 12B      | minimum-viable OptiX backend     | pending |
 | 12C+     | feature parity with CUDA backend | pending |
+| 13A      | Texture data model (rr_texture; Texture / ImageTexture; CudaTexture.cuh re-export; no sampling) | ✅ |
 
 ## Stage 12A.2.1 — OptiX raygen program design
 
@@ -6301,6 +6302,207 @@ log lines.**
   `-DOPTIX_SDK_DIR=...` instead of `-DOPTIX_ROOT
   =...`: identical three-line stanza. The 12B.4
   alias path still works end-to-end.
+
+## Stage 13A — Texture data model
+
+**Scope of this slice (Stage 13A): introduce the
+host-side data model for textures (master order
+#18) without any sampling, GPU upload, or
+material wiring. Three new types land:
+
+- `rr::texture::Texture`       host-side texture
+  descriptor (POD-friendly fields, copy-friendly).
+  Tagged union: a `TextureKind` of `Constant`
+  (carries an RGB `base_color`) or `Image`
+  (carries an integer `image_index` into a
+  scene-side image-texture table). Stable
+  `TextureId` handle (`-1` = invalid). Optional
+  authoring `name`.
+- `rr::texture::ImageTexture`  host-side image-
+  texture entry. Width / height / format
+  metadata + a placeholder pixel buffer
+  (`std::vector<std::byte>`, empty until a
+  loader sub-stage fills it). `ImageTextureFormat`
+  enumerates two slots: `Rgba8` (sRGB authored
+  textures) and `Rgba32F` (HDR / data textures).
+  Helpers `image_texture_bpp` and
+  `expected_byte_size` size buffers; `empty()`
+  reports "no data to upload".
+- `cuda/CudaTexture.cuh`        a thin re-export
+  of the two host headers, mirroring the
+  `CudaMaterial.cuh` / `CudaLight.cuh` pattern.
+  Kernels can `#include "cuda/CudaTexture.cuh"`
+  to signal intent; today the include is purely
+  organisational - there is no `RR_HD inline`
+  sampler, no `cudaTextureObject_t` lifecycle.
+
+No sampler, no UV lookup, no GPU upload, no
+mipmap chain, no wrap-mode / filter parameters,
+no material `texture_id` field, no scene
+texture table. Stage 13A is the data shape that
+subsequent 13B+ sub-stages populate, upload, and
+sample.**
+
+### What ships
+
+- `src/texture/Texture.{h,cpp}` (new): the
+  `Texture` class plus `TextureKind` enum,
+  `TextureId` typedef, and `kInvalidTextureId`
+  sentinel. Two factory helpers
+  (`make_constant` / `make_image`). Const-and-
+  mutable accessors for every field; setters
+  for the mutable ones.
+- `src/texture/ImageTexture.{h,cpp}` (new): the
+  `ImageTexture` class plus `ImageTextureFormat`
+  enum and `image_texture_bpp` free function.
+  `expected_byte_size()` for loader sizing,
+  `empty()` for "no data" detection,
+  `resize(w,h,fmt)` to re-set dimensions and
+  clear pixels.
+- `src/cuda/CudaTexture.cuh` (new): re-export
+  of both host headers; no kernel-side code.
+- `CMakeLists.txt`:
+  - New `rr_texture` static library inserted
+    after `rr_lighting`. Compiles
+    `Texture.cpp` + `ImageTexture.cpp`. PUBLIC-
+    links `rr_math` (the only dependency,
+    transitively from `Vec3`); PUBLIC-includes
+    `src` (matching every other foundation
+    library). `rr_apply_warnings` is applied.
+  - `rr_texture` linked into the
+    `RelativityRender` executable so it is
+    built by the default build target. The
+    executable does not yet reference any
+    texture symbol; the link is structural so
+    a missing translation-unit / header
+    surfaces at this stage rather than
+    silently rotting until the wiring sub-
+    stage.
+  - Stage label bumped to "Stage 13A: texture
+    data model" in both the `project(...)`
+    description and the project-banner status
+    message.
+- `docs/BUILD_PLAN.md`: this entry + status-
+  table row for 13A.
+
+### Architectural decisions worth highlighting
+
+- **Tagged union, not polymorphism.** `Texture`
+  carries a `TextureKind` plus both payload
+  fields (`base_color` for Constant, `image_
+  index` for Image); no virtual functions, no
+  vtable, no derived class. This matches the
+  existing `Material` / `Light` foundation
+  pattern - flat POD that uploads to the GPU
+  cleanly and survives `cudaMemcpy` without an
+  object-slicing or pointer-fix-up step. A
+  future `Texture::sample(uv)` becomes a free-
+  function `RR_HD inline` switch on `kind` in
+  the kernel, not a virtual call.
+- **Two-tier model.** `Texture` describes how a
+  sampler is configured (constant value vs
+  image lookup) and is small + scalar. The
+  heavy pixel data lives in a separate
+  `ImageTexture` table referenced by index, so
+  multiple `Texture` entries can share an
+  underlying image (e.g. when the same albedo
+  serves as both a base-colour and an emissive
+  source) and so the Texture array is cheap to
+  upload while the ImageTexture array uploads
+  once. This matches how glTF / USD / D3D / GL
+  separate samplers from images.
+- **`std::byte` pixel buffer.** `ImageTexture`
+  carries `std::vector<std::byte>` rather than a
+  templated `vector<uint8_t>` / `vector<float>`
+  pair so the same type holds Rgba8 and
+  Rgba32F without a sum-type or templated
+  split. The loader writes the byte pattern
+  the format prescribes; the uploader honours
+  the format flag when binding to CUDA. The
+  buffer size matches `expected_byte_size()`
+  when fully populated; an under-sized buffer
+  is the loader's responsibility to fill or
+  discard.
+- **No material wiring yet.** `MaterialParams`
+  is unchanged. Adding a `texture_id` field
+  before the sampler exists would be data-
+  shape churn that the wiring sub-stage rolls
+  back; deferring it keeps the GPU upload
+  path's current launch-arg shape stable.
+- **No mesh changes.** `Vertex` already carries
+  `uv` (master order #12, `geometry/Mesh.h:
+  Vertex.uv`); no further mesh edits are
+  needed for the data model. The UV is fed
+  through the mesh upload path today as
+  zero-initialised data; the sampler sub-stage
+  will start consuming it.
+- **No scene table yet.** `rr::scene::Scene` is
+  unchanged. Adding `std::vector<Texture>` /
+  `std::vector<ImageTexture>` fields would
+  imply a parser / writer slice (the
+  `.rrscene` format does not currently
+  describe textures) that does not belong in
+  Stage 13A. The texture data model exists
+  standalone today; its scene wiring + parser
+  rules + loader join in subsequent sub-
+  stages.
+- **CudaTexture.cuh re-export, no sampler.**
+  The header mirrors `CudaMaterial.cuh` /
+  `CudaLight.cuh`'s "thin re-export today,
+  device helpers later" pattern. Kernels that
+  want texture support can `#include` it now;
+  the eventual `sample(uv)` lands here as
+  `RR_HD inline` helpers when the sampler
+  sub-stage adds it. No `<cuda_runtime.h>` or
+  `cudaTextureObject_t` reference today, so
+  the header compiles in pure-host TUs the
+  same as the other CUDA-side re-exports.
+
+### Hard-rule audit
+
+- No texture sampling yet  **yes**, no
+  `Texture::sample(uv)`, no `RR_HD inline`
+  UV-lookup helpers, no `tex2D` / bindless
+  lookup. The whole sampler API is absent.
+- No material graph  **yes**, this is data
+  model, not authoring graph. No node, no
+  evaluation order, no input/output ports.
+- No node editor  **yes**, no UI, no JSON
+  serialisation of node connectivity.
+- No C4D  **yes**, no Cinema 4D headers,
+  bridges, or DCC dependencies.
+- No server  **yes**, no IPC, no socket,
+  no protocol surface.
+- Must compile  **yes**, OFF + ON
+  reconfigures both build clean (no warnings,
+  no errors); ctest 4/4 passes both ways. The
+  rr_texture artifact `librr_texture.a` is
+  produced and linked into the
+  RelativityRender executable.
+- Update docs/BUILD_PLAN.md  **yes**, this
+  entry + status-table row.
+
+### Verified at the build
+
+- `cmake -DRELATIVITYRENDER_ENABLE_OPTIX=OFF ..`
+  (clean reconfigure): builds the new
+  `rr_texture` library + the executable; no
+  warnings / errors under `-Wall -Wextra
+  -Wpedantic`; ctest 4/4 passes (math, image,
+  gpu, pathtracer). Banner shows
+  `Stage 13A: texture data model`.
+- `cmake -DRELATIVITYRENDER_ENABLE_OPTIX=ON ..`
+  (clean reconfigure): same `rr_texture`
+  build, plus the existing OptiX scaffold;
+  no warnings / errors (the only message is
+  the expected 12B.4 SDK-not-found warning);
+  ctest 4/4 passes. Texture data model is
+  orthogonal to the OptiX flag.
+- `librr_texture.a` is produced and linked
+  into the `RelativityRender` executable. The
+  `rr_texture` target builds independently of
+  any consumer (`cmake --build build --target
+  rr_texture` succeeds).
 
 ## Next stage
 
