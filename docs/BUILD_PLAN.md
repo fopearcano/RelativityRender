@@ -3685,7 +3685,8 @@ sub-stages, appended to the same file.** No code is touched.
 | 12A.2.4  | OPTIX_BACKEND_PLAN.md §8 (Any-hit) | ✅ |
 | 12A.2.5  | OPTIX_BACKEND_PLAN.md §9 (Shader Binding Table) | ✅ |
 | 12A.3.1  | OPTIX_BACKEND_PLAN.md §10 (Acceleration structures) | ✅ |
-| 12A.x    | remaining IS / data-flow / integration / file-layout / risks sections | pending |
+| 12A.3.2  | OPTIX_BACKEND_PLAN.md §11 (Camera data) | ✅ |
+| 12A.x    | remaining IS / Material / Light / Relativity data + integration / file-layout / risks sections | pending |
 | 12B      | minimum-viable OptiX backend     | pending |
 | 12C+     | feature parity with CUDA backend | pending |
 
@@ -4154,18 +4155,100 @@ pending).**
   edits are two markdown files.
 - Update docs/BUILD_PLAN.md — **yes**, this entry.
 
+## Stage 12A.3.2 — OptiX camera data design
+
+**Scope of this slice (Stage 12A.3.2): documentation-only.
+Append §11 "Camera data" to `docs/OPTIX_BACKEND_PLAN.md`
+covering the existing `rr::camera::Camera` →
+`Camera::to_gpu()` → `GpuCamera` POD pipeline (reused
+verbatim from the CUDA backend), the explicit field list
+(position, forward, up, right, tan_half_vfov, aspect),
+the per-launch siblings that travel alongside (resolution
++ sample_index), the launch-params-not-SBT routing
+(consolidating §9.3's general rule for the camera
+specifically), and the host-side update flow (one
+struct copy + cudaMemcpy per launch, no SBT/AS/pipeline
+rebuild). No code; no other sections (§12 Material,
+§13 Light, §14 Relativity, plus IS / file-layout /
+risks remain pending).**
+
+### What ships
+
+- `docs/OPTIX_BACKEND_PLAN.md` §11 with subsections 11.1
+  Source (Camera → to_gpu() → GpuCamera flow shared
+  verbatim with the CUDA backend; no second snapshot
+  path), 11.2 GpuCamera POD field list (table covering
+  the six fields with sizes; total 56 B; rationale for
+  storing tan_half_vfov + aspect in pre-computed form
+  rather than raw degrees + width/height; rationale for
+  storing the basis explicitly rather than reconstructing
+  from a single look-direction), 11.3 Resolution and
+  sample_index (the per-launch siblings inside
+  optixLaunchParams; rationale for not folding them into
+  GpuCamera), 11.4 Routing: launch params not SBT
+  (inherits §9.3's three justifications - per-launch
+  mutability, broadcast-friendly small size, program-
+  agnostic shared state), 11.5 Host-side update flow
+  (concrete code sketch: struct write + cudaMemcpy +
+  optixLaunch; cost dominated by optixLaunch itself),
+  11.6 Read/write summary, 11.7 Scope (DOF, motion blur
+  shutter — both deferred but routing stays unchanged).
+- The footer drops "Camera data flow" and adds "Light
+  data flow" (per the 12A.3 surface's planned section
+  list).
+- This BUILD_PLAN entry + status-table row.
+
+### Architectural decisions worth highlighting
+
+- **Reuse the existing GpuCamera POD verbatim.** The
+  Camera → to_gpu() → GpuCamera path is the same
+  snapshot path Stage 6B's render_camera_rays and Stage
+  11C's k_pathtrace_sample already use. The OptiX
+  migration touches the rendering layer (kernel launch
+  primitive + per-pixel program), not the camera layer.
+- **tan_half_vfov + aspect are precomputed.** The POD
+  stores derived forms rather than raw fov degrees + raw
+  width/height, so the raygen avoids per-pixel
+  std::tan and division calls. The host's
+  Camera::to_gpu() does the precomputation once.
+- **Basis stored explicitly.** GpuCamera carries forward
+  + up + right as three explicit unit vectors, not a
+  single look-direction. Matches Camera::look_at's
+  basis-orthogonalisation contract; raygen does no
+  basis reconstruction.
+- **Resolution + sample_index live next to camera, not
+  inside it.** The grouping in optixLaunchParams reflects
+  the per-launch consumer (raygen) rather than the
+  authoring abstraction. GpuCamera describes the optical
+  configuration; the framebuffer + sampling state are
+  separate concerns.
+- **No SBT camera data.** Per §9.3's general rule, every
+  camera field lives in launch params; the SBT records
+  carry zero camera data. Host can mutate the camera
+  freely between launches without touching the SBT, AS,
+  or pipeline.
+
+### Hard-rule audit
+
+- Do not add other sections — **yes**, only §11 was
+  appended; the footer dropped "Camera data flow" and
+  added "Light data flow" (planned per 12A.3 surface).
+- Documentation only — **yes**, no source under `src/`,
+  `tests/`, or `CMakeLists.txt` is touched. The only
+  edits are two markdown files.
+- Update docs/BUILD_PLAN.md — **yes**, this entry.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
 
-- continue 12A: append §11+ (Camera data, Material data,
-  Light data, Relativity parameter data, then
-  Intersection program / Path-tracing integration /
-  planned module-file layout / migration risks) to
-  `OPTIX_BACKEND_PLAN.md`, one focused section per
-  sub-stage matching the
+- continue 12A: append §12+ (Material data, Light data,
+  Relativity parameter data, then Intersection program /
+  Path-tracing integration / planned module-file layout /
+  migration risks) to `OPTIX_BACKEND_PLAN.md`, one
+  focused section per sub-stage matching the
   12A.2.1 / 12A.2.2 / 12A.2.3 / 12A.2.4 / 12A.2.5 /
-  12A.3.1 cadence;
+  12A.3.1 / 12A.3.2 cadence;
 - *or* (if the priority is path-tracer feature breadth
   instead of backend swap) direct-light sampling (NEE),
   non-diffuse materials, multi-mesh upload, or relativistic-

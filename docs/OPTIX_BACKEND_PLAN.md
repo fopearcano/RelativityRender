@@ -2170,6 +2170,222 @@ listed above is additive against that baseline.
 
 ---
 
+## 11. Camera data
+
+The camera is the smallest device-side data surface that
+matters per launch — a few dozen bytes that drive every
+primary ray's origin and direction. §5.2.1 sketched the
+fields informally inside the `optixLaunchParams` struct;
+§9.3 fixed the routing rule (camera lives in launch params,
+not SBT). §11 consolidates: the exact POD shape, the
+per-launch state that travels alongside it, and the
+host-side update flow.
+
+### 11.1 Source
+
+The camera flows from host to device through a
+single existing snapshot path:
+
+```
+rr::camera::Camera (host class, mutable basis + fov)
+              │
+              │  Camera::to_gpu()
+              ▼
+rr::camera::GpuCamera (POD, defined in camera/CameraRay.h)
+              │
+              │  copy by value into optixLaunchParams.camera
+              ▼
+optixLaunchParams (constant memory)
+```
+
+`Camera::to_gpu()` is the same RR_HD-friendly snapshot
+function the CUDA backend already calls (Stage 6B's
+`render_camera_rays` / Stage 11C's `k_pathtrace_sample`
+both consume the result). The OptiX backend reuses it
+verbatim — there is no second camera POD or second
+snapshot path. The migration of the rendering layer does
+not touch the camera layer at all.
+
+### 11.2 GpuCamera POD field list
+
+The camera POD lives in `camera/CameraRay.h` and is the
+exact shape the raygen reads:
+
+| Field           | Type   | Size | Purpose                                                        |
+|-----------------|--------|-----:|----------------------------------------------------------------|
+| `position`      | Vec3   | 12 B | World-space camera origin; primary-ray origin                  |
+| `forward`       | Vec3   | 12 B | Unit forward direction (camera looks down `forward`)           |
+| `up`            | Vec3   | 12 B | Unit up direction; orthogonal to `forward`                     |
+| `right`         | Vec3   | 12 B | Unit right direction; orthogonal to both; RH coordinate system |
+| `tan_half_vfov` | float  |  4 B | Precomputed `tan(vfov / 2)` — vertical FOV in tangent form     |
+| `aspect`        | float  |  4 B | Width / height ratio                                           |
+
+Total: **56 bytes** per camera POD.
+
+The user-prompt bullet asked for "position, forward, up,
+right, fov". The POD stores `fov` in its already-computed
+tangent form (`tan_half_vfov`) rather than the raw degrees
+— the raygen needs `tan(vfov/2)` to map pixel coordinates
+to the image plane (per `generate_primary_ray` in §5 / the
+existing `generate_camera_ray` in `camera/CameraRay.h`),
+and precomputing it on the host saves a per-pixel
+transcendental on the device. `aspect` is precomputed for
+the same reason. Both are derived from the host
+`Camera::vertical_fov_degrees()` and the framebuffer
+dimensions at `to_gpu` time.
+
+The basis (`forward`, `up`, `right`) is **stored
+explicitly** rather than reconstructed from a single
+look-direction. This matches the host `Camera::look_at`
+contract: re-orthogonalise the basis once on the host,
+then pass the right-handed orthonormal triple to the
+device. The raygen does no basis reconstruction — its
+work is `position + (right * u + up * v + forward) * t_param`
+where `u, v` come from the pixel-coordinate / aspect /
+tan_half_vfov maths.
+
+### 11.3 Resolution and sample_index
+
+Resolution and sample index are **not** part of the
+camera POD. They live alongside the camera in
+`optixLaunchParams` because they're per-launch state the
+raygen also consumes:
+
+| Field          | Type | Size | Purpose                                                                      |
+|----------------|------|-----:|------------------------------------------------------------------------------|
+| `width`        | int  |  4 B | Framebuffer width in pixels; raygen reads `optixGetLaunchIndex().x` against it |
+| `height`       | int  |  4 B | Framebuffer height in pixels                                                 |
+| `sample_index` | u32  |  4 B | Current spp iteration; mixed into `make_pixel_rng` per pixel for decorrelated sample streams |
+
+Why not in the camera POD: the camera describes the
+optical configuration (where, looking at what, at what
+fov + aspect); resolution describes the *output surface*
+the camera projects onto, and sample_index describes the
+*sampling state* of the path tracer. Conflating them into
+`GpuCamera` would couple the camera class to the spp
+loop's iteration counter — the wrong abstraction. Keeping
+them as siblings inside `optixLaunchParams` lets the
+camera POD stay the same shape the CUDA backend uses
+without modification.
+
+The host populates `width` / `height` from
+`scene.render_settings` (Stage 10B.2 parser output).
+`sample_index` advances by 1 per `optixLaunch`, driven by
+the host-side spp loop in `PathTracer::render` (Stage
+11C's CUDA path tracer follows the same shape; the OptiX
+migration replaces the kernel-launch primitive but not
+the loop).
+
+### 11.4 Routing: launch params, not SBT
+
+The camera POD + `width` / `height` / `sample_index` all
+live in `optixLaunchParams` — the constant-memory POD
+bound to a fixed device symbol at pipeline link time. The
+host populates the struct before each `optixLaunch` and
+copies it to the device-side launch-params buffer.
+
+§9.3 fixed this rule for camera + relativity params;
+§11.4 inherits it for the same three reasons:
+
+1. **Per-launch mutability.** The camera moves between
+   renders (interactive editing); resolution can change
+   between renders (re-render at a higher quality);
+   sample_index changes between every launch in a
+   single render (the spp loop). Encoding any of these
+   into SBT records would force an SBT rebuild on every
+   such change, defeating the SBT's caching purpose.
+2. **Broadcast-friendly small size.** 56 bytes camera +
+   12 bytes (width + height + sample_index) = 68 bytes
+   total per launch — well under the constant-memory
+   broadcast budget. Every program reads from the same
+   bound symbol with one load.
+3. **Program-agnostic shared state.** Raygen is the
+   primary consumer (§5.5), but miss / CH (§6, §7)
+   also read the camera position for emission/env
+   Doppler maths if a future relativistic extension
+   needs the observer's position relative to a hit
+   point. Keeping the camera in launch params lets all
+   programs read the same authoritative copy.
+
+The SBT records carry zero camera data. `optixGetSbtData
+Pointer()` in any program returns a pointer to the empty
+user-data slot; the camera POD comes from the constant-
+memory launch params instead.
+
+### 11.5 Host-side update flow
+
+The host populates the launch-params struct's camera
+fields once per launch:
+
+```cpp
+// In the OptiX path tracer's host-side render loop:
+optixLaunchParams.camera       = scene.gpu_camera();        // 56 B copy
+optixLaunchParams.width        = scene.render_settings.width;
+optixLaunchParams.height       = scene.render_settings.height;
+optixLaunchParams.sample_index = static_cast<unsigned int>(s);
+// ... other fields ...
+
+cudaMemcpy(d_launch_params, &optixLaunchParams,
+           sizeof(optixLaunchParams), cudaMemcpyHostToDevice);
+optixLaunch(pipeline, stream, d_launch_params,
+            sizeof(optixLaunchParams), &sbt,
+            width, height, /*depth=*/1);
+```
+
+Cost per launch: one 56 + 12 byte struct write, one
+cudaMemcpy of the ~few-hundred-byte launch-params struct
+(camera + relativity + scene-handle + pointers), and the
+optixLaunch itself. **No SBT rebuild, no AS rebuild, no
+pipeline rebuild.** The launch-params copy is tens of
+nanoseconds; the optixLaunch itself dominates.
+
+This is the same shape Stage 11C's CUDA path tracer uses:
+`PathTracer::render` populates per-launch state, then
+calls the kernel-launch primitive. The OptiX migration
+swaps `<<<grid, block>>>` for `optixLaunch` and the launch-
+arg POD for the launch-params constant-memory bind; the
+loop shape is identical.
+
+### 11.6 Read / write summary
+
+| Surface                                 | Direction      | Lifetime               |
+|-----------------------------------------|----------------|------------------------|
+| `rr::camera::Camera` (host class)       | host read/write | persistent across renders |
+| `Camera::to_gpu()` returned `GpuCamera` | host write to launch-params | per launch |
+| `optixLaunchParams.camera`              | device read (raygen + future programs) | per launch |
+| `optixLaunchParams.width / height`      | device read (raygen + accumulator-sized) | per launch (typically per render) |
+| `optixLaunchParams.sample_index`        | device read (raygen RNG seed) | per launch (every iteration) |
+| SBT records (any table)                 | (no camera data) | n/a                  |
+
+The camera surface is read-only on the device side; only
+the host writes it. The host can mutate it freely between
+launches without touching the SBT, the AS, or the
+pipeline.
+
+### 11.7 Scope: what's NOT in §11
+
+Two camera-related concerns this section deliberately
+defers:
+
+- **Depth of field.** A real lens model needs an
+  aperture radius + focal-distance pair on `GpuCamera`,
+  plus raygen lens-disk sampling (`pathtracer::Rng`
+  draws → disk-sample direction perturbation). The POD
+  grows by 8 bytes; the routing stays the same. Future
+  master-order slice; not in 12B.
+- **Motion blur shutter.** Motion blur (per §10.7) needs
+  `shutter_open` / `shutter_close` time fields on
+  `GpuCamera`, which the raygen samples per primary ray
+  to thread a time parameter through `optixTrace`.
+  Activates alongside `OptixMotionOptions` on the IAS;
+  scope-tied to that future slice.
+
+Both are additive: the §11 routing (launch params, not
+SBT) does not change. The POD grows; the constant-memory
+bind covers it.
+
+---
+
 ## Sections to come
 
 Future Stage 12A sub-stages will append (one per slice or
@@ -2178,7 +2394,7 @@ small group of slices):
 - Intersection program design
 - Material data flow (per-record vs constant-memory vs
   launch-param)
-- Camera data flow
+- Light data flow
 - Relativity integration (where aberration / Doppler /
   searchlight live across the program model)
 - Path-tracing integration (iterative bounce loop in raygen,
