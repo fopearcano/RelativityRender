@@ -4347,6 +4347,30 @@ pipeline-build logic.
 
 ---
 
+## 22. Acceleration
+
+The fifth piece of the planned `src/optix/` directory is
+the acceleration-structure builder declarations. This is
+the host-side declaration of the GAS + IAS construction
+§10 designed: a sphere GAS, per-mesh GASes (one in Stage
+12B's single-mesh slot), and the single IAS that wraps
+them with identity transforms (per §10.4's CUDA-backend-
+parity choice).
+
+| File                          | Purpose                                                                                  |
+|-------------------------------|------------------------------------------------------------------------------------------|
+| `src/optix/OptixAccel.h`      | Header-only declarations for the Stage 12B AS build pipeline: `build_sphere_gas` (consuming `GpuScene::device_spheres()` via `OptixBuildInputSphereArray`), `build_mesh_gas` (consuming `GpuMesh::device_vertices()` + `device_triangles()` via `OptixBuildInputTriangleArray`), and `build_ias` (composing an `OptixInstance[]` array with `sbtOffset = 0`/1 per §9.4 and identity transforms per §10.4). Returns the root `OptixTraversableHandle` consumed by `optixLaunchParams.scene_handle` per §15.1. |
+
+Like `OptixSBT.h` (§21), the header is host-only +
+OptiX-Runtime-aware (it includes `<optix.h>` for
+`OptixTraversableHandle` / `OptixBuildInput` /
+`OptixAccelBuildOptions`). The build-function
+implementations live in `OptixRenderer.cpp` rather than a
+sibling `.cpp` because the AS is built once per scene
+load — the same lifecycle the renderer already owns.
+
+---
+
 ## Sections to come
 
 Future Stage 12A sub-stages will append (one per slice or

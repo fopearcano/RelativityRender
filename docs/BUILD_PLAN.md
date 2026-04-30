@@ -3696,6 +3696,7 @@ sub-stages, appended to the same file.** No code is touched.
 | 12A.4.3.2 | OPTIX_BACKEND_PLAN.md §19 (OptiX renderer files) | ✅ |
 | 12A.4.3.3 | OPTIX_BACKEND_PLAN.md §20 (OptiX programs)      | ✅ |
 | 12A.4.3.4 | OPTIX_BACKEND_PLAN.md §21 (SBT)                  | ✅ |
+| 12A.4.3.5 | OPTIX_BACKEND_PLAN.md §22 (Acceleration)         | ✅ |
 | 12A.x    | remaining IS / file-layout sub-stages / migration-risks | pending |
 | 12B      | minimum-viable OptiX backend     | pending |
 | 12C+     | feature parity with CUDA backend | pending |
@@ -5138,6 +5139,84 @@ other files; no other sections.**
 
 - Do not add other files — **yes**, only
   `OptixSBT.h` was listed; the prompt's "Do not
+  add other files" was respected.
+- Documentation only — **yes**, no source under
+  `src/`, `tests/`, or `CMakeLists.txt` is touched.
+  The only edits are two markdown files.
+- Update docs/BUILD_PLAN.md — **yes**, this entry.
+
+## Stage 12A.4.3.5 — Acceleration file
+
+**Scope of this slice (Stage 12A.4.3.5): documentation-only.
+Append §22 "Acceleration" to
+`docs/OPTIX_BACKEND_PLAN.md` listing exactly the one file
+the user prompt names — `src/optix/OptixAccel.h` — with
+a one-line purpose. Fifth sub-stage in the 12A.4.3.x
+file-pair sequence (single-file slice). One sub-stage
+remains in the file-layout chapter (launch-params
+header). No code; no other files; no other sections.**
+
+### What ships
+
+- `docs/OPTIX_BACKEND_PLAN.md` §22 with a single-row
+  table:
+  - `src/optix/OptixAccel.h` — header-only
+    declarations for the Stage 12B AS build pipeline:
+    `build_sphere_gas` (consuming
+    `GpuScene::device_spheres()` via
+    `OptixBuildInputSphereArray`), `build_mesh_gas`
+    (consuming `GpuMesh::device_vertices()` +
+    `device_triangles()` via
+    `OptixBuildInputTriangleArray`), and `build_ias`
+    (composing an `OptixInstance[]` array with
+    `sbtOffset = 0`/1 per §9.4 and identity
+    transforms per §10.4). Returns the root
+    `OptixTraversableHandle` consumed by
+    `optixLaunchParams.scene_handle` per §15.1.
+  Plus a short paragraph noting the file is
+  host-only + OptiX-Runtime-aware (includes
+  `<optix.h>`), and that build-function
+  implementations live in `OptixRenderer.cpp` rather
+  than a sibling `.cpp` (same rationale as §21's
+  no-sibling-cpp choice — AS lifecycle is owned by
+  the renderer).
+- The footer is untouched — "Planned module / file
+  layout" stays pending until the final 12A.4.3.x
+  sub-stage (launch-params header).
+- This BUILD_PLAN entry + status-table row.
+
+### Architectural decisions worth highlighting
+
+- **Header-only declarations.** `OptixAccel.h` is
+  host-only + OptiX-Runtime-aware (includes
+  `<optix.h>` for `OptixTraversableHandle` /
+  `OptixBuildInput` / `OptixAccelBuildOptions`).
+  Consumers (`OptixRenderer.cpp`) include it where
+  the AS is built; non-OptiX-aware TUs do not need
+  to.
+- **No sibling .cpp.** Same rationale as §21:
+  build-function implementations live in
+  `OptixRenderer.cpp` where the per-scene-load
+  lifecycle already lives. The AS is a renderer-
+  scoped artefact; co-locating with the consumer
+  keeps the build chain compact.
+- **Three build entry points** matching §10's
+  per-mesh-GAS-plus-IAS architecture:
+  `build_sphere_gas`, `build_mesh_gas`, `build_ias`.
+  Stage 12B's single-mesh slot calls
+  `build_mesh_gas` zero or one time; multi-mesh
+  growth (carried-forward from 10B.11) calls it N
+  times without restructuring the API.
+- **Identity transforms by default.** Per §10.4's
+  CUDA-backend-parity choice: `build_ias` writes
+  identity transforms on every `OptixInstance`.
+  Activating per-mesh transforms is a future slice
+  that flips a flag without restructuring the API.
+
+### Hard-rule audit
+
+- Do not add other files — **yes**, only
+  `OptixAccel.h` was listed; the prompt's "Do not
   add other files" was respected.
 - Documentation only — **yes**, no source under
   `src/`, `tests/`, or `CMakeLists.txt` is touched.
