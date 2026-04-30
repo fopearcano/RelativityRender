@@ -79,6 +79,18 @@ namespace rr::core {
 //                           uniform mid-gray. Default output
 //                           "output/gpu_accumulation_test.ppm".
 //                           Requires CUDA.
+//   --render-pathtrace <file>
+//                           Stage 11C minimal diffuse GPU path
+//                           tracer. Loads the `.rrscene` file,
+//                           uploads the scene to GpuScene, and
+//                           runs the path tracer twice (spp = 1
+//                           and spp = 16) writing
+//                           "output/pathtrace_spp_1.ppm" and
+//                           "output/pathtrace_spp_16.ppm".
+//                           --output is ignored. Resolution
+//                           comes from the scene's
+//                           render_settings; --width / --height
+//                           are ignored. Requires CUDA.
 //   --render-gradient       Run the GPU UV-gradient diagnostic and
 //                           save it to <output>. Requires CUDA.
 //   --render-rays           Run the GPU camera-ray-direction
@@ -141,8 +153,8 @@ namespace rr::core {
 // Action flags (--help / --version / --device-info / --render /
 // --scene-info / --scene-summary / --render-from-scene /
 // --render-full-scene / --render-rng-test /
-// --render-accumulation-test / --render-gradient / --render-rays /
-// --render-sphere /
+// --render-accumulation-test / --render-pathtrace /
+// --render-gradient / --render-rays / --render-sphere /
 // --render-relativistic / --render-scene / --render-triangle /
 // --render-mesh-scene / --render-material-scene /
 // --render-direct-lighting) are mutually exclusive; combining them
@@ -163,6 +175,7 @@ public:
         RenderFullScene,
         RenderRngTest,
         RenderAccumulationTest,
+        RenderPathtrace,
         RenderGradient,
         RenderRays,
         RenderSphere,

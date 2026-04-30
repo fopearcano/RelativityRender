@@ -26,6 +26,7 @@
     #include "material/Material.h"
     #include "material/MaterialTypes.h"
     #include "math/Vec3.h"
+    #include "pathtracer/PathTracer.h"
     #include "relativity/RelativityParams.h"
     #include "renderer/AccumulationBuffer.h"
     #include "scene/Scene.h"
@@ -737,6 +738,156 @@ int run_render_accumulation_test(const rr::core::Config& cfg) {
     return save_image_or_error(img, out_path,
                                "GPU accumulation test",
                                cfg.width, cfg.height) ? 0 : 1;
+#endif
+}
+
+// `--render-pathtrace` dispatch. Stage 11C - the first action
+// that runs the GPU path tracer. CPU loads the .rrscene, uploads
+// camera + relativity + materials + spheres + first visible
+// non-empty mesh + lights to a GpuScene, then drives the
+// host-side `PathTracer` once at spp = 1 and once at spp = 16,
+// writing both PPMs. The two outputs let an artist eyeball
+// progressive convergence (spp_1 is noisy; spp_16 is markedly
+// smoother).
+//
+// Resolution comes from the scene's `render_settings`; `--width`
+// / `--height` are intentionally ignored, same policy as
+// `--render-from-scene` / `--render-full-scene`. `--output` is
+// also ignored - the two PPM paths are fixed by the prompt and
+// matching `--render-relativistic`'s precedent of writing
+// multiple fixed paths per launch.
+//
+// Lights are uploaded but the path tracer does not directly
+// sample them in this slice (no MIS / NEE yet); illumination
+// comes from emissive surface hits and the environment fallback
+// (configured from a default sky tint inside `PathTraceConfig`).
+int run_render_pathtrace(const rr::core::Config& cfg) {
+    using rr::core::Logger;
+
+    if (cfg.scene_path.empty()) {
+        Logger::error("--render-pathtrace requires a file path");
+        return 2;
+    }
+
+    const auto loaded = rr::io::load(cfg.scene_path);
+    if (!loaded.ok) {
+        std::string msg = "scene load failed: " + loaded.error_message;
+        if (loaded.error_line > 0) {
+            msg += " (line " + std::to_string(loaded.error_line)
+                +  ", column " + std::to_string(loaded.error_column) + ")";
+        }
+        Logger::error(msg);
+        return 1;
+    }
+
+    const auto& scene  = loaded.scene;
+    const int   width  = scene.render_settings.width;
+    const int   height = scene.render_settings.height;
+
+#ifndef RR_HAS_CUDA
+    (void)scene;
+    (void)width;
+    (void)height;
+    Logger::error("--render-pathtrace requires CUDA. Rebuild with "
+                  "-DRR_ENABLE_CUDA=ON on a host with the CUDA Toolkit "
+                  "and a CUDA-capable GPU.");
+    return 1;
+#else
+    // Same flatten + upload chain as --render-full-scene.
+    std::vector<rr::geometry::Sphere> sphere_pods;
+    sphere_pods.reserve(scene.spheres.size());
+    for (const auto& s : scene.spheres) {
+        if (s.object.visible) sphere_pods.push_back(s.geometry);
+    }
+    std::vector<rr::material::MaterialParams> material_pods;
+    material_pods.reserve(scene.materials.size());
+    for (const auto& m : scene.materials) material_pods.push_back(m.params);
+    std::vector<rr::lighting::Light> light_pods;
+    light_pods.reserve(scene.lights.size());
+    for (const auto& l : scene.lights) {
+        if (l.object.visible) light_pods.push_back(l.data);
+    }
+    const rr::geometry::Mesh* mesh_to_upload = nullptr;
+    for (const auto& sm : scene.meshes) {
+        if (!sm.object.visible) continue;
+        if (sm.geometry.empty()) continue;
+        mesh_to_upload = &sm.geometry;
+        break;
+    }
+
+    rr::gpu::GpuScene gpu_scene;
+    if (!gpu_scene.upload_camera(scene.camera)) {
+        Logger::error("pathtrace failed: upload_camera"); return 1;
+    }
+    if (!gpu_scene.upload_relativity(scene.observer, scene.relativity)) {
+        Logger::error("pathtrace failed: upload_relativity"); return 1;
+    }
+    if (!sphere_pods.empty()
+     && !gpu_scene.upload_spheres(sphere_pods.data(), sphere_pods.size())) {
+        Logger::error("pathtrace failed: upload_spheres"); return 1;
+    }
+    if (!material_pods.empty()
+     && !gpu_scene.upload_materials(material_pods.data(),
+                                    material_pods.size())) {
+        Logger::error("pathtrace failed: upload_materials"); return 1;
+    }
+    if (!light_pods.empty()
+     && !gpu_scene.upload_lights(light_pods.data(), light_pods.size())) {
+        Logger::error("pathtrace failed: upload_lights"); return 1;
+    }
+    if (mesh_to_upload != nullptr
+     && !gpu_scene.upload_mesh(*mesh_to_upload)) {
+        Logger::error("pathtrace failed: upload_mesh"); return 1;
+    }
+
+    // Stage 11C writes two PPMs per invocation: spp = 1 (noisy)
+    // and spp = 16 (markedly smoother). Keeping both call sites
+    // compact + identical-shape so the convergence comparison
+    // depends only on `samples_per_pixel`.
+    struct SppRun { int spp; const char* path; const char* label; };
+    constexpr SppRun kRuns[] = {
+        { 1,  "output/pathtrace_spp_1.ppm",  "pathtrace spp=1"  },
+        {16,  "output/pathtrace_spp_16.ppm", "pathtrace spp=16" },
+    };
+
+    rr::pathtracer::PathTracer pt;
+    int failures = 0;
+    for (const auto& run : kRuns) {
+        rr::pathtracer::PathTraceConfig pcfg;
+        pcfg.samples_per_pixel = run.spp;
+        // Other PathTraceConfig fields (max_bounces, seed,
+        // environment_color, environment_intensity) keep their
+        // defaults. The defaults produce a moderate cool sky tint
+        // so a scene without emissive surfaces still produces a
+        // visible image.
+
+        auto r = pt.render(gpu_scene, width, height, pcfg);
+        if (!r.ok) {
+            Logger::error(std::string(run.label) + " failed: "
+                                + r.message);
+            ++failures;
+            continue;
+        }
+
+        Logger::info(std::string("scene file       : ") + cfg.scene_path);
+        Logger::info("framebuffer      : "
+                   + std::to_string(width) + "x" + std::to_string(height)
+                   + " (from render_settings)");
+        Logger::info(std::string("pathtrace        : ")
+                   + std::to_string(run.spp) + " spp, "
+                   + std::to_string(pcfg.max_bounces) + " bounces, "
+                   + std::to_string(sphere_pods.size())   + " sphere(s), "
+                   + std::to_string(material_pods.size()) + " material(s), "
+                   + std::to_string(light_pods.size())    + " light(s), "
+                   + std::to_string(mesh_to_upload != nullptr ? 1 : 0)
+                   + " mesh(es)");
+
+        if (!save_image_or_error(r.image, run.path, run.label,
+                                 width, height)) {
+            ++failures;
+        }
+    }
+    return failures == 0 ? 0 : 1;
 #endif
 }
 
@@ -1507,6 +1658,9 @@ int main(int argc, char** argv) {
         case CommandLine::Action::RenderAccumulationTest:
             return run_render_accumulation_test(result.config);
 
+        case CommandLine::Action::RenderPathtrace:
+            return run_render_pathtrace(result.config);
+
         case CommandLine::Action::RenderGradient:
             return run_render_gradient(result.config);
 
@@ -1542,8 +1696,9 @@ int main(int argc, char** argv) {
         case CommandLine::Action::Default:
             Logger::info(std::string(rr::core::kProjectName) + " "
                        + rr::core::kVersionString + " starting up.");
-            Logger::info("Stage 11B: progressive accumulation buffer. "
-                         "Try --render-accumulation-test, "
+            Logger::info("Stage 11C: minimal GPU path tracer. "
+                         "Try --render-pathtrace <file>, "
+                         "--render-accumulation-test, "
                          "--render-rng-test, "
                          "--render-full-scene <file>, "
                          "--render-from-scene <file>, "

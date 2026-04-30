@@ -3349,19 +3349,281 @@ a wrong-by-CPU image.
 | ...   | (existing flags through 11A)      | (unchanged)                                     |
 | 11B   | `--render-accumulation-test`      | Stage 11B accumulation-buffer convergence test  |
 
+## Stage 11C — minimal GPU path tracer
+
+**Scope of this slice (Stage 11C; master order #16, "Path
+tracing foundation"): the first real GPU path tracer. Per
+pixel the kernel runs a hit-shade-bounce loop consuming the
+Stage 11A RNG / cosine-hemisphere sampling primitives; the
+host runs a samples-per-pixel loop accumulating through the
+Stage 11B `AccumulationBuffer`; resolve writes a host
+`Image`.** Materials are diffuse-only; no MIS / NEE / shadow
+rays / OptiX. Lights upload but only emissive surfaces
+contribute illumination.
+
+### What ships
+
+- `src/pathtracer/PathTracer.h` - host-facing surface:
+  `PathTraceConfig` POD (`max_bounces` defaults 4,
+  `samples_per_pixel` defaults 16, `seed` defaults 0,
+  `environment_color` and `environment_intensity` defaults
+  `(0.55, 0.70, 1.00)` * `0.30`) + `PathTraceResult` (matches
+  `CudaRenderer::Result`) + `PathTracer::render(scene, w, h,
+  cfg)`.
+- `src/pathtracer/PathTracer.cpp` - host-only orchestration:
+  allocates an `AccumulationBuffer` and a per-sample
+  `GpuBuffer<float>`, loops `samples_per_pixel` times calling
+  `launch_pathtrace_sample` then `accum.accumulate_sample`,
+  finally `resolve_to_image`. On the host-only build path
+  returns `ok = false` with a clear message - the master
+  rule "All ray paths on GPU" rules out a CPU fallback.
+- `src/cuda/CudaPathTracer.cuh` - launcher declaration. Takes
+  `const rr::gpu::GpuScene&` (host-friendly) rather than the
+  device-side `CudaSceneView`, so `PathTracer.cpp` can include
+  this header without forcing nvcc on that TU. The `.cu`
+  builds the view internally, mirroring the
+  `CudaAccumulation.cuh` host-friendly stance.
+- `src/cuda/CudaPathTracer.cu` - the kernel + launcher:
+  - `__device__ inline align_to_normal(local, n)` builds a
+    cheap orthonormal basis using a non-collinear helper
+    axis, rotates a tangent-space sample (+Z = normal) into
+    world space.
+  - `__device__ inline closest_hit(ray, scene, t_max)`
+    walks the sphere array then the (single) mesh slot,
+    tightening `t_max` as candidates are accepted - identical
+    in shape to `k_render_scene`'s closest-hit step. Mesh
+    hits rewrite `material_index` to the mesh's
+    `material_id` so shading reads from the same materials
+    array.
+  - `__device__ inline material_for(idx, materials,
+    material_count)` falls back to `MaterialParams{}` (the
+    neutral grey diffuse default) when the index is out of
+    range.
+  - `__device__ inline generate_primary_ray(cam, x, y, w, h,
+    jx, jy)` mirrors `rr::camera::generate_camera_ray` but
+    replaces the +0.5 pixel-centre offset with a randomly
+    sampled jitter so the spp loop produces anti-aliasing
+    for free.
+  - `__global__ k_pathtrace_sample(...)` - the path-tracer
+    kernel itself. Per pixel: seed Rng, generate jittered
+    primary ray, then for `bounce in [0, max_bounces)`:
+    closest_hit -> miss-environment / hit-emission / diffuse
+    bounce. cos-weighted sampling on a Lambert BRDF reduces
+    the throughput update to the simple Hadamard product
+    `throughput *= albedo` (the cos / pi factor cancels by
+    construction).
+  - `launch_pathtrace_sample(...)` builds the
+    `CudaSceneView` from the GpuScene's accessors before the
+    `<<<grid, block>>>` launch.
+- `src/main.cpp::run_render_pathtrace` - the CLI handler:
+  loads the scene file (same parser as Stage 10B), uploads
+  the same chain `--render-full-scene` does (camera +
+  relativity + spheres + materials + lights + first
+  visible non-empty mesh), then runs `PathTracer::render`
+  twice with `samples_per_pixel = 1` and `samples_per_pixel
+  = 16` writing `output/pathtrace_spp_1.ppm` and
+  `output/pathtrace_spp_16.ppm`. `--output` is ignored
+  (matching the `--render-relativistic` precedent of
+  multiple fixed paths per launch).
+- `src/core/CommandLine.{h,cpp}` - new
+  `Action::RenderPathtrace` + `--render-pathtrace <file>`
+  flag (path-argument, exclusive with other action flags).
+  Usage block extended; action-collision error string lists
+  the new flag.
+- `CMakeLists.txt`:
+  - `rr_renderer` STATIC library gains
+    `src/pathtracer/PathTracer.cpp`. The PathTracer.cpp lives
+    here (not in `rr_pathtracer`) so the static-lib graph
+    stays acyclic - `rr_pathtracer` (INTERFACE) holds only
+    the RR_HD inline RNG / Sampling headers; `rr_renderer`
+    holds the host-side TUs that depend on `rr_gpu`.
+  - `rr_renderer` PUBLIC-links `rr_pathtracer` so
+    `PathTracer.h`'s `Vec3` / Sampling references resolve
+    transitively.
+  - `cuda/CudaPathTracer.cu` added to `rr_gpu`'s CUDA
+    sources under `RR_ENABLE_CUDA`.
+  - status string bumped to "Stage 11C: minimal GPU path
+    tracer".
+
+### Algorithm details
+
+The kernel implements the standard Lambert-only path-tracer
+loop. Per pixel, once per sample:
+
+1. **Primary ray with sub-pixel jitter.** Seed
+   `pathtracer::Rng` from `(x, y, sample_index, seed)` and
+   draw a `next_vec2` for the pixel jitter. The jitter takes
+   the place of the +0.5 centre offset
+   `rr::camera::generate_camera_ray` uses, so the spp loop
+   gets stratified-by-default anti-aliasing.
+
+2. **Closest-hit walk.** Sphere loop then mesh-triangle
+   loop, `t_max` tightening as candidates are accepted. The
+   shape exactly matches the Stage 9B `k_render_scene`
+   closest-hit step.
+
+3. **Emission contribution.** Add `throughput *
+   material.emissionColor * material.emissionStrength` to
+   the running radiance. This is what makes emissive
+   surfaces light the scene without explicit light sampling
+   - the path tracer "discovers" emitters by hitting them.
+
+4. **Bounce decision.** If we're on the last bounce
+   (`bounce + 1 >= max_bounces`), stop - no point sampling
+   a direction we won't trace.
+
+5. **Cosine-weighted diffuse bounce.** Draw `next_vec2`,
+   produce a tangent-space direction via
+   `pathtracer::sample_cosine_hemisphere`, rotate into
+   world space via `align_to_normal`, multiply throughput
+   by `material.baseColor`. The `cos(theta) / pi` BRDF and
+   the `cos(theta) / pi` PDF cancel exactly, so the
+   throughput update is just the albedo.
+
+6. **Environment fallback on miss.** Add `throughput *
+   environment_color * environment_intensity` to the
+   running radiance and break.
+
+### What's deliberately not here
+
+Per the Stage 11C prompt:
+
+- **No MIS / NEE.** Lights uploaded via
+  `GpuScene::upload_lights` are visible to the kernel but
+  never directly sampled. Make sure your scene has emissive
+  surfaces or a non-zero `environment_intensity` if you want
+  any illumination.
+- **Diffuse-only materials.** `roughness`, `metallic`,
+  `specular`, `transmission` are read from the upload but
+  not consumed - the BRDF is pure Lambert, the PDF is pure
+  cos-weighted hemisphere. Adding non-diffuse BSDFs is a
+  later module's job.
+- **No shadow rays.** Direct visibility tests are part of
+  NEE; without NEE there is nothing to shadow-test.
+- **No OptiX.** This is the CUDA backend's path tracer; an
+  OptiX upgrade is master order #17.
+- **No relativistic perception.** The kernel skips the
+  Stage 9 aberration / Doppler / searchlight pipeline that
+  `k_render_scene` runs. Re-introducing relativity for path-
+  traced rays is its own slice (the bounce direction also
+  needs aberration; that's not a one-line change).
+
+### Build-host constraint (this environment)
+
+Same as Stages 10B.10 / 10B.11 / 11A / 11B: this environment
+has no CUDA toolchain and no GPU, so `--render-pathtrace`
+returns the standard "requires CUDA. Rebuild with
+-DRR_ENABLE_CUDA=ON ..." error. On a CUDA-enabled host:
+
+```
+cmake -S . -B build-cuda -DRR_ENABLE_CUDA=ON
+cmake --build build-cuda -j
+build-cuda/bin/RelativityRender \
+    --render-pathtrace scenes/test_full_scene.rrscene
+```
+
+writes `output/pathtrace_spp_1.ppm` and
+`output/pathtrace_spp_16.ppm`. Per-pixel writes happen
+entirely on the device for both runs: ray-gen / closest-hit /
+material lookup / hemisphere sample / throughput update /
+emission accumulation all run inside `k_pathtrace_sample`;
+the host orchestration only owns the spp loop + buffer
+lifetimes + the final cudaMemcpy download. The 1-spp output
+is noisy as expected for a one-bounce-per-pixel sample; the
+16-spp output is markedly smoother, the visual confirmation
+that the AccumulationBuffer integration works against the
+path tracer.
+
+A CPU fallback would directly violate the prompt's "All ray
+paths on GPU" rule and the master "No CPU ray tracing as
+production path" rule, so it is not shipped.
+
+### Hard-rule audit
+
+- All ray paths on GPU - **yes**, the host code in
+  `PathTracer::render` and `run_render_pathtrace` only
+  allocates buffers, launches kernels, and downloads the
+  resolved image. No per-ray / per-pixel host loops.
+- CPU only launches kernels and saves image - **yes**, that
+  is exactly what the host side does.
+- Keep materials simple - **yes**, the kernel reads only
+  `baseColor` and `emissionColor * emissionStrength` from
+  `MaterialParams`. Roughness / metallic / specular /
+  transmission are uploaded but ignored.
+- No MIS yet - **yes**, `scene.lights` is wired through
+  the launch arg but never sampled by the kernel.
+- No OptiX yet - **yes**, this is the CUDA backend's path
+  tracer; no `<optix.h>` / OptiX SDK touch.
+- No server / C4D - **yes**, no source under any such
+  directory.
+- Must compile - **yes**, host-only build is clean under
+  `-Wall -Wextra -Wpedantic`, no warnings; `ctest` reports
+  4/4 (existing math / image / gpu / pathtracer tests
+  unchanged).
+
+### Verified at the host-only CLI / ctest
+
+- `--render-pathtrace scenes/test_full_scene.rrscene` on a
+  host-only build → exit 1, "requires CUDA. Rebuild with
+  -DRR_ENABLE_CUDA=ON ..." (same shape as every other render
+  action's no-CUDA error).
+- `--render-pathtrace /tmp/missing.rrscene` → exit 1,
+  "scene load failed: scene file does not exist: ..." (parser
+  runs before the CUDA gate).
+- `--render-pathtrace` without an argument → exit 2,
+  "missing value after --render-pathtrace" + usage block.
+- `--render-pathtrace foo --render-rng-test` → exit 2,
+  "cannot combine action flags ..." with `--render-pathtrace`
+  listed.
+- `--help` shows the new flag with the spp-1 / spp-16
+  output paths.
+- Existing tests still pass: `math_tests`, `image_tests`,
+  `gpu_tests`, `pathtracer_tests` are byte-identical to
+  Stage 11B.
+
+### Static-library shape after this slice
+
+```
+   rr_pathtracer (INTERFACE)
+       headers: pathtracer/{RNG,Sampling}.{h,cuh},
+                pathtracer/PathTracer.h
+       deps:    rr_math
+                  ^
+                  |
+   rr_renderer (STATIC)
+       impl:   renderer/AccumulationBuffer.cpp,
+                pathtracer/PathTracer.cpp
+       deps:    rr_image, rr_gpu, rr_pathtracer
+                                     ^
+                                     |
+   rr_gpu (STATIC)
+       impl:    cuda/Cuda*.{cpp,cu} including the new
+                CudaPathTracer.cu under RR_ENABLE_CUDA
+       deps:    rr_image, rr_camera, rr_geometry, rr_relativity,
+                rr_pathtracer (PRIVATE: only the kernel TUs need
+                the headers)
+```
+
+No cycles. `rr_renderer` is the canonical home for host-side
+renderer glue that needs both `rr_image` and `rr_gpu`; both
+the accumulation buffer and the path tracer fit there.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
 
-- the path tracer itself (master module 16, multi-bounce GPU
-  path integration consuming the Stage 11A RNG / sampling
-  primitives + the Stage 11B accumulation buffer);
+- direct-light sampling (next-event estimation) so the path
+  tracer picks up illumination from non-emissive light
+  primitives (point / directional / area), with a
+  multiple-importance combine against the BRDF sample;
+- non-diffuse materials (specular, metal, transmission) +
+  a real BSDF dispatch in the kernel;
 - multi-mesh upload on `GpuScene`;
+- relativistic-perception integration: aberrate primary +
+  bounce rays, fold Doppler / searchlight back into the
+  emission / environment evaluations;
 - `SceneWriter::save` / `serialize` for round-trip + a
-  `tests/io_tests.cpp` covering round-trip and each §12 rule;
-- round out the deferred fields (`transmission`, `visible`
-  / `transform` on `SceneObject` wrappers, `area_width` /
-  `area_height`, `source_path`).
+  `tests/io_tests.cpp` covering round-trip and each §12 rule.
 
 ## Constraints carried forward
 

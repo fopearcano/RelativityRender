@@ -49,8 +49,8 @@ bool set_action(CommandLine::Action& current, CommandLine::Action target,
                 "--device-info / --render / --scene-info / "
                 "--scene-summary / --render-from-scene / "
                 "--render-full-scene / --render-rng-test / "
-                "--render-accumulation-test / --render-gradient / "
-                "--render-rays / --render-sphere / "
+                "--render-accumulation-test / --render-pathtrace / "
+                "--render-gradient / --render-rays / --render-sphere / "
                 "--render-relativistic / --render-scene / "
                 "--render-triangle / --render-mesh-scene / "
                 "--render-material-scene / --render-direct-lighting)";
@@ -148,6 +148,17 @@ CommandLine::ParseResult CommandLine::parse(int argc, char** argv) {
                 r.action = Action::Error;
                 return r;
             }
+        } else if (a == "--render-pathtrace") {
+            if (!set_action(r.action, Action::RenderPathtrace,
+                            r.error_message)) {
+                r.action = Action::Error;
+                return r;
+            }
+            if (!take_value(argc, argv, i, a, value, r.error_message)) {
+                r.action = Action::Error;
+                return r;
+            }
+            r.config.scene_path.assign(value);
         } else if (a == "--render-gradient") {
             if (!set_action(r.action, Action::RenderGradient,
                             r.error_message)) {
@@ -248,6 +259,7 @@ CommandLine::ParseResult CommandLine::parse(int argc, char** argv) {
      || r.action == Action::RenderFullScene
      || r.action == Action::RenderRngTest
      || r.action == Action::RenderAccumulationTest
+     || r.action == Action::RenderPathtrace
      || r.action == Action::RenderGradient
      || r.action == Action::RenderRays
      || r.action == Action::RenderSphere
@@ -323,6 +335,16 @@ std::string CommandLine::usage(std::string_view argv0) {
        << "                        Default output "
                                   "\"output/gpu_accumulation_test.ppm\". "
                                   "Requires CUDA.\n"
+       << "  --render-pathtrace <file>\n"
+       << "                        Stage 11C minimal diffuse GPU path "
+                                  "tracer. Loads the .rrscene\n"
+       << "                        file and runs the path tracer at "
+                                  "spp = 1 and spp = 16, writing\n"
+       << "                        \"output/pathtrace_spp_1.ppm\" "
+                                  "and \"output/pathtrace_spp_16.ppm\".\n"
+       << "                        Resolution from render_settings; "
+                                  "--width / --height ignored.\n"
+       << "                        Requires CUDA.\n"
        << "  --render-gradient     Run the GPU UV-gradient diagnostic "
                                   "and save it (requires CUDA).\n"
        << "  --render-rays         Run the GPU camera-ray "

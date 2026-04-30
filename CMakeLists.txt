@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.20)
 
 project(RelativityRender
     VERSION     0.1.0
-    DESCRIPTION "RelativityRender - GPU renderer platform (Stage 11B: progressive accumulation buffer)"
+    DESCRIPTION "RelativityRender - GPU renderer platform (Stage 11C: minimal GPU path tracer)"
     LANGUAGES   CXX
 )
 
@@ -23,7 +23,7 @@ option(RR_ENABLE_CUDA "Enable CUDA backend (requires CUDA Toolkit)"   OFF)
 
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
-message(STATUS "RelativityRender ${PROJECT_VERSION} (Stage 11B: progressive accumulation buffer)")
+message(STATUS "RelativityRender ${PROJECT_VERSION} (Stage 11C: minimal GPU path tracer)")
 
 message(STATUS "  Build type   : ${CMAKE_BUILD_TYPE}")
 message(STATUS "  C++ standard : ${CMAKE_CXX_STANDARD}")
@@ -186,21 +186,18 @@ target_link_libraries(rr_pathtracer INTERFACE rr_math)
 # rr_renderer: host-side renderer pieces that don't fit cleanly
 # inside `rr_gpu` (CUDA backend) or `rr_image` (host buffers).
 # Stage 11B introduces this library for the progressive-
-# accumulation buffer (`AccumulationBuffer`), which owns a
-# device-side Rgba32F sum buffer + a host-side sample counter and
-# drives the kernels declared in `cuda/CudaAccumulation.cuh`. The
-# library PUBLIC-links `rr_image` (because `resolve_to_image()`
-# returns an Image by value) and `rr_gpu` (because the host class
-# holds a `GpuBuffer<float>` and the `--render-accumulation-test`
-# launchers live in the CUDA backend); when CUDA is on the
-# rr_gpu PUBLIC link propagates `RR_HAS_CUDA` into rr_renderer
-# consumers so `AccumulationBuffer.cpp`'s `#ifdef RR_HAS_CUDA`
-# gate stays in sync with the rest of the build.
+# accumulation buffer (`AccumulationBuffer`); Stage 11C adds the
+# host-side `PathTracer` that drives the spp loop + accumulation
+# + resolve. Both .cpps end up here (instead of inside the
+# header-only `rr_pathtracer` INTERFACE library) so the static-
+# lib dependency direction stays one-way:
+# rr_renderer -> rr_gpu, rr_pathtracer, rr_image, with no cycle.
 add_library(rr_renderer STATIC
     src/renderer/AccumulationBuffer.cpp
+    src/pathtracer/PathTracer.cpp
 )
 target_include_directories(rr_renderer PUBLIC src)
-target_link_libraries(rr_renderer PUBLIC rr_image rr_gpu)
+target_link_libraries(rr_renderer PUBLIC rr_image rr_gpu rr_pathtracer)
 rr_apply_warnings(rr_renderer)
 
 # rr_io: scene-format IO (Stage 10B). Stage 10B.1 ships only the
@@ -264,6 +261,7 @@ if(RR_ENABLE_CUDA)
         src/cuda/CudaTestKernel.cu
         src/cuda/CudaRngTestKernel.cu
         src/cuda/CudaAccumulation.cu
+        src/cuda/CudaPathTracer.cu
         src/cuda/CudaRenderer.cu
     )
     # PUBLIC: targets linking rr_gpu (RelativityRender, gpu_tests) gate
