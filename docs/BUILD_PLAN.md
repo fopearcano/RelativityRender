@@ -3683,7 +3683,8 @@ sub-stages, appended to the same file.** No code is touched.
 | 12A.2.2  | OPTIX_BACKEND_PLAN.md §6 (Miss)  | ✅      |
 | 12A.2.3  | OPTIX_BACKEND_PLAN.md §7 (Closest-hit) | ✅ |
 | 12A.2.4  | OPTIX_BACKEND_PLAN.md §8 (Any-hit) | ✅ |
-| 12A.x    | remaining program / AS / SBT / data-flow / file-layout / risks sections | pending |
+| 12A.2.5  | OPTIX_BACKEND_PLAN.md §9 (Shader Binding Table) | ✅ |
+| 12A.x    | remaining IS / AS / data-flow / integration / file-layout / risks sections | pending |
 | 12B      | minimum-viable OptiX backend     | pending |
 | 12C+     | feature parity with CUDA backend | pending |
 
@@ -3951,15 +3952,118 @@ pending).**
   edits are two markdown files.
 - Update docs/BUILD_PLAN.md — **yes**, this entry.
 
+## Stage 12A.2.5 — OptiX Shader Binding Table design
+
+**Scope of this slice (Stage 12A.2.5): documentation-only.
+Append §9 "Shader Binding Table" to
+`docs/OPTIX_BACKEND_PLAN.md` covering what the SBT
+stores (raygen + miss + HitGroup record categories +
+optional callable), per-object/per-material data linkage
+(launch-params arrays vs SBT user-data tradeoff, Stage
+12B picks launch-params), camera/relativity params
+explicit non-membership in SBT (live in launch params),
+the Stage 12B 4-record concrete layout, Stage 12C+
+extensions for shadow rays + multi-mesh, the OptiX
+HitGroup index math, and a read/write summary. No code;
+no other sections (§10+ remain pending).**
+
+### What ships
+
+- `docs/OPTIX_BACKEND_PLAN.md` §9 with subsections 9.1
+  What the SBT stores (record categories, anatomy
+  header+user-data, alignment + stride math, Stage 12B
+  count column), 9.2 Per-object/per-material data
+  linkage (two routing options - launch-params arrays
+  with hit-time index lookup vs per-record SBT user-data
+  via optixGetSbtDataPointer - and a comparison table
+  covering SBT-rebuild cost, launch-params size, cache
+  locality, multi-mesh scaling, OptiX-idiom alignment;
+  Stage 12B picks launch-params for three reasons: no
+  SBT rebuilds during interactive editing, small material
+  / mesh counts, one source of truth shared with the
+  CUDA backend), 9.3 Camera and relativity params:
+  launch params not SBT (consolidates the §5.2.1 / §6.2.2
+  / §7.2.2 rule with three justifications - per-launch
+  mutability, broadcast-friendly small size, program-
+  agnostic shared state), 9.4 Stage 12B layout (concrete
+  record list as table - 1 raygen + 1 miss + 2
+  HitGroup + 0 user-data per record + 32 B record size
+  + 128 B total SBT footprint; HitGroup-to-primitive
+  binding via sbtOffset at AS build time), 9.5 Stage
+  12C+ extensions (9.5.1 multi-ray-type for NEE shadow
+  rays grows to 7 records with interleaved-by-ray-type
+  HitGroup ordering; 9.5.2 multi-mesh has two layout
+  options mirroring the §9.2 tradeoff one level up),
+  9.6 SBT index math (the OptiX formula plus the Stage
+  12B and 12C+ degenerate cases), 9.7 Read/write summary
+  (SBT is read-only at trace time; host-only writes at
+  pipeline build), 9.8 Scope (forward-pointers to GAS/IAS
+  construction in §10, multi-mesh upload upgrade as a
+  separate slice, callable programs for future BSDF
+  dispatch).
+- The footer drops the "Shader Binding Table layout"
+  entry; the outstanding-items list now reads:
+  Intersection program design / Acceleration structures /
+  Material data flow / Camera data flow / Relativity
+  integration / Path-tracing integration / Planned module
+  / file layout / Migration risks.
+- This BUILD_PLAN entry + status-table row.
+
+### Architectural decisions worth highlighting
+
+- **Launch-params arrays for per-primitive metadata.**
+  §9.2 documents the choice that Stage 12B routes per-
+  primitive material / sphere / mesh data through
+  `optixLaunchParams` rather than per-record SBT
+  user-data. The two key rationales: (a) no SBT rebuild
+  on per-material / per-sphere edits, useful for
+  interactive workflows; (b) the CUDA backend already
+  reads the same `GpuScene::device_*()` accessors -
+  reusing them in OptiX means a single source of truth
+  during the migration. The migration to SBT user-data
+  is documented as the future option for production
+  scenes with thousands of distinct materials.
+- **Camera + relativity params are explicitly NOT in
+  the SBT.** They live in `optixLaunchParams` because
+  they change per launch (sample_index, observer
+  velocity, camera pose), they are small enough to
+  broadcast via constant memory, and every program type
+  (raygen, miss, CH) needs the same authoritative copy.
+  This is the consolidating rule that §5/§6/§7 each
+  forward-pointed to.
+- **128-byte SBT footprint.** Stage 12B's 4 records ×
+  32-byte stride = 128 bytes total. The SBT is built
+  once at pipeline construction and reused across every
+  launch; per-launch state goes through launch params,
+  not SBT updates.
+- **Activation roadmap stays additive.** §9.5's NEE
+  shadow ray expansion (4 → 7 records) and multi-mesh
+  expansion (per-mesh records OR launch-params indexed
+  by InstanceId) are both characterised as additive
+  growth paths; neither restructures the §9.4 baseline.
+
+### Hard-rule audit
+
+- Do not add other sections — **yes**, only §9 was
+  appended; the footer dropped exactly the matching
+  item.
+- Documentation only — **yes**, no source under `src/`,
+  `tests/`, or `CMakeLists.txt` is touched. The only
+  edits are two markdown files.
+- Update docs/BUILD_PLAN.md — **yes**, this entry.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
 
-- continue 12A.2: append §9 (Shader Binding Table) to
-  `OPTIX_BACKEND_PLAN.md`, then continue with §10+ (AS,
-  data flows, integrations, file layout, risks) one
-  focused section per sub-stage matching the
-  12A.2.1 / 12A.2.2 / 12A.2.3 / 12A.2.4 cadence;
+- continue 12A: append §10+ (Intersection program,
+  Acceleration structures, Material data flow, Camera
+  data flow, Relativity integration, Path-tracing
+  integration, planned module/file layout, migration
+  risks) to `OPTIX_BACKEND_PLAN.md`, one focused section
+  per sub-stage matching the
+  12A.2.1 / 12A.2.2 / 12A.2.3 / 12A.2.4 / 12A.2.5
+  cadence;
 - *or* (if the priority is path-tracer feature breadth
   instead of backend swap) direct-light sampling (NEE),
   non-diffuse materials, multi-mesh upload, or relativistic-

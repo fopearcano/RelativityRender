@@ -1433,6 +1433,345 @@ SBT-layout change.
 
 ---
 
+## 9. Shader Binding Table
+
+The OptiX **Shader Binding Table** (SBT) is the device-side
+data structure that connects ray traversal events to the
+program code that handles them. Every `optixTrace` call,
+every miss, and every closest-hit decision dispatches
+through the SBT — it is the lookup table the OptiX runtime
+walks to find "which program, given which user data, runs
+for this event?".
+
+§5 / §6 / §7 / §8 each consume the SBT from one program's
+viewpoint and forward-pointed details to §9. This section
+consolidates those forward-pointers, defines the Stage 12B
+record layout, and documents the index math + per-object /
+per-material data routing that the program-side sections
+deliberately deferred.
+
+### 9.1 What the SBT stores
+
+OptiX's SBT is split across three (optionally four) device
+arrays the host sets on `OptixShaderBindingTable`:
+
+| Field                     | Holds                              | Stage 12B count |
+|---------------------------|------------------------------------|-----------------|
+| `raygenRecord`            | A single raygen record (pointer)   | 1               |
+| `missRecordBase`          | An array of miss records (table)   | 1 record        |
+| `hitgroupRecordBase`      | An array of HitGroup records (table) | 2 records     |
+| `callablesRecordBase`     | Optional callable program records  | 0 (unused)      |
+
+Each record is a contiguous chunk of device memory laid
+out as:
+
+```
+[ OPTIX_SBT_RECORD_HEADER_SIZE bytes (= 32) | user_data ]
+```
+
+The header is opaque — the host fills it via
+`optixSbtRecordPackHeader(program_group, record_ptr)`,
+which writes the program-group identifier OptiX needs to
+dispatch into the right code at trace time. The user-data
+section is whatever the host chooses: a plain POD the
+program can later read via `optixGetSbtDataPointer()`.
+Records within a single table (miss / HitGroup / callable)
+**must be the same stride**, so all entries in a table need
+to use a uniform user-data size.
+
+Stride math:
+
+```
+stride = OPTIX_SBT_RECORD_HEADER_SIZE          // 32 bytes
+       + max_over_records(sizeof(user_data))   // 0 in Stage 12B
+       rounded up to OPTIX_SBT_RECORD_ALIGNMENT (16)
+```
+
+For Stage 12B, every record is a bare 32-byte header — no
+user-data anywhere — so the stride is exactly 32 bytes for
+every table.
+
+### 9.2 Per-object / per-material data linkage
+
+OptiX exposes two distinct mechanisms for getting per-
+primitive / per-material metadata from the host into the
+device-side programs:
+
+1. **Launch-params arrays + hit-time index lookup.** The
+   host puts arrays (materials, spheres, mesh metadata,
+   etc.) on the device via existing GpuBuffer uploads,
+   stores the device pointers in `optixLaunchParams`
+   (a constant-memory POD bound to a fixed device symbol
+   at pipeline link time), and the CH program reads
+   `optixGetPrimitiveIndex()` / instance / vertex indices
+   to *index* into those arrays.
+2. **Per-record SBT user-data accessed via
+   `optixGetSbtDataPointer()`.** The host packs the
+   per-primitive metadata directly into the HitGroup
+   record's user-data slot at SBT build time. The CH
+   program calls `optixGetSbtDataPointer()` to get a
+   pointer to the current record's user-data, then casts
+   to the expected POD.
+
+Both work; the choice is a tradeoff:
+
+| Concern                               | Launch-params (Stage 12B) | SBT user-data |
+|---------------------------------------|---------------------------|---------------|
+| SBT rebuild on scene edit?            | No (just memcpy the array) | Yes (rebuild + repack) |
+| Launch-params size                    | Grows with material/mesh count | Constant     |
+| Cache locality                        | All threads load same launch_params from constant memory; arrays go through global memory | OptiX guarantees record locality for the hit's HitGroup |
+| Multi-mesh scaling                    | Linear array growth + indexed lookup | Per-mesh records (linear SBT growth)        |
+| Native OptiX idiom                    | Atypical (most renderers use SBT data) | Canonical |
+
+Stage 12B picks **option 1 (launch-params)** for three
+reasons:
+
+1. **No SBT rebuilds during interactive editing.** A
+   future interactive viewer will want to tweak materials
+   / move spheres / re-upload one mesh without
+   rebuilding the SBT. Launch-params arrays let the host
+   memcpy a single material slot or sphere POD without
+   pipeline-side work.
+2. **Small material / mesh counts.** Stage 12B's target
+   scenes (Stage 11C-style: 4 spheres + 1 mesh + 5 materials
+   + 3 lights) make launch-params arrays tiny — a few
+   hundred bytes total. The cache-locality argument that
+   favours SBT user-data only matters at hundreds-of-
+   thousands of distinct records.
+3. **One source of truth.** The CUDA backend
+   (`CudaSceneView` in `cuda/CudaScene.cuh`) already
+   threads the same arrays through the kernel by value.
+   The OptiX backend reading the same arrays from
+   launch-params means both backends share the host-side
+   `GpuScene::device_*()` accessors verbatim — there is
+   no second data path to maintain during the migration.
+
+The migration to **option 2** is on the table for future
+multi-mesh + many-material scenes (production-grade content
+with thousands of distinct surfaces). When that happens,
+the §7 CH program's hit-data extraction step grows a
+single line — `auto* data = optixGetSbtDataPointer();` —
+and the host's SBT build grows a per-record user-data
+copy. Neither change restructures §5 / §6 / §7 / §8; the
+material / mesh data flow is *additive*.
+
+### 9.3 Camera and relativity params: launch params, not SBT
+
+§5.2.1, §6.2.2, and §7.2.2 each documented camera +
+observer + relativity params as living in
+`optixLaunchParams`. §9 makes the rule explicit: these
+fields are **not** in the SBT. Three reasons:
+
+1. **They change per launch.** `sample_index` changes
+   between every `optixLaunch` (the host's spp loop);
+   `observer.velocity` changes between renders; the
+   camera POD changes when the user moves the camera.
+   Encoding these into SBT records would require
+   repacking + re-uploading the SBT on every launch, which
+   defeats the SBT's caching purpose.
+2. **They are small and broadcast-friendly.** The full
+   per-launch state (camera POD ~80 B, observer ~16 B,
+   relativity params ~32 B, env color/intensity ~16 B,
+   plus pointers + sizes) is well under 256 B — a single
+   constant-memory bind, accessible from every program
+   with one load.
+3. **They are program-agnostic.** Raygen, miss, and CH all
+   need the same observer + relativity params (raygen for
+   primary-ray aberration, miss for env Doppler, CH for
+   emission Doppler). Putting them in launch-params lets
+   each program read the same authoritative copy without
+   duplicating the data across record categories.
+
+The SBT records carry program identifiers (mandatory) and
+*per-program* metadata when present. Per-launch state lives
+in launch params. The two surfaces are non-overlapping by
+construction.
+
+### 9.4 Stage 12B layout
+
+Concrete record list for the Stage 12B SBT:
+
+| Table        | Index | Program group         | User data    | Record size |
+|--------------|------:|-----------------------|--------------|------------:|
+| raygenRecord |     0 | `pathtrace_raygen`    | (none)       | 32 B        |
+| missRecord   |     0 | `pathtrace_miss`      | (none)       | 32 B        |
+| hitgroupRecord |   0 | `sphere_hitgroup` (CH) | (none)      | 32 B        |
+| hitgroupRecord |   1 | `triangle_hitgroup` (CH) | (none)    | 32 B        |
+
+Total SBT footprint: **128 bytes** (4 records × 32 B). The
+device buffer is allocated once at pipeline build and reused
+across every launch.
+
+The HitGroup records' assignment to primitives happens at
+**acceleration-structure build time**, not at SBT build
+time. When the host calls `optixAccelBuild` for the sphere
+GAS, the build descriptor sets `sbtOffset = 0` (sphere
+HitGroup record is HitGroup table index 0); for the
+triangle GAS, `sbtOffset = 1`. The SBT itself is order-
+independent at build; the AS records the per-GAS offsets.
+
+### 9.5 Stage 12C+ extensions
+
+Two natural growth axes from the Stage 12B baseline:
+
+#### 9.5.1 Multi-ray-type (NEE shadow rays)
+
+NEE adds a "shadow" ray type alongside the existing
+"radiance" ray type. The SBT grows from 4 records to 7:
+
+| Table        | Index | Program group               |
+|--------------|------:|-----------------------------|
+| raygenRecord |     0 | `pathtrace_raygen`          |
+| missRecord   |     0 | `pathtrace_miss` (radiance) |
+| missRecord   |     1 | `shadow_miss` (returns "no occluder") |
+| hitgroupRecord |   0 | `sphere_hitgroup` (radiance: CH only) |
+| hitgroupRecord |   1 | `sphere_hitgroup_shadow` (shadow: AH only, calls optixTerminateRay) |
+| hitgroupRecord |   2 | `triangle_hitgroup` (radiance: CH only) |
+| hitgroupRecord |   3 | `triangle_hitgroup_shadow` (shadow: AH only)        |
+
+OptiX convention orders HitGroup records *interleaved by
+ray type within geometry*: the index for `(geometry, ray
+type)` is `geometry_sbt_offset * ray_type_count +
+ray_type`. The `sphere` GAS gets `sbtOffset = 0` →
+records 0 and 1; the `triangle` GAS gets `sbtOffset = 1`
+→ records 2 and 3 (with `ray_type_count = 2`).
+
+`optixTrace` calls pick the ray type via the `SBToffset`
++ `SBTstride` arguments (corresponds to the ray-type
+slot within a HitGroup pair). Stage 12C+ raygen will use
+ray type 0 for radiance and ray type 1 for shadow.
+
+#### 9.5.2 Multi-mesh
+
+When `GpuScene::upload_mesh` grows multi-mesh support
+(carried-forward from 10B.11), the layout has two
+options:
+
+- **Per-mesh HitGroup records.** Each mesh becomes its
+  own GAS or sub-GAS; each GAS gets its own
+  `sbtOffset`; the HitGroup table grows to one record
+  per mesh per ray type. Each record's user-data slot
+  carries the mesh's vertex / triangle device pointers
+  and `material_id`. The CH program reads
+  `optixGetSbtDataPointer()` to find the mesh metadata
+  for the current hit. **Linear SBT growth with mesh
+  count** (acceptable up to thousands of meshes; cache-
+  friendly per-hit lookup).
+- **launch_params.meshes[] indexed by
+  optixGetInstanceId().** A single HitGroup record
+  per ray type covers all meshes; the CH program uses
+  the IAS-provided instance ID to index a launch-params
+  array of mesh metadata. **Constant SBT size** (just
+  the existing 4 records); the launch-params arrays
+  grow.
+
+The choice mirrors §9.2's "launch-params vs SBT user-
+data" tradeoff one level up. For interactive editing-
+heavy workflows the launch-params route wins (no SBT
+rebuild on per-mesh edits); for static scenes with many
+meshes the SBT route wins (per-record cache locality).
+Stage 12B does not need to commit; the multi-mesh slice
+makes the call when it lands.
+
+### 9.6 SBT index math
+
+OptiX's HitGroup index for a given ray + intersection is:
+
+```
+hitgroup_index = sbtOffset                   // from optixAccelBuild
+               + ray_type_count * instance_offset
+               + ray_type                    // from optixTrace
+```
+
+Stage 12B's degenerate case:
+
+- `sbtOffset` = 0 (sphere GAS) or 1 (triangle GAS)
+- `ray_type_count` = 1 (radiance only)
+- `instance_offset` = 0 (no IAS)
+- `ray_type` = 0 (always radiance)
+
+→ `hitgroup_index` is just `sbtOffset` (0 for sphere
+hits, 1 for triangle hits). Linear lookup.
+
+Stage 12C+ with shadow rays:
+
+- `sbtOffset` = 0 (sphere GAS) or 2 (triangle GAS;
+  doubled because each geometry now has two ray-type
+  slots)
+- `ray_type_count` = 2
+- `ray_type` = 0 (radiance) or 1 (shadow)
+
+→ `hitgroup_index` is `sbtOffset + ray_type` (0 = sphere
+radiance, 1 = sphere shadow, 2 = triangle radiance,
+3 = triangle shadow). The interleaving is fixed by OptiX
+convention; the host sets `sbtOffset` per geometry at
+GAS build time.
+
+Multi-mesh + IAS adds the third term (`instance_offset`)
+which the IAS provides per-instance at build time. The
+formula stays the same shape; the host just has more
+knobs to set.
+
+### 9.7 Read / write summary
+
+The SBT is **read-only at trace time**. Every entry
+documented here is read by the OptiX runtime to dispatch
+into the right program; nothing in the program code
+writes back to the SBT. The host owns the SBT entirely
+— builds it once per pipeline (or per scene-edit when
+SBT user-data carries per-record state), uploads it to
+the device, and never touches it again until the next
+pipeline rebuild.
+
+| Surface                              | Direction       | Lifetime            |
+|--------------------------------------|-----------------|---------------------|
+| `raygenRecord` (host upload)         | write           | per pipeline build  |
+| `raygenRecord` (device read)         | read by OptiX runtime | per launch    |
+| `missRecord` (host upload)           | write           | per pipeline build  |
+| `missRecord` (device read)           | read by OptiX runtime | per miss      |
+| `hitgroupRecord` (host upload)       | write           | per pipeline build  |
+| `hitgroupRecord` (device read)       | read by OptiX runtime | per hit       |
+| `optixGetSbtDataPointer()` (programs) | read           | per program invocation |
+
+Stage 12B's empty user-data means the third row is the
+only meaningful payload — the program-group identifier
+in each record's header — and `optixGetSbtDataPointer()`
+returns a pointer the programs do not dereference.
+
+### 9.8 Scope: what's NOT in §9
+
+Three adjacent SBT-related concerns this section does not
+cover:
+
+- **GAS / IAS construction.** §10 (acceleration
+  structures, future sub-stage) covers the build flags,
+  refit-vs-rebuild policies, and how `sbtOffset` /
+  `instance_offset` are set per GAS / instance. §9
+  documents the SBT records' shape; §10 will document
+  what feeds them at AS-build time.
+- **Multi-mesh `GpuScene::upload_mesh` upgrade.** The
+  §9.5.2 layout discussion assumes the GpuScene side
+  has grown multi-mesh upload support. That upgrade is
+  a separate slice (carried-forward from 10B.11); §9
+  documents the SBT layout that *would* result, not
+  the GpuScene API change.
+- **Callable programs.** OptiX 7+ supports callable
+  programs (continuation-call functions invokable from
+  any program) as a fourth SBT category. RelativityRender
+  has no use for them yet; the canonical use is BSDF
+  dispatch where each material's evaluation /
+  sampling / pdf functions are callable records. When
+  the BSDF dispatch lands (master order #13), the SBT
+  grows a callable table; §9's existing 4-record
+  baseline stays intact.
+
+The SBT is a small but pervasive piece of the OptiX
+contract — Stage 12B's 4-record table is enough for the
+minimum viable backend, and every future expansion path
+documented here is additive against that baseline.
+
+---
+
 ## Sections to come
 
 Future Stage 12A sub-stages will append (one per slice or
@@ -1441,8 +1780,6 @@ small group of slices):
 - Intersection program design
 - Acceleration structures (GAS, IAS, build flags, refit vs
   rebuild)
-- Shader Binding Table layout (records per ray type, per
-  geometry type, per material)
 - Material data flow (per-record vs constant-memory vs
   launch-param)
 - Camera data flow
