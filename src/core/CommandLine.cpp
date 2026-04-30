@@ -48,8 +48,8 @@ bool set_action(CommandLine::Action& current, CommandLine::Action target,
         error = "cannot combine action flags (--help / --version / "
                 "--device-info / --render / --scene-info / "
                 "--scene-summary / --render-from-scene / "
-                "--render-full-scene / --render-gradient / "
-                "--render-rays / --render-sphere / "
+                "--render-full-scene / --render-rng-test / "
+                "--render-gradient / --render-rays / --render-sphere / "
                 "--render-relativistic / --render-scene / "
                 "--render-triangle / --render-mesh-scene / "
                 "--render-material-scene / --render-direct-lighting)";
@@ -135,6 +135,12 @@ CommandLine::ParseResult CommandLine::parse(int argc, char** argv) {
                 return r;
             }
             r.config.scene_path.assign(value);
+        } else if (a == "--render-rng-test") {
+            if (!set_action(r.action, Action::RenderRngTest,
+                            r.error_message)) {
+                r.action = Action::Error;
+                return r;
+            }
         } else if (a == "--render-gradient") {
             if (!set_action(r.action, Action::RenderGradient,
                             r.error_message)) {
@@ -233,6 +239,7 @@ CommandLine::ParseResult CommandLine::parse(int argc, char** argv) {
      || r.action == Action::SceneSummary
      || r.action == Action::RenderFromScene
      || r.action == Action::RenderFullScene
+     || r.action == Action::RenderRngTest
      || r.action == Action::RenderGradient
      || r.action == Action::RenderRays
      || r.action == Action::RenderSphere
@@ -287,6 +294,16 @@ std::string CommandLine::usage(std::string_view argv0) {
        << "                        support is a future slice). Default "
                                   "output\n"
        << "                        \"output/from_scene_full.ppm\". "
+                                  "Requires CUDA.\n"
+       << "  --render-rng-test     Run the Stage 11A GPU RNG / sampling "
+                                  "validation kernel. Splits\n"
+       << "                        the framebuffer into four quadrants, "
+                                  "each exercising one of\n"
+       << "                        next_float / next_vec2 / "
+                                  "sample_uniform_hemisphere /\n"
+       << "                        sample_cosine_hemisphere. Default "
+                                  "output\n"
+       << "                        \"output/gpu_rng_test.ppm\". "
                                   "Requires CUDA.\n"
        << "  --render-gradient     Run the GPU UV-gradient diagnostic "
                                   "and save it (requires CUDA).\n"

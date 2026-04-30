@@ -620,6 +620,38 @@ int run_render_full_scene(const rr::core::Config& cfg) {
 #endif
 }
 
+// `--render-rng-test` dispatch. Stage 11A validation: invokes
+// `CudaRenderer::render_rng_test` which writes a four-quadrant
+// visualisation exercising every Stage 11A `pathtracer::*`
+// primitive (white noise, 2D uniform, uniform hemisphere, cosine
+// hemisphere). Width / height come from Config (`--width` /
+// `--height`, defaults 1280x720); output defaults to
+// "output/gpu_rng_test.ppm". The seed is fixed at 0 so re-runs are
+// deterministic; future stages will surface a `--seed` flag once
+// the path tracer needs frame-to-frame variation.
+int run_render_rng_test(const rr::core::Config& cfg) {
+    const std::string out_path = cfg.output_path.empty()
+        ? std::string("output/gpu_rng_test.ppm")
+        : cfg.output_path;
+
+#ifndef RR_HAS_CUDA
+    (void)cfg;
+    rr::core::Logger::error("--render-rng-test requires CUDA. Rebuild with "
+                            "-DRR_ENABLE_CUDA=ON on a host with the CUDA "
+                            "Toolkit and a CUDA-capable GPU.");
+    return 1;
+#else
+    auto r = rr::cuda::CudaRenderer::render_rng_test(cfg.width, cfg.height,
+                                                     /*seed=*/0u);
+    if (!r.ok) {
+        rr::core::Logger::error("rng-test render failed: " + r.message);
+        return 1;
+    }
+    return save_image_or_error(r.image, out_path, "GPU RNG test",
+                               cfg.width, cfg.height) ? 0 : 1;
+#endif
+}
+
 // `--render-gradient` dispatch. Width/height come from Config; output
 // path defaults to "output/gpu_gradient.ppm" when --output is unset.
 int run_render_gradient(const rr::core::Config& cfg) {
@@ -1381,6 +1413,9 @@ int main(int argc, char** argv) {
         case CommandLine::Action::RenderFullScene:
             return run_render_full_scene(result.config);
 
+        case CommandLine::Action::RenderRngTest:
+            return run_render_rng_test(result.config);
+
         case CommandLine::Action::RenderGradient:
             return run_render_gradient(result.config);
 
@@ -1416,8 +1451,9 @@ int main(int argc, char** argv) {
         case CommandLine::Action::Default:
             Logger::info(std::string(rr::core::kProjectName) + " "
                        + rr::core::kVersionString + " starting up.");
-            Logger::info("Stage 10B.11: render full loaded scene. "
-                         "Try --render-full-scene <file>, "
+            Logger::info("Stage 11A: GPU sampling system. "
+                         "Try --render-rng-test, "
+                         "--render-full-scene <file>, "
                          "--render-from-scene <file>, "
                          "--scene-summary <file>, "
                          "--scene-info <file>, --device-info, "

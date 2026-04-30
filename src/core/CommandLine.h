@@ -59,6 +59,14 @@ namespace rr::core {
 //                           scene's `render_settings.output_path` >
 //                           "output/from_scene_full.ppm". Requires
 //                           CUDA.
+//   --render-rng-test       Run the Stage 11A GPU RNG / sampling
+//                           validation kernel. The framebuffer is
+//                           split into four quadrants exercising
+//                           the four `pathtracer::*` primitives
+//                           (white noise, 2D uniform, uniform
+//                           hemisphere, cosine hemisphere). Default
+//                           output "output/gpu_rng_test.ppm".
+//                           Requires CUDA.
 //   --render-gradient       Run the GPU UV-gradient diagnostic and
 //                           save it to <output>. Requires CUDA.
 //   --render-rays           Run the GPU camera-ray-direction
@@ -120,8 +128,8 @@ namespace rr::core {
 //
 // Action flags (--help / --version / --device-info / --render /
 // --scene-info / --scene-summary / --render-from-scene /
-// --render-full-scene / --render-gradient / --render-rays /
-// --render-sphere /
+// --render-full-scene / --render-rng-test / --render-gradient /
+// --render-rays / --render-sphere /
 // --render-relativistic / --render-scene / --render-triangle /
 // --render-mesh-scene / --render-material-scene /
 // --render-direct-lighting) are mutually exclusive; combining them
@@ -140,6 +148,7 @@ public:
         SceneSummary,
         RenderFromScene,
         RenderFullScene,
+        RenderRngTest,
         RenderGradient,
         RenderRays,
         RenderSphere,

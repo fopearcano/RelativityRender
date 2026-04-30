@@ -90,6 +90,18 @@ public:
     //     through to the sky-gradient miss path for every pixel.
     [[nodiscard]] static Result render_scene(const rr::gpu::GpuScene& scene,
                                              int width, int height);
+
+    // Render the Stage 11A RNG / sampling validation image. The
+    // GPU writes a four-quadrant visualisation that exercises
+    // each `pathtracer::*` primitive (white noise, 2D uniform,
+    // uniform hemisphere, cosine hemisphere). `seed` mixes
+    // through `make_pixel_rng` per pixel, so re-running with a
+    // different seed produces a fresh noise field. Stage 11A is
+    // sampling-foundation only; this is not a path-tracer
+    // integration point.
+    [[nodiscard]] static Result render_rng_test(int          width,
+                                                int          height,
+                                                unsigned int seed = 0u);
 };
 
 }

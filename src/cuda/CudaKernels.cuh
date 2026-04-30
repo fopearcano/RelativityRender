@@ -84,4 +84,21 @@ void launch_render_scene(float* device_pixels, int width, int height,
                          CudaSceneView scene,
                          cudaStream_t  stream = 0);
 
+// Host-callable launcher for the Stage 11A RNG / sampling
+// validation kernel. Defined in `CudaRngTestKernel.cu`. Splits
+// the framebuffer into four quadrants, each driven by one of the
+// four `pathtracer::*` primitives:
+//
+//   TL: next_float                  -> grayscale white noise
+//   TR: next_vec2                   -> r=u.x, g=u.y, b=0
+//   BL: sample_uniform_hemisphere   -> dir encoded as colour
+//   BR: sample_cosine_hemisphere    -> dir encoded as colour
+//
+// `global_seed` mixes through `make_pixel_rng` per pixel so
+// re-running with a different seed produces a fresh noise field.
+// All per-pixel work happens on the device.
+void launch_rng_test_visualize(float* device_pixels, int width, int height,
+                               unsigned int global_seed,
+                               cudaStream_t stream = 0);
+
 }

@@ -171,4 +171,14 @@ CudaRenderer::Result CudaRenderer::render_scene(const rr::gpu::GpuScene& scene,
         });
 }
 
+CudaRenderer::Result CudaRenderer::render_rng_test(int          width,
+                                                   int          height,
+                                                   unsigned int seed) {
+    return run_kernel_render(width, height,
+        [seed](float* device_pixels, int w, int h) {
+            launch_rng_test_visualize(device_pixels, w, h, seed,
+                                      /*stream=*/nullptr);
+        });
+}
+
 }  // namespace rr::cuda

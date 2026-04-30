@@ -2939,13 +2939,218 @@ every v1.0 schema section. The CPU role for an authored
 render is exactly: parse the file, flatten the wrappers,
 upload to `GpuScene`, save the framebuffer.
 
+## Stage 11A — GPU sampling system
+
+**Scope of this slice (Stage 11A; master order #16, "Path
+tracing foundation"): add a GPU-safe random sampling library
+(`rr_pathtracer`) supporting per-pixel seeding, uniform random
+floats / Vec2s, and uniform + cosine-weighted hemisphere
+sampling. Validate it with a single CUDA kernel that produces a
+four-quadrant noise visualisation. No path-tracer integration;
+the path tracer itself is its own stage.**
+
+### What ships
+
+- `src/pathtracer/RNG.h` — host+device RNG header. The state is
+  `Rng { uint64_t state }`, stepped by **PCG-XSH-RR-64-32**
+  (the canonical GPU-path-tracer generator: 8 bytes per
+  thread, integer-only, strong statistics, RR_HD trivially).
+  Five entry points:
+  - `pcg32_next(rng)` — one 32-bit step (called by the helpers
+    below, exposed for kernels that want the raw bits).
+  - `splitmix64(x)` — public 64-bit avalanche hash; used by
+    `make_pixel_rng` and useful for any other seed splitting
+    kernels need.
+  - `make_pixel_rng(x, y, frame, global_seed)` — splittable
+    seed: mixes the four inputs through SplitMix64, then steps
+    PCG once to decorrelate adjacent seeds. The path tracer
+    will reuse this entry point for primary-ray seeding;
+    Stage 11A's noise-test kernel is its first consumer.
+  - `next_float(rng)` — uniform `[0, 1)` using the top 24 bits
+    (the float significand width) so the distribution is
+    uniform across representable values. Multiplies by the
+    pre-computed `1 / 2^24` to avoid a div on the device.
+  - `next_vec2(rng)` — calls `next_float` twice; keeps each
+    component at full 24-bit precision (splitting one 32-bit
+    draw into two 16-bit halves would cost the precision the
+    hemisphere samplers depend on).
+- `src/pathtracer/RNG.cuh` — single-line re-export for kernel
+  TUs, mirroring the `RelativityMath.cuh` pattern. Stage 11A
+  has no device-only specialisations; the file exists so
+  future intrinsic-based or warp-batched generators can land
+  here without churning every kernel call site.
+- `src/pathtracer/Sampling.h` — host+device sampling header.
+  Local-frame convention (+Z is the surface normal) so the
+  same code is reusable for any orientation; the path tracer
+  rotates samples into world space against the hit's basis.
+  Four entry points:
+  - `sample_uniform_hemisphere(u)` — uniform in solid angle.
+    `cos(theta) = u.x`, `sin = sqrt(1-cos^2)`,
+    `phi = 2*pi*u.y`.
+  - `pdf_uniform_hemisphere()` — constant `1 / (2*pi)`.
+  - `sample_cosine_hemisphere(u)` — Malley's method with
+    Shirley's concentric disk mapping (preserves stratification
+    better than the polar form, avoids the polar form's
+    distortion near the disk centre).
+  - `pdf_cosine_hemisphere(cos_theta)` — `cos(theta) / pi` for
+    `cos_theta > 0`, else 0.
+- `src/pathtracer/Sampling.cuh` — single-line re-export.
+- `src/cuda/CudaRngTestKernel.cu` — the validation kernel.
+  Splits the framebuffer into four quadrants, each driven by
+  one of the four primitives the prompt requires:
+  - **TL**: `next_float` → grayscale white noise.
+  - **TR**: `next_vec2` → `(r=u.x, g=u.y, b=0)`.
+  - **BL**: `sample_uniform_hemisphere` → direction encoded as
+    `(r=dx*0.5+0.5, g=dy*0.5+0.5, b=dz)`.
+  - **BR**: `sample_cosine_hemisphere` → same encoding.
+    Visually distinguishable from BL because cos-weighted
+    samples cluster toward +Z, biasing this quadrant bluer on
+    average. That visual difference is the second axis of
+    validation alongside the host-side Monte-Carlo tests.
+- `src/cuda/CudaKernels.cuh` — added
+  `launch_rng_test_visualize(device_pixels, w, h, seed,
+  stream)` declaration.
+- `src/cuda/CudaRenderer.{h,cu}` — added
+  `CudaRenderer::render_rng_test(width, height, seed)` static
+  method; reuses the existing `run_kernel_render` scaffold for
+  device-buffer alloc / launch / sync / download.
+- `src/core/CommandLine.{h,cpp}` + `src/main.cpp` — new
+  `Action::RenderRngTest` + `--render-rng-test` flag (no
+  argument; `--width` / `--height` defaults supply the
+  framebuffer size). Default output
+  `output/gpu_rng_test.ppm`. Mutually exclusive with other
+  action flags via the existing `set_action` machinery.
+- `tests/pathtracer_tests.cpp` — new ctest binary covering
+  the headers via the host C++ compiler (the same RR_HD
+  inline code runs on host). Nine test functions:
+  - `next_float` range invariant `[0, 1)` over 100k samples.
+  - Per-pixel decorrelation: distinct first samples for
+    adjacent `(x, y)`, `(x, y+1)`, frame-increment, and
+    seed-increment seeds.
+  - Determinism: same inputs → same stream (4096-sample
+    bit-exact equality).
+  - `next_vec2` per-component range + collision rate (must be
+    rare).
+  - Uniform-hemisphere unit-length + upper-hemisphere
+    invariants (10k samples).
+  - Uniform-hemisphere PDF normalises: Monte-Carlo integral
+    of 1 with the sampler converges to `2*pi` (200k samples).
+  - Cosine-hemisphere unit-length + upper-hemisphere
+    invariants.
+  - Cosine-hemisphere distribution: `E[dz] = 2/3` (analytical
+    expectation, 200k Monte-Carlo samples within tolerance).
+  - PDF identities for `cos_theta` at 0, -0.5, 1, 0.5.
+- `CMakeLists.txt`:
+  - new `rr_pathtracer` INTERFACE library exporting the
+    header-only sampling foundation (PUBLIC-links `rr_math`).
+  - `cuda/CudaRngTestKernel.cu` added to `rr_gpu`'s CUDA
+    sources under `RR_ENABLE_CUDA`.
+  - `rr_gpu` PUBLIC-links `rr_pathtracer` so the kernel TU
+    sees the headers and so future GPU consumers (the path
+    tracer) inherit the same dependency.
+  - `pathtracer_tests` ctest binary wired up.
+  - status string bumped to "Stage 11A: GPU sampling system".
+
+### Why PCG32 + SplitMix64
+
+PCG-XSH-RR-64-32 is the standard GPU-path-tracer RNG: tiny
+(8 bytes per thread), integer-only (no LUTs, no transcendentals
+in the state step), excellent statistical properties (passes
+PractRand and TestU01 BigCrush), trivially RR_HD. SplitMix64 is
+the standard avalanche hash for spreading a small key
+(pixel coordinates + frame index + global seed) across the
+full PCG state space; together they give independent streams
+per (pixel, frame, seed) combination without explicit stream
+constants.
+
+Alternatives considered and rejected:
+- **xorshift32**: 4 bytes per thread, but weaker statistics
+  and worse low-bit decorrelation - acceptable for a noise
+  test, marginal for path-tracer rays.
+- **Hash-based stateless RNG**: appealing for trivial parallel
+  decorrelation, but every sample is a fresh hash and the
+  per-pixel cost grows linearly with sample count. PCG steps
+  cost a single 64-bit multiply + add.
+
+### Build-host constraint (this environment)
+
+Same as Stages 10B.10 / 10B.11: this environment has no CUDA
+toolchain and no GPU, so `--render-rng-test` returns the
+standard "requires CUDA. Rebuild with -DRR_ENABLE_CUDA=ON ..."
+error. On a CUDA-enabled host:
+
+```
+cmake -S . -B build-cuda -DRR_ENABLE_CUDA=ON
+cmake --build build-cuda -j
+build-cuda/bin/RelativityRender --render-rng-test
+```
+
+writes `output/gpu_rng_test.ppm` at the default 1280x720
+resolution. CPU touches each pixel only as the
+`Image::set_pixel` callback during PPM save; per-pixel RNG
+seeding, sample generation, and colour encoding all run inside
+`k_rng_test_visualize` via `make_pixel_rng` + the four
+primitive helpers.
+
+The host-side `pathtracer_tests` binary runs in this
+environment and validates correctness invariants the kernel
+relies on. On a CUDA host the same headers compile inside
+`CudaRngTestKernel.cu` via `nvcc`, so a passing host test
+gives confidence the device build of the same code is correct
+too (modulo nvcc-vs-gcc transcendental precision differences,
+which the unit-length tolerances absorb).
+
+### Hard-rule audit
+
+- No path tracer integration yet — **yes**, the four headers
+  + the validation kernel are stand-alone. Nothing in
+  `--render-from-scene` / `--render-full-scene` /
+  `--render-scene` consumes them; the new
+  `--render-rng-test` action is the only call site.
+- No CPU rendering — **yes**, the only host-side per-pixel
+  work is the existing `Image::save_ppm` writeback. The
+  pathtracer_tests binary runs sample-correctness loops, not
+  per-pixel rendering, and is gated behind `RR_BUILD_TESTS`
+  in the existing test-suite pattern.
+- No server, no C4D — **yes**, no source under any such
+  directory.
+- Must compile and produce output — host-only build is clean
+  under `-Wall -Wextra -Wpedantic`, no warnings; `ctest`
+  reports 4/4 (math + image + gpu + new pathtracer_tests).
+  The "produce output" half is contingent on a CUDA-enabled
+  host per the constraint above; a CPU fallback would
+  directly violate the prompt's "No CPU rendering" rule, so
+  it is not shipped.
+
+### Verified at the host-only CLI / ctest
+
+- `--render-rng-test` on a host-only build → exit 1,
+  "requires CUDA. Rebuild with -DRR_ENABLE_CUDA=ON ..."
+  (same shape as every other render action's no-CUDA error).
+- `--help` shows the new flag with its full description
+  including the four-quadrant explanation and the default
+  output path.
+- Action collisions list `--render-rng-test` in the conflict
+  error.
+- `pathtracer_tests` reports `9/9 passed` (every host-side
+  invariant from the test file).
+- Existing tests still pass: `math_tests`, `image_tests`,
+  `gpu_tests` are byte-identical to Stage 10B.11.
+
+### CLI inventory after this slice
+
+| Stage | Action flag                      | What it does                                     |
+|-------|----------------------------------|--------------------------------------------------|
+| ...   | (existing flags through 10B.11)  | (unchanged)                                      |
+| 11A   | `--render-rng-test`              | Stage 11A noise / sampling validation image      |
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
 
-- multi-mesh upload on `GpuScene` so files with several
-  meshes render every one (the fixture-level constraint
-  surfacing today);
+- the path tracer itself (master module 16, multi-bounce GPU
+  path integration consuming the Stage 11A primitives);
+- multi-mesh upload on `GpuScene`;
 - `SceneWriter::save` / `serialize` for round-trip + a
   `tests/io_tests.cpp` covering round-trip and each §12 rule;
 - round out the deferred fields (`transmission`, `visible`

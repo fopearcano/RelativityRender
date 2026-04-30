@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.20)
 
 project(RelativityRender
     VERSION     0.1.0
-    DESCRIPTION "RelativityRender - GPU renderer platform (Stage 10B.11: render full loaded scene)"
+    DESCRIPTION "RelativityRender - GPU renderer platform (Stage 11A: GPU sampling system)"
     LANGUAGES   CXX
 )
 
@@ -23,7 +23,7 @@ option(RR_ENABLE_CUDA "Enable CUDA backend (requires CUDA Toolkit)"   OFF)
 
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
-message(STATUS "RelativityRender ${PROJECT_VERSION} (Stage 10B.11: render full loaded scene)")
+message(STATUS "RelativityRender ${PROJECT_VERSION} (Stage 11A: GPU sampling system)")
 
 message(STATUS "  Build type   : ${CMAKE_BUILD_TYPE}")
 message(STATUS "  C++ standard : ${CMAKE_CXX_STANDARD}")
@@ -171,6 +171,18 @@ target_include_directories(rr_scene PUBLIC src)
 target_link_libraries(rr_scene PUBLIC rr_math rr_camera rr_geometry rr_relativity rr_material rr_lighting)
 rr_apply_warnings(rr_scene)
 
+# rr_pathtracer: GPU-safe sampling foundation (Stage 11A; master
+# module 16). Header-only at this stage - everything in
+# `pathtracer/RNG.{h,cuh}` and `pathtracer/Sampling.{h,cuh}` is
+# RR_HD inline. The library exists so consumers (the Stage 11A
+# RNG-test kernel today, the path tracer in later stages) get a
+# stable include path + transitive math dependency. PUBLIC-links
+# `rr_math` because the sampling primitives use Vec2 / Vec3 /
+# kPi / kTwoPi / max by value.
+add_library(rr_pathtracer INTERFACE)
+target_include_directories(rr_pathtracer INTERFACE src)
+target_link_libraries(rr_pathtracer INTERFACE rr_math)
+
 # rr_io: scene-format IO (Stage 10B). Stage 10B.1 ships only the
 # library scaffold + a single host-side helper (`sceneFileExists`).
 # The `.rrscene` v1.0 parser + writer (`SceneLoader::load`,
@@ -230,6 +242,7 @@ if(RR_ENABLE_CUDA)
         src/cuda/CudaContext.cpp
         src/cuda/CudaBuffer.cpp
         src/cuda/CudaTestKernel.cu
+        src/cuda/CudaRngTestKernel.cu
         src/cuda/CudaRenderer.cu
     )
     # PUBLIC: targets linking rr_gpu (RelativityRender, gpu_tests) gate
@@ -246,7 +259,7 @@ if(RR_ENABLE_CUDA)
     # RelativityParams by const ref, and the kernel calls
     # aberrateDirection / dopplerFactor / applyDopplerColor /
     # searchlightFactor on the device.
-    target_link_libraries(rr_gpu PUBLIC  rr_image rr_camera rr_geometry rr_relativity)
+    target_link_libraries(rr_gpu PUBLIC  rr_image rr_camera rr_geometry rr_relativity rr_pathtracer)
     target_link_libraries(rr_gpu PRIVATE CUDA::cudart)
     set_target_properties(rr_gpu PROPERTIES POSITION_INDEPENDENT_CODE ON)
 endif()
@@ -297,4 +310,16 @@ if(RR_BUILD_TESTS)
     target_link_libraries(gpu_tests PRIVATE rr_gpu)
     rr_apply_warnings(gpu_tests)
     add_test(NAME gpu_tests COMMAND gpu_tests)
+
+    # pathtracer_tests (Stage 11A) covers the RNG / Sampling
+    # primitives. The headers are RR_HD inline so they compile
+    # against the host C++ compiler too; this test exercises them
+    # there to catch host-build breakage and to verify correctness
+    # invariants (per-pixel decorrelation, [0, 1) range, hemisphere
+    # samples are unit-length + upper hemisphere, cos-weighted mean
+    # of dz is 2/3, etc.).
+    add_executable(pathtracer_tests tests/pathtracer_tests.cpp)
+    target_link_libraries(pathtracer_tests PRIVATE rr_pathtracer)
+    rr_apply_warnings(pathtracer_tests)
+    add_test(NAME pathtracer_tests COMMAND pathtracer_tests)
 endif()
