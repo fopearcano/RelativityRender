@@ -29,6 +29,23 @@ namespace rr::core {
 //                           full v1 scene loads end-to-end. No
 //                           render. Pure host code; works without
 //                           CUDA.
+//   --render-from-scene <file>
+//                           Load a `.rrscene` file and render its
+//                           sphere scene on the GPU. Stage 10B.10
+//                           is the first action that actually
+//                           renders from authored data: CPU
+//                           parses + uploads camera / relativity /
+//                           materials / spheres / lights to
+//                           `GpuScene`; the kernel produces every
+//                           pixel. Meshes are intentionally skipped
+//                           in this slice (the prompt rules them
+//                           out). Output path precedence:
+//                           `--output` > scene's
+//                           `render_settings.output_path` >
+//                           "output/from_scene_spheres.ppm".
+//                           Resolution comes from the scene's
+//                           `render_settings`; `--width` /
+//                           `--height` are ignored. Requires CUDA.
 //   --render-gradient       Run the GPU UV-gradient diagnostic and
 //                           save it to <output>. Requires CUDA.
 //   --render-rays           Run the GPU camera-ray-direction
@@ -89,8 +106,8 @@ namespace rr::core {
 //   --height <int>          Render height in pixels (default 720).
 //
 // Action flags (--help / --version / --device-info / --render /
-// --scene-info / --scene-summary / --render-gradient / --render-rays /
-// --render-sphere /
+// --scene-info / --scene-summary / --render-from-scene /
+// --render-gradient / --render-rays / --render-sphere /
 // --render-relativistic / --render-scene / --render-triangle /
 // --render-mesh-scene / --render-material-scene /
 // --render-direct-lighting) are mutually exclusive; combining them
@@ -107,6 +124,7 @@ public:
         Render,
         SceneInfo,
         SceneSummary,
+        RenderFromScene,
         RenderGradient,
         RenderRays,
         RenderSphere,

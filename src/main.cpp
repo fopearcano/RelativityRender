@@ -322,6 +322,144 @@ int run_scene_summary(const rr::core::Config& cfg) {
     return 0;
 }
 
+// `--render-from-scene` dispatch. Stage 10B.10 - the first action
+// that drives the GPU renderer from authored data. CPU loads the
+// `.rrscene` via the Stage 10B.2-10B.8 parser, uploads the
+// resulting host `Scene` (camera + relativity + materials +
+// spheres + lights) to a `GpuScene`, and runs the existing GPU
+// closest-hit kernel through `CudaRenderer::render_scene`.
+//
+// Meshes are intentionally skipped: the prompt explicitly defers
+// mesh rendering ("Do not render meshes yet"). The parser still
+// reads the `meshes` block onto `scene.meshes` (Stage 10B.8); we
+// just don't call `gpu_scene.upload_mesh` here. A follow-up
+// stage threads `SceneMesh::geometry` through the upload path.
+//
+// Resolution comes from the parsed `render_settings`; this is
+// the canonical source authored by the file. `--width` /
+// `--height` are intentionally ignored - mixing CLI overrides
+// with authored resolution would mean either the camera's aspect
+// or the framebuffer's are stale, neither helpful. Output path
+// precedence: `--output` > scene's `output_path` >
+// "output/from_scene_spheres.ppm".
+int run_render_from_scene(const rr::core::Config& cfg) {
+    using rr::core::Logger;
+
+    if (cfg.scene_path.empty()) {
+        Logger::error("--render-from-scene requires a file path");
+        return 2;
+    }
+
+    const auto loaded = rr::io::load(cfg.scene_path);
+    if (!loaded.ok) {
+        std::string msg = "scene load failed: " + loaded.error_message;
+        if (loaded.error_line > 0) {
+            msg += " (line " + std::to_string(loaded.error_line)
+                +  ", column " + std::to_string(loaded.error_column) + ")";
+        }
+        Logger::error(msg);
+        return 1;
+    }
+
+    const auto& scene  = loaded.scene;
+    const int   width  = scene.render_settings.width;
+    const int   height = scene.render_settings.height;
+
+    const std::string out_path =
+        !cfg.output_path.empty()                ? cfg.output_path
+      : !scene.render_settings.output_path.empty()
+                                                ? scene.render_settings.output_path
+                                                : std::string("output/from_scene_spheres.ppm");
+
+#ifndef RR_HAS_CUDA
+    (void)scene;
+    (void)width;
+    (void)height;
+    (void)out_path;
+    Logger::error("--render-from-scene requires CUDA. Rebuild with "
+                  "-DRR_ENABLE_CUDA=ON on a host with the CUDA Toolkit "
+                  "and a CUDA-capable GPU.");
+    return 1;
+#else
+    // The parser captures aspect from render_settings already
+    // (via `apply_camera`); leave the camera as authored.
+
+    // Pull `rr::geometry::Sphere` PODs out of the scene's
+    // `SceneSphere` wrappers, dropping any entries marked invisible.
+    std::vector<rr::geometry::Sphere> sphere_pods;
+    sphere_pods.reserve(scene.spheres.size());
+    for (const auto& s : scene.spheres) {
+        if (s.object.visible) sphere_pods.push_back(s.geometry);
+    }
+
+    // Materials get flattened the same way `--render-material-scene`
+    // does; the kernel reads `materials[Hit::material_index]`.
+    std::vector<rr::material::MaterialParams> material_pods;
+    material_pods.reserve(scene.materials.size());
+    for (const auto& m : scene.materials) material_pods.push_back(m.params);
+
+    // Lights flatten the same way `--render-direct-lighting` does.
+    std::vector<rr::lighting::Light> light_pods;
+    light_pods.reserve(scene.lights.size());
+    for (const auto& l : scene.lights) {
+        if (l.object.visible) light_pods.push_back(l.data);
+    }
+
+    rr::gpu::GpuScene gpu_scene;
+    if (!gpu_scene.upload_camera(scene.camera)) {
+        Logger::error("render-from-scene failed: upload_camera");
+        return 1;
+    }
+    if (!gpu_scene.upload_relativity(scene.observer, scene.relativity)) {
+        Logger::error("render-from-scene failed: upload_relativity");
+        return 1;
+    }
+    if (!sphere_pods.empty()) {
+        if (!gpu_scene.upload_spheres(sphere_pods.data(),
+                                      sphere_pods.size())) {
+            Logger::error("render-from-scene failed: upload_spheres");
+            return 1;
+        }
+    }
+    if (!material_pods.empty()) {
+        if (!gpu_scene.upload_materials(material_pods.data(),
+                                        material_pods.size())) {
+            Logger::error("render-from-scene failed: upload_materials");
+            return 1;
+        }
+    }
+    if (!light_pods.empty()) {
+        if (!gpu_scene.upload_lights(light_pods.data(), light_pods.size())) {
+            Logger::error("render-from-scene failed: upload_lights");
+            return 1;
+        }
+    }
+    // Mesh upload is intentionally skipped per the Stage 10B.10
+    // prompt rule "Do not render meshes yet". Threading
+    // `SceneMesh::geometry` through `gpu_scene.upload_mesh` joins
+    // in a follow-up sub-stage.
+
+    auto r = rr::cuda::CudaRenderer::render_scene(gpu_scene, width, height);
+    if (!r.ok) {
+        Logger::error("render-from-scene failed: " + r.message);
+        return 1;
+    }
+
+    Logger::info("scene file  : " + cfg.scene_path);
+    Logger::info("scene-render: "
+               + std::to_string(sphere_pods.size())   + " sphere(s), "
+               + std::to_string(material_pods.size()) + " material(s), "
+               + std::to_string(light_pods.size())    + " light(s) "
+                 "uploaded; meshes deferred");
+    Logger::info("framebuffer : "
+               + std::to_string(width) + "x" + std::to_string(height)
+               + " (from render_settings)");
+
+    return save_image_or_error(r.image, out_path, "GPU scene-from-file",
+                               width, height) ? 0 : 1;
+#endif
+}
+
 // `--render-gradient` dispatch. Width/height come from Config; output
 // path defaults to "output/gpu_gradient.ppm" when --output is unset.
 int run_render_gradient(const rr::core::Config& cfg) {
@@ -1077,6 +1215,9 @@ int main(int argc, char** argv) {
         case CommandLine::Action::SceneSummary:
             return run_scene_summary(result.config);
 
+        case CommandLine::Action::RenderFromScene:
+            return run_render_from_scene(result.config);
+
         case CommandLine::Action::RenderGradient:
             return run_render_gradient(result.config);
 
@@ -1112,8 +1253,9 @@ int main(int argc, char** argv) {
         case CommandLine::Action::Default:
             Logger::info(std::string(rr::core::kProjectName) + " "
                        + rr::core::kVersionString + " starting up.");
-            Logger::info("Stage 10B.9: full scene load test. "
-                         "Try --scene-summary <file>, "
+            Logger::info("Stage 10B.10: render loaded sphere scene. "
+                         "Try --render-from-scene <file>, "
+                         "--scene-summary <file>, "
                          "--scene-info <file>, --device-info, "
                          "--render-gradient, --render-rays, "
                          "--render-sphere, --render-relativistic, "

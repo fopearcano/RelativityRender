@@ -47,11 +47,11 @@ bool set_action(CommandLine::Action& current, CommandLine::Action target,
     if (current != CommandLine::Action::Default) {
         error = "cannot combine action flags (--help / --version / "
                 "--device-info / --render / --scene-info / "
-                "--scene-summary / --render-gradient / --render-rays / "
-                "--render-sphere / --render-relativistic / "
-                "--render-scene / --render-triangle / "
-                "--render-mesh-scene / --render-material-scene / "
-                "--render-direct-lighting)";
+                "--scene-summary / --render-from-scene / "
+                "--render-gradient / --render-rays / --render-sphere / "
+                "--render-relativistic / --render-scene / "
+                "--render-triangle / --render-mesh-scene / "
+                "--render-material-scene / --render-direct-lighting)";
         return false;
     }
     current = target;
@@ -104,6 +104,17 @@ CommandLine::ParseResult CommandLine::parse(int argc, char** argv) {
             r.config.scene_path.assign(value);
         } else if (a == "--scene-summary") {
             if (!set_action(r.action, Action::SceneSummary, r.error_message)) {
+                r.action = Action::Error;
+                return r;
+            }
+            if (!take_value(argc, argv, i, a, value, r.error_message)) {
+                r.action = Action::Error;
+                return r;
+            }
+            r.config.scene_path.assign(value);
+        } else if (a == "--render-from-scene") {
+            if (!set_action(r.action, Action::RenderFromScene,
+                            r.error_message)) {
                 r.action = Action::Error;
                 return r;
             }
@@ -208,6 +219,7 @@ CommandLine::ParseResult CommandLine::parse(int argc, char** argv) {
      || r.action == Action::Render
      || r.action == Action::SceneInfo
      || r.action == Action::SceneSummary
+     || r.action == Action::RenderFromScene
      || r.action == Action::RenderGradient
      || r.action == Action::RenderRays
      || r.action == Action::RenderSphere
@@ -245,6 +257,15 @@ std::string CommandLine::usage(std::string_view argv0) {
        << "                        material/sphere/mesh/light counts, "
                                   "|beta|). No render. Works\n"
        << "                        without CUDA.\n"
+       << "  --render-from-scene <file>\n"
+       << "                        Load a .rrscene file and render its "
+                                  "sphere scene on the GPU.\n"
+       << "                        CPU parses + uploads; the kernel "
+                                  "produces every pixel. Meshes\n"
+       << "                        are skipped in this slice. Resolution "
+                                  "comes from the scene's\n"
+       << "                        render_settings; --width / --height "
+                                  "are ignored. Requires CUDA.\n"
        << "  --render-gradient     Run the GPU UV-gradient diagnostic "
                                   "and save it (requires CUDA).\n"
        << "  --render-rays         Run the GPU camera-ray "

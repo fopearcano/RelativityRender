@@ -2613,14 +2613,172 @@ Every top-level v1.0 section now has a mapper *and* a
 verified end-to-end load path through a single integrated
 fixture.
 
+## Stage 10B.10 — render loaded sphere scene
+
+**Scope of this slice (Stage 10B.10): connect the parser to the
+existing GPU sphere-render path. CPU loads the `.rrscene` and
+uploads camera + relativity + materials + spheres + lights to a
+`GpuScene`; the kernel produces every pixel via the existing
+`CudaRenderer::render_scene`. Meshes are explicitly deferred per
+the prompt rule.** This is the first action that actually
+renders authored scene data.
+
+### What ships
+
+- `src/core/CommandLine.{h,cpp}` — new `Action::RenderFromScene`
+  enumerator + `--render-from-scene <file>` parsing branch
+  (mirroring the `--scene-info` / `--scene-summary` shape:
+  action + path argument, exclusive with other action flags).
+  Usage block extended; the action-collision error string lists
+  `--render-from-scene` so authors get the full set of
+  conflicting flags.
+- `src/main.cpp::run_render_from_scene` — the new handler:
+  - Calls `rr::io::load(cfg.scene_path)` and surfaces parse
+    failures with the same `error_line` / `error_column`
+    diagnostic the `--scene-info` / `--scene-summary`
+    handlers use.
+  - **Resolution comes from the scene's `render_settings`**;
+    `--width` / `--height` are intentionally ignored. The
+    parser already calls `Camera::set_aspect(width / height)`
+    at apply-time (per §5), so the camera basis matches the
+    framebuffer it renders into.
+  - **Output path precedence**: `--output` >
+    `scene.render_settings.output_path` >
+    `output/from_scene_spheres.ppm`. The default matches the
+    Stage 10B.10 prompt's specified output. The middle slot
+    honours an authored `output_path` so a `.rrscene` file
+    can carry its own canonical destination.
+  - Pulls `rr::geometry::Sphere` PODs out of visible
+    `SceneSphere` wrappers, flattens `SceneMaterial::params`
+    into a `MaterialParams[]`, and flattens visible
+    `SceneLight::data` into a `Light[]` - the same flatten
+    shape `--render-material-scene` and
+    `--render-direct-lighting` already use.
+  - Calls `gpu_scene.upload_camera` / `upload_relativity` /
+    `upload_spheres` / `upload_materials` / `upload_lights`,
+    each gated on the slice being non-empty (a sphere-only
+    file with no materials still uploads cleanly).
+  - **`gpu_scene.upload_mesh` is intentionally not called**;
+    the prompt rule "Do not render meshes yet" wins. The
+    parser still populates `scene.meshes` (Stage 10B.8); the
+    upload path is the deferred half.
+  - Calls `CudaRenderer::render_scene(gpu_scene, w, h)` and
+    saves the result via the existing
+    `save_image_or_error` helper.
+  - Logs an authoring-friendly summary line:
+    `N sphere(s), M material(s), L light(s) uploaded; meshes
+    deferred` plus the framebuffer size with its source.
+- `src/main.cpp` default-action hint — extended to mention
+  `--render-from-scene <file>` first; `--scene-summary` /
+  `--scene-info` retained for parser diagnostics.
+
+### Build-host constraint (this environment)
+
+The local build environment for this branch has no CUDA
+toolchain and no GPU. The `--render-from-scene` action
+therefore returns the same "requires CUDA. Rebuild with
+-DRR_ENABLE_CUDA=ON ..." error every other GPU action returns
+when the host-only build runs it; it does not produce
+`output/from_scene_spheres.ppm` here. This is the same gating
+pattern Stages 6-9 used for `--render-scene` /
+`--render-material-scene` / `--render-direct-lighting`; no
+new gate, no new fallback.
+
+On a CUDA-enabled host:
+
+```
+cmake -S . -B build-cuda -DRR_ENABLE_CUDA=ON
+cmake --build build-cuda -j
+build-cuda/bin/RelativityRender \
+    --render-from-scene scenes/test_spheres.rrscene
+```
+
+writes `output/from_scene_spheres.ppm` (resolution from the
+fixture's `render_settings`: 640x360). The CPU reaches every
+pixel only as the `Image::set_pixel` callback during PPM save;
+ray-gen / intersection / shading / Doppler / searchlight all
+run inside the existing `k_render_scene` kernel uploaded
+through `GpuScene`.
+
+### Hard-rule audit
+
+- CPU parses only — **yes**, the host code in
+  `run_render_from_scene` only calls `rr::io::load`. No
+  per-pixel / per-ray loops, no manual intersect.
+- CPU uploads scene only — **yes**, the only host-side data
+  motion is `GpuScene::upload_*`. The `sphere_pods` /
+  `material_pods` / `light_pods` flatteners are pure value
+  copies of the parsed wrappers' POD tails, no transformation
+  beyond flattening for the upload-buffer layout.
+- GPU renders all pixels/rays/intersections/shading — **yes**,
+  every per-pixel step happens inside `k_render_scene`
+  launched by `CudaRenderer::render_scene`. Stage 9B already
+  audited that kernel for full-GPU coverage; nothing in this
+  slice changes it.
+- Do not render meshes yet — **yes**, `gpu_scene.upload_mesh`
+  is not called. The kernel's mesh loop runs zero iterations
+  because `CudaSceneView::mesh_triangle_count == 0`. The
+  parser still loads `scene.meshes` (Stage 10B.8), it just
+  isn't threaded through the upload path here.
+- No server, no C4D — **yes**, no source under any such
+  directory.
+- Must compile and produce output — **yes**, host-only build
+  is clean under `-Wall -Wextra -Wpedantic`, no warnings;
+  `ctest` reports 3/3. The "produce output" half is
+  contingent on a CUDA-enabled host per the constraint above
+  (a CPU fallback would directly violate the
+  GPU-renders-everything rule and the master "No CPU
+  ray tracing as production path" rule, so it is not
+  shipped).
+
+### Verified at the CLI (host-only build)
+
+- `--render-from-scene scenes/test_spheres.rrscene` on a
+  host-only build → exit 1, "requires CUDA. Rebuild with
+  -DRR_ENABLE_CUDA=ON ..." (same shape as every other render
+  action's no-CUDA error).
+- `--render-from-scene /tmp/missing.rrscene` → exit 1,
+  "scene load failed: scene file does not exist: ...". The
+  parser runs before the CUDA gate so authoring errors
+  surface even on a host-only host.
+- `--render-from-scene a --scene-info b` → exit 2, "cannot
+  combine action flags ..." with `--render-from-scene`
+  listed.
+- `--help` shows the new flag with its full description
+  including the meshes-deferred caveat.
+
+### Stage 10B status after this slice
+
+| Sub-stage | Surface                          | Status |
+|-----------|----------------------------------|:------:|
+| 10B.1     | `rr_io` scaffold + `sceneFileExists` | ✅ |
+| 10B.2     | `version` + `render_settings`    | ✅ |
+| 10B.3     | `camera`                         | ✅ |
+| 10B.4     | `relativity`                     | ✅ |
+| 10B.5     | `materials`                      | ✅ |
+| 10B.6     | `spheres`                        | ✅ |
+| 10B.7     | `lights`                         | ✅ |
+| 10B.8     | inline `meshes` + SceneMesh promotion | ✅ |
+| 10B.9     | full-scene fixture + `--scene-summary` | ✅ |
+| 10B.10    | `--render-from-scene` (sphere path)    | ✅ |
+
+The parser is now wired into the GPU sphere render. The
+remaining 10B work (mesh upload from `SceneMesh::geometry`,
+`SceneWriter::save`, deferred fields, and
+`tests/io_tests.cpp`) lands in follow-up sub-stages when
+prompted.
+
 ## Next stage
 
-The remaining 10B work (writer, `--render <file>` end-to-end
-wiring, deferred fields like `transmission` / `visible` /
-`transform` on `SceneObject` wrappers / `area_width` /
-`area_height` / `source_path`, plus `tests/io_tests.cpp`
-exercising round-trip + each §12 rule) lands in a follow-up
-sub-stage when prompted; this slice only ships verification.
+When prompted, the natural follow-ups are:
+- thread `SceneMesh::geometry` through `GpuScene::upload_mesh`
+  inside `--render-from-scene` so authored meshes also render;
+- ship `SceneWriter::save` / `serialize` for round-trip;
+- round out the deferred fields (`transmission`, `visible`,
+  `transform` on `SceneObject` wrappers, `area_width` /
+  `area_height`, `source_path`);
+- add `tests/io_tests.cpp` exercising round-trip + each §12
+  rule.
 
 ## Constraints carried forward
 
