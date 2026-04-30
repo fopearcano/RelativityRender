@@ -3697,7 +3697,8 @@ sub-stages, appended to the same file.** No code is touched.
 | 12A.4.3.3 | OPTIX_BACKEND_PLAN.md §20 (OptiX programs)      | ✅ |
 | 12A.4.3.4 | OPTIX_BACKEND_PLAN.md §21 (SBT)                  | ✅ |
 | 12A.4.3.5 | OPTIX_BACKEND_PLAN.md §22 (Acceleration)         | ✅ |
-| 12A.x    | remaining IS / file-layout sub-stages / migration-risks | pending |
+| 12A.4.3.6 | OPTIX_BACKEND_PLAN.md §23 (Launch params)        | ✅ |
+| 12A.x    | remaining IS / CMake integration / migration-risks | pending |
 | 12B      | minimum-viable OptiX backend     | pending |
 | 12C+     | feature parity with CUDA backend | pending |
 
@@ -5218,6 +5219,99 @@ header). No code; no other files; no other sections.**
 - Do not add other files — **yes**, only
   `OptixAccel.h` was listed; the prompt's "Do not
   add other files" was respected.
+- Documentation only — **yes**, no source under
+  `src/`, `tests/`, or `CMakeLists.txt` is touched.
+  The only edits are two markdown files.
+- Update docs/BUILD_PLAN.md — **yes**, this entry.
+
+## Stage 12A.4.3.6 — Launch params file
+
+**Scope of this slice (Stage 12A.4.3.6): documentation-only.
+Append §23 "Launch params" to
+`docs/OPTIX_BACKEND_PLAN.md` listing exactly the one file
+the user prompt names — `src/optix/OptixLaunchParams.h`
+— with a one-line purpose. Final sub-stage in the
+12A.4.3.x file-pair sequence (single-file slice). With
+§23 in place, the §18-§23 file inventory is complete and
+the "Planned module / file layout" outstanding-items
+entry can drop from the footer; CMake integration of the
+new files becomes its own future sub-stage. No code; no
+other files; no other sections.**
+
+### What ships
+
+- `docs/OPTIX_BACKEND_PLAN.md` §23 with a single-row
+  table:
+  - `src/optix/OptixLaunchParams.h` — header-only POD
+    definition for `optixLaunchParams` per §15.1's
+    inventory. Included by both host
+    (`OptixRenderer.cpp` populates the struct,
+    cudaMemcpys it to the device-side launch-params
+    buffer before each launch) and device
+    (`OptixPrograms.cu`'s raygen / miss / closest-hit
+    programs read fields via the fixed-symbol
+    constant-memory bind). The single source-of-truth
+    definition that ensures host writes and device
+    reads agree on layout and offsets.
+  Plus a short paragraph noting this file is the
+  explicit contract between the two sides of the
+  OptiX boundary, mirroring the other host-and-
+  device-shared headers in the project
+  (`pathtracer/RNG.cuh`, `pathtracer/Sampling.cuh`,
+  `relativity/RelativityMath.cuh`). Layout
+  mismatches on a constant-memory POD are silent
+  hard-to-debug failures; co-locating the
+  definition in one header eliminates the class.
+  Plus a closing paragraph noting that with §23 in
+  place the planned `src/optix/` directory is
+  complete: six files covering the backend's full
+  host-side surface, device-side surface, and the
+  constant-memory bridge between them.
+- The footer drops "Planned module / file layout
+  under `src/optix/` + CMake changes" and replaces
+  it with a narrower "CMake integration changes
+  (target list, gating, PTX embedding)" entry — the
+  *file layout* itself is now documented across
+  §18-§23, but the CMake build-system wiring (the
+  `+ CMake changes` half of the original outstanding
+  item) remains its own future sub-stage.
+- This BUILD_PLAN entry + status-table row.
+
+### Architectural decisions worth highlighting
+
+- **The file layout chapter is complete.** §18-§23
+  cover the six files of `src/optix/`:
+    OptixBackend.{h,cpp}    (§18) - device-context lifecycle
+    OptixRenderer.{h,cpp}   (§19) - render orchestration
+    OptixPrograms.cu        (§20) - raygen + miss + CH
+    OptixSBT.h              (§21) - SBT layout + builder decls
+    OptixAccel.h            (§22) - GAS + IAS build decls
+    OptixLaunchParams.h     (§23) - host+device shared POD
+  An implementer reading §18-§23 has the complete
+  file inventory for Stage 12B without needing
+  speculation.
+- **`OptixLaunchParams.h` is the boundary contract.**
+  Like the other host-and-device-shared headers in
+  the project, it is the explicit contract between
+  host writes and device reads. Co-locating the
+  POD definition in one header eliminates layout-
+  drift failures on the constant-memory bind.
+- **CMake integration is a separate sub-stage.**
+  The original outstanding-items entry was
+  "Planned module / file layout under `src/optix/`
+  + CMake changes" — combined. The 12A.4.3.x
+  sub-stages covered the file declarations but not
+  the build-system wiring (target list, OptiX SDK
+  detection, PTX/OptiXIR compilation flags,
+  embedded-PTX-as-cpp-string generation). Splitting
+  the entry honours what was actually documented vs
+  what remains for a future slice.
+
+### Hard-rule audit
+
+- Do not add other files — **yes**, only
+  `OptixLaunchParams.h` was listed; the prompt's
+  "Do not add other files" was respected.
 - Documentation only — **yes**, no source under
   `src/`, `tests/`, or `CMakeLists.txt` is touched.
   The only edits are two markdown files.

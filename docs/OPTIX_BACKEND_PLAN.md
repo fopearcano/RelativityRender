@@ -4371,14 +4371,49 @@ load — the same lifecycle the renderer already owns.
 
 ---
 
+## 23. Launch params
+
+The sixth and final piece of the planned `src/optix/`
+directory is the launch-parameters POD definition. This
+is the single shared header that §15.1 inventoried at
+the data-routing level: a host-and-device-readable POD
+containing camera + observer + RelativityParams + env
+fallback + AS handle + geometry/material/light array
+pointers + sampling state + output buffer pointer + dims,
+populated by the host before each `optixLaunch` and read
+by the OptiX programs via the constant-memory bind.
+
+| File                          | Purpose                                                                                  |
+|-------------------------------|------------------------------------------------------------------------------------------|
+| `src/optix/OptixLaunchParams.h` | Header-only POD definition for `optixLaunchParams` per §15.1's inventory. Included by both host (`OptixRenderer.cpp` populates the struct, cudaMemcpys it to the device-side launch-params buffer before each launch) and device (`OptixPrograms.cu`'s raygen / miss / closest-hit programs read fields via the fixed-symbol constant-memory bind). The single source-of-truth definition that ensures host writes and device reads agree on layout and offsets. |
+
+Like the other host-and-device-shared headers in the
+project (`pathtracer/RNG.cuh`, `pathtracer/Sampling.cuh`,
+`relativity/RelativityMath.cuh`), this file is the
+explicit contract between the two sides of the OptiX
+boundary. Mismatches between host writes and device reads
+on a constant-memory POD are silent, hard-to-debug
+failures; co-locating the layout in one header eliminates
+the class.
+
+With §23 in place, the planned `src/optix/` directory is
+complete: six files (`OptixBackend.{h,cpp}` + `OptixRenderer.{h,cpp}`
++ `OptixPrograms.cu` + `OptixSBT.h` + `OptixAccel.h` +
+`OptixLaunchParams.h`) covering the OptiX backend's full
+host-side surface, device-side surface, and the
+constant-memory bridge between them.
+
+---
+
 ## Sections to come
 
 Future Stage 12A sub-stages will append (one per slice or
 small group of slices):
 
 - Intersection program design
-- Planned module / file layout under `src/optix/` + CMake
-  changes
+- CMake integration changes (target list, gating, PTX
+  embedding) — the file layout itself is now documented
+  across §18-§23; the CMake side is its own slice
 - Migration risks (toolchain, debug story, build-host
   requirements, code duplication during transition)
 
