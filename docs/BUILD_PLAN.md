@@ -3699,7 +3699,8 @@ sub-stages, appended to the same file.** No code is touched.
 | 12A.4.3.5 | OPTIX_BACKEND_PLAN.md §22 (Acceleration)         | ✅ |
 | 12A.4.3.6 | OPTIX_BACKEND_PLAN.md §23 (Launch params)        | ✅ |
 | 12A.4.3.7 | OPTIX_BACKEND_PLAN.md §24 (Separation from CUDA) | ✅ |
-| 12A.x    | remaining IS / CMake integration / migration-risks | pending |
+| 12A.4.4   | OPTIX_BACKEND_PLAN.md §25 (Risks)                | ✅ |
+| 12A.x    | remaining IS / CMake integration sections | pending |
 | 12B      | minimum-viable OptiX backend     | pending |
 | 12C+     | feature parity with CUDA backend | pending |
 
@@ -5389,6 +5390,105 @@ code; no other sections.**
 - Max 4 bullet points — **yes**, exactly four bullets
   in §24's body, matching the user prompt's bullets
   one-for-one.
+- Documentation only — **yes**, no source under
+  `src/`, `tests/`, or `CMakeLists.txt` is touched.
+  The only edits are two markdown files.
+- Update docs/BUILD_PLAN.md — **yes**, this entry.
+
+## Stage 12A.4.4 — Risks
+
+**Scope of this slice (Stage 12A.4.4): documentation-only.
+Append §25 "Risks" to `docs/OPTIX_BACKEND_PLAN.md` as a
+strict bullet-only list (no prose, no intro, no scope
+subsection) covering the six risks the user prompt
+specified. Drops "Migration risks" from the footer's
+outstanding-items list since §25 documents the risk
+inventory the migration plan needs. No code; no other
+sections.**
+
+### What ships
+
+- `docs/OPTIX_BACKEND_PLAN.md` §25 with exactly six
+  bullets matching the user prompt one-for-one:
+  - **Build/toolchain complexity** — OptiX SDK +
+    driver + CUDA-Toolkit version matrix; PTX/
+    OptiXIR compilation flags differ from CUDA;
+    embedded-PTX-as-cpp-string generation needs
+    custom CMake logic.
+  - **SBT/data layout bugs** — silent failures on
+    layout mismatches between `OptixLaunchParams.h`
+    host writes and device reads; per-record stride
+    / alignment errors; program-group identifier
+    packing errors.
+  - **Divergence vs CUDA path** — same scene rendered
+    through both backends produces different images
+    beyond Monte-Carlo noise; reproducible
+    regressions are hard to localise without §16.5's
+    image-regression framework.
+  - **Performance regressions** — naive AS build
+    settings can leave 2-3× perf on the floor;
+    payload register over-budget forces register
+    spill; pipeline-depth misconfiguration triggers
+    OptiX runtime overhead.
+  - **Memory limits / AS rebuild costs** — per-mesh
+    GAS allocation grows with scene complexity; full
+    rebuild on every scene load (no `ALLOW_UPDATE`
+    per §10.5) gates interactive workflows; AS temp
+    buffers double peak memory during build.
+  - **Relativity integration points (raygen vs
+    shading)** — §14.4's split must hold across the
+    migration; mistakenly applying aberration on
+    bounce rays or Doppler on albedo would silently
+    break the artistic-perception model.
+- The footer drops "Migration risks (toolchain,
+  debug story, build-host requirements, code
+  duplication during transition)" — §25 documents
+  the canonical risk inventory.
+- This BUILD_PLAN entry + status-table row.
+
+### Architectural decisions worth highlighting
+
+- **Strict 6-bullet shape, no prose.** The user
+  prompt specified "Max 8 bullets. No prose." The
+  body of §25 is exactly the six bullets named in
+  the prompt — no intro paragraph, no scope
+  subsection, no closing notes. Each bullet is a
+  single sentence describing the risk's surface +
+  the underlying mechanism.
+- **Cross-references to design sections.** Each
+  bullet that has a documented mitigation pattern
+  cross-references the relevant section (§16.5 for
+  image-regression framework, §10.5 for
+  ALLOW_UPDATE deferral, §14.4 for relativity
+  integration points). The risks are not abstract —
+  they each map to specific design choices made
+  earlier in the plan.
+- **Risks vs design.** §25 is a *forward-looking*
+  inventory of what could go wrong during Stage 12B
+  implementation, not a *backward-looking* audit of
+  what has gone wrong. Each bullet identifies a
+  failure class the implementer should specifically
+  test against; the docs/STAGE_*_AUDIT.md pattern
+  established by the post-Stage-11 audit applies
+  when the implementation is complete.
+- **Footer dropped, not narrowed.** Unlike the
+  12A.4.3.6 split between "file layout" (now done)
+  and "CMake integration" (still pending), the
+  "Migration risks" entry covered topics §25's six
+  bullets address adequately. Debug story (touched
+  by bullet 1's toolchain breadth) and build-host
+  requirements (covered by bullet 1's CUDA-Toolkit
+  version matrix) are subsumed; code duplication
+  (bullet 3) and toolchain complexity (bullet 1)
+  are explicit. The footer entry can drop cleanly.
+
+### Hard-rule audit
+
+- Max 8 bullets — **yes**, exactly six bullets in
+  §25's body, well under the 8 cap.
+- No prose — **yes**, the body is bullet-only with
+  no intro paragraph, no scope subsection, no
+  closing notes.
 - Documentation only — **yes**, no source under
   `src/`, `tests/`, or `CMakeLists.txt` is touched.
   The only edits are two markdown files.

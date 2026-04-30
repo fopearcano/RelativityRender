@@ -4462,6 +4462,17 @@ the separation:
 
 ---
 
+## 25. Risks
+
+- **Build/toolchain complexity** — OptiX SDK + driver + CUDA-Toolkit version matrix; PTX/OptiXIR compilation flags differ from CUDA; embedded-PTX-as-cpp-string generation needs custom CMake logic.
+- **SBT/data layout bugs** — silent failures on layout mismatches between `OptixLaunchParams.h` host writes and device reads; per-record stride / alignment errors; program-group identifier packing errors.
+- **Divergence vs CUDA path** — same scene rendered through both backends produces different images beyond Monte-Carlo noise; reproducible regressions are hard to localise without §16.5's image-regression framework.
+- **Performance regressions** — naive AS build settings (no compaction, no `PREFER_FAST_TRACE`) can leave 2-3× perf on the floor; payload register over-budget forces register spill; pipeline-depth misconfiguration triggers OptiX runtime overhead.
+- **Memory limits / AS rebuild costs** — per-mesh GAS allocation grows with scene complexity; full rebuild on every scene load (no `ALLOW_UPDATE` per §10.5) gates interactive workflows; AS temp buffers double peak memory during build.
+- **Relativity integration points (raygen vs shading)** — §14.4's split (aberration in raygen primary-only, Doppler/searchlight in miss + CH on every radiance source) must hold across the migration; mistakenly applying aberration on bounce rays or Doppler on albedo would silently break the artistic-perception model.
+
+---
+
 ## Sections to come
 
 Future Stage 12A sub-stages will append (one per slice or
@@ -4471,8 +4482,6 @@ small group of slices):
 - CMake integration changes (target list, gating, PTX
   embedding) — the file layout itself is now documented
   across §18-§23; the CMake side is its own slice
-- Migration risks (toolchain, debug story, build-host
-  requirements, code duplication during transition)
 
 Stage 12B is the first slice that ships OptiX **code**. Until
 then the project's renderer is exactly what it is today — a
