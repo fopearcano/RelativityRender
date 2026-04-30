@@ -3250,6 +3250,290 @@ boundary unchanged.
 
 ---
 
+## 15. Launch parameters
+
+§5 - §14 each documented one slice of the OptiX backend
+from one perspective (program / data-category). §15 is the
+consolidating capstone: it inventories *everything* that
+travels into the OptiX runtime per launch (`optixLaunch`),
+*everything* that lives in the Shader Binding Table, and
+states the general routing rule that §11.4 / §12.5 /
+§13.6 / §14.5 have each been instantiating from their own
+data category's viewpoint.
+
+The user prompt frames this as "what goes in launch params
+(camera, relativity, frame buffers)" vs "what goes in SBT
+(materials, per-object data)". §15 answers honestly: in
+Stage 12B *everything* goes through launch params; SBT
+records carry program-group identifiers and nothing else.
+The user's "what goes in SBT" framing is the **future**
+state — the per-record materials / per-mesh metadata
+roadmap covered in §9.2, §9.5, §12.3. §15.4 documents
+when each data category crosses the complexity threshold
+that makes SBT-data routing worth its overhead.
+
+### 15.1 Stage 12B launch-params inventory
+
+The per-launch state lives in a single
+`optixLaunchParams` POD bound to a fixed device symbol at
+pipeline link time. Stage 12B's planned layout (consolidating
+§5.2.1 / §11.2 / §12.5 / §13.6 / §14.5):
+
+```cpp
+struct OptixLaunchParams {
+    // ----- Output framebuffer (§5.3.2) -----
+    float*  sample_pixels;     // device pointer; w*h*4 floats Rgba32F
+    int     width;             // §11.3
+    int     height;            // §11.3
+
+    // ----- Per-launch sampling state (§5.2.1, §11.3) -----
+    unsigned int seed;         // RNG global seed
+    unsigned int sample_index; // changes between launches
+    int          max_bounces;  // bounce-loop budget
+
+    // ----- Acceleration structure root (§10.1) -----
+    OptixTraversableHandle scene_handle;  // IAS handle for optixTrace
+
+    // ----- Geometry arrays (§9.2 launch-params route, §10.4 identity transforms) -----
+    const rr::geometry::Sphere*   spheres;       // device pointer
+    int                           sphere_count;
+    rr::cuda::CudaMeshView        mesh;          // single-mesh slot today
+
+    // ----- Materials (§12.3 launch-params route) -----
+    const rr::material::MaterialParams* materials;
+    int                                 material_count;
+
+    // ----- Lights (§13.1; uploaded but not sampled in 12B per §13.3) -----
+    const rr::lighting::Light*  lights;
+    int                         light_count;
+
+    // ----- Camera (§11.2) -----
+    rr::camera::GpuCamera       camera;          // 56 B by value
+
+    // ----- Relativity (§14.2 + §14.3) -----
+    rr::relativity::Observer            observer;  // 12 B by value
+    rr::relativity::RelativityParams    params;    // 16 B by value
+
+    // ----- Environment fallback (§6.4) -----
+    rr::math::Vec3              env_color;
+    float                       env_intensity;
+};
+```
+
+Approximate total size:
+
+| Group                        | Size estimate |
+|------------------------------|--------------:|
+| Output buffer pointer + dims | 16 B          |
+| Sampling state               | 12 B          |
+| AS handle                    |  8 B          |
+| Sphere array (ptr + count)   | 16 B          |
+| Mesh view (CudaMeshView)     | ~40 B         |
+| Materials (ptr + count)      | 16 B          |
+| Lights (ptr + count)         | 16 B          |
+| Camera POD                   | 56 B          |
+| Observer POD                 | 12 B          |
+| RelativityParams POD         | 16 B          |
+| Env fallback                 | 16 B          |
+| **Total** (approximate)      | **~224 B**    |
+
+Well under any practical constant-memory budget; the
+launch-params upload is a single ~250-byte cudaMemcpy
+per `optixLaunch`. Even on a slow-PCIe host the upload
+cost is negligible compared to the kernel launch
+itself.
+
+### 15.2 Stage 12B SBT data inventory
+
+The Shader Binding Table (§9.4) contains exactly four
+records totalling 128 bytes:
+
+| Record         | Index | Program identifier (32 B) | User data | Total |
+|----------------|------:|---------------------------|-----------|------:|
+| raygenRecord   |     0 | `pathtrace_raygen`        | (empty)   | 32 B  |
+| missRecord     |     0 | `pathtrace_miss`          | (empty)   | 32 B  |
+| hitgroupRecord |     0 | `sphere_hitgroup` (CH)    | (empty)   | 32 B  |
+| hitgroupRecord |     1 | `triangle_hitgroup` (CH)  | (empty)   | 32 B  |
+
+Stage 12B's SBT records carry **only the program-group
+identifiers** that OptiX needs to dispatch into the right
+code at trace time. There is no per-record user-data —
+no per-mesh material parameters, no per-instance
+transforms, no per-primitive opacity threshold.
+`optixGetSbtDataPointer()` from any program returns a
+pointer to the empty user-data slot, which the programs
+do not dereference.
+
+### 15.3 Separation rationale
+
+The general routing rule that emerges from Stages §11 -
+§14:
+
+| Lives in...        | When the data is...                                                                                       |
+|--------------------|-----------------------------------------------------------------------------------------------------------|
+| **Launch params**  | per-launch mutable (camera moves, observer changes, sample_index advances), small enough to broadcast (≤ few KB), shared across multiple program types (raygen + miss + CH all read it) |
+| **SBT user-data**  | per-pipeline / per-scene stable (changes only when the SBT itself rebuilds), per-record specific (different HitGroup records carry different data), large enough to make launch-params bloat costly, per-primitive metadata that maps cleanly onto HitGroup-record granularity |
+
+The two surfaces are non-overlapping by construction:
+
+- **Launch params** are read once per program invocation
+  via the constant-memory bind. Every thread reads the
+  same data; cache-friendly broadcast.
+- **SBT user-data** is read once per program invocation
+  via `optixGetSbtDataPointer()`. Each thread *might*
+  read a different record (different primitive index →
+  different HitGroup record); cache-friendly per-record
+  locality if many primitives bind to the same record.
+
+#### 15.3.1 Why Stage 12B picks launch-params for everything
+
+Three reasons §11.4 / §12.3 / §13.4 / §14.5 each cite,
+collected here:
+
+1. **Per-launch mutability dominates.** Stage 12B's
+   workloads are interactive editing + spp loops. The
+   camera / observer / spp index / scene contents all
+   shift between launches. Routing through SBT records
+   would force an SBT rebuild on most edits, defeating
+   the SBT's caching purpose.
+2. **Small data sizes.** ~224 B launch params + 128 B
+   SBT = ~350 B total per-launch device-side state.
+   Launch-params arrays carrying small material/sphere/
+   mesh counts (~few KB each in the pessimistic case)
+   stay below the cache pressure point where SBT-data
+   locality starts to matter.
+3. **CUDA-backend parity.** The CUDA path tracer
+   (Stage 11C) reads materials / spheres / mesh / lights
+   from the same `GpuScene::device_*()` accessors via
+   `CudaSceneView`. The OptiX backend reading the same
+   arrays through launch params means a single source
+   of truth across both backends — fixtures render
+   identically (modulo the AS traversal speedup, which
+   is the point of the migration).
+
+#### 15.3.2 What the SBT-route would gain
+
+When per-mesh / per-material counts grow to thousands,
+the SBT-route gains:
+
+- **Per-record cache locality.** OptiX guarantees the
+  HitGroup record currently dispatching is hot in the
+  L1 instruction cache; per-record user-data piggybacks
+  on that locality.
+- **No launch-params bloat.** If material count climbs
+  to 10,000+, `materials` as a launch-params array
+  pointer with hit-time index lookup still works, but
+  the working-set across all primitive hits becomes
+  large enough that per-record locality starts to
+  matter. SBT user-data avoids the working-set issue by
+  putting the relevant material data in the same
+  record OptiX is already loading.
+- **Per-record specialisation.** Different HitGroup
+  records can carry different *types* of data — a
+  velvet-fabric BSDF record carries different
+  parameters than a metal record. Stage 12B's "every
+  hit reads the same MaterialParams POD" model does
+  not need this; future BSDF dispatch (master order #13)
+  does.
+
+### 15.4 Migration paths to SBT user-data
+
+The roadmap for moving data categories from launch-params
+to SBT user-data, in dependency order:
+
+| Data category    | Migration trigger                                | Document ref         |
+|------------------|--------------------------------------------------|----------------------|
+| Per-mesh metadata | Multi-mesh upload on `GpuScene` activates       | §9.5.2               |
+| Per-material BSDF data | BSDF dispatch (master order #13)            | §12.4 / §12.7        |
+| Per-instance transforms | When per-mesh transforms activate (§10.4)  | §10.4                |
+| Per-record opacity / alpha | Alpha-test cutout (master order #18)    | §8.3 step 2          |
+| Per-record callable BSDF programs | When callable programs land (master #13) | §9.8       |
+
+Each of these is **additive** against §15.1's launch-
+params layout — moving per-mesh metadata into SBT
+user-data does not require *removing* the per-mesh
+launch-params arrays in lockstep; the launch-params
+arrays can stay as the canonical source for fallback
+indices while the SBT user-data carries the hot per-hit
+copy. The migrations roll out one data category at a
+time as their consuming features ship.
+
+#### 15.4.1 The non-migration: launch-params permanent residents
+
+Some data categories belong in launch-params permanently,
+regardless of scene scale:
+
+- **Camera POD** — per-launch mutable; tiny; shared across
+  programs (§11.4). No SBT-route makes sense.
+- **Observer + RelativityParams** — same shape as camera:
+  per-launch mutable, tiny, program-agnostic (§14.5).
+- **Output framebuffer pointer + dimensions** — the
+  raygen needs the destination of its per-pixel write
+  available before the per-launch dispatch even starts;
+  this is launch-params territory by definition.
+- **Per-launch sampling state** — `seed`,
+  `sample_index`, `max_bounces`. The spp loop's
+  iteration counter mutates every launch.
+- **AS root handle** — the `OptixTraversableHandle` is
+  the entry point for `optixTrace`; it cannot be in the
+  SBT (the SBT is *inside* what the AS dispatches into).
+- **Environment fallback** (`env_color` /
+  `env_intensity`) — per-launch mutable (interactive
+  scene editing), tiny, single-consumer (miss program).
+
+Stage 12B's "everything in launch-params" picks the
+right answer for *the current scene scale*. The
+migration roadmap's data categories above are the ones
+that change posture as scenes scale; the §15.4.1
+residents stay in launch params indefinitely.
+
+### 15.5 Read / write summary
+
+The launch-params surface from a host's perspective
+across one render:
+
+| Operation                              | Cost                          | Frequency               |
+|----------------------------------------|-------------------------------|-------------------------|
+| Allocate launch-params device buffer   | one cudaMalloc (~few µs)      | once at pipeline build  |
+| Populate optixLaunchParams struct      | host-side struct writes (~ns) | per launch              |
+| `cudaMemcpy(d_launch_params, ...)`     | ~250 B H2D (~ns - few µs)     | per launch              |
+| `optixLaunch(...)`                     | kernel-launch overhead        | per launch              |
+| Free launch-params buffer              | one cudaFree                  | once at pipeline destroy |
+
+The launch-params upload is in the noise compared to the
+optixLaunch itself for any non-trivial render. Stage 12B
+spp loops typically run hundreds of `optixLaunch`s per
+second on a modern GPU; the launch-params upload adds
+microseconds of overhead per launch, swallowed by the
+kernel time.
+
+### 15.6 Scope: what's NOT in §15
+
+Two related concerns this section deliberately defers:
+
+- **Pipeline configuration.** `OptixPipelineCompileOptions`
+  / `OptixPipelineLinkOptions` / `OptixModuleCompileOptions`
+  control how the OptiX pipeline is built (register
+  pressure, debug-info inclusion, payload register count,
+  etc.). These are pipeline-build parameters, not
+  per-launch state. The "Planned module / file layout"
+  future sub-stage covers them when documenting the
+  host-side OptiX setup code.
+- **Stream-level parallelism.** OptiX 7+ supports
+  per-stream `optixLaunch` calls for concurrent
+  multi-frame rendering or progressive preview while a
+  full render is in flight. Stage 12B uses a single
+  default stream; multi-stream is a future
+  interactive-viewer slice.
+
+The §15 launch-params + SBT inventory is the data-side
+mental model for the migration. Combined with §5-§9's
+program-side model, it gives an implementer the full
+contract for the Stage 12B OptiX backend without
+needing to read the rest of the doc front-to-back.
+
+---
+
 ## Sections to come
 
 Future Stage 12A sub-stages will append (one per slice or

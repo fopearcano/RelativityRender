@@ -3689,6 +3689,7 @@ sub-stages, appended to the same file.** No code is touched.
 | 12A.3.3  | OPTIX_BACKEND_PLAN.md §12 (Material data) | ✅ |
 | 12A.3.4  | OPTIX_BACKEND_PLAN.md §13 (Light data) | ✅ |
 | 12A.3.5  | OPTIX_BACKEND_PLAN.md §14 (Relativity parameter data) | ✅ |
+| 12A.3.6  | OPTIX_BACKEND_PLAN.md §15 (Launch parameters consolidation) | ✅ |
 | 12A.x    | remaining IS / Path-tracing integration / file-layout / risks sections | pending |
 | 12B      | minimum-viable OptiX backend     | pending |
 | 12C+     | feature parity with CUDA backend | pending |
@@ -4547,6 +4548,105 @@ No code; no other sections (IS / Path-tracing integration
 - Do not add other sections — **yes**, only §14 was
   appended; the footer dropped exactly the matching
   item ("Relativity integration").
+- Documentation only — **yes**, no source under `src/`,
+  `tests/`, or `CMakeLists.txt` is touched. The only
+  edits are two markdown files.
+- Update docs/BUILD_PLAN.md — **yes**, this entry.
+
+## Stage 12A.3.6 — OptiX launch-parameters consolidation
+
+**Scope of this slice (Stage 12A.3.6): documentation-only.
+Append §15 "Launch parameters" to
+`docs/OPTIX_BACKEND_PLAN.md` — the consolidating capstone
+for the data-routing chapter (§11 - §14). Inventories
+Stage 12B's complete `optixLaunchParams` struct (~224 B,
+collected from §5.2.1 / §11.2 / §12.5 / §13.6 / §14.5),
+inventories the empty-SBT-records state (4 records ×
+32 B = 128 B; program-group identifiers only), names the
+abstract launch-params-vs-SBT-data routing rule that the
+prior data sections were each instantiating, and
+documents the migration roadmap to SBT user-data for
+future scaling. No code; no other sections (Intersection
+program design / Path-tracing integration / file-layout /
+risks remain pending).**
+
+### What ships
+
+- `docs/OPTIX_BACKEND_PLAN.md` §15 with subsections 15.1
+  Stage 12B launch-params inventory (concrete struct
+  layout consolidating fields from §5/§11/§12/§13/§14;
+  per-group size table totalling ~224 B), 15.2 Stage 12B
+  SBT data inventory (4 records × 32 B = 128 B; explicit
+  "user data: empty" column showing every record carries
+  only its program-group identifier), 15.3 Separation
+  rationale (the abstract routing rule: launch-params
+  for per-launch-mutable + small + program-agnostic;
+  SBT user-data for per-pipeline-stable + per-record
+  specific + per-primitive metadata; non-overlapping
+  surfaces by construction; cache-locality differences),
+  15.3.1 Why Stage 12B picks launch-params for
+  everything (three reasons consolidating §11.4 / §12.3
+  / §13.4 / §14.5: per-launch mutability dominates,
+  small data sizes, CUDA-backend parity), 15.3.2 What
+  the SBT-route would gain (per-record cache locality,
+  no launch-params bloat, per-record specialisation —
+  the future arguments when scenes scale up), 15.4
+  Migration paths to SBT user-data (per-mesh metadata,
+  per-material BSDF data, per-instance transforms,
+  per-record opacity, per-record callable BSDF programs;
+  trigger conditions + document references for each),
+  15.4.1 Non-migration: launch-params permanent
+  residents (camera POD, observer/relativity params,
+  output framebuffer, sampling state, AS root,
+  environment fallback — these stay in launch-params
+  indefinitely regardless of scene scale), 15.5 Read/
+  write summary (per-operation cost + frequency table;
+  launch-params upload is ~250 B H2D in the noise
+  compared to optixLaunch itself), 15.6 Scope (pipeline
+  configuration deferred to file-layout sub-stage;
+  stream-level parallelism is a future interactive-
+  viewer concern).
+- The footer is untouched — §15 was not on the original
+  outstanding-items list (it is a consolidating capstone
+  the user added, not one of the originally-planned
+  twelve sections of OPTIX_BACKEND_PLAN.md). Remaining
+  outstanding items: Intersection program design, Path-
+  tracing integration, planned module/file layout,
+  Migration risks.
+- This BUILD_PLAN entry + status-table row.
+
+### Architectural decisions worth highlighting
+
+- **Stage 12B uses launch-params for EVERYTHING; SBT
+  records are empty.** §15.1 + §15.2 make this the
+  formal contract. ~224 B launch params + 128 B SBT
+  (program-group identifiers only) = ~350 B total
+  per-launch device-side state.
+- **Two surfaces, non-overlapping.** §15.3 codifies the
+  routing rule: launch-params for per-launch-mutable +
+  small + program-agnostic; SBT user-data for per-
+  pipeline-stable + per-record specific + per-primitive
+  metadata. The rule is the unified mental model that
+  §11 / §12 / §13 / §14 were each instantiating from
+  one data category's viewpoint.
+- **Migration paths are additive.** §15.4's roadmap for
+  moving data categories into SBT user-data does not
+  require *removing* the launch-params arrays in
+  lockstep. The launch-params arrays can stay as the
+  canonical fallback while SBT user-data carries the
+  hot per-hit copy.
+- **§15.4.1 permanent residents.** Camera, observer/
+  relativity, output framebuffer, sampling state, AS
+  root, environment fallback — these belong in launch
+  params indefinitely regardless of scene scale.
+  Documenting which data does NOT migrate is as
+  valuable as documenting which does.
+
+### Hard-rule audit
+
+- Do not add other sections — **yes**, only §15 was
+  appended; the footer is unchanged because §15 was
+  not on the original outstanding-items list.
 - Documentation only — **yes**, no source under `src/`,
   `tests/`, or `CMakeLists.txt` is touched. The only
   edits are two markdown files.
