@@ -4322,6 +4322,31 @@ time, so one CH file covers both HitGroup records (§9.4).
 
 ---
 
+## 21. SBT
+
+The fourth piece of the planned `src/optix/` directory is
+the Shader Binding Table layout types + builder. This is
+the host-side declaration of the SBT records §9 / §15.2
+fixed: 4 records × 32 B = 128 B total in Stage 12B, with
+empty user-data slots (per §9.2 / §15.3.1's launch-params-
+for-everything decision).
+
+| File                          | Purpose                                                                                  |
+|-------------------------------|------------------------------------------------------------------------------------------|
+| `src/optix/OptixSBT.h`        | Header-only declarations for the Stage 12B SBT layout: record-type typedefs (`OptixSbtRecord<T>` aliases for raygen / miss / HitGroup), the `build_sbt` host-callable builder consumed by `OptixRenderer.cpp` (§19), and the per-record `optixSbtRecordPackHeader` invocation that wires program-group identifiers into record headers per §9.1's anatomy. |
+
+The header is host-only + OptiX-Runtime-aware (it
+includes `<optix.h>` for `OptixShaderBindingTable` /
+`optixSbtRecordPackHeader`). Implementation of `build_sbt`
+lives in `OptixRenderer.cpp` rather than a sibling
+`OptixSBT.cpp` because the SBT is built once at pipeline
+construction (per §9.4 / §17.1) and that lifecycle is
+already owned by the renderer; spinning up a second TU
+just to host one builder function would scatter the
+pipeline-build logic.
+
+---
+
 ## Sections to come
 
 Future Stage 12A sub-stages will append (one per slice or

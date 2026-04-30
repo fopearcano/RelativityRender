@@ -3695,6 +3695,7 @@ sub-stages, appended to the same file.** No code is touched.
 | 12A.4.3.1 | OPTIX_BACKEND_PLAN.md §18 (OptiX backend files) | ✅ |
 | 12A.4.3.2 | OPTIX_BACKEND_PLAN.md §19 (OptiX renderer files) | ✅ |
 | 12A.4.3.3 | OPTIX_BACKEND_PLAN.md §20 (OptiX programs)      | ✅ |
+| 12A.4.3.4 | OPTIX_BACKEND_PLAN.md §21 (SBT)                  | ✅ |
 | 12A.x    | remaining IS / file-layout sub-stages / migration-risks | pending |
 | 12B      | minimum-viable OptiX backend     | pending |
 | 12C+     | feature parity with CUDA backend | pending |
@@ -5071,6 +5072,73 @@ files; no other sections.**
 - Do not add other files — **yes**, only
   `OptixPrograms.cu` was listed; the prompt's "Do
   not add other files" was respected.
+- Documentation only — **yes**, no source under
+  `src/`, `tests/`, or `CMakeLists.txt` is touched.
+  The only edits are two markdown files.
+- Update docs/BUILD_PLAN.md — **yes**, this entry.
+
+## Stage 12A.4.3.4 — SBT file
+
+**Scope of this slice (Stage 12A.4.3.4): documentation-only.
+Append §21 "SBT" to `docs/OPTIX_BACKEND_PLAN.md` listing
+exactly the one file the user prompt names —
+`src/optix/OptixSBT.h` — with a one-line purpose. Fourth
+sub-stage in the 12A.4.3.x file-pair sequence (single-file
+slice). Subsequent sub-stages append the remaining
+`src/optix/` modules (AS, launch-params). No code; no
+other files; no other sections.**
+
+### What ships
+
+- `docs/OPTIX_BACKEND_PLAN.md` §21 with a single-row
+  table:
+  - `src/optix/OptixSBT.h` — header-only declarations
+    for the Stage 12B SBT layout: record-type
+    typedefs (`OptixSbtRecord<T>` aliases for raygen
+    / miss / HitGroup), the `build_sbt` host-callable
+    builder consumed by `OptixRenderer.cpp` (§19),
+    and the per-record `optixSbtRecordPackHeader`
+    invocation that wires program-group identifiers
+    into record headers per §9.1's anatomy.
+  Plus a short paragraph noting that `build_sbt`'s
+  *implementation* lives in `OptixRenderer.cpp`
+  rather than a sibling `.cpp` — the SBT is built
+  once at pipeline construction (§9.4 / §17.1) and
+  that lifecycle is already owned by the renderer;
+  spinning up a second TU for one function would
+  scatter the pipeline-build logic.
+- The footer is untouched — "Planned module / file
+  layout" stays pending until the remaining 12A.4.3.x
+  sub-stages (AS, launch-params remain to come).
+- This BUILD_PLAN entry + status-table row.
+
+### Architectural decisions worth highlighting
+
+- **Header-only declarations.** `OptixSBT.h` is a
+  host-only header that includes `<optix.h>` for the
+  `OptixShaderBindingTable` /
+  `optixSbtRecordPackHeader` types it declares.
+  Consumers (`OptixRenderer.cpp`) include it where
+  the SBT is built; non-OptiX-aware TUs do not need
+  to.
+- **No sibling .cpp.** The user prompt explicitly
+  lists only the `.h`. Implementation lives in
+  `OptixRenderer.cpp` where the pipeline lifecycle
+  already lives. The SBT is a pipeline-scoped
+  artefact — building it next to the pipeline that
+  consumes it is the natural co-location.
+- **128 byte SBT footprint.** Per §9.4: 4 records ×
+  32 B (program-group identifier only; empty
+  user-data per §15.3.1's launch-params-for-
+  everything decision). The `OptixSBT.h` types
+  reflect this exactly — no per-record user-data
+  payload typedef in Stage 12B.
+
+### Hard-rule audit
+
+- Do not add other files — **yes**, only
+  `OptixSBT.h` was listed; the prompt's "Do not
+  add other files" was respected.
 - Documentation only — **yes**, no source under
   `src/`, `tests/`, or `CMakeLists.txt` is touched.
   The only edits are two markdown files.
