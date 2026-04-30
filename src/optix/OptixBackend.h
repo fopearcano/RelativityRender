@@ -36,6 +36,20 @@ public:
     // `cmake`). Returns false otherwise. Pure preprocessor query;
     // no OptiX runtime calls, no device probing.
     [[nodiscard]] static bool isCompiled() noexcept;
+
+    // Stage 12B.5: returns true iff the CMake configure stage
+    // located an OptiX SDK install (i.e., the Stage 12B.4
+    // detection block found `include/optix.h` under one of
+    // OPTIX_ROOT / OPTIX_SDK_DIR / $ENV{OPTIX_ROOT} and
+    // PUBLIC-defined `RELATIVITYRENDER_OPTIX_SDK_FOUND` on
+    // rr_optix). Returns false otherwise - including the
+    // RELATIVITYRENDER_ENABLE_OPTIX=ON-but-no-SDK state.
+    // Pure preprocessor query; no OptiX runtime calls, no SDK
+    // header include, no `find_package` invocation. Used today
+    // only by `--device-info` diagnostics; future sub-stages
+    // gate real SDK consumption (`<optix.h>` include,
+    // `optixInit`, etc.) on this same signal.
+    [[nodiscard]] static bool isSdkFound() noexcept;
 };
 
 }  // namespace rr::optix

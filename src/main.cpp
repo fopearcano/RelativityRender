@@ -13,6 +13,14 @@
 #include "gpu/GpuDevice.h"
 #include "io/SceneLoader.h"
 
+// Stage 12B.5: rr_optix is only linked into the executable when
+// RELATIVITYRENDER_ENABLE_OPTIX=ON, so the include is gated on the
+// same macro the rr_optix target PUBLIC-defines. OFF builds never
+// see this header and never reference the OptixBackend class.
+#ifdef RELATIVITYRENDER_ENABLE_OPTIX
+    #include "optix/OptixBackend.h"
+#endif
+
 #ifdef RR_HAS_CUDA
     #include "camera/Camera.h"
     #include "cuda/CudaAccumulation.cuh"
@@ -57,19 +65,36 @@ void report_device_info() {
                      "Rebuild with -DRR_ENABLE_CUDA=ON on a host with the "
                      "CUDA Toolkit and a CUDA-capable GPU to enable device "
                      "queries.");
-        return;
+    } else {
+        Logger::info(std::to_string(devices.size())
+                     + (devices.size() == 1 ? " device:" : " devices:"));
+        for (const auto& d : devices) {
+            const std::string line =
+                "  [" + std::to_string(d.index) + "] " + d.name
+              + " (sm_"  + d.compute_capability_string()
+              + ", "     + d.total_memory_human()
+              + ", "     + std::to_string(d.multiprocessor_count) + " SMs)";
+            Logger::info(line);
+        }
     }
 
-    Logger::info(std::to_string(devices.size())
-                 + (devices.size() == 1 ? " device:" : " devices:"));
-    for (const auto& d : devices) {
-        const std::string line =
-            "  [" + std::to_string(d.index) + "] " + d.name
-          + " (sm_"  + d.compute_capability_string()
-          + ", "     + d.total_memory_human()
-          + ", "     + std::to_string(d.multiprocessor_count) + " SMs)";
-        Logger::info(line);
-    }
+    // Stage 12B.5: OptiX availability stanza. Three lines that
+    // describe the scaffold's compile / SDK / runtime state. None
+    // of this initialises an OptixDeviceContext or invokes any
+    // OptiX runtime call - it reports compile-time facts only.
+    // CUDA remains the primary renderer; this is purely informational.
+#ifdef RELATIVITYRENDER_ENABLE_OPTIX
+    Logger::info(std::string("OptiX build enabled: ")
+                 + (rr::optix::OptixBackend::isCompiled() ? "yes" : "no"));
+    Logger::info(std::string("OptiX SDK found: ")
+                 + (rr::optix::OptixBackend::isSdkFound() ? "yes" : "no"));
+    Logger::info("OptiX renderer status: scaffold only");
+#else
+    // OFF build: rr_optix is not linked and OptixBackend is not
+    // visible. Report the compile-time fact and stop - SDK / status
+    // lines are meaningless when the backend was never built in.
+    Logger::info("OptiX build enabled: no");
+#endif
 }
 
 #ifdef RR_HAS_CUDA

@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.20)
 
 project(RelativityRender
     VERSION     0.1.0
-    DESCRIPTION "RelativityRender - GPU renderer platform (Stage 12B.4: OptiX SDK path detection)"
+    DESCRIPTION "RelativityRender - GPU renderer platform (Stage 12B.5: OptiX availability report)"
     LANGUAGES   CXX
 )
 
@@ -33,7 +33,7 @@ option(RELATIVITYRENDER_ENABLE_OPTIX
 
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
-message(STATUS "RelativityRender ${PROJECT_VERSION} (Stage 12B.4: OptiX SDK path detection)")
+message(STATUS "RelativityRender ${PROJECT_VERSION} (Stage 12B.5: OptiX availability report)")
 
 message(STATUS "  Build type   : ${CMAKE_BUILD_TYPE}")
 message(STATUS "  C++ standard : ${CMAKE_CXX_STANDARD}")
@@ -301,6 +301,17 @@ if(RELATIVITYRENDER_ENABLE_OPTIX)
     # itself reads the macro; future sub-stages add CLI handlers
     # and other consumers that gate on it.
     target_compile_definitions(rr_optix PUBLIC RELATIVITYRENDER_ENABLE_OPTIX)
+    # Stage 12B.5: propagate the SDK-found result from the
+    # detection block above as a PUBLIC compile definition so
+    # `OptixBackend::isSdkFound()` (and any future SDK-gated
+    # call site) can answer at runtime. The macro is defined
+    # only when `include/optix.h` was located; otherwise it is
+    # undefined and `isSdkFound()` returns false. No SDK include
+    # path is propagated yet (per Stage 12B.4); this is purely a
+    # boolean signal for diagnostics.
+    if(RELATIVITYRENDER_OPTIX_SDK_FOUND)
+        target_compile_definitions(rr_optix PUBLIC RELATIVITYRENDER_OPTIX_SDK_FOUND)
+    endif()
 endif()
 
 # rr_io: scene-format IO (Stage 10B). Stage 10B.1 ships only the

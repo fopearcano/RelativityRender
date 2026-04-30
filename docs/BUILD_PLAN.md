@@ -3706,6 +3706,7 @@ sub-stages, appended to the same file.** No code is touched.
 | 12B.2    | OptiX file skeleton (rr_optix; OptixBackend.{h,cpp}, OptixRenderer.{h,cpp}; placeholders) | ✅ |
 | 12B.3    | Conditional OptiX build wiring (rr_optix gated on the option; OFF byte-identical to pre-12B) | ✅ |
 | 12B.4    | OptiX SDK path detection (OPTIX_ROOT / OPTIX_SDK_DIR; sets RELATIVITYRENDER_OPTIX_SDK_FOUND) | ✅ |
+| 12B.5    | OptiX availability report (--device-info: build enabled / SDK found / renderer status) | ✅ |
 | 12B      | minimum-viable OptiX backend     | pending |
 | 12C+     | feature parity with CUDA backend | pending |
 
@@ -6128,6 +6129,178 @@ device-context init.**
   (path was passed but `include/optix.h` doesn't
   exist there); build continues; ctest 4/4
   unchanged.
+
+## Stage 12B.5 — OptiX availability report
+
+**Scope of this slice (Stage 12B.5): wire the
+`--device-info` diagnostic to report the OptiX
+scaffold's compile / SDK / runtime state. Three
+new lines render after the existing GPU-backend +
+device list:
+
+- `OptiX build enabled: yes/no` - whether the
+  binary was compiled with
+  `-DRELATIVITYRENDER_ENABLE_OPTIX=ON`.
+- `OptiX SDK found: yes/no` - whether the Stage
+  12B.4 detection block located `include/optix.h`
+  under one of the candidate paths. Only printed
+  when the build is enabled.
+- `OptiX renderer status: scaffold only` - hard-
+  coded today since the Stage 12B.2 placeholder
+  is the real renderer state. Future sub-stages
+  promote this when an actual pipeline launches.
+
+No OptixDeviceContext is created, no OptiX runtime
+call is made, no SDK header is included. The
+report is a pure preprocessor query plus three
+log lines.**
+
+### What ships
+
+- `CMakeLists.txt`:
+  - Inside the existing
+    `if(RELATIVITYRENDER_ENABLE_OPTIX)` rr_optix
+    section, after the SDK-detection block, the
+    SDK-found result is now propagated as a
+    PUBLIC compile definition on rr_optix:
+    `if(RELATIVITYRENDER_OPTIX_SDK_FOUND)
+    target_compile_definitions(rr_optix PUBLIC
+    RELATIVITYRENDER_OPTIX_SDK_FOUND) endif()`.
+    Defined when the SDK was located, undefined
+    otherwise. Stage 12B.4 had set this only as a
+    CMake variable; 12B.5 turns it into a runtime-
+    visible boolean signal.
+  - Stage label bumped to "Stage 12B.5: OptiX
+    availability report" in both the
+    `project(...)` description and the project-
+    banner status message.
+- `src/optix/OptixBackend.h` / `.cpp`:
+  - New static accessor
+    `[[nodiscard]] static bool isSdkFound()
+    noexcept;`. Returns `true` iff the macro
+    `RELATIVITYRENDER_OPTIX_SDK_FOUND` was defined
+    at compile time. Sibling of the existing
+    `isCompiled()`. Pure preprocessor query, no
+    OptiX runtime calls, no SDK include.
+- `src/main.cpp`:
+  - Conditional include of
+    `optix/OptixBackend.h` gated on
+    `RELATIVITYRENDER_ENABLE_OPTIX` (rr_optix is
+    only linked when ON; the executable cannot
+    reference the header otherwise).
+  - `report_device_info()` refactored: the
+    empty-devices early-return is replaced with
+    an `if`/`else` branch so the OptiX stanza
+    always prints. Two-branch stanza:
+    - ON build: three lines, build-enabled / SDK-
+      found / renderer status, the first two
+      driven by `OptixBackend::isCompiled()` /
+      `OptixBackend::isSdkFound()` and the third
+      a hard-coded `"scaffold only"`.
+    - OFF build: single line `"OptiX build
+      enabled: no"`. SDK / status lines are
+      omitted because they are meaningless when
+      rr_optix was never compiled in.
+- `docs/BUILD_PLAN.md`: this entry + status-
+  table row for 12B.5.
+
+### Architectural decisions worth highlighting
+
+- **Diagnostics-only, no runtime touch.** The
+  user's three rules (no OptiX context init, no
+  OptiX rendering, CUDA stays primary) are all
+  satisfied by routing the report through pure
+  preprocessor queries. Both new accessors
+  (`isCompiled` / `isSdkFound`) compile to a
+  single `return true;` or `return false;` per
+  build configuration; there is no chance of
+  partial OptiX runtime activation slipping in.
+- **PUBLIC compile-def propagation, mirroring
+  12B.3's pattern.** `RELATIVITYRENDER_ENABLE_
+  OPTIX` was already PUBLIC on rr_optix; 12B.5
+  just adds `RELATIVITYRENDER_OPTIX_SDK_FOUND`
+  next to it on the same target. The
+  RelativityRender executable links rr_optix
+  PRIVATE-to-itself but the *interface*
+  compile-defs from rr_optix bubble through, so
+  main.cpp sees both macros without any extra
+  `target_compile_definitions` on the executable.
+- **Two-branch stanza, not a single template.**
+  Printing `OptiX SDK found: n/a` and `OptiX
+  renderer status: n/a` for OFF builds would
+  pollute the diagnostic with information that
+  is structurally meaningless (rr_optix wasn't
+  built; there is no SDK question to ask). The
+  OFF build emits a single honest line; the ON
+  build emits the full three-line stanza. This
+  also keeps the OFF binary free of any
+  reference to the OptiX namespace.
+- **Refactor of the empty-devices early-return.**
+  Pre-12B.5 the function early-returned when no
+  CUDA devices were visible, which would have
+  silently dropped the OptiX stanza for the
+  common host-only case (no NVIDIA GPU + OptiX
+  flag exercise). Replacing the early-return
+  with `if`/`else` keeps the OptiX stanza
+  unconditional after the CUDA section.
+- **No OptixRenderer accessor.** The "scaffold
+  only" string is a hard-coded literal in
+  main.cpp, not a method on `OptixRenderer`.
+  Adding an accessor would be premature - today
+  there is exactly one renderer state, and a
+  one-shot literal is honest. Future sub-stages
+  that introduce more states (initialised /
+  pipelines built / launched) replace the
+  literal with a real accessor at that point.
+
+### Hard-rule audit
+
+- No OptiX context initialization - **yes**, no
+  `optixInit()`, `optixDeviceContextCreate()`, or
+  any OptiX runtime call anywhere. The two new
+  accessors are macro queries.
+- No OptiX rendering - **yes**, no `optixLaunch`,
+  no SBT build, no AS build. The renderer-status
+  line is a hard-coded string literal.
+- CUDA renderer remains primary - **yes**, the
+  existing CUDA dispatch paths (`--render-scene`,
+  `--render-relativistic`, `--pathtrace`) are
+  untouched. No control flow now branches into
+  OptiX. The OptiX stanza is purely log output.
+- Must compile with OptiX OFF - **yes**, verified
+  with a clean reconfigure: `cmake -DRELATIVITY
+  RENDER_ENABLE_OPTIX=OFF` builds clean, ctest
+  4/4 passes, the OFF binary's `--device-info`
+  prints `OptiX build enabled: no` and nothing
+  more.
+- Update docs/BUILD_PLAN.md - **yes**, this entry
+  + status-table row.
+
+### Verified at the build
+
+- `cmake -DRELATIVITYRENDER_ENABLE_OPTIX=OFF ..`
+  (clean reconfigure): builds clean; ctest 4/4
+  passes; `RelativityRender --device-info` prints
+  `GPU backend: (none)`, the no-CUDA-devices
+  message, then `OptiX build enabled: no` (and
+  nothing else - no SDK / status lines).
+- `cmake -DRELATIVITYRENDER_ENABLE_OPTIX=ON ..`
+  (no SDK passed): builds clean (with the
+  expected 12B.4 SDK-not-found warning); ctest
+  4/4 passes; `--device-info` prints `OptiX
+  build enabled: yes`, `OptiX SDK found: no`,
+  `OptiX renderer status: scaffold only`.
+- `cmake -DRELATIVITYRENDER_ENABLE_OPTIX=ON
+  -DOPTIX_ROOT=/tmp/fake-optix-sdk ..` (fake SDK
+  = `mkdir -p .../include && touch
+  .../include/optix.h`): builds clean; ctest
+  4/4 passes; `--device-info` prints `OptiX
+  build enabled: yes`, `OptiX SDK found: yes`,
+  `OptiX renderer status: scaffold only`.
+- Same fake-SDK location passed via
+  `-DOPTIX_SDK_DIR=...` instead of `-DOPTIX_ROOT
+  =...`: identical three-line stanza. The 12B.4
+  alias path still works end-to-end.
 
 ## Next stage
 

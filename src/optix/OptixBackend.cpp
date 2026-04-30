@@ -10,4 +10,12 @@ bool OptixBackend::isCompiled() noexcept {
 #endif
 }
 
+bool OptixBackend::isSdkFound() noexcept {
+#ifdef RELATIVITYRENDER_OPTIX_SDK_FOUND
+    return true;
+#else
+    return false;
+#endif
+}
+
 }  // namespace rr::optix
