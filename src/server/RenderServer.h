@@ -98,6 +98,17 @@ public:
         return config_.bind_address;
     }
 
+    // Raw OS file descriptor of the listen socket, or -1 when the
+    // server is not started. Stage 15A.2 exposes this so a CLI
+    // signal handler (`SIGINT` / `SIGTERM`) can wake a blocked
+    // `accept()` via the async-signal-safe call
+    // `::shutdown(fd, SHUT_RDWR)`. This accessor is the only
+    // sanctioned way for non-`RenderServer` code to touch the
+    // underlying fd; the caller must NOT close it directly (that
+    // is `stop()`'s job) and must not call other `RenderServer`
+    // methods from within the signal handler.
+    [[nodiscard]] int         listen_fd()     const noexcept { return listen_fd_; }
+
     // Reason of the most recent `start()` failure. Empty when
     // the server is currently listening or has never been
     // started.

@@ -12,6 +12,11 @@
 #include "core/Version.h"
 #include "gpu/GpuDevice.h"
 #include "io/SceneLoader.h"
+#include "server/RenderServer.h"
+
+#include <atomic>
+#include <csignal>
+#include <sys/socket.h>  // shutdown(2) for the server SIGINT handler
 
 // Stage 12B.5: rr_optix is only linked into the executable when
 // RELATIVITYRENDER_ENABLE_OPTIX=ON, so the include is gated on the
@@ -226,6 +231,113 @@ bool save_aov_to_ppm(const rr::renderer::GpuAOVBuffer& buffer,
     return save_image_or_error(img, out_path, label, width, height);
 }
 #endif  // RR_HAS_CUDA
+
+// Module-local state for the Stage 15A.2 `--server` action's
+// signal-driven shutdown. The handler stores the listen fd
+// when the server starts and clears it on stop; SIGINT /
+// SIGTERM trigger an async-signal-safe `shutdown(SHUT_RDWR)`
+// to wake a blocked `accept()` and set the stop flag the
+// serving loop polls between cycles.
+namespace server_signal {
+
+std::atomic<int>  g_listen_fd{-1};
+std::atomic<bool> g_stop_requested{false};
+
+extern "C" void signal_handler(int /*sig*/) {
+    g_stop_requested.store(true, std::memory_order_release);
+    const int fd = g_listen_fd.load(std::memory_order_acquire);
+    if (fd >= 0) {
+        // Async-signal-safe: per POSIX, `shutdown(2)` is on the
+        // signal-safe list. This causes `accept()` in the main
+        // thread to return with EINVAL, which the server's
+        // serve_one() surfaces as an error; the loop then
+        // observes `g_stop_requested` and exits.
+        ::shutdown(fd, SHUT_RDWR);
+    }
+}
+
+}  // namespace server_signal
+
+// `--server` dispatch (Stage 15A.2; master order #20). Starts
+// the renderer server on `127.0.0.1:7777`, logs startup, loops
+// `serve_one()` until SIGINT / SIGTERM, logs each request +
+// the final shutdown line, and returns 0 on graceful exit.
+// Pure host code; works without CUDA.
+int run_server(const rr::core::Config& /*cfg*/) {
+    using rr::core::Logger;
+
+    rr::server::RenderServer::Config server_cfg;
+    // Bind address + port default to "127.0.0.1" / 7777 per
+    // the Stage 15A.1 Config contract.
+    rr::server::RenderServer server(server_cfg);
+
+    if (!server.start()) {
+        Logger::error("server start failed: " + server.last_error());
+        return 1;
+    }
+
+    // Capture the listen fd so the signal handler can wake
+    // a blocked accept() via shutdown(2). Reset the stop flag
+    // in case a previous --server run left it set in the same
+    // process (single CLI invocation today, but defensive).
+    server_signal::g_listen_fd.store(server.listen_fd(),
+                                     std::memory_order_release);
+    server_signal::g_stop_requested.store(false,
+                                          std::memory_order_release);
+
+    // Install SIGINT + SIGTERM handlers. SA_RESTART is left off
+    // so the blocking accept() is interrupted on signal delivery
+    // (combined with the fd shutdown, this makes the wakeup
+    // doubly reliable).
+    struct sigaction sa{};
+    sa.sa_handler = server_signal::signal_handler;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = 0;
+    ::sigaction(SIGINT,  &sa, nullptr);
+    ::sigaction(SIGTERM, &sa, nullptr);
+
+    Logger::info("renderer server started on "
+               + server.bind_address() + ":"
+               + std::to_string(server.port())
+               + " (Ctrl-C / SIGTERM to stop)");
+
+    long served = 0;
+    while (server.is_listening()
+        && !server_signal::g_stop_requested.load(
+              std::memory_order_acquire)) {
+        const auto result = server.serve_one();
+
+        if (server_signal::g_stop_requested.load(
+              std::memory_order_acquire)) {
+            // Stop arrived during this cycle. The serve_one's
+            // accept() likely returned with EINVAL after our
+            // shutdown(2); ignore its error_message and exit.
+            break;
+        }
+
+        if (!result.ok) {
+            Logger::warning("server cycle error: "
+                          + (result.error_message.empty()
+                                 ? std::string("(unknown)")
+                                 : result.error_message));
+            continue;
+        }
+
+        ++served;
+        Logger::info("served '" + result.command + "' from "
+                   + result.client_address + ":"
+                   + std::to_string(result.client_port)
+                   + " -> '" + result.response + "'");
+    }
+
+    server.stop();
+    server_signal::g_listen_fd.store(-1, std::memory_order_release);
+
+    Logger::info("renderer server stopped ("
+               + std::to_string(served)
+               + (served == 1 ? " request served)" : " requests served)"));
+    return 0;
+}
 
 // `--scene-info` dispatch. Loads `cfg.scene_path` via the Stage
 // 10B.2 scene parser, prints the version + render settings, and
@@ -2206,6 +2318,9 @@ int main(int argc, char** argv) {
         case CommandLine::Action::RenderAOVs:
             return run_render_aovs(result.config);
 
+        case CommandLine::Action::Server:
+            return run_server(result.config);
+
         case CommandLine::Action::Error:
             Logger::error(result.error_message);
             std::cerr << CommandLine::usage(argv[0]);
@@ -2214,8 +2329,9 @@ int main(int argc, char** argv) {
         case CommandLine::Action::Default:
             Logger::info(std::string(rr::core::kProjectName) + " "
                        + rr::core::kVersionString + " starting up.");
-            Logger::info("Stage 14A.3: GPU AOV writing. "
-                         "Try --render-aovs, "
+            Logger::info("Stage 15A.2: CLI server mode. "
+                         "Try --server, "
+                         "--render-aovs, "
                          "--render-textured-material, "
                          "--render-texture-sample-test, "
                          "--render-pathtrace <file>, "

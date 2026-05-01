@@ -3717,6 +3717,7 @@ sub-stages, appended to the same file.** No code is touched.
 | 14A.2    | GPU AOV buffers (GpuAOVBuffer; one GpuBuffer<float> per pass; allocate / reset / download; make_default_aov_set; no kernel hook) | ✅ |
 | 14A.3    | CUDA AOV writing (k_render_scene writes 6 AOVs; render_scene_with_aovs; --render-aovs; output/aov_*.ppm) | ✅ |
 | 15A.1    | Renderer server skeleton (rr_server; RenderServer class; localhost:7777; ping->pong; no rendering integration) | ✅ |
+| 15A.2    | CLI server mode (--server starts the loop on localhost:7777; SIGINT/SIGTERM graceful shutdown; logs startup / per-request / shutdown) | ✅ |
 
 ## Stage 12A.2.1 — OptiX raygen program design
 
@@ -8225,6 +8226,201 @@ does not modify any rendering or AOV code.**
   client_address = "127.0.0.1"`,
   empty `error_message`. Smoke artifact
   removed afterwards; not committed.
+
+## Stage 15A.2 — CLI server mode
+
+**Scope of this slice (Stage 15A.2; master order
+#20): expose the Stage 15A.1 `RenderServer` via
+a new top-level CLI action, `--server`, that
+starts the listen loop on `127.0.0.1:7777`,
+serves clients one at a time, and exits cleanly
+on `SIGINT` (Ctrl-C) or `SIGTERM`. Pure host
+code; no rendering integration yet - the only
+supported command is still `ping` -> `pong`.
+
+The pre-Stage-14 visual confirmation of the
+Stage 13 textured-material output and the
+Stage 14A.3 AOV outputs both remain deferred
+(audit host has no CUDA toolchain). 15A.2
+deliberately does not modify any rendering or
+AOV code.**
+
+### What ships
+
+- `src/server/RenderServer.h`:
+  - New accessor `int listen_fd() const
+    noexcept` returning the raw OS file
+    descriptor of the listen socket (or -1
+    when the server is not started). Stage
+    15A.2 needs this so a CLI signal handler
+    can call the async-signal-safe
+    `::shutdown(fd, SHUT_RDWR)` to wake a
+    blocked `accept()`. Documented as the
+    only sanctioned way for non-`RenderServer`
+    code to touch the underlying fd.
+- `src/core/CommandLine.{h,cpp}`:
+  - New `Action::Server` enum value (placed
+    after `RenderAOVs` in the `Action`
+    enum).
+  - Parser entry recognising `--server` and
+    routing through `set_action(...)` so it
+    is mutually exclusive with every other
+    action flag.
+  - The action is **deliberately omitted**
+    from the `Config::validate()` block (the
+    server doesn't need positive framebuffer
+    dimensions, mirroring the precedent set
+    by `--help` / `--version` /
+    `--device-info`).
+  - Usage text gains a `--server` paragraph;
+    the doc-comment block + the
+    "mutually exclusive" enumeration both
+    pick up the new flag.
+- `src/main.cpp`:
+  - New include of `server/RenderServer.h`
+    plus `<atomic>`, `<csignal>`, and
+    `<sys/socket.h>` (the last for
+    `::shutdown(2)` from the SIGINT
+    handler).
+  - New module-local namespace
+    `server_signal` holding two atomics
+    (`g_listen_fd`, `g_stop_requested`) and
+    an `extern "C"` `signal_handler` that
+    sets the stop flag and calls
+    `::shutdown(SHUT_RDWR)` on the captured
+    fd. Both calls are async-signal-safe per
+    POSIX; the handler is the only writer
+    of `g_listen_fd` from the signal
+    context.
+  - New `run_server(cfg)` handler. Starts
+    the server (default `127.0.0.1:7777`),
+    captures `server.listen_fd()` into the
+    atomic, installs `SIGINT` + `SIGTERM`
+    handlers (no `SA_RESTART` so accept
+    interrupts cleanly), and loops
+    `serve_one()` until the stop flag is
+    set or the listen socket closes. Each
+    successful cycle logs a `served '<cmd>'
+    from <ip>:<port> -> '<resp>'` line; per-
+    cycle errors log a warning and the loop
+    continues. Final shutdown line records
+    the served-request count; returns 0 on
+    graceful exit.
+  - `run_server` is wired into the action
+    dispatch (`switch (action) { ... case
+    Action::Server: ... }`).
+  - `Action::Default`'s startup-banner hint
+    line is updated to mention `--server` and
+    the stage label is bumped to "Stage
+    15A.2: CLI server mode".
+- `CMakeLists.txt`: stage label bumped in
+  both the `project(...)` description and
+  the project-banner status message. No new
+  source files; rr_server already builds via
+  the executable's link list (Stage 15A.1).
+- `docs/BUILD_PLAN.md`: this entry +
+  status-table row for 15A.2.
+
+### Architectural decisions worth highlighting
+
+- **Async-signal-safe shutdown via
+  `::shutdown(2)`.** The handler stores no
+  C++ state beyond an atomic flag and an
+  atomic int (the captured fd); it never
+  calls `RenderServer` methods directly.
+  `shutdown(2)` is on POSIX's signal-safe
+  list, so calling it from the handler is
+  defined behaviour. This wakes the blocked
+  `accept()` cleanly; the main thread's
+  serve loop observes the stop flag between
+  cycles and exits.
+- **No SA_RESTART.** With `SA_RESTART = 0`,
+  the kernel returns `EINVAL` from the
+  interrupted `accept()` instead of
+  silently restarting the syscall. Combined
+  with the explicit fd shutdown, this is
+  doubly reliable.
+- **Atomic capture of the fd, not the
+  RenderServer pointer.** The handler must
+  not touch C++ object state; a raw atomic
+  int is the smallest correct surface.
+  Lifetime: `run_server` clears the atomic
+  to -1 right before `server.stop()` so a
+  late SIGINT after stop is a no-op.
+- **`Action::Server` excluded from
+  `Config::validate()`.** Server mode does
+  not need positive `width` / `height`;
+  excluding it follows the precedent set
+  by `--help` / `--version` /
+  `--device-info`.
+- **No `--port` / `--bind-address` flags.**
+  The prompt asks for "starts server on
+  localhost:7777" - the defaults already
+  satisfy that. Adding configurable port /
+  bind would expand scope past Stage 15A.2;
+  a future sub-stage that ships the real
+  protocol commands can also add the
+  override flags.
+- **Logger-driven logging at the CLI
+  layer.** Per-request + startup +
+  shutdown lines route through
+  `rr::core::Logger::info` / `::warning`,
+  matching every other CLI handler's
+  format. The Stage 15A.1 `RenderServer`
+  module remains Logger-free; the CLI
+  layer is the natural home for
+  formatting decisions.
+
+### Hard-rule audit
+
+- No render command yet - **yes**, the
+  server's command table still contains
+  exactly one entry (`ping` -> `pong`); no
+  render trigger, no scene upload, no AOV
+  selection.
+- No C4D - **yes**, no Cinema 4D headers /
+  bridges / DCC dependencies.
+- No UI - **yes**, no UI framework, no
+  window, no event loop beyond
+  `serve_one()`'s blocking accept.
+- Must compile - **yes**, OFF + ON
+  reconfigures both build clean (no
+  warnings, no errors under `-Wall
+  -Wextra -Wpedantic`); ctest 4/4 passes
+  both ways.
+- Update docs/BUILD_PLAN.md - **yes**,
+  this entry + status-table row.
+
+### Verified at the build
+
+- `cmake -DRELATIVITYRENDER_ENABLE_OPTIX=
+  OFF ..` (clean reconfigure): builds
+  clean; banner shows "Stage 15A.2: CLI
+  server mode"; ctest 4/4 passes.
+- `cmake -DRELATIVITYRENDER_ENABLE_OPTIX=
+  ON ..` (clean reconfigure): same build,
+  OptiX scaffold compiles (with the
+  expected 12B.4 SDK-not-found warning);
+  ctest 4/4 passes. CLI server mode is
+  orthogonal to the OptiX flag and to
+  `RR_ENABLE_CUDA`.
+- `RelativityRender --server` end-to-end
+  smoke check: started in the background,
+  client sent `ping\n` via `nc`, received
+  `pong\n` back, then `kill -INT $pid`
+  triggered the shutdown. Captured logs
+  show, in order:
+  ```
+  [..] [INFO] renderer server started on 127.0.0.1:7777 (Ctrl-C / SIGTERM to stop)
+  [..] [INFO] served 'ping' from 127.0.0.1:<port> -> 'pong'
+  [..] [INFO] renderer server stopped (1 request served)
+  ```
+  Process exited 0.
+- `--help` lists the new action.
+- Mutual exclusion: `--server --render-aovs`
+  is rejected at parse time with the full
+  action-list error message including
+  `--server`.
 
 ## Next stage
 

@@ -55,7 +55,8 @@ bool set_action(CommandLine::Action& current, CommandLine::Action target,
                 "--render-triangle / --render-mesh-scene / "
                 "--render-material-scene / --render-direct-lighting / "
                 "--render-texture-sample-test / "
-                "--render-textured-material / --render-aovs)";
+                "--render-textured-material / --render-aovs / "
+                "--server)";
         return false;
     }
     current = target;
@@ -229,6 +230,12 @@ CommandLine::ParseResult CommandLine::parse(int argc, char** argv) {
             }
         } else if (a == "--render-aovs") {
             if (!set_action(r.action, Action::RenderAOVs,
+                            r.error_message)) {
+                r.action = Action::Error;
+                return r;
+            }
+        } else if (a == "--server") {
+            if (!set_action(r.action, Action::Server,
                             r.error_message)) {
                 r.action = Action::Error;
                 return r;
@@ -441,6 +448,13 @@ std::string CommandLine::usage(std::string_view argv0) {
        << "                        output/aov_doppler.ppm, "
                                   "output/aov_searchlight.ppm. --output\n"
        << "                        is ignored (requires CUDA).\n"
+       << "  --server              Stage 15A.2 renderer-server mode: "
+                                  "bind a TCP listen socket\n"
+       << "                        to localhost:7777 and accept clients "
+                                  "one at a time. Supported\n"
+       << "                        commands: ping -> pong. Press Ctrl-C "
+                                  "(SIGINT) or send SIGTERM\n"
+       << "                        to stop. Pure host code; runs without CUDA.\n"
        << "  --output <path>       Write the rendered image to <path>.\n"
        << "                        Default for --render-gradient is "
                                   "output/gpu_gradient.ppm;\n"

@@ -183,6 +183,16 @@ namespace rr::core {
 //                             output/aov_searchlight.ppm
 //                           `--output` is ignored; the path-set
 //                           above is fixed. Requires CUDA.
+//   --server                Start the renderer server (Stage
+//                           15A.2; master order #20). Binds a
+//                           TCP listen socket to localhost:7777
+//                           and accepts one client at a time;
+//                           supported commands: `ping` -> `pong`.
+//                           Logs startup and per-request lines.
+//                           Press Ctrl-C (SIGINT) or send
+//                           SIGTERM to stop; the server logs a
+//                           shutdown line and exits with code 0.
+//                           Pure host code; runs without CUDA.
 //   --output <path>         Write the rendered image to <path>.
 //                           Default for --render-gradient is
 //                           "output/gpu_gradient.ppm";
@@ -212,10 +222,10 @@ namespace rr::core {
 // --render-relativistic / --render-scene / --render-triangle /
 // --render-mesh-scene / --render-material-scene /
 // --render-direct-lighting / --render-texture-sample-test /
-// --render-textured-material / --render-aovs) are mutually
-// exclusive; combining them is a parse error. The remaining
-// flags configure `Config` and are accepted regardless of
-// action.
+// --render-textured-material / --render-aovs / --server) are
+// mutually exclusive; combining them is a parse error. The
+// remaining flags configure `Config` and are accepted regardless
+// of action.
 
 class CommandLine {
 public:
@@ -244,6 +254,7 @@ public:
         RenderTextureSampleTest,
         RenderTexturedMaterial,
         RenderAOVs,
+        Server,
         Error,          // parse failure; see `error_message`
     };
 
