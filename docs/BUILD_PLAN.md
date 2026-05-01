@@ -3718,6 +3718,7 @@ sub-stages, appended to the same file.** No code is touched.
 | 14A.3    | CUDA AOV writing (k_render_scene writes 6 AOVs; render_scene_with_aovs; --render-aovs; output/aov_*.ppm) | ✅ |
 | 15A.1    | Renderer server skeleton (rr_server; RenderServer class; localhost:7777; ping->pong; no rendering integration) | ✅ |
 | 15A.2    | CLI server mode (--server starts the loop on localhost:7777; SIGINT/SIGTERM graceful shutdown; logs startup / per-request / shutdown) | ✅ |
+| 15B.1    | Server load_scene command (parses .rrscene via SceneLoader; stores result on the server; ok/error response) | ✅ |
 
 ## Stage 12A.2.1 — OptiX raygen program design
 
@@ -8421,6 +8422,221 @@ AOV code.**
   is rejected at parse time with the full
   action-list error message including
   `--server`.
+
+## Stage 15B.1 — Server load_scene command
+
+**Scope of this slice (Stage 15B.1; master order
+#20): teach the renderer server to parse a
+`.rrscene` file via the existing
+`rr::io::load(...)` and stash the result in a
+new server-side state slot. One new wire
+command:
+
+  `load_scene <path>` -> `ok: scene loaded ...`
+                      -> `error: scene load failed: <msg>`
+
+A successful load atomically replaces the
+previously-loaded scene (matching every
+`upload_*` path's "no partial state"
+contract). No render dispatch yet - the loaded
+scene sits unused until a follow-up sub-stage
+adds a render command that consumes it.**
+
+### What ships
+
+- `src/server/RenderServer.h`:
+  - New include of `scene/Scene.h` + `<optional>`.
+  - New private member
+    `std::optional<rr::scene::Scene>
+    loaded_scene_` plus public read-only
+    accessor
+    `loaded_scene() const noexcept`. The
+    optional is empty until a successful
+    `load_scene` populates it; subsequent
+    failed loads do not clear it.
+  - The previous free-function command
+    dispatcher is replaced by a private
+    member function
+    `std::string handle_command(const
+    std::string& command)`. Making it a
+    member lets per-command handlers
+    mutate `loaded_scene_` (and any
+    future state slot) without
+    threading the server through global
+    state.
+  - Header doc-comment updated to describe
+    the new wire command + atomic-load
+    semantics.
+- `src/server/RenderServer.cpp`:
+  - New include of `io/SceneLoader.h`.
+  - New helper `parse_command_line(line)`:
+    splits a command line into
+    `(verb, args)` at the first whitespace
+    character (space or tab). Whitespace
+    between verb and args is collapsed; a
+    line with no whitespace yields
+    `{verb, ""}`.
+  - Old free function `handle_command`
+    deleted; new member implementation
+    handles `ping` (unchanged) and
+    `load_scene`. The latter validates
+    that an argument was provided, calls
+    `rr::io::load(args)`, and either:
+    - on failure: returns
+      `error: scene load failed: <msg>
+       [(line N, column M)]`. The
+      previously-loaded scene (if any)
+      stays put.
+    - on success: builds a one-line
+      summary (`width=W height=H
+      materials=K spheres=S meshes=M
+      lights=L` - matching the format
+      `--scene-summary` uses on stdout)
+      *before* moving `lr.scene` into
+      `loaded_scene_`, then moves and
+      returns the summary. Building the
+      summary first avoids a use-after-
+      move bug on `lr.scene`'s vectors.
+- `CMakeLists.txt`:
+  - `rr_server` PUBLIC-links `rr_io`
+    (which transitively pulls in
+    `rr_scene`) so the server's header
+    surface is self-contained for
+    downstream consumers. No new
+    library; no source-list change beyond
+    the previously-shipped
+    `RenderServer.cpp`.
+  - Stage label bumped to "Stage 15B.1:
+    server load_scene command" in both
+    the `project(...)` description and
+    the project-banner status message.
+- `docs/BUILD_PLAN.md`: this entry +
+  status-table row for 15B.1.
+
+### Architectural decisions worth highlighting
+
+- **Reuse `rr::io::load` directly.** The
+  server is a thin wrapper around the
+  existing host-side parser; no new
+  parser, no protocol-specific decoder,
+  no JSON-over-the-wire variant. A
+  future sub-stage that lets a client
+  *upload* scene bytes inline (rather
+  than reference a server-local path)
+  can call `rr::io::parse(...)` instead.
+- **Atomic load via "build summary,
+  then move".** The previous-scene slot
+  is preserved on parse failure. On
+  success the new scene replaces the
+  old in one move; the response summary
+  is built from the about-to-be-moved
+  source so the caller never observes
+  a half-applied state.
+- **Verb / args parser splits on first
+  whitespace only.** Sufficient for the
+  single argument shape `load_scene
+  <path>`. Paths with embedded
+  whitespace are not yet supported - a
+  future quoting / escape extension can
+  layer on without breaking the
+  existing contract.
+- **Free-function -> member promotion.**
+  The 15A.1 dispatcher was a free
+  function in an anonymous namespace;
+  Stage 15B.1 needs to mutate
+  `loaded_scene_` per command, so the
+  dispatcher becomes a private member.
+  The serve_one() call site
+  (`r.response = handle_command(...)`)
+  needed no change because unqualified
+  lookup now finds the member directly.
+- **No render dispatch yet.** The
+  prompt's "Do not render yet" rule is
+  satisfied by storing the scene and
+  doing nothing else with it.
+  Subsequent 15B+ sub-stages add the
+  `render` command + the GPU dispatch
+  that consumes `loaded_scene_`.
+- **Path lookup is server-side.** The
+  server resolves `<path>` against the
+  process's current working directory,
+  not the client's. This is the
+  expected behaviour for the
+  development-only loopback bind; a
+  future sub-stage that ships the
+  server to a remote host needs an
+  explicit upload protocol.
+
+### Hard-rule audit
+
+- Do not render yet - **yes**, no
+  render dispatch, no GPU upload, no
+  framebuffer; `loaded_scene_` is set
+  but unread by any other code path.
+- CPU only parses scene - **yes**, the
+  parse runs entirely on the host via
+  `rr::io::load`; no GPU touch.
+- No C4D - **yes**, no Cinema 4D
+  headers / bridges.
+- No UI - **yes**, no UI framework /
+  window / event loop.
+- Must compile - **yes**, OFF + ON
+  reconfigures both build clean (no
+  warnings, no errors under
+  `-Wall -Wextra -Wpedantic`); ctest
+  4/4 passes both ways.
+- Update docs/BUILD_PLAN.md - **yes**,
+  this entry + status-table row.
+
+### Verified at the build
+
+- `cmake -DRELATIVITYRENDER_ENABLE_OPTIX=
+  OFF ..` (clean reconfigure): builds
+  clean; banner shows "Stage 15B.1:
+  server load_scene command";
+  ctest 4/4 passes.
+- `cmake -DRELATIVITYRENDER_ENABLE_OPTIX=
+  ON ..` (clean reconfigure): same
+  build; OptiX scaffold compiles (with
+  the expected 12B.4 SDK-not-found
+  warning); ctest 4/4 passes.
+- `RelativityRender --server`
+  end-to-end smoke check (server in
+  the background, `nc` clients,
+  `kill -INT` to stop):
+  - `ping` -> `pong` (still works).
+  - `load_scene scenes/test_spheres
+    .rrscene` ->
+    `ok: scene loaded width=640
+    height=360 materials=3 spheres=3
+    meshes=0 lights=0`. Matches
+    `--scene-summary scenes/test_
+    spheres.rrscene` byte-for-byte
+    on the count fields.
+  - `load_scene scenes/nonexistent
+    .rrscene` -> `error: scene load
+    failed: scene file does not
+    exist: scenes/nonexistent
+    .rrscene`. The previously-loaded
+    scene stays in `loaded_scene_`.
+  - `load_scene` (no path) ->
+    `error: load_scene requires a
+    path`.
+  - `render now` (unknown verb) ->
+    `error: unknown command`. ping
+    + load_scene logic falls
+    through unchanged.
+- A bug found and fixed during this
+  slice: the initial implementation
+  bound `const auto& s = lr.scene`,
+  then `std::move(lr.scene)` into
+  `loaded_scene_`, then read `s`'s
+  vectors - a use-after-move whose
+  `std::vector` "valid but
+  unspecified" state happened to be
+  empty. The summary now builds
+  before the move; the smoke run
+  reports correct non-zero counts.
 
 ## Next stage
 

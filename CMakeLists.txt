@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.20)
 
 project(RelativityRender
     VERSION     0.1.0
-    DESCRIPTION "RelativityRender - GPU renderer platform (Stage 15A.2: CLI server mode)"
+    DESCRIPTION "RelativityRender - GPU renderer platform (Stage 15B.1: server load_scene command)"
     LANGUAGES   CXX
 )
 
@@ -33,7 +33,7 @@ option(RELATIVITYRENDER_ENABLE_OPTIX
 
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
-message(STATUS "RelativityRender ${PROJECT_VERSION} (Stage 15A.2: CLI server mode)")
+message(STATUS "RelativityRender ${PROJECT_VERSION} (Stage 15B.1: server load_scene command)")
 
 message(STATUS "  Build type   : ${CMAKE_BUILD_TYPE}")
 message(STATUS "  C++ standard : ${CMAKE_CXX_STANDARD}")
@@ -263,6 +263,13 @@ add_library(rr_server STATIC
     src/server/RenderServer.cpp
 )
 target_include_directories(rr_server PUBLIC src)
+# Stage 15B.1: rr_server's `load_scene` command forwards to the
+# host-side `.rrscene` parser via `rr::io::load`, and the loaded
+# scene is held as `std::optional<rr::scene::Scene>` in the
+# server's state. PUBLIC-link rr_io (which already pulls
+# rr_scene transitively) so the server's header surface is
+# self-contained for downstream consumers.
+target_link_libraries(rr_server PUBLIC rr_io)
 rr_apply_warnings(rr_server)
 
 # rr_optix: OptiX backend file skeleton. Stage 12B.3 makes the

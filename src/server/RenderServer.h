@@ -1,6 +1,9 @@
 #pragma once
 
+#include "scene/Scene.h"
+
 #include <cstddef>
+#include <optional>
 #include <string>
 
 namespace rr::server {
@@ -17,9 +20,22 @@ namespace rr::server {
 //   server -> client : `<response>\n`
 //   server closes connection
 //
-// Stage 15A.1 supports exactly one command:
+// Stage 15A.1 shipped exactly one command (`ping` -> `pong`).
+// Stage 15B.1 adds:
 //
-//   `ping` -> `pong`
+//   `load_scene <path>` -> `ok: scene loaded ...` (summary)
+//                       -> `error: scene load failed: <msg>`
+//
+// Arguments are split off the verb at the first whitespace
+// character (space or tab). Paths with embedded whitespace are
+// not supported in this minimum-viable wire format; a future
+// sub-stage may grow the parser to handle quoted arguments.
+//
+// On a successful `load_scene`, the parsed scene is stored on
+// the server (see `loaded_scene()`) for subsequent commands to
+// consume. An empty / failing load leaves the previously-loaded
+// scene (if any) untouched - "atomic" semantics matching the
+// rest of the project's `upload_*` paths.
 //
 // Any other command yields `error: unknown command`. A
 // command that exceeds the read buffer (256 bytes) yields
@@ -29,10 +45,10 @@ namespace rr::server {
 // `accept`); concurrent clients arrive on the next
 // `serve_one()` cycle.
 //
-// No render command, no upload of geometry / textures / AOVs,
-// no shutdown of the renderer. Subsequent 15A+ sub-stages add
-// the protocol commands that drive a render dispatch and
-// stream results back.
+// No render command, no upload of geometry / textures / AOVs to
+// the GPU, no shutdown of the renderer. Subsequent 15B+ sub-
+// stages add the protocol commands that drive a render dispatch
+// and stream results back.
 class RenderServer {
 public:
     struct Config {
@@ -116,15 +132,36 @@ public:
         return last_error_;
     }
 
+    // Stage 15B.1: the most recently loaded scene. `std::nullopt`
+    // means "no scene loaded yet" or "every load attempt so far
+    // has failed". A successful `load_scene <path>` command
+    // overwrites the slot atomically; a failing load leaves the
+    // previously-loaded value (if any) intact, matching the
+    // "no partial state" precedent the project's `upload_*`
+    // paths set. The server does not yet act on the loaded
+    // scene - subsequent 15B+ sub-stages add the render command
+    // that consumes it.
+    [[nodiscard]] const std::optional<rr::scene::Scene>& loaded_scene() const noexcept {
+        return loaded_scene_;
+    }
+
     // Maximum length, in bytes, of a single command line
     // including the trailing newline. Commands longer than
     // this are rejected with `error: command too long`.
     static constexpr std::size_t kMaxCommandBytes = 256;
 
 private:
-    Config      config_{};
-    int         listen_fd_ = -1;
-    std::string last_error_;
+    // Translate a single client command line (already trimmed
+    // of trailing `\r\n`) into the response text the server
+    // sends back (without the trailing `\n`). Mutates the
+    // server's stateful slots when a command modifies them
+    // (currently only `load_scene` updates `loaded_scene_`).
+    [[nodiscard]] std::string handle_command(const std::string& command);
+
+    Config                            config_{};
+    int                               listen_fd_ = -1;
+    std::string                       last_error_;
+    std::optional<rr::scene::Scene>   loaded_scene_;
 };
 
 }  // namespace rr::server

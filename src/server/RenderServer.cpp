@@ -1,5 +1,7 @@
 #include "server/RenderServer.h"
 
+#include "io/SceneLoader.h"
+
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
@@ -100,12 +102,31 @@ bool write_all(int fd, const std::string& payload) {
     return true;
 }
 
-// Map a command string to its response (without trailing newline).
-std::string handle_command(const std::string& command) {
-    if (command == "ping") {
-        return "pong";
+// Split a single command line into a verb (everything before the
+// first whitespace) and an argument tail (everything after, with
+// leading whitespace trimmed). A line with no whitespace yields
+// `{line, ""}`. Trailing whitespace on the tail is preserved (a
+// path with significant trailing spaces is the caller's
+// problem; today this never matters).
+struct ParsedCommand {
+    std::string verb;
+    std::string args;
+};
+
+ParsedCommand parse_command_line(const std::string& line) {
+    const auto sep = line.find_first_of(" \t");
+    if (sep == std::string::npos) {
+        return {line, ""};
     }
-    return "error: unknown command";
+    ParsedCommand p;
+    p.verb = line.substr(0, sep);
+    // Skip every contiguous whitespace character between verb
+    // and args; the wire format is whitespace-tolerant.
+    auto first_arg = line.find_first_not_of(" \t", sep);
+    if (first_arg != std::string::npos) {
+        p.args = line.substr(first_arg);
+    }
+    return p;
 }
 
 }  // namespace
@@ -195,6 +216,51 @@ void RenderServer::stop() noexcept {
         ::close(listen_fd_);
         listen_fd_ = -1;
     }
+}
+
+std::string RenderServer::handle_command(const std::string& command) {
+    const ParsedCommand p = parse_command_line(command);
+
+    if (p.verb == "ping") {
+        // Stage 15A.1 baseline; arguments (if any) are ignored.
+        return "pong";
+    }
+    if (p.verb == "load_scene") {
+        if (p.args.empty()) {
+            return "error: load_scene requires a path";
+        }
+        // Forward to the existing host-side parser. On success
+        // we replace the stored scene atomically; on failure the
+        // previously-loaded scene (if any) stays put - the
+        // protocol's "atomic load" contract.
+        rr::io::LoadResult lr = rr::io::load(p.args);
+        if (!lr.ok) {
+            std::string msg = "error: scene load failed: ";
+            msg += lr.error_message.empty() ? "(unknown)" : lr.error_message;
+            if (lr.error_line > 0) {
+                msg += " (line " + std::to_string(lr.error_line)
+                     + ", column " + std::to_string(lr.error_column) + ")";
+            }
+            return msg;
+        }
+        // Build the summary BEFORE moving the scene into the
+        // member - reading `lr.scene`'s vectors after a move-from
+        // would observe empty containers (a "valid but
+        // unspecified" state for `std::vector`).
+        const auto& s = lr.scene;
+        std::string summary = "ok: scene loaded";
+        summary += " width="     + std::to_string(s.render_settings.width);
+        summary += " height="    + std::to_string(s.render_settings.height);
+        summary += " materials=" + std::to_string(s.materials.size());
+        summary += " spheres="   + std::to_string(s.spheres.size());
+        summary += " meshes="    + std::to_string(s.meshes.size());
+        summary += " lights="    + std::to_string(s.lights.size());
+
+        loaded_scene_ = std::move(lr.scene);
+        return summary;
+    }
+
+    return "error: unknown command";
 }
 
 RenderServer::ServeResult RenderServer::serve_one() {
