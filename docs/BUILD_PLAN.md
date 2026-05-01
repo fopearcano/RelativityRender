@@ -3720,6 +3720,8 @@ sub-stages, appended to the same file.** No code is touched.
 | 15A.2    | CLI server mode (--server starts the loop on localhost:7777; SIGINT/SIGTERM graceful shutdown; logs startup / per-request / shutdown) | ✅ |
 | 15B.1    | Server load_scene command (parses .rrscene via SceneLoader; stores result on the server; ok/error response) | ✅ |
 | 15B.3    | Server set_beta command (scalar |beta| update via existing clampBeta; preserves loaded direction; -Z fallback) | ✅ |
+| 15B.2    | Server render command (wire-driven render dispatch) | not yet implemented (skipped between 15B.1 and 15B.3); will land alongside the prototype-1 final integration |
+| 15       | Renderer server (rr_server + --server CLI + ping / load_scene / set_beta / shutdown) | IMPLEMENTED — runtime test deferred to prototype-1 final validation (see docs/STAGE_15_SERVER_DEFERRED.md) |
 
 ## Stage 12A.2.1 — OptiX raygen program design
 
