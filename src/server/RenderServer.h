@@ -26,6 +26,19 @@ namespace rr::server {
 //   `load_scene <path>` -> `ok: scene loaded ...` (summary)
 //                       -> `error: scene load failed: <msg>`
 //
+// The shell-hang fix (see `docs/SHELL_HANG_AUDIT.md`) adds:
+//
+//   `shutdown`          -> `ok: shutting down`
+//
+// The `shutdown` command sets a server-side flag
+// (`shutdown_requested()`) that the CLI's serve loop reads
+// between cycles to exit gracefully without requiring SIGINT.
+// It exists primarily so smoke tests / harnesses can end a
+// session over the wire instead of relying on signal delivery
+// (which is fragile to test-driver scripting bugs). Production
+// callers can also use it to stop the server cleanly from the
+// client side.
+//
 // Arguments are split off the verb at the first whitespace
 // character (space or tab). Paths with embedded whitespace are
 // not supported in this minimum-viable wire format; a future
@@ -145,6 +158,14 @@ public:
         return loaded_scene_;
     }
 
+    // True iff a client has issued the `shutdown` wire command
+    // since the server was last started. The CLI's serve loop
+    // checks this flag between cycles to break out cleanly.
+    // Reset to `false` by the next successful `start()`.
+    [[nodiscard]] bool shutdown_requested() const noexcept {
+        return shutdown_requested_;
+    }
+
     // Maximum length, in bytes, of a single command line
     // including the trailing newline. Commands longer than
     // this are rejected with `error: command too long`.
@@ -162,6 +183,7 @@ private:
     int                               listen_fd_ = -1;
     std::string                       last_error_;
     std::optional<rr::scene::Scene>   loaded_scene_;
+    bool                              shutdown_requested_ = false;
 };
 
 }  // namespace rr::server

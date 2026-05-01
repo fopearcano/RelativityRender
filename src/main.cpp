@@ -328,6 +328,17 @@ int run_server(const rr::core::Config& /*cfg*/) {
                    + result.client_address + ":"
                    + std::to_string(result.client_port)
                    + " -> '" + result.response + "'");
+
+        // Wire-driven graceful shutdown (see
+        // docs/SHELL_HANG_AUDIT.md): if the just-served command
+        // was `shutdown`, the server set its
+        // `shutdown_requested_` flag inside `handle_command`.
+        // Break the loop cleanly; the response was already sent
+        // to the client.
+        if (server.shutdown_requested()) {
+            Logger::info("renderer server: shutdown requested by client");
+            break;
+        }
     }
 
     server.stop();

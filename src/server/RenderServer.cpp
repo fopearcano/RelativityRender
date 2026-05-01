@@ -208,6 +208,12 @@ bool RenderServer::start() {
     }
 
     listen_fd_ = fd;
+    // Reset the cross-session stop flag. A previous run that
+    // exited via the `shutdown` wire command leaves
+    // `shutdown_requested_` set; clearing it here lets the
+    // same RenderServer instance be reused for a fresh
+    // session.
+    shutdown_requested_ = false;
     return true;
 }
 
@@ -224,6 +230,16 @@ std::string RenderServer::handle_command(const std::string& command) {
     if (p.verb == "ping") {
         // Stage 15A.1 baseline; arguments (if any) are ignored.
         return "pong";
+    }
+    if (p.verb == "shutdown") {
+        // Test-only escape hatch (see docs/SHELL_HANG_AUDIT.md).
+        // Sets a flag the CLI's serve loop reads between cycles
+        // to exit gracefully without needing SIGINT. The
+        // response is sent before the loop exits, so the
+        // calling client always sees a clean
+        // `ok: shutting down` line.
+        shutdown_requested_ = true;
+        return "ok: shutting down";
     }
     if (p.verb == "load_scene") {
         if (p.args.empty()) {
