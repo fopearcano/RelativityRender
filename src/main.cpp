@@ -13,10 +13,10 @@
 #include "gpu/GpuDevice.h"
 #include "io/SceneLoader.h"
 #include "server/RenderServer.h"
+#include "server/SocketPlatform.h"  // shutdown(2) wakeup + portable shim
 
 #include <atomic>
 #include <csignal>
-#include <sys/socket.h>  // shutdown(2) for the server SIGINT handler
 
 // Stage 12B.5: rr_optix is only linked into the executable when
 // RELATIVITYRENDER_ENABLE_OPTIX=ON, so the include is gated on the
@@ -235,24 +235,31 @@ bool save_aov_to_ppm(const rr::renderer::GpuAOVBuffer& buffer,
 // Module-local state for the Stage 15A.2 `--server` action's
 // signal-driven shutdown. The handler stores the listen fd
 // when the server starts and clears it on stop; SIGINT /
-// SIGTERM trigger an async-signal-safe `shutdown(SHUT_RDWR)`
-// to wake a blocked `accept()` and set the stop flag the
-// serving loop polls between cycles.
+// SIGTERM (POSIX) and SIGINT (Windows / Console-Ctrl) trigger
+// an async-signal-safe `shutdown(fd, kSocketShutdownBoth)` to
+// wake a blocked `accept()` and set the stop flag the serving
+// loop polls between cycles.
+//
+// The Windows-portability slice changed the captured fd type
+// from `int` to `rr::server::socket_t` (which is `int` on
+// POSIX and `SOCKET = UINT_PTR` on Windows). `std::atomic<
+// socket_t>` is lock-free on both platforms.
 namespace server_signal {
 
-std::atomic<int>  g_listen_fd{-1};
-std::atomic<bool> g_stop_requested{false};
+std::atomic<rr::server::socket_t> g_listen_fd{rr::server::kInvalidSocket};
+std::atomic<bool>                 g_stop_requested{false};
 
 extern "C" void signal_handler(int /*sig*/) {
     g_stop_requested.store(true, std::memory_order_release);
-    const int fd = g_listen_fd.load(std::memory_order_acquire);
-    if (fd >= 0) {
-        // Async-signal-safe: per POSIX, `shutdown(2)` is on the
-        // signal-safe list. This causes `accept()` in the main
-        // thread to return with EINVAL, which the server's
-        // serve_one() surfaces as an error; the loop then
+    const rr::server::socket_t fd =
+        g_listen_fd.load(std::memory_order_acquire);
+    if (fd != rr::server::kInvalidSocket) {
+        // Async-signal-safe (POSIX) / safe-from-any-thread
+        // (Winsock2): `shutdown(2)` triggers the kernel-side
+        // wakeup of `accept()` in the main thread, which the
+        // server's serve_one() then surfaces; the loop
         // observes `g_stop_requested` and exits.
-        ::shutdown(fd, SHUT_RDWR);
+        ::shutdown(fd, rr::server::kSocketShutdownBoth);
     }
 }
 
@@ -266,6 +273,14 @@ extern "C" void signal_handler(int /*sig*/) {
 int run_server(const rr::core::Config& /*cfg*/) {
     using rr::core::Logger;
 
+    // Initialise the platform's socket subsystem (no-op on POSIX,
+    // WSAStartup on Windows). Must run before `RenderServer::start`.
+    if (!rr::server::initSocketSystem()) {
+        Logger::error("server start failed: socket subsystem "
+                      "initialisation failed");
+        return 1;
+    }
+
     rr::server::RenderServer::Config server_cfg;
     // Bind address + port default to "127.0.0.1" / 7777 per
     // the Stage 15A.1 Config contract.
@@ -273,6 +288,7 @@ int run_server(const rr::core::Config& /*cfg*/) {
 
     if (!server.start()) {
         Logger::error("server start failed: " + server.last_error());
+        rr::server::shutdownSocketSystem();
         return 1;
     }
 
@@ -285,16 +301,22 @@ int run_server(const rr::core::Config& /*cfg*/) {
     server_signal::g_stop_requested.store(false,
                                           std::memory_order_release);
 
-    // Install SIGINT + SIGTERM handlers. SA_RESTART is left off
-    // so the blocking accept() is interrupted on signal delivery
-    // (combined with the fd shutdown, this makes the wakeup
-    // doubly reliable).
+    // Install signal handlers for graceful shutdown. POSIX uses
+    // sigaction with no SA_RESTART so accept() returns on signal
+    // delivery; Windows-only signal() handles SIGINT (Ctrl+C is
+    // delivered via a separate thread under the hood). Either
+    // way the wire-level `shutdown` command is the deterministic
+    // alternative.
+#if defined(_WIN32)
+    std::signal(SIGINT, server_signal::signal_handler);
+#else
     struct sigaction sa{};
     sa.sa_handler = server_signal::signal_handler;
     sigemptyset(&sa.sa_mask);
     sa.sa_flags = 0;
     ::sigaction(SIGINT,  &sa, nullptr);
     ::sigaction(SIGTERM, &sa, nullptr);
+#endif
 
     Logger::info("renderer server started on "
                + server.bind_address() + ":"
@@ -342,7 +364,13 @@ int run_server(const rr::core::Config& /*cfg*/) {
     }
 
     server.stop();
-    server_signal::g_listen_fd.store(-1, std::memory_order_release);
+    server_signal::g_listen_fd.store(rr::server::kInvalidSocket,
+                                     std::memory_order_release);
+
+    // Tear down the socket subsystem (no-op on POSIX, WSACleanup
+    // on Windows). Symmetric with the initSocketSystem() call at
+    // the top of this function.
+    rr::server::shutdownSocketSystem();
 
     Logger::info("renderer server stopped ("
                + std::to_string(served)

@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.20)
 
 project(RelativityRender
     VERSION     0.1.0
-    DESCRIPTION "RelativityRender - GPU renderer platform (Stage 15B.3: server set_beta command)"
+    DESCRIPTION "RelativityRender - GPU renderer platform (Windows build repair: RenderServer portability)"
     LANGUAGES   CXX
 )
 
@@ -33,7 +33,7 @@ option(RELATIVITYRENDER_ENABLE_OPTIX
 
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
-message(STATUS "RelativityRender ${PROJECT_VERSION} (Stage 15B.3: server set_beta command)")
+message(STATUS "RelativityRender ${PROJECT_VERSION} (Windows build repair: RenderServer portability)")
 
 message(STATUS "  Build type   : ${CMAKE_BUILD_TYPE}")
 message(STATUS "  C++ standard : ${CMAKE_CXX_STANDARD}")
@@ -270,6 +270,15 @@ target_include_directories(rr_server PUBLIC src)
 # rr_scene transitively) so the server's header surface is
 # self-contained for downstream consumers.
 target_link_libraries(rr_server PUBLIC rr_io)
+# Windows-portability slice: link Ws2_32 for the Winsock2 ABI
+# (socket / bind / listen / accept / closesocket / shutdown /
+# inet_pton / WSAStartup / WSACleanup). PUBLIC-link so the
+# downstream `RelativityRender` executable picks the dependency
+# up transitively. POSIX builds don't need a separate library
+# (the symbols live in libc).
+if(WIN32)
+    target_link_libraries(rr_server PUBLIC ws2_32)
+endif()
 rr_apply_warnings(rr_server)
 
 # rr_optix: OptiX backend file skeleton. Stage 12B.3 makes the

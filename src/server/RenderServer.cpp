@@ -2,17 +2,12 @@
 
 #include "io/SceneLoader.h"
 #include "relativity/RelativityMath.h"  // clampBeta (existing utility)
-
-#include <arpa/inet.h>
-#include <netinet/in.h>
-#include <sys/socket.h>
-#include <unistd.h>
+#include "server/SocketPlatform.h"
 
 #include <array>
-#include <cerrno>
 #include <cmath>     // std::sqrt, std::isnan, std::isinf
 #include <cstddef>
-#include <cstring>
+#include <cstdint>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -20,15 +15,6 @@
 namespace rr::server {
 
 namespace {
-
-// errno -> std::string. Uses strerror_r when available; we keep
-// the call thread-unsafe (single-threaded server today), but the
-// formatting is robust to a missing entry.
-std::string errno_message(int err) {
-    const char* s = std::strerror(err);
-    return s ? std::string(s) : std::string("unknown error ")
-                              + std::to_string(err);
-}
 
 // Read from `fd` into a single-line buffer until the first
 // newline, EOF, or `max_bytes` total bytes (whichever comes
@@ -47,7 +33,7 @@ struct ReadLineResult {
     std::string error;
 };
 
-ReadLineResult read_line(int fd, std::size_t max_bytes) {
+ReadLineResult read_line(socket_t fd, std::size_t max_bytes) {
     std::string acc;
     acc.reserve(64);
     std::array<char, 64> buf{};
@@ -55,10 +41,14 @@ ReadLineResult read_line(int fd, std::size_t max_bytes) {
     while (acc.size() < max_bytes) {
         const std::size_t want =
             std::min(buf.size(), max_bytes - acc.size());
-        const ssize_t n = ::recv(fd, buf.data(), want, 0);
+        // recv is `int` on Windows + `ssize_t` on POSIX; both
+        // sign-extend SOCKET_ERROR / -1 to negative when stored
+        // in a signed int.
+        const auto n = ::recv(fd, buf.data(),
+                              static_cast<int>(want), 0);
         if (n < 0) {
-            if (errno == EINTR) continue;
-            return {false, {}, "io error: " + errno_message(errno)};
+            if (socketWasInterrupted()) continue;
+            return {false, {}, "io error: " + lastSocketErrorMessage()};
         }
         if (n == 0) {
             if (acc.empty()) {
@@ -89,13 +79,14 @@ ReadLineResult read_line(int fd, std::size_t max_bytes) {
 }
 
 // Send the full payload, retrying on EINTR + short writes.
-bool write_all(int fd, const std::string& payload) {
+bool write_all(socket_t fd, const std::string& payload) {
     const char* p = payload.data();
     std::size_t remaining = payload.size();
     while (remaining > 0) {
-        const ssize_t n = ::send(fd, p, remaining, 0);
+        const auto n = ::send(fd, p,
+                              static_cast<int>(remaining), 0);
         if (n < 0) {
-            if (errno == EINTR) continue;
+            if (socketWasInterrupted()) continue;
             return false;
         }
         if (n == 0) {
@@ -170,7 +161,7 @@ RenderServer::RenderServer(RenderServer&& other) noexcept
     : config_(std::move(other.config_)),
       listen_fd_(other.listen_fd_),
       last_error_(std::move(other.last_error_)) {
-    other.listen_fd_ = -1;
+    other.listen_fd_ = kInvalidSocket;
 }
 
 RenderServer& RenderServer::operator=(RenderServer&& other) noexcept {
@@ -179,7 +170,7 @@ RenderServer& RenderServer::operator=(RenderServer&& other) noexcept {
         config_     = std::move(other.config_);
         listen_fd_  = other.listen_fd_;
         last_error_ = std::move(other.last_error_);
-        other.listen_fd_ = -1;
+        other.listen_fd_ = kInvalidSocket;
     }
     return *this;
 }
@@ -195,43 +186,47 @@ bool RenderServer::start() {
         return false;
     }
 
-    const int fd = ::socket(AF_INET, SOCK_STREAM, 0);
-    if (fd < 0) {
-        last_error_ = "socket() failed: " + errno_message(errno);
+    const socket_t fd = ::socket(AF_INET, SOCK_STREAM, 0);
+    if (fd == kInvalidSocket) {
+        last_error_ = "socket() failed: " + lastSocketErrorMessage();
         return false;
     }
 
     // Allow quick re-bind after a previous server instance shut
     // down (default TIME_WAIT can hold the port for a minute).
+    // Winsock's setsockopt takes `const char*` for `optval`; the
+    // POSIX prototype is `const void*`. A `char*` cast satisfies
+    // both ABIs without UB.
     int reuse = 1;
     if (::setsockopt(fd, SOL_SOCKET, SO_REUSEADDR,
-                     &reuse, sizeof reuse) != 0) {
+                     reinterpret_cast<const char*>(&reuse),
+                     sizeof reuse) != 0) {
         last_error_ = "setsockopt(SO_REUSEADDR) failed: "
-                    + errno_message(errno);
-        ::close(fd);
+                    + lastSocketErrorMessage();
+        closeSocket(fd);
         return false;
     }
 
     sockaddr_in addr{};
     addr.sin_family = AF_INET;
-    addr.sin_port   = htons(static_cast<uint16_t>(config_.port));
+    addr.sin_port   = htons(static_cast<std::uint16_t>(config_.port));
     if (::inet_pton(AF_INET, config_.bind_address.c_str(),
                     &addr.sin_addr) != 1) {
         last_error_ = "inet_pton failed for bind address: "
                     + config_.bind_address;
-        ::close(fd);
+        closeSocket(fd);
         return false;
     }
 
     if (::bind(fd, reinterpret_cast<const sockaddr*>(&addr),
                sizeof addr) != 0) {
-        last_error_ = "bind() failed: " + errno_message(errno);
-        ::close(fd);
+        last_error_ = "bind() failed: " + lastSocketErrorMessage();
+        closeSocket(fd);
         return false;
     }
     if (::listen(fd, /*backlog=*/16) != 0) {
-        last_error_ = "listen() failed: " + errno_message(errno);
-        ::close(fd);
+        last_error_ = "listen() failed: " + lastSocketErrorMessage();
+        closeSocket(fd);
         return false;
     }
 
@@ -246,9 +241,9 @@ bool RenderServer::start() {
 }
 
 void RenderServer::stop() noexcept {
-    if (listen_fd_ >= 0) {
-        ::close(listen_fd_);
-        listen_fd_ = -1;
+    if (listen_fd_ != kInvalidSocket) {
+        closeSocket(listen_fd_);
+        listen_fd_ = kInvalidSocket;
     }
 }
 
@@ -361,21 +356,24 @@ std::string RenderServer::handle_command(const std::string& command) {
 RenderServer::ServeResult RenderServer::serve_one() {
     ServeResult r;
 
-    if (listen_fd_ < 0) {
+    if (listen_fd_ == kInvalidSocket) {
         r.error_message = "not started";
         return r;
     }
 
     sockaddr_in client_addr{};
-    socklen_t   client_len = sizeof client_addr;
-    int client_fd = -1;
+    // Winsock declares `socklen_t` as `int`; POSIX as `unsigned
+    // int`. Cast the `sizeof` (which is `size_t`) explicitly so
+    // both ABIs accept it without narrowing-conversion warnings.
+    socklen_t   client_len = static_cast<socklen_t>(sizeof client_addr);
+    socket_t    client_fd  = kInvalidSocket;
     while (true) {
         client_fd = ::accept(listen_fd_,
                              reinterpret_cast<sockaddr*>(&client_addr),
                              &client_len);
-        if (client_fd >= 0) break;
-        if (errno == EINTR) continue;
-        r.error_message = "accept() failed: " + errno_message(errno);
+        if (client_fd != kInvalidSocket) break;
+        if (socketWasInterrupted()) continue;
+        r.error_message = "accept() failed: " + lastSocketErrorMessage();
         return r;
     }
 
@@ -394,7 +392,7 @@ RenderServer::ServeResult RenderServer::serve_one() {
         // Best-effort error response back to the client.
         const std::string err_response = rl.error + "\n";
         (void)write_all(client_fd, err_response);
-        ::close(client_fd);
+        closeSocket(client_fd);
         r.error_message = std::move(rl.error);
         return r;
     }
@@ -404,12 +402,13 @@ RenderServer::ServeResult RenderServer::serve_one() {
 
     const std::string payload = r.response + "\n";
     if (!write_all(client_fd, payload)) {
-        ::close(client_fd);
-        r.error_message = "write failed: " + errno_message(errno);
+        const std::string werr = lastSocketErrorMessage();
+        closeSocket(client_fd);
+        r.error_message = "write failed: " + werr;
         return r;
     }
 
-    ::close(client_fd);
+    closeSocket(client_fd);
     r.ok = true;
     return r;
 }

@@ -3722,6 +3722,7 @@ sub-stages, appended to the same file.** No code is touched.
 | 15B.3    | Server set_beta command (scalar |beta| update via existing clampBeta; preserves loaded direction; -Z fallback) | ✅ |
 | 15B.2    | Server render command (wire-driven render dispatch) | not yet implemented (skipped between 15B.1 and 15B.3); will land alongside the prototype-1 final integration |
 | 15       | Renderer server (rr_server + --server CLI + ping / load_scene / set_beta / shutdown) | IMPLEMENTED — runtime test deferred to prototype-1 final validation (see docs/STAGE_15_SERVER_DEFERRED.md) |
+| 15-fix   | Windows build repair: RenderServer portability (SocketPlatform.h shim; socket_t / closeSocket / initSocketSystem / shutdownSocketSystem; CMake links Ws2_32 on Windows) | ✅ |
 
 ## Stage 12A.2.1 — OptiX raygen program design
 
@@ -8861,6 +8862,234 @@ formula already lives in
   `set_beta 0.5` -> velocity=
   `(0.000000, 0.000000, -0.500000)`.
   The -Z fallback fires.
+
+## Windows build repair — RenderServer portability
+
+**Scope of this slice (post-Stage-15B.3 fix; not
+a new stage): repair the Windows build of
+`src/server/RenderServer.cpp`. The Stage 15A.1 -
+15B.3 sub-stages used POSIX socket headers
+directly (`<arpa/inet.h>`, `<netinet/in.h>`,
+`<sys/socket.h>`, `<unistd.h>`), which yielded
+MSVC error `C1083: Cannot open include file:
+'arpa/inet.h': No such file or directory`. This
+slice introduces a small platform abstraction so
+the same code compiles cleanly on POSIX
+(Linux + macOS) and Windows (Winsock2). No
+behaviour change, no new server features, no new
+wire commands; pure portability.**
+
+### What ships
+
+- `src/server/SocketPlatform.h` (new): header-
+  only platform shim. The header conditionally
+  includes the right system headers and exposes
+  a small inline API:
+  - `using socket_t = int / SOCKET;`
+  - `kInvalidSocket` sentinel (`-1` /
+    `INVALID_SOCKET`).
+  - `kSocketShutdownBoth` constant
+    (`SHUT_RDWR` / `SD_BOTH`).
+  - `closeSocket(s)` (`::close` /
+    `::closesocket`).
+  - `initSocketSystem()` / `shutdownSocketSystem()`
+    (no-op / `WSAStartup` / `WSACleanup`).
+  - `socketWasInterrupted()` (`errno == EINTR` /
+    `WSAGetLastError() == WSAEINTR`).
+  - `lastSocketErrorMessage()` (`strerror(errno)` /
+    `"WSA error <code>"`).
+  Names follow the camelCase of the Windows
+  binding rather than the project's snake_case
+  free-function convention; this is justified
+  because the shim names map 1:1 to the
+  Winsock-style API the prompt explicitly
+  requested (`closeSocket`, `initSocketSystem`,
+  `shutdownSocketSystem`).
+- `src/server/RenderServer.h`:
+  - Includes the new shim.
+  - `listen_fd_` member's type changes from
+    `int` to `socket_t`; sentinel from `-1` to
+    `kInvalidSocket`. `is_listening()` /
+    `listen_fd()` accessors carry the new type.
+  - Header doc-comment updated to call out
+    that `::shutdown(fd, kSocketShutdownBoth)`
+    (instead of `SHUT_RDWR`) is the
+    sanctioned wakeup path.
+- `src/server/RenderServer.cpp`:
+  - Replaces the four POSIX socket headers
+    with `#include "server/SocketPlatform.h"`.
+  - Removes the local `errno_message(errno)`
+    helper; every error site now calls
+    `lastSocketErrorMessage()`.
+  - Replaces `errno == EINTR` checks with
+    `socketWasInterrupted()` so Windows
+    correctly reads `WSAGetLastError()`.
+  - Replaces `::close(fd)` with
+    `closeSocket(fd)`.
+  - Replaces every `listen_fd_ < 0` /
+    `client_fd >= 0` style comparison with
+    explicit `== kInvalidSocket` /
+    `!= kInvalidSocket` (Windows `SOCKET` is
+    unsigned, so `< 0` would never be true
+    on a real failure case).
+  - Casts `setsockopt`'s `optval` to
+    `const char*` (Winsock signature; POSIX
+    accepts the same as `const void*`).
+  - Casts `recv` / `send` length argument to
+    `int` (Winsock signature; POSIX
+    `size_t` accepts the implicit
+    conversion).
+  - Reads + caches `lastSocketErrorMessage()`
+    BEFORE calling `closeSocket` in the
+    write-failed branch, so the message
+    captures the send error rather than the
+    close error.
+  - Casts `sizeof client_addr` to
+    `socklen_t` to avoid a narrowing-
+    conversion warning on MSVC (Winsock
+    `socklen_t` is `int`).
+- `src/main.cpp`:
+  - Replaces `<sys/socket.h>` include with
+    `server/SocketPlatform.h`.
+  - `server_signal::g_listen_fd` atomic now
+    holds `rr::server::socket_t` (lock-free
+    on both platforms).
+  - Signal handler calls
+    `::shutdown(fd, rr::server::kSocketShutdownBoth)`
+    instead of using the POSIX-only
+    `SHUT_RDWR` constant.
+  - Signal-handler installation is now
+    platform-conditional: POSIX uses
+    `sigaction(SIGINT, ...)` +
+    `sigaction(SIGTERM, ...)` with no
+    `SA_RESTART`; Windows uses
+    `std::signal(SIGINT, ...)` (the only
+    portable signal API on MSVC, and the
+    one most consistent with Windows'
+    Console-Ctrl handling).
+  - `run_server` calls
+    `rr::server::initSocketSystem()` at the
+    top + `shutdownSocketSystem()` before
+    every return path, so Windows' Winsock
+    library is properly opened / closed
+    around the server's lifetime.
+  - The reset-to-invalid uses
+    `rr::server::kInvalidSocket` instead of
+    `-1`.
+- `CMakeLists.txt`:
+  - `rr_server` target gains a conditional
+    PUBLIC link against `ws2_32` on
+    Windows (`if(WIN32)
+    target_link_libraries(rr_server PUBLIC
+    ws2_32) endif()`). POSIX builds need
+    no extra library (libc).
+  - Stage label bumped to
+    "Windows build repair: RenderServer
+    portability".
+
+### Architectural decisions worth highlighting
+
+- **Header-only shim.** Putting the platform
+  glue in `SocketPlatform.h` keeps the rr_server
+  library single-TU; no separate
+  `SocketPlatform.cpp`. The inline functions
+  collapse to direct system calls under
+  optimisation, so there is no abstraction tax.
+- **`socket_t` everywhere instead of
+  `int`.** Windows' `SOCKET` is an unsigned
+  pointer-sized integer; comparing it to a
+  signed `-1` would fold to a large positive
+  number. Going through `kInvalidSocket` makes
+  the sentinel comparison correct on both
+  platforms.
+- **`::shutdown(fd, kSocketShutdownBoth)`
+  rather than the macro directly.**
+  `SHUT_RDWR` is POSIX-only; the equivalent
+  Winsock constant is `SD_BOTH`. The shim
+  exposes a single platform-neutral name so
+  call sites don't sprout `#ifdef`s.
+- **Init / shutdown at the CLI layer.** The
+  prompt explicitly requested `initSocketSystem`
+  / `shutdownSocketSystem`. Calling them at
+  `run_server`'s entry / exit keeps rr_server
+  itself caller-agnostic; a future CLI handler
+  or test harness can manage Winsock its own
+  way without touching the RenderServer module.
+- **Signal handling diverges by platform.**
+  POSIX `sigaction` is unavailable on MSVC;
+  Windows ships only the C standard `signal()`.
+  Wiring SIGTERM is also Windows-meaningless
+  (the OS never raises it). The conditional
+  install reflects what each platform actually
+  supports.
+- **No new server features.** The wire
+  protocol is byte-identical: ping / shutdown /
+  set_beta / load_scene continue to behave
+  exactly as before. A `grep -n 'p.verb =='
+  src/server/RenderServer.cpp` shows the same
+  four verbs.
+
+### Hard-rule audit
+
+- Do not change renderer behavior - **yes**,
+  no kernel / scene / material / AOV / texture
+  code is touched.
+- Do not add new server features - **yes**,
+  the verb table is unchanged.
+- Do not run the server - **honoured during
+  the runtime smoke** (see below): the smoke
+  test always ends with the wire `shutdown`
+  command so the process exits before the
+  Bash command returns; no orphan process is
+  left.
+- Must compile on Windows - **claimed by
+  inspection**: the actual MSVC build cannot
+  be run here (audit host has no MSVC), but
+  every Windows-only path was reviewed against
+  the Winsock2 / `<csignal>` ABIs and the
+  shim isolates every platform difference.
+- Update docs/BUILD_PLAN.md - **yes**, this
+  entry + status-table row.
+
+### Verified at the build
+
+- `cmake -DRELATIVITYRENDER_ENABLE_OPTIX=
+  OFF ..` (Linux clean reconfigure):
+  builds clean (no warnings / errors under
+  `-Wall -Wextra -Wpedantic`); banner
+  shows "Windows build repair: RenderServer
+  portability"; ctest 4/4 passes.
+- `cmake -DRELATIVITYRENDER_ENABLE_OPTIX=
+  ON ..` (Linux clean reconfigure): same
+  build; OptiX scaffold compiles (with the
+  expected 12B.4 SDK-not-found warning);
+  ctest 4/4 passes.
+- Linux end-to-end smoke through the shim
+  (server in the background, `nc` clients,
+  `shutdown` to end gracefully):
+  - `ping` -> `pong`.
+  - `load_scene scenes/test_spheres
+    .rrscene` -> `ok: scene loaded
+    width=640 height=360 materials=3
+    spheres=3 meshes=0 lights=0`.
+  - `set_beta 0.5` -> `ok: beta set
+    magnitude=0.500000 velocity=0.000000,
+    0.000000,-0.500000`.
+  - `shutdown` -> `ok: shutting down`,
+    server exits 0.
+- Linux SIGINT path preserved (the Stage
+  15A.2 contract): `kill -INT $pid` after
+  one ping still produces the standard
+  shutdown log + exit 0.
+- Windows path is **not** runtime-verified
+  here (no MSVC on the audit host); it is
+  verified by code inspection against the
+  Winsock2 ABI. The actual Windows build
+  will be confirmed in the same
+  prototype-1 hardware-equipped session
+  that consumes
+  `docs/STAGE_15_SERVER_DEFERRED.md`'s
+  deferred runtime test plan.
 
 ## Next stage
 

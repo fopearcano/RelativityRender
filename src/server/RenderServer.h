@@ -1,6 +1,7 @@
 #pragma once
 
 #include "scene/Scene.h"
+#include "server/SocketPlatform.h"
 
 #include <cstddef>
 #include <optional>
@@ -138,22 +139,27 @@ public:
     // server has not been started.
     [[nodiscard]] ServeResult serve_one();
 
-    [[nodiscard]] bool        is_listening()  const noexcept { return listen_fd_ >= 0; }
+    [[nodiscard]] bool        is_listening()  const noexcept {
+        return listen_fd_ != kInvalidSocket;
+    }
     [[nodiscard]] int         port()          const noexcept { return config_.port; }
     [[nodiscard]] const std::string& bind_address() const noexcept {
         return config_.bind_address;
     }
 
-    // Raw OS file descriptor of the listen socket, or -1 when the
-    // server is not started. Stage 15A.2 exposes this so a CLI
-    // signal handler (`SIGINT` / `SIGTERM`) can wake a blocked
+    // Raw OS handle of the listen socket, or `kInvalidSocket` when
+    // the server is not started. Stage 15A.2 exposes this so a CLI
+    // signal / console-control handler can wake a blocked
     // `accept()` via the async-signal-safe call
-    // `::shutdown(fd, SHUT_RDWR)`. This accessor is the only
-    // sanctioned way for non-`RenderServer` code to touch the
-    // underlying fd; the caller must NOT close it directly (that
-    // is `stop()`'s job) and must not call other `RenderServer`
-    // methods from within the signal handler.
-    [[nodiscard]] int         listen_fd()     const noexcept { return listen_fd_; }
+    // `::shutdown(fd, kSocketShutdownBoth)`. The Windows-portability
+    // slice changed the type from `int` to `rr::server::socket_t`
+    // (which is `int` on POSIX and `SOCKET` on Windows); the
+    // semantics of the accessor are otherwise unchanged. This
+    // accessor is the only sanctioned way for non-`RenderServer`
+    // code to touch the underlying handle; the caller must NOT
+    // close it directly (that is `stop()`'s job) and must not call
+    // other `RenderServer` methods from within the signal handler.
+    [[nodiscard]] socket_t    listen_fd()     const noexcept { return listen_fd_; }
 
     // Reason of the most recent `start()` failure. Empty when
     // the server is currently listening or has never been
@@ -197,7 +203,7 @@ private:
     [[nodiscard]] std::string handle_command(const std::string& command);
 
     Config                            config_{};
-    int                               listen_fd_ = -1;
+    socket_t                          listen_fd_          = kInvalidSocket;
     std::string                       last_error_;
     std::optional<rr::scene::Scene>   loaded_scene_;
     bool                              shutdown_requested_ = false;
