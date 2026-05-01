@@ -3716,6 +3716,7 @@ sub-stages, appended to the same file.** No code is touched.
 | 14A.1    | AOV data model (AOVType: Beauty/Normal/Depth/Albedo/DopplerFactor/SearchlightFactor; AOV class; CudaAOV.cuh re-export; no integration) | ✅ |
 | 14A.2    | GPU AOV buffers (GpuAOVBuffer; one GpuBuffer<float> per pass; allocate / reset / download; make_default_aov_set; no kernel hook) | ✅ |
 | 14A.3    | CUDA AOV writing (k_render_scene writes 6 AOVs; render_scene_with_aovs; --render-aovs; output/aov_*.ppm) | ✅ |
+| 15A.1    | Renderer server skeleton (rr_server; RenderServer class; localhost:7777; ping->pong; no rendering integration) | ✅ |
 
 ## Stage 12A.2.1 — OptiX raygen program design
 
@@ -8016,6 +8017,214 @@ write.**
   forward-cone brightening / backward-
   cone dimming gradients from the
   β = 0.5 velocity.
+
+## Stage 15A.1 — Renderer server skeleton
+
+**Scope of this slice (Stage 15A.1; master order
+#20): introduce a host-side TCP server module
+that the eventual Cinema 4D bridge / preview UI
+will speak to. This first sub-stage ships the
+file skeleton + a one-command protocol (`ping`
+-> `pong`) only. The server has no rendering
+integration; it exists so subsequent 15A+ sub-
+stages can layer real protocol commands on top
+of a working accept / read / respond cycle.
+
+The pre-Stage-14 visual confirmation of the
+Stage 13 textured-material output and the
+Stage 14A.3 AOV outputs both remain deferred
+(audit host has no CUDA toolchain; see
+`docs/STAGE_13_VISUAL_CONFIRMATION.md` /
+`docs/STAGE_14_AOV_AUDIT.md`). 15A.1 deliberately
+does not modify any rendering or AOV code.**
+
+### What ships
+
+- `src/server/RenderServer.{h,cpp}` (new):
+  - `class rr::server::RenderServer`. Move-only
+    owning handle for the OS listen socket fd.
+  - `struct Config { std::string bind_address =
+    "127.0.0.1"; int port = 7777; }` -
+    "localhost only" baked into the default;
+    callers can override but should not unless
+    they understand the implications (no auth,
+    no sandboxing yet).
+  - `bool start()` - opens AF_INET / SOCK_STREAM
+    socket, sets SO_REUSEADDR, `inet_pton`s the
+    bind address, binds, listens. On failure
+    populates `last_error()` and leaves the
+    server in its pre-start state. Already-
+    listening start is a no-op success.
+  - `void stop() noexcept` - closes the listen
+    socket if open. Idempotent. Destructor
+    calls it.
+  - `ServeResult serve_one()` - accepts one
+    client (blocking; loops over EINTR), reads
+    one newline-delimited command (up to
+    `kMaxCommandBytes = 256` bytes; `\r`
+    stripped), dispatches to a tiny command
+    table, sends `<response>\n`, closes the
+    client socket. Returns a struct describing
+    the cycle: `ok / command / response /
+    client_address / client_port /
+    error_message`. The listen socket stays
+    open after every cycle (success or error)
+    so the caller can loop.
+  - `last_error()` - reason of the last
+    `start()` failure (empty when the server
+    is currently listening or has never been
+    started).
+- `CMakeLists.txt`:
+  - New `rr_server` STATIC library compiling
+    `src/server/RenderServer.cpp`. PUBLIC-
+    includes `src`. No external dependencies
+    (POSIX sockets are libc on Linux).
+  - `rr_server` linked into the
+    `RelativityRender` executable so the
+    library is built by the default build
+    target (matches the pattern Stage 13A
+    used to wire in `rr_texture` before any
+    consumer existed).
+  - Stage label bumped to "Stage 15A.1:
+    renderer server skeleton" in both the
+    `project(...)` description and the
+    project-banner status message.
+- `docs/BUILD_PLAN.md`: this entry +
+  status-table row for 15A.1.
+
+### Architectural decisions worth highlighting
+
+- **Pure POSIX, Linux-only at this stage.**
+  The implementation uses `<sys/socket.h>`,
+  `<netinet/in.h>`, `<arpa/inet.h>`,
+  `<unistd.h>` directly. Cross-platform
+  support (winsock backend) is a future
+  slice when the server actually needs to
+  ship to non-Linux hosts; today the
+  project only builds on Linux + macOS,
+  both of which expose the POSIX surface.
+- **One command at a time, one client at a
+  time.** `serve_one()` is blocking and
+  serves a single client to completion
+  before returning. No threading, no
+  `select` / `epoll` event loop, no
+  connection pooling. Concurrency is
+  explicitly out of scope for the
+  skeleton; the next 15A sub-stage that
+  wires real protocol commands can keep
+  this single-threaded model or upgrade
+  to a small select loop without changing
+  the protocol surface.
+- **Newline-delimited ASCII protocol.**
+  Trivially testable with `nc 127.0.0.1
+  7777` followed by typing the command +
+  `<enter>`. No length-prefixed framing,
+  no JSON parser, no protobuf - those are
+  premature for a single command. The
+  protocol can grow line-by-line (one
+  command per line, optional whitespace-
+  separated arguments) without breaking
+  the ping/pong contract.
+- **`ping` -> `pong` as the only command.**
+  Exactly what the prompt specifies. Any
+  other command yields `error: unknown
+  command`. Oversize commands yield
+  `error: command too long`. Read failures
+  yield `error: io error`. Each response
+  is a single line for symmetry with the
+  request.
+- **Bind to 127.0.0.1 by default.** The
+  rule "localhost only" is enforced by
+  defaulting `Config::bind_address` to the
+  loopback address; the bind call uses
+  `inet_pton` so misspelled addresses
+  fail with a clear error rather than
+  silently binding `0.0.0.0`. Operators
+  can override the default but get no
+  authentication safety net.
+- **`SO_REUSEADDR`.** Lets the server
+  restart immediately after a previous
+  instance closes, instead of waiting out
+  the kernel's TIME_WAIT (~60s). Common
+  practice for development servers; not a
+  security concern on a loopback bind.
+- **Move-only (owns an fd).** The fd
+  cannot be safely duplicated by a copy
+  ctor; explicit move semantics (with
+  `stop()` called on overwrite + the
+  source fd nulled to -1) keep RAII
+  honest. Same pattern as `GpuTexture` /
+  `GpuMesh` / `GpuAOVBuffer`.
+- **No CLI handler in this slice.** The
+  prompt asks for the module + behaviour;
+  it does not ask for an `--serve` CLI
+  flag. Adding one would expand scope
+  past "server skeleton". Subsequent
+  15A+ sub-stages add the CLI surface
+  alongside the real render-dispatch
+  protocol commands; today the module
+  is exercised only by the build /
+  link step.
+- **No Logger dependency.** `rr_server`
+  is self-contained; errors flow back
+  through `last_error()` /
+  `ServeResult::error_message` instead
+  of being printed. Lets a future
+  CLI handler decide its own
+  formatting / verbosity / sink.
+
+### Hard-rule audit
+
+- No rendering command yet - **yes**, the
+  command table contains exactly one
+  entry (`ping` -> `pong`); no render
+  trigger, no scene upload, no AOV
+  selection, no framebuffer download.
+- No C4D - **yes**, no Cinema 4D
+  headers / bridges / DCC dependencies.
+- No preview UI - **yes**, no UI
+  framework, no window, no event loop
+  beyond `serve_one()`'s blocking
+  accept.
+- Must compile - **yes**, OFF + ON
+  reconfigures both build clean (no
+  warnings, no errors under
+  `-Wall -Wextra -Wpedantic`); ctest
+  4/4 passes both ways. `librr_server.a`
+  is produced and linked into the
+  executable.
+- Update docs/BUILD_PLAN.md - **yes**,
+  this entry + status-table row.
+
+### Verified at the build
+
+- `cmake -DRELATIVITYRENDER_ENABLE_OPTIX=
+  OFF ..` (clean reconfigure): builds
+  the new rr_server library + the
+  executable; no warnings / errors;
+  banner shows "Stage 15A.1: renderer
+  server skeleton"; ctest 4/4 passes.
+- `cmake -DRELATIVITYRENDER_ENABLE_OPTIX=
+  ON ..` (clean reconfigure): same
+  rr_server build, plus the existing
+  OptiX scaffold; no warnings / errors
+  (only the expected 12B.4 SDK-not-found
+  warning); ctest 4/4 passes. Renderer
+  server is orthogonal to the OptiX
+  flag and to `RR_ENABLE_CUDA`.
+- `librr_server.a` is produced and
+  linked into the `RelativityRender`
+  executable.
+- End-to-end smoke check (out-of-tree
+  driver against `librr_server.a`):
+  start the server on `127.0.0.1:17777`,
+  spawn a client, send `ping\n`,
+  receive `pong\n`. Server's
+  `ServeResult` reports `ok = 1,
+  command = "ping", response = "pong",
+  client_address = "127.0.0.1"`,
+  empty `error_message`. Smoke artifact
+  removed afterwards; not committed.
 
 ## Next stage
 

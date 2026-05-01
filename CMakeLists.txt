@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.20)
 
 project(RelativityRender
     VERSION     0.1.0
-    DESCRIPTION "RelativityRender - GPU renderer platform (Stage 14A.3: CUDA AOV writing)"
+    DESCRIPTION "RelativityRender - GPU renderer platform (Stage 15A.1: renderer server skeleton)"
     LANGUAGES   CXX
 )
 
@@ -33,7 +33,7 @@ option(RELATIVITYRENDER_ENABLE_OPTIX
 
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
-message(STATUS "RelativityRender ${PROJECT_VERSION} (Stage 14A.3: CUDA AOV writing)")
+message(STATUS "RelativityRender ${PROJECT_VERSION} (Stage 15A.1: renderer server skeleton)")
 
 message(STATUS "  Build type   : ${CMAKE_BUILD_TYPE}")
 message(STATUS "  C++ standard : ${CMAKE_CXX_STANDARD}")
@@ -247,6 +247,24 @@ target_include_directories(rr_renderer PUBLIC src)
 target_link_libraries(rr_renderer PUBLIC rr_image rr_gpu rr_pathtracer)
 rr_apply_warnings(rr_renderer)
 
+# rr_server: renderer-server skeleton (Stage 15A.1; master order
+# #20). Pure-POSIX TCP server bound to 127.0.0.1 with a single
+# command (`ping` -> `pong`). No rendering integration yet. The
+# library compiles standalone (only depends on libc / POSIX
+# sockets) and is linked into the RelativityRender executable so
+# the build target exercises it; an actual `--serve` CLI handler
+# joins in a subsequent 15A+ sub-stage.
+#
+# Linux-only at this stage: `socket` / `bind` / `listen` /
+# `accept` come from <sys/socket.h>. Cross-platform support
+# (winsock backend) is a future slice when the server actually
+# needs to ship to non-Linux hosts.
+add_library(rr_server STATIC
+    src/server/RenderServer.cpp
+)
+target_include_directories(rr_server PUBLIC src)
+rr_apply_warnings(rr_server)
+
 # rr_optix: OptiX backend file skeleton. Stage 12B.3 makes the
 # entire library conditional on RELATIVITYRENDER_ENABLE_OPTIX so
 # the OFF build never compiles any `src/optix/` source - byte-
@@ -440,7 +458,7 @@ add_executable(RelativityRender
 )
 target_include_directories(RelativityRender PRIVATE src)
 target_link_libraries(RelativityRender PRIVATE
-    rr_gpu rr_image rr_camera rr_geometry rr_relativity rr_material rr_lighting rr_texture rr_scene rr_io rr_renderer)
+    rr_gpu rr_image rr_camera rr_geometry rr_relativity rr_material rr_lighting rr_texture rr_scene rr_io rr_renderer rr_server)
 # Stage 12B.3: rr_optix is only created when OptiX support is
 # requested (see the rr_optix block above), so the link must be
 # conditional too. When OFF, the executable's link line is
