@@ -3719,6 +3719,7 @@ sub-stages, appended to the same file.** No code is touched.
 | 15A.1    | Renderer server skeleton (rr_server; RenderServer class; localhost:7777; ping->pong; no rendering integration) | ✅ |
 | 15A.2    | CLI server mode (--server starts the loop on localhost:7777; SIGINT/SIGTERM graceful shutdown; logs startup / per-request / shutdown) | ✅ |
 | 15B.1    | Server load_scene command (parses .rrscene via SceneLoader; stores result on the server; ok/error response) | ✅ |
+| 15B.3    | Server set_beta command (scalar |beta| update via existing clampBeta; preserves loaded direction; -Z fallback) | ✅ |
 
 ## Stage 12A.2.1 — OptiX raygen program design
 
@@ -8637,6 +8638,227 @@ adds a render command that consumes it.**
   empty. The summary now builds
   before the move; the smoke run
   reports correct non-zero counts.
+
+## Stage 15B.3 — Server set_beta command
+
+**Scope of this slice (Stage 15B.3; master order
+#20): teach the renderer server to update the
+loaded scene's relativity beta-velocity at
+runtime. One new wire command:
+
+  `set_beta <value>` -> `ok: beta set magnitude=<m> velocity=x,y,z`
+                     -> `error: ...`
+
+The value is parsed as a scalar float, folded to
+its absolute value (so the user can type a
+negative number without surprise), and run
+through the existing
+`rr::relativity::clampBeta(...)` against the
+loaded scene's `relativity.max_beta` cap. The
+clamped magnitude is then projected onto the
+loaded scene's velocity direction, preserving
+the orientation of `observer.velocity`. When the
+loaded scene has zero velocity the new magnitude
+is placed along camera-forward (-Z), matching
+the convention `--render-relativistic` uses.
+
+No new relativity math. The command is a thin
+host-side wrapper around `clampBeta` plus a
+direction-preserving rescale; every physical
+formula already lives in
+`src/relativity/RelativityMath.h`.**
+
+### What ships
+
+- `src/server/RenderServer.h`:
+  - Header doc-comment lists the new
+    `set_beta` command + its semantics
+    (scalar magnitude, `clampBeta` against
+    `max_beta`, direction preservation, -Z
+    fallback when velocity is zero).
+- `src/server/RenderServer.cpp`:
+  - New include of
+    `relativity/RelativityMath.h` (for
+    `rr::relativity::clampBeta`) plus
+    `<cmath>` (for `std::sqrt`,
+    `std::isnan`, `std::isinf`).
+  - New helper
+    `parse_finite_float(s, &out)` in the
+    anonymous namespace: rejects empty
+    strings, trailing non-whitespace junk,
+    `inf`, and `NaN`. Used to validate
+    `set_beta`'s scalar argument before it
+    reaches `clampBeta`.
+  - New `set_beta` branch in
+    `handle_command`. Order: `ping` /
+    `shutdown` / `set_beta` / `load_scene`
+    / fallthrough. Validates a scene is
+    loaded, parses the float, folds to
+    magnitude, runs `clampBeta`, projects
+    onto the existing direction (preserving
+    sign + axis of `observer.velocity`),
+    falls back to -Z when the velocity is
+    zero, writes the new vector back into
+    the loaded scene, returns a `ok: beta
+    set magnitude=<m> velocity=x,y,z`
+    summary.
+- `CMakeLists.txt`:
+  - Stage label bumped to "Stage 15B.3:
+    server set_beta command" in both the
+    `project(...)` description and the
+    project-banner status message.
+  - No new source files, no new dependency
+    edge: rr_server PUBLIC-links rr_io ->
+    rr_scene -> rr_relativity (INTERFACE)
+    -> rr_math, so
+    `RelativityMath.h`'s symbols are
+    already in scope.
+- `docs/BUILD_PLAN.md`: this entry +
+  status-table row for 15B.3.
+
+### Architectural decisions worth highlighting
+
+- **Reuse existing `clampBeta`.** The
+  prompt's "No new relativity math" rule
+  forbids any new physical-formula code.
+  The set_beta handler delegates the
+  clamp work to the existing utility,
+  which already folds negative inputs
+  to magnitude and caps at the global
+  ceiling (0.999999). The handler's
+  per-call work is just argument parsing
+  + direction-preservation arithmetic
+  (a vector rescale), which is generic
+  geometry, not new physics.
+- **Scalar argument, vector preservation.**
+  `set_beta <value>` takes one float -
+  the simplest possible wire format.
+  Direction comes from the loaded scene
+  (preserving authored intent) or
+  defaults to camera-forward (-Z) when
+  the scene has none. A future
+  sub-stage can grow a sibling
+  `set_velocity <x> <y> <z>` for full
+  3-component control without breaking
+  this command's contract.
+- **Magnitude fold via absolute value.**
+  Folds negative inputs (`-0.25`) into
+  positive magnitudes before invoking
+  `clampBeta`, so the response always
+  reports a non-negative magnitude. The
+  resulting velocity vector still
+  carries the loaded direction's sign,
+  so the *physical* motion direction
+  is preserved.
+- **`-Z fallback` for zero-velocity
+  scenes.** When `|v| ~ 0`, there is
+  no direction to preserve. The
+  fallback to camera-forward matches
+  `--render-relativistic`'s convention
+  (the same convention every
+  relativistic CLI demo uses), so a
+  client driving the server doesn't
+  need to manually inject a velocity
+  before the first `set_beta`.
+- **Validate before clamping.** The
+  `parse_finite_float` helper rejects
+  empty strings, trailing junk, inf,
+  and NaN before the value reaches
+  `clampBeta`. NaN in particular would
+  propagate through `clampBeta`'s
+  comparisons (every comparison with
+  NaN is false), producing a NaN
+  velocity; rejecting at the parser
+  is honest and avoids mutating the
+  scene's state with garbage.
+- **Atomic-update semantics, like
+  `load_scene`.** A failed `set_beta`
+  (no scene loaded, parse error,
+  invalid value) leaves the previously-
+  loaded scene's velocity untouched.
+  Only the success path mutates the
+  state.
+
+### Hard-rule audit
+
+- No C4D - **yes**, no Cinema 4D
+  headers / bridges.
+- No UI - **yes**, no UI framework /
+  window / event loop.
+- No new relativity math - **yes**,
+  only `clampBeta` (existing) is used
+  for the physical clamp; the rescale
+  is generic geometry.
+- Must compile - **yes**, OFF + ON
+  reconfigures both build clean (no
+  warnings, no errors under
+  `-Wall -Wextra -Wpedantic`); ctest
+  4/4 passes both ways.
+- Update docs/BUILD_PLAN.md - **yes**,
+  this entry + status-table row.
+
+### Verified at the build
+
+- `cmake -DRELATIVITYRENDER_ENABLE_OPTIX=
+  OFF ..` (clean reconfigure): builds
+  clean; banner shows "Stage 15B.3:
+  server set_beta command";
+  ctest 4/4 passes.
+- `cmake -DRELATIVITYRENDER_ENABLE_OPTIX=
+  ON ..` (clean reconfigure): same
+  build; OptiX scaffold compiles (with
+  the expected 12B.4 SDK-not-found
+  warning); ctest 4/4 passes.
+- `--server` end-to-end smoke (server
+  in the background, `nc` clients,
+  `shutdown` to end gracefully):
+  - `set_beta 0.5` BEFORE any
+    `load_scene` -> `error: no scene
+    loaded; call load_scene first`.
+    Server state untouched.
+  - `load_scene scenes/test_relativity
+    .rrscene` -> ok summary; the
+    fixture's relativity section sets
+    velocity along (0, 0, -1) at
+    |beta| = 0.75.
+  - `set_beta` (no args) ->
+    `error: set_beta requires a
+    value`.
+  - `set_beta abc` ->
+    `error: invalid beta value: abc`.
+  - `set_beta 0.5` ->
+    `ok: beta set magnitude=0.500000
+    velocity=0.000000,0.000000,
+    -0.500000`. Direction preserved
+    along -Z; magnitude exactly the
+    requested value.
+  - `set_beta 5.0` (super-luminal) ->
+    `ok: beta set magnitude=0.999999
+    velocity=0.000000,0.000000,
+    -0.999999`. Magnitude clamped to
+    `max_beta`; direction preserved.
+  - `set_beta 0` ->
+    `ok: beta set magnitude=0.000000
+    velocity=0.000000,0.000000,
+    -0.000000`. Zero output; no
+    crash.
+  - `set_beta -0.25` ->
+    `ok: beta set magnitude=0.250000
+    velocity=0.000000,0.000000,
+    -0.250000`. Negative input folded
+    to positive magnitude;
+    direction (-Z) preserved from the
+    loaded scene.
+  - `shutdown` -> graceful exit, exit
+    code 0.
+- Zero-velocity fallback verified
+  separately: `load_scene scenes/test_
+  spheres.rrscene` (no relativity
+  section, so `observer.velocity =
+  (0, 0, 0)`) followed by
+  `set_beta 0.5` -> velocity=
+  `(0.000000, 0.000000, -0.500000)`.
+  The -Z fallback fires.
 
 ## Next stage
 

@@ -30,6 +30,23 @@ namespace rr::server {
 //
 //   `shutdown`          -> `ok: shutting down`
 //
+// Stage 15B.3 adds runtime relativity-velocity updates for the
+// loaded scene:
+//
+//   `set_beta <value>`  -> `ok: beta set magnitude=... velocity=x,y,z`
+//                       -> `error: ...`
+//
+// The value is treated as a scalar magnitude `|beta|` in c-units;
+// it is folded to absolute value, run through the existing
+// `rr::relativity::clampBeta(...)` against the loaded scene's
+// `relativity.max_beta`, and then projected onto the scene's
+// current velocity direction (preserving sign + axis orientation
+// of the loaded `observer.velocity`). When the loaded scene's
+// velocity is the zero vector the new magnitude is placed along
+// the camera-forward (-Z) direction, matching the convention
+// `--render-relativistic` uses. No new relativity math is
+// introduced - the command is a thin host-side wrapper.
+//
 // The `shutdown` command sets a server-side flag
 // (`shutdown_requested()`) that the CLI's serve loop reads
 // between cycles to exit gracefully without requiring SIGINT.

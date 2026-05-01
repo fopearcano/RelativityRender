@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.20)
 
 project(RelativityRender
     VERSION     0.1.0
-    DESCRIPTION "RelativityRender - GPU renderer platform (Stage 15B.1: server load_scene command)"
+    DESCRIPTION "RelativityRender - GPU renderer platform (Stage 15B.3: server set_beta command)"
     LANGUAGES   CXX
 )
 
@@ -33,7 +33,7 @@ option(RELATIVITYRENDER_ENABLE_OPTIX
 
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
-message(STATUS "RelativityRender ${PROJECT_VERSION} (Stage 15B.1: server load_scene command)")
+message(STATUS "RelativityRender ${PROJECT_VERSION} (Stage 15B.3: server set_beta command)")
 
 message(STATUS "  Build type   : ${CMAKE_BUILD_TYPE}")
 message(STATUS "  C++ standard : ${CMAKE_CXX_STANDARD}")

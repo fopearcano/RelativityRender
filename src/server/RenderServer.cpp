@@ -1,6 +1,7 @@
 #include "server/RenderServer.h"
 
 #include "io/SceneLoader.h"
+#include "relativity/RelativityMath.h"  // clampBeta (existing utility)
 
 #include <arpa/inet.h>
 #include <netinet/in.h>
@@ -9,7 +10,11 @@
 
 #include <array>
 #include <cerrno>
+#include <cmath>     // std::sqrt, std::isnan, std::isinf
+#include <cstddef>
 #include <cstring>
+#include <stdexcept>
+#include <string>
 #include <utility>
 
 namespace rr::server {
@@ -129,6 +134,29 @@ ParsedCommand parse_command_line(const std::string& line) {
     return p;
 }
 
+// Parse a single float from `s`. On success returns `true` and
+// writes the parsed value into `*out`; rejects empty strings,
+// strings with trailing non-whitespace junk, and inf / NaN
+// values. Used by `set_beta` to validate its scalar argument
+// before it reaches `rr::relativity::clampBeta`.
+bool parse_finite_float(const std::string& s, float* out) {
+    if (s.empty() || out == nullptr) {
+        return false;
+    }
+    try {
+        std::size_t pos = 0;
+        const float v = std::stof(s, &pos);
+        for (std::size_t i = pos; i < s.size(); ++i) {
+            if (s[i] != ' ' && s[i] != '\t') return false;
+        }
+        if (std::isnan(v) || std::isinf(v)) return false;
+        *out = v;
+        return true;
+    } catch (const std::exception&) {
+        return false;
+    }
+}
+
 }  // namespace
 
 RenderServer::RenderServer(Config config)
@@ -240,6 +268,57 @@ std::string RenderServer::handle_command(const std::string& command) {
         // `ok: shutting down` line.
         shutdown_requested_ = true;
         return "ok: shutting down";
+    }
+    if (p.verb == "set_beta") {
+        // Stage 15B.3: scalar |beta| update for the loaded
+        // scene, clamped through the existing
+        // `rr::relativity::clampBeta` utility. No new relativity
+        // math is introduced - the command is a thin wrapper.
+        if (!loaded_scene_.has_value()) {
+            return "error: no scene loaded; call load_scene first";
+        }
+        if (p.args.empty()) {
+            return "error: set_beta requires a value";
+        }
+        float requested = 0.0f;
+        if (!parse_finite_float(p.args, &requested)) {
+            return "error: invalid beta value: " + p.args;
+        }
+
+        // Fold to magnitude (the user may have typed a negative
+        // number; we want |beta|), then run through the existing
+        // clamp against the scene's `max_beta` cap. clampBeta
+        // already handles negative inputs and the global ceiling.
+        const float magnitude = (requested < 0.0f) ? -requested : requested;
+        auto&       scene     = loaded_scene_.value();
+        const float clamped   = rr::relativity::clampBeta(
+            magnitude, scene.relativity.max_beta);
+
+        // Project the clamped magnitude onto the scene's current
+        // velocity direction, preserving the loaded direction
+        // (sign + axis). When the velocity is the zero vector
+        // there is no direction to preserve; place the new
+        // magnitude along camera-forward (-Z), matching the
+        // convention `--render-relativistic` uses (see
+        // src/main.cpp's `run_render_relativistic`).
+        rr::math::Vec3& v = scene.observer.velocity;
+        const float current_len_sq =
+            v.x * v.x + v.y * v.y + v.z * v.z;
+        rr::math::Vec3 new_v;
+        if (current_len_sq > 1.0e-24f) {
+            const float current_len = std::sqrt(current_len_sq);
+            const float k           = clamped / current_len;
+            new_v = rr::math::Vec3{v.x * k, v.y * k, v.z * k};
+        } else {
+            new_v = rr::math::Vec3{0.0f, 0.0f, -clamped};
+        }
+        v = new_v;
+
+        std::string msg = "ok: beta set magnitude=" + std::to_string(clamped);
+        msg += " velocity=" + std::to_string(new_v.x);
+        msg += "," + std::to_string(new_v.y);
+        msg += "," + std::to_string(new_v.z);
+        return msg;
     }
     if (p.verb == "load_scene") {
         if (p.args.empty()) {
