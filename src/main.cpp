@@ -730,6 +730,43 @@ int run_render_from_scene(const rr::core::Config& cfg) {
 #endif
 }
 
+// `--render <scene>` dispatch (CLI render path repair). The
+// pre-repair Stage 1 placeholder for this action only logged
+// "render command received" and returned 0 - no scene was
+// loaded, no GPU pipeline ran, no PPM was written. This handler
+// wires the action up to the real GPU pipeline by delegating to
+// the existing `run_render_from_scene`, which already loads via
+// `rr::io::load`, uploads via `rr::gpu::GpuScene`, renders via
+// `rr::cuda::CudaRenderer::render_scene`, and saves the result
+// through `save_image_or_error`.
+//
+// The only behaviour difference from `--render-from-scene` is
+// the default output path: per the CLI render-path-repair spec,
+// `--render` defaults to `output/render.ppm` when `--output` is
+// not supplied. The scene's authored
+// `render_settings.output_path` is intentionally NOT consulted
+// here (the spec hardcodes the default), but `--output` still
+// overrides everything.
+//
+// All per-pixel / per-ray work runs on the GPU; this handler is
+// pure host orchestration (parse / upload / launch / save), in
+// keeping with the master rules.
+int run_render(const rr::core::Config& cfg) {
+    using rr::core::Logger;
+
+    if (cfg.scene_path.empty()) {
+        Logger::error("--render requires a scene file path");
+        return 2;
+    }
+
+    rr::core::Config effective = cfg;
+    if (effective.output_path.empty()) {
+        effective.output_path = "output/render.ppm";
+    }
+
+    return run_render_from_scene(effective);
+}
+
 // `--render-full-scene` dispatch. Stage 10B.11 - the first action
 // that drives the GPU renderer for a complete `.rrscene` file:
 // camera + relativity + materials + spheres + meshes + lights all
@@ -2297,8 +2334,7 @@ int main(int argc, char** argv) {
             return 0;
 
         case CommandLine::Action::Render:
-            Logger::info("render command received");
-            return 0;
+            return run_render(result.config);
 
         case CommandLine::Action::SceneInfo:
             return run_scene_info(result.config);

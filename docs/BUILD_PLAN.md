@@ -3723,6 +3723,7 @@ sub-stages, appended to the same file.** No code is touched.
 | 15B.2    | Server render command (wire-driven render dispatch) | not yet implemented (skipped between 15B.1 and 15B.3); will land alongside the prototype-1 final integration |
 | 15       | Renderer server (rr_server + --server CLI + ping / load_scene / set_beta / shutdown) | IMPLEMENTED — runtime test deferred to prototype-1 final validation (see docs/STAGE_15_SERVER_DEFERRED.md) |
 | 15-fix   | Windows build repair: RenderServer portability (SocketPlatform.h shim; socket_t / closeSocket / initSocketSystem / shutdownSocketSystem; CMake links Ws2_32 on Windows) | ✅ |
+| cli-fix  | CLI render path repair (--render wired to GPU pipeline; defaults to output/render.ppm; delegates to run_render_from_scene) | ✅ |
 
 ## Stage 12A.2.1 — OptiX raygen program design
 
@@ -9090,6 +9091,177 @@ wire commands; pure portability.**
   that consumes
   `docs/STAGE_15_SERVER_DEFERRED.md`'s
   deferred runtime test plan.
+
+## CLI render path repair
+
+**Scope of this slice (post-Stage-15 fix; not a
+new master-order stage): the bare `--render
+<scene>` CLI action - present since the very
+first Stage 1 surface - was still pinned to its
+original placeholder, which only logged
+"render command received" and returned 0
+without loading a scene, uploading anything to
+the GPU, or writing a PPM. On Windows users
+running
+
+  `RelativityRender.exe --render scenes/
+  test_spheres.rrscene --output output/test.ppm`
+
+reported the printed line but no output file.
+This slice repairs the action so it produces a
+real render. No new renderer features, no
+kernel changes.**
+
+### What ships
+
+- `src/main.cpp`:
+  - New `run_render(cfg)` handler defined just
+    after `run_render_from_scene` (so the
+    forward-declaration ordering is automatic).
+    The handler:
+    - Validates `cfg.scene_path` is set; emits
+      `--render requires a scene file path`
+      and returns exit code 2 otherwise.
+    - Pre-fills `cfg.output_path` with
+      `output/render.ppm` if `--output` was
+      not supplied.
+    - Delegates to the existing
+      `run_render_from_scene(effective)`,
+      which already loads via `rr::io::load`,
+      uploads via `rr::gpu::GpuScene`, renders
+      via `rr::cuda::CudaRenderer::render_scene`,
+      and saves through `save_image_or_error`.
+  - The dispatch case `Action::Render` now
+    `return run_render(result.config);`
+    instead of the old
+    `Logger::info("render command received");
+    return 0;` placeholder.
+  - The string `"render command received"` no
+    longer appears anywhere in the codebase
+    (verified via `grep -n` across `src/`).
+- `CMakeLists.txt`: stage label bumped to
+  "CLI render path repair: --render wired to
+  GPU pipeline" in both the `project(...)`
+  description and the project-banner status
+  message.
+- `docs/BUILD_PLAN.md`: this entry +
+  status-table row for the cli-fix.
+- `docs/WINDOWS_TEST_GUIDE.md` (new): records
+  the validated CLI command shape for Windows,
+  the expected exit codes, and the output-file
+  artefact location.
+
+### Architectural decisions worth highlighting
+
+- **Delegate, don't duplicate.** The existing
+  `run_render_from_scene` already implements
+  every step the spec requires (load + upload +
+  render + save with non-zero on failure +
+  `save_image_or_error` printing the saved
+  path on success). The repair is a thin
+  6-line wrapper that adjusts the default
+  output path. Forking the logic would have
+  duplicated ~100 lines for a difference of
+  one string literal.
+- **Default output path: `output/render.ppm`**
+  per the CLI render-path-repair spec. The
+  scene's authored `render_settings.output_path`
+  is intentionally NOT consulted here (the spec
+  hardcodes the default), but `--output` still
+  overrides everything. This is a strict
+  reading of the spec wording; if a future
+  stage wants to honour the scene's authored
+  path, it can swap `effective.output_path =
+  "output/render.ppm";` for the same fallback
+  chain `run_render_from_scene` uses
+  internally.
+- **Forward-declaration ordering.**
+  `run_render` is defined immediately AFTER
+  `run_render_from_scene` so the call site
+  resolves without an explicit forward
+  declaration. This is a deliberate placement;
+  the first attempt put `run_render` BEFORE
+  `run_render_from_scene` and the OFF build
+  failed with `'run_render_from_scene' was not
+  declared in this scope`.
+- **Error-message prefixes.** Errors raised
+  inside `run_render_from_scene` still mention
+  "render-from-scene" (e.g. "render-from-scene
+  failed: upload_camera"). When such an error
+  surfaces from a `--render` invocation the
+  prefix is technically a slight misnomer, but
+  the message is still clear and accurate
+  about what failed; rewording the prefixes
+  in the existing function would touch
+  unrelated code paths and risks breaking
+  log-grep tests / scripts. The prefix is a
+  cosmetic concession, not a correctness gap.
+- **No CUDA-kernel changes.** The repair is
+  pure host-side dispatch. All per-pixel /
+  per-ray work continues to run on the GPU,
+  in keeping with the master rules.
+
+### Hard-rule audit
+
+- Do not add new renderer features - **yes**,
+  no new render path, no new CLI flags, no
+  new CUDA entry points.
+- Do not modify CUDA kernels unless absolutely
+  required - **yes**, no `.cu` file is
+  touched.
+- Do not add server / C4D / UI - **yes**,
+  the server / C4D / UI code is untouched.
+- CPU may only parse / load / upload / launch /
+  save - **yes**, `run_render` does parse
+  (delegates to `rr::io::load`), upload
+  (`GpuScene::upload_*`), launch
+  (`CudaRenderer::render_scene`), and save
+  (`save_image_or_error` -> `Image::save_ppm`).
+  No per-pixel CPU work is added.
+- All per-pixel / per-ray rendering must
+  remain GPU-side - **yes**, the only
+  difference from before is that the dispatch
+  now reaches the existing `__global__`
+  kernels instead of short-circuiting at the
+  placeholder log line.
+- Keep build working - **yes**, OFF + ON
+  reconfigures both build clean (no warnings,
+  no errors); ctest 4/4 passes both ways.
+- Update docs/BUILD_PLAN.md - **yes**, this
+  entry + status-table row.
+
+### Verified at the build
+
+- `cmake -DRELATIVITYRENDER_ENABLE_OPTIX=OFF
+  ..` (Linux clean reconfigure): builds
+  clean (no warnings / errors under
+  `-Wall -Wextra -Wpedantic`); banner shows
+  "CLI render path repair: --render wired to
+  GPU pipeline"; ctest 4/4 passes.
+- `cmake -DRELATIVITYRENDER_ENABLE_OPTIX=ON
+  ..` (Linux clean reconfigure): same; OptiX
+  scaffold compiles (with the expected
+  12B.4 SDK-not-found warning); ctest 4/4.
+- Linux CLI exit-code smoke (no CUDA on the
+  audit host, so the GPU branch returns the
+  documented requires-CUDA error):
+  - `--render scenes/test_spheres.rrscene
+    --output output/test.ppm` -> logs
+    `--render-from-scene requires CUDA. ...`
+    and exits **1**. (On a CUDA host the
+    same command writes `output/test.ppm`
+    and exits **0**.)
+  - `--render scenes/nonexistent.rrscene`
+    -> logs `scene load failed: scene file
+    does not exist: scenes/nonexistent
+    .rrscene` and exits **1** (independent
+    of CUDA - the load step is host-side).
+  - `--render` (no path) -> parser rejects
+    with `missing value after --render`
+    + exits **2**.
+- The pre-repair string `"render command
+  received"` no longer appears anywhere in
+  `src/`.
 
 ## Next stage
 
