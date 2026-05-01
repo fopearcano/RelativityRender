@@ -205,6 +205,77 @@ CudaRenderer::Result CudaRenderer::render_scene(const rr::gpu::GpuScene& scene,
         });
 }
 
+CudaRenderer::Result CudaRenderer::render_scene_with_aovs(
+        const rr::gpu::GpuScene& scene,
+        int                      width,
+        int                      height,
+        const AOVTargets&        targets) {
+    // Build the same launch-arg view `render_scene` builds, plus
+    // populate the AOV write slot. Each `targets.*` pointer is a
+    // raw device pointer the kernel writes into; `nullptr` means
+    // the corresponding pass is skipped. The renderer does not
+    // own these buffers - the caller (typically
+    // `run_render_aovs` in main.cpp) holds `GpuAOVBuffer` objects
+    // alive across this call.
+    rr::cuda::CudaSceneView view;
+    view.camera        = scene.gpu_camera();
+    view.observer      = scene.observer();
+    view.params        = scene.params();
+    view.spheres       = scene.device_spheres();
+    view.sphere_count  = static_cast<int>(scene.sphere_count());
+
+    const auto& m            = scene.mesh();
+    view.mesh.vertices       = m.device_vertices();
+    view.mesh.triangles      = m.device_triangles();
+    view.mesh.vertex_count   = static_cast<int>(m.vertex_count());
+    view.mesh.triangle_count = static_cast<int>(m.triangle_count());
+    view.mesh.material_id    = m.material_id();
+    view.mesh.transform      = m.transform();
+
+    view.materials      = scene.device_materials();
+    view.material_count = static_cast<int>(scene.material_count());
+
+    view.lights      = scene.device_lights();
+    view.light_count = static_cast<int>(scene.light_count());
+
+    rr::gpu::GpuBuffer<rr::cuda::DeviceTextureView> texture_views_dev;
+    const auto& host_textures = scene.textures();
+    if (!host_textures.empty()) {
+        std::vector<rr::cuda::DeviceTextureView> host_views;
+        host_views.reserve(host_textures.size());
+        for (const auto& gt : host_textures) {
+            host_views.push_back(rr::cuda::DeviceTextureView{
+                /*pixels=*/gt.device_pixels(),
+                /*width =*/gt.width(),
+                /*height=*/gt.height(),
+                /*format=*/gt.format(),
+            });
+        }
+        if (!texture_views_dev.upload(host_views.data(), host_views.size())) {
+            Result fail;
+            fail.message = "texture-view upload failed";
+            return fail;
+        }
+        view.textures      = texture_views_dev.device_ptr();
+        view.texture_count = static_cast<int>(host_views.size());
+    }
+
+    // Stage 14A.3: AOV write slot. The kernel skips per-pass
+    // writes whose pointer is null; populating any subset of the
+    // six is supported.
+    view.aovs.beauty             = targets.beauty;
+    view.aovs.normal             = targets.normal;
+    view.aovs.depth              = targets.depth;
+    view.aovs.albedo             = targets.albedo;
+    view.aovs.doppler_factor     = targets.doppler_factor;
+    view.aovs.searchlight_factor = targets.searchlight_factor;
+
+    return run_kernel_render(width, height,
+        [view](float* device_pixels, int w, int h) {
+            launch_render_scene(device_pixels, w, h, view, /*stream=*/nullptr);
+        });
+}
+
 CudaRenderer::Result CudaRenderer::render_rng_test(int          width,
                                                    int          height,
                                                    unsigned int seed) {

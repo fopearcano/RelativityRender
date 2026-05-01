@@ -358,10 +358,15 @@ __global__ void k_render_scene(float* pixels, int width, int height,
     //                --render-material-scene) still produce visible
     //                output.
     //    Miss: vertical sky gradient (unchanged).
+    // Stage 14A.3: hoist `albedo` out of the hit branch so the
+    // albedo AOV can read it on miss as well (sentinel zero); the
+    // existing hit-side albedo computation is unchanged.
+    Vec3 albedo   = Vec3{0.0f, 0.0f, 0.0f};
     Vec3 color;
     if (best.hit) {
-        rr::math::Vec3 albedo   = rr::math::Vec3{0.8f, 0.8f, 0.8f};
         rr::math::Vec3 emission = rr::math::Vec3{0.0f, 0.0f, 0.0f};
+        // Pre-14A.3 default for hits with no material assigned.
+        albedo = Vec3{0.8f, 0.8f, 0.8f};
 
         if (best.material_index >= 0
          && best.material_index < scene.material_count
@@ -474,9 +479,12 @@ __global__ void k_render_scene(float* pixels, int width, int height,
             color, D, scene.params.doppler_color_strength);
     }
 
-    // 7. Searchlight / beaming.
+    // 7. Searchlight / beaming. Stage 14A.3: compute D^4 unconditionally
+    // so the searchlight_factor AOV always sees the raw physical value
+    // regardless of whether the beauty pass actually applies the
+    // beaming scale.
+    const float D4 = rr::relativity::searchlightFactor(D);
     if (scene.params.enable_searchlight) {
-        const float D4    = rr::relativity::searchlightFactor(D);
         const float scale = 1.0f + (D4 - 1.0f) * scene.params.searchlight_strength;
         color = color * scale;
     }
@@ -487,6 +495,56 @@ __global__ void k_render_scene(float* pixels, int width, int height,
     pixels[idx + 1] = color.y;
     pixels[idx + 2] = color.z;
     pixels[idx + 3] = 1.0f;
+
+    // 9. Stage 14A.3: per-pixel AOV writes. Each `scene.aovs.*`
+    // pointer is null when the corresponding pass is not requested
+    // for this launch; the kernel skips its write. Indexing matches
+    // the host-side `GpuAOVBuffer`'s `width * height *
+    // component_count` layout: `pix_idx_3` for 3-channel passes,
+    // `pix_idx_1` for 1-channel passes.
+    //
+    // Encoding choices (see `cuda/CudaAOV.cuh`'s header comment):
+    //   - normal: `0.5 * n + 0.5` for hits so the saved PPM is
+    //     directly viewable without a CPU remap; (0, 0, 0) on
+    //     miss.
+    //   - depth:  `1.0 / (1.0 + t)` for hits so closer surfaces
+    //     are brighter and the value is bounded in [0, 1] for
+    //     PPM viewing; 0 on miss.
+    //   - other passes: raw values.
+    const int pix_idx_1 = y * width + x;
+    const int pix_idx_3 = pix_idx_1 * 3;
+
+    if (scene.aovs.beauty != nullptr) {
+        scene.aovs.beauty[pix_idx_3 + 0] = color.x;
+        scene.aovs.beauty[pix_idx_3 + 1] = color.y;
+        scene.aovs.beauty[pix_idx_3 + 2] = color.z;
+    }
+    if (scene.aovs.normal != nullptr) {
+        const Vec3 n_enc = best.hit
+            ? Vec3{best.normal.x * 0.5f + 0.5f,
+                   best.normal.y * 0.5f + 0.5f,
+                   best.normal.z * 0.5f + 0.5f}
+            : Vec3{0.0f, 0.0f, 0.0f};
+        scene.aovs.normal[pix_idx_3 + 0] = n_enc.x;
+        scene.aovs.normal[pix_idx_3 + 1] = n_enc.y;
+        scene.aovs.normal[pix_idx_3 + 2] = n_enc.z;
+    }
+    if (scene.aovs.depth != nullptr) {
+        const float depth_vis =
+            best.hit ? (1.0f / (1.0f + best.t)) : 0.0f;
+        scene.aovs.depth[pix_idx_1] = depth_vis;
+    }
+    if (scene.aovs.albedo != nullptr) {
+        scene.aovs.albedo[pix_idx_3 + 0] = albedo.x;
+        scene.aovs.albedo[pix_idx_3 + 1] = albedo.y;
+        scene.aovs.albedo[pix_idx_3 + 2] = albedo.z;
+    }
+    if (scene.aovs.doppler_factor != nullptr) {
+        scene.aovs.doppler_factor[pix_idx_1] = D;
+    }
+    if (scene.aovs.searchlight_factor != nullptr) {
+        scene.aovs.searchlight_factor[pix_idx_1] = D4;
+    }
 }
 
 }  // namespace

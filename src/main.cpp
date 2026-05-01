@@ -37,6 +37,8 @@
     #include "pathtracer/PathTracer.h"
     #include "relativity/RelativityParams.h"
     #include "renderer/AccumulationBuffer.h"
+    #include "renderer/AOV.h"
+    #include "renderer/GpuAOVBuffer.h"
     #include "scene/Scene.h"
     #include "texture/ImageTexture.h"
 
@@ -100,11 +102,22 @@ void report_device_info() {
 }
 
 #ifdef RR_HAS_CUDA
-// Create the parent directory of `out_path` (if any), save the image
-// there, and log the absolute path on success. Returns true on
-// success. Only used by the GPU render dispatches, so it is gated on
-// the same RR_HAS_CUDA macro to avoid a `defined but not used`
-// warning under host-only builds.
+// Forward declarations for two save helpers used by the GPU render
+// dispatches. Both are gated on `RR_HAS_CUDA` because that's the
+// only context where a populated framebuffer / AOV buffer reaches
+// the host.
+bool save_image_or_error(const rr::image::Image& img,
+                         const std::string&      out_path,
+                         std::string_view        label,
+                         int                     width,
+                         int                     height);
+
+bool save_aov_to_ppm(const rr::renderer::GpuAOVBuffer& buffer,
+                     const std::string&                out_path,
+                     int                               width,
+                     int                               height,
+                     std::string_view                  label);
+
 bool save_image_or_error(const rr::image::Image& img,
                          const std::string&      out_path,
                          std::string_view        label,
@@ -137,6 +150,80 @@ bool save_image_or_error(const rr::image::Image& img,
                + " (" + std::to_string(width) + "x"
                + std::to_string(height) + ", RGBA32F)");
     return true;
+}
+
+// Stage 14A.3 helper: download a per-pass `GpuAOVBuffer` and write
+// it to PPM via the existing `Image::save_ppm` path. Vector AOVs
+// (3 floats / pixel: Beauty / Normal / Albedo) are copied directly
+// into an `Rgb32F` image. Scalar AOVs (1 float / pixel: Depth /
+// DopplerFactor / SearchlightFactor) are replicated to grayscale
+// RGB so the resulting PPM is viewable. The float -> uint8 clamp
+// happens inside `save_ppm`, matching every other GPU-render
+// action's save behaviour. No per-pixel value computation runs on
+// the CPU - the floats stored in the AOV buffer are exactly what
+// the kernel wrote (encoded forms for Normal / Depth, raw for the
+// others; see `cuda/CudaAOV.cuh` for the encoding choices).
+bool save_aov_to_ppm(const rr::renderer::GpuAOVBuffer& buffer,
+                     const std::string&                out_path,
+                     int                               width,
+                     int                               height,
+                     std::string_view                  label) {
+    using rr::core::Logger;
+
+    std::vector<float> host;
+    if (!buffer.download(host)) {
+        Logger::error(std::string(label)
+                    + " AOV download failed (no GPU backend, "
+                      "buffer not allocated, or device->host copy "
+                      "errored)");
+        return false;
+    }
+
+    const int components = buffer.component_count();
+    rr::image::Image img(width, height, rr::image::PixelFormat::Rgb32F);
+
+    if (components == 3) {
+        // Direct copy: Image's Rgb32F layout is exactly 3 contiguous
+        // floats per pixel, matching the AOV buffer's layout.
+        const std::size_t expected =
+            static_cast<std::size_t>(width)
+          * static_cast<std::size_t>(height) * 3u;
+        if (host.size() != expected || img.size_in_floats() != expected) {
+            Logger::error(std::string(label)
+                        + " AOV size mismatch (host="
+                        + std::to_string(host.size())
+                        + ", image=" + std::to_string(img.size_in_floats())
+                        + ", expected=" + std::to_string(expected) + ")");
+            return false;
+        }
+        std::memcpy(img.data(), host.data(), expected * sizeof(float));
+    } else if (components == 1) {
+        // Replicate scalar to RGB so the PPM has three identical
+        // channels. Pure data-layout transformation; no value math.
+        const std::size_t pixel_count =
+            static_cast<std::size_t>(width) * static_cast<std::size_t>(height);
+        if (host.size() != pixel_count) {
+            Logger::error(std::string(label)
+                        + " AOV size mismatch (host="
+                        + std::to_string(host.size())
+                        + ", expected=" + std::to_string(pixel_count) + ")");
+            return false;
+        }
+        float* dst = img.data();
+        for (std::size_t i = 0; i < pixel_count; ++i) {
+            const float v = host[i];
+            dst[i * 3 + 0] = v;
+            dst[i * 3 + 1] = v;
+            dst[i * 3 + 2] = v;
+        }
+    } else {
+        Logger::error(std::string(label)
+                    + " AOV has unexpected component count: "
+                    + std::to_string(components));
+        return false;
+    }
+
+    return save_image_or_error(img, out_path, label, width, height);
 }
 #endif  // RR_HAS_CUDA
 
@@ -1847,6 +1934,196 @@ int run_render_direct_lighting(const rr::core::Config& cfg) {
 #endif
 }
 
+// `--render-aovs` dispatch (Stage 14A.3 / master order #19).
+// Builds the same multi-sphere + textured-quad + materials +
+// lights scene `--render-direct-lighting` uses, but layers a
+// non-zero observer velocity on top so the relativity AOVs
+// (DopplerFactor / SearchlightFactor) show visible variation
+// across the framebuffer rather than a flat 1.0. Allocates one
+// `GpuAOVBuffer` per declared `AOVType`, plumbs each device
+// pointer into `CudaRenderer::AOVTargets`, runs
+// `render_scene_with_aovs`, then downloads + saves each pass
+// independently. The CPU only owns buffer lifetime + the final
+// download / save; every per-pixel value comes from the kernel.
+int run_render_aovs(const rr::core::Config& cfg) {
+#ifndef RR_HAS_CUDA
+    (void)cfg;
+    rr::core::Logger::error("--render-aovs requires CUDA. Rebuild with "
+                            "-DRR_ENABLE_CUDA=ON on a host with the CUDA "
+                            "Toolkit and a CUDA-capable GPU.");
+    return 1;
+#else
+    rr::scene::Scene scene;
+    scene.render_settings.width  = cfg.width;
+    scene.render_settings.height = cfg.height;
+    scene.camera.set_aspect(static_cast<float>(cfg.width)
+                          / static_cast<float>(cfg.height));
+
+    // Materials: same five-material palette as
+    // --render-material-scene / --render-direct-lighting.
+    auto red       = rr::material::Material::make_diffuse(
+        rr::math::Vec3{0.85f, 0.20f, 0.20f});
+    auto green     = rr::material::Material::make_diffuse(
+        rr::math::Vec3{0.20f, 0.80f, 0.30f});
+    auto blue      = rr::material::Material::make_diffuse(
+        rr::math::Vec3{0.20f, 0.30f, 0.90f});
+    auto emissive  = rr::material::Material::make_emissive(
+        rr::math::Vec3{1.0f, 0.85f, 0.35f}, /*strength=*/2.0f);
+    auto neutral   = rr::material::Material::make_diffuse(
+        rr::math::Vec3{0.65f, 0.65f, 0.65f});
+    scene.materials.push_back({0, "red",      red.params()});
+    scene.materials.push_back({1, "green",    green.params()});
+    scene.materials.push_back({2, "blue",     blue.params()});
+    scene.materials.push_back({3, "emissive", emissive.params()});
+    scene.materials.push_back({4, "neutral",  neutral.params()});
+
+    const auto add_sphere = [&](float cx, float cy, float cz, float r,
+                                int mat, const char* name) {
+        rr::scene::SceneSphere s;
+        s.object.name = name;
+        s.geometry    = rr::geometry::Sphere{
+            rr::math::Vec3{cx, cy, cz}, r, mat};
+        scene.spheres.push_back(s);
+    };
+    add_sphere(-1.5f,  0.2f, -4.0f, 0.7f, 0, "left");
+    add_sphere( 0.0f, -0.1f, -3.5f, 0.8f, 1, "centre");
+    add_sphere( 1.5f,  0.2f, -4.0f, 0.7f, 2, "right");
+    add_sphere( 0.0f, -1.4f, -5.0f, 1.0f, 3, "ground-bulb");
+
+    rr::geometry::Mesh quad;
+    quad.vertices.push_back({rr::math::Vec3{-3.0f, -3.0f, -6.0f},
+                             rr::math::Vec3{0.0f, 0.0f, 1.0f},
+                             rr::math::Vec2{0.0f, 0.0f}});
+    quad.vertices.push_back({rr::math::Vec3{ 3.0f, -3.0f, -6.0f},
+                             rr::math::Vec3{0.0f, 0.0f, 1.0f},
+                             rr::math::Vec2{1.0f, 0.0f}});
+    quad.vertices.push_back({rr::math::Vec3{ 3.0f,  3.0f, -6.0f},
+                             rr::math::Vec3{0.0f, 0.0f, 1.0f},
+                             rr::math::Vec2{1.0f, 1.0f}});
+    quad.vertices.push_back({rr::math::Vec3{-3.0f,  3.0f, -6.0f},
+                             rr::math::Vec3{0.0f, 0.0f, 1.0f},
+                             rr::math::Vec2{0.0f, 1.0f}});
+    quad.triangles.push_back({0, 1, 2});
+    quad.triangles.push_back({0, 2, 3});
+    quad.material_id = 4;
+
+    // Three lights: one directional (key), one warm point light
+    // near the spheres (fill), one cool environment ambient.
+    // Same shape as --render-direct-lighting; the brace-init
+    // matches `SceneLight { SceneObject object; Light data; }`.
+    scene.lights.push_back({{}, rr::lighting::make_directional_light(
+        rr::math::Vec3{-0.4f, -0.7f, -0.6f},
+        rr::math::Vec3{1.0f, 0.95f, 0.85f},
+        /*intensity=*/0.9f)});
+    scene.lights.push_back({{}, rr::lighting::make_point_light(
+        rr::math::Vec3{2.0f, 1.5f, -2.5f},
+        rr::math::Vec3{1.0f, 0.85f, 0.6f},
+        /*intensity=*/30.0f)});
+    scene.lights.push_back({{}, rr::lighting::make_environment_light(
+        rr::math::Vec3{0.55f, 0.65f, 0.85f},
+        /*intensity=*/0.25f)});
+
+    // Stage 14A.3: pick a non-zero observer velocity so the
+    // DopplerFactor / SearchlightFactor AOVs show visible
+    // variation across the framebuffer. β = 0.5 along -Z (forward
+    // motion into the scene) gives a clear forward-cone brightening
+    // and a backward-cone dimming under the searchlight pass.
+    scene.observer.velocity = rr::math::Vec3{0.0f, 0.0f, -0.5f};
+    // Defaults already enable doppler / searchlight in
+    // RelativityParams; the AOV writes happen regardless of those
+    // flags, so the beauty pass shows the colour-shifted output
+    // and the AOV passes show the underlying physical factors.
+
+    std::vector<rr::geometry::Sphere> sphere_pods;
+    sphere_pods.reserve(scene.spheres.size());
+    for (const auto& s : scene.spheres) {
+        if (s.object.visible) sphere_pods.push_back(s.geometry);
+    }
+
+    std::vector<rr::material::MaterialParams> material_pods;
+    material_pods.reserve(scene.materials.size());
+    for (const auto& m : scene.materials) {
+        material_pods.push_back(m.params);
+    }
+
+    std::vector<rr::lighting::Light> light_pods;
+    light_pods.reserve(scene.lights.size());
+    for (const auto& L : scene.lights) light_pods.push_back(L.data);
+
+    rr::gpu::GpuScene gpu_scene;
+    if (!gpu_scene.upload_camera(scene.camera))
+        { rr::core::Logger::error("aovs: upload_camera failed"); return 1; }
+    if (!gpu_scene.upload_relativity(scene.observer, scene.relativity))
+        { rr::core::Logger::error("aovs: upload_relativity failed"); return 1; }
+    if (!gpu_scene.upload_spheres(sphere_pods.data(), sphere_pods.size()))
+        { rr::core::Logger::error("aovs: upload_spheres failed"); return 1; }
+    if (!gpu_scene.upload_mesh(quad))
+        { rr::core::Logger::error("aovs: upload_mesh failed"); return 1; }
+    if (!gpu_scene.upload_materials(material_pods.data(), material_pods.size()))
+        { rr::core::Logger::error("aovs: upload_materials failed"); return 1; }
+    if (!gpu_scene.upload_lights(light_pods.data(), light_pods.size()))
+        { rr::core::Logger::error("aovs: upload_lights failed"); return 1; }
+
+    // Allocate one GpuAOVBuffer per declared AOVType. The default
+    // factory returns the six in stable order:
+    //   [0] Beauty, [1] Normal, [2] Depth,
+    //   [3] Albedo, [4] DopplerFactor, [5] SearchlightFactor.
+    auto aov_set = rr::renderer::make_default_aov_set();
+    for (auto& b : aov_set) {
+        if (!b.resize(cfg.width, cfg.height)) {
+            rr::core::Logger::error("aovs: resize failed for "
+                + std::string(rr::renderer::aov_type_name(b.type())));
+            return 1;
+        }
+    }
+
+    rr::cuda::CudaRenderer::AOVTargets targets;
+    targets.beauty             = aov_set[0].device_ptr();
+    targets.normal             = aov_set[1].device_ptr();
+    targets.depth              = aov_set[2].device_ptr();
+    targets.albedo             = aov_set[3].device_ptr();
+    targets.doppler_factor     = aov_set[4].device_ptr();
+    targets.searchlight_factor = aov_set[5].device_ptr();
+
+    auto r = rr::cuda::CudaRenderer::render_scene_with_aovs(
+        gpu_scene, cfg.width, cfg.height, targets);
+    if (!r.ok) {
+        rr::core::Logger::error("aovs render failed: " + r.message);
+        return 1;
+    }
+
+    // Save each AOV to its named PPM. Output filenames match the
+    // prompt's spec; the doppler / searchlight passes use the
+    // shorter "_doppler" / "_searchlight" stems rather than the
+    // verbose factor-suffixed forms.
+    struct OutSpec { std::size_t idx; const char* path; const char* label; };
+    static constexpr OutSpec kSpecs[] = {
+        {0, "output/aov_beauty.ppm",       "AOV beauty"},
+        {1, "output/aov_normal.ppm",       "AOV normal"},
+        {2, "output/aov_depth.ppm",        "AOV depth"},
+        {3, "output/aov_albedo.ppm",       "AOV albedo"},
+        {4, "output/aov_doppler.ppm",      "AOV doppler"},
+        {5, "output/aov_searchlight.ppm",  "AOV searchlight"},
+    };
+
+    bool all_ok = true;
+    for (const auto& s : kSpecs) {
+        if (!save_aov_to_ppm(aov_set[s.idx], s.path,
+                             cfg.width, cfg.height, s.label)) {
+            all_ok = false;
+        }
+    }
+
+    rr::core::Logger::info("aovs: "
+                         + std::to_string(aov_set.size())
+                         + " AOV(s) rendered, "
+                         + std::to_string(cfg.width) + "x"
+                         + std::to_string(cfg.height) + " each");
+
+    return all_ok ? 0 : 1;
+#endif
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -1926,6 +2203,9 @@ int main(int argc, char** argv) {
         case CommandLine::Action::RenderTexturedMaterial:
             return run_render_textured_material(result.config);
 
+        case CommandLine::Action::RenderAOVs:
+            return run_render_aovs(result.config);
+
         case CommandLine::Action::Error:
             Logger::error(result.error_message);
             std::cerr << CommandLine::usage(argv[0]);
@@ -1934,8 +2214,9 @@ int main(int argc, char** argv) {
         case CommandLine::Action::Default:
             Logger::info(std::string(rr::core::kProjectName) + " "
                        + rr::core::kVersionString + " starting up.");
-            Logger::info("Stage 13B.3: material texture integration. "
-                         "Try --render-textured-material, "
+            Logger::info("Stage 14A.3: GPU AOV writing. "
+                         "Try --render-aovs, "
+                         "--render-textured-material, "
                          "--render-texture-sample-test, "
                          "--render-pathtrace <file>, "
                          "--render-accumulation-test, "

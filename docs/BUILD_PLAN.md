@@ -3715,6 +3715,7 @@ sub-stages, appended to the same file.** No code is touched.
 | 13B.3    | Material texture integration (baseColorTextureId / useBaseColorTexture; GpuScene textures; --render-textured-material) | ✅ |
 | 14A.1    | AOV data model (AOVType: Beauty/Normal/Depth/Albedo/DopplerFactor/SearchlightFactor; AOV class; CudaAOV.cuh re-export; no integration) | ✅ |
 | 14A.2    | GPU AOV buffers (GpuAOVBuffer; one GpuBuffer<float> per pass; allocate / reset / download; make_default_aov_set; no kernel hook) | ✅ |
+| 14A.3    | CUDA AOV writing (k_render_scene writes 6 AOVs; render_scene_with_aovs; --render-aovs; output/aov_*.ppm) | ✅ |
 
 ## Stage 12A.2.1 — OptiX raygen program design
 
@@ -7717,6 +7718,304 @@ joins in a subsequent sub-stage.**
   found warning); ctest 4/4 passes. GPU AOV
   buffers are orthogonal to the OptiX flag
   and to `RR_ENABLE_CUDA`.
+
+## Stage 14A.3 — CUDA AOV writing
+
+**Scope of this slice (Stage 14A.3; master order
+#19): wire the GPU render kernel `k_render_scene`
+to write the six declared AOVs into the host-
+allocated `GpuAOVBuffer`s from Stage 14A.2.
+Adds a `DeviceAOVView` device-pointer POD on
+`CudaSceneView`, a per-pixel write block at the
+end of the kernel, a host-side
+`render_scene_with_aovs` entry on
+`CudaRenderer`, a new CLI action
+`--render-aovs`, and the six output PPMs the
+prompt requires.
+
+All AOV values are computed GPU-side. The CPU
+only allocates buffers, downloads them, and
+writes PPMs. Existing CLI actions remain byte-
+identical because the kernel's per-pass write
+is gated on a non-null device pointer; the
+default-constructed `DeviceAOVView` (every
+existing `render_scene` call) skips every
+write.**
+
+### What ships
+
+- `src/cuda/CudaAOV.cuh`: rewritten beyond the
+  Stage 14A.1 thin re-export. Now declares
+  `struct rr::cuda::DeviceAOVView` with six
+  raw-`float*` device-pointer fields (one per
+  declared AOVType). Each pointer is the
+  device-side write target for that pass;
+  `nullptr` means the kernel skips the write.
+  Header comment documents the six per-pass
+  encoding choices (Beauty / Albedo: raw RGB;
+  Normal: encoded `0.5 * n + 0.5` for hits, zero
+  on miss; Depth: `1.0 / (1.0 + t)` for hits,
+  zero on miss; DopplerFactor / SearchlightFactor:
+  raw physical values regardless of the existing
+  relativity `enable_*` toggles).
+- `src/cuda/CudaScene.cuh`: `CudaSceneView`
+  gains an `rr::cuda::DeviceAOVView aovs;`
+  field. Default-constructed (every pointer
+  null) so existing `render_scene` callers
+  remain byte-identical.
+- `src/cuda/CudaTestKernel.cu`: `k_render_scene`
+  refactored:
+  - `albedo` is hoisted out of the hit branch
+    (default `(0,0,0)` in scope; the existing
+    pre-14A.3 hit-side default `(0.8, 0.8, 0.8)`
+    moved into the hit branch where it was
+    used) so the albedo AOV can read it on
+    miss.
+  - `D^4` is computed unconditionally via
+    `searchlightFactor(D)` (was previously
+    inside the `enable_searchlight` guard) so
+    the searchlight_factor AOV always sees the
+    raw physical value regardless of whether
+    the beauty pass applies the beaming scale.
+  - A new "step 9: AOV writes" block appended
+    after the framebuffer write. Six per-pass
+    branches, each gated on `scene.aovs.<pass>
+    != nullptr`. Indexing matches the host-
+    side `GpuAOVBuffer`'s `width * height *
+    component_count` layout (3-channel
+    `pix_idx_3 = pix_idx_1 * 3`; 1-channel
+    `pix_idx_1 = y * width + x`).
+- `src/cuda/CudaRenderer.{h,cu}`:
+  - New nested struct
+    `CudaRenderer::AOVTargets` with six raw
+    `float*` device pointers. Raw pointers
+    keep the dependency direction one-way
+    (rr_renderer -> rr_gpu) since
+    `GpuAOVBuffer` lives in rr_renderer; the
+    caller extracts each buffer's
+    `device_ptr()` into the struct.
+  - New entry point
+    `CudaRenderer::render_scene_with_aovs(
+    scene, width, height, AOVTargets)`.
+    Implements the same scene-view build as
+    `render_scene` plus the AOV slot
+    population, then dispatches via
+    `run_kernel_render` (the framebuffer is
+    still allocated + downloaded; its RGB is
+    the same data the Beauty AOV records).
+- `src/main.cpp`:
+  - New helper `save_aov_to_ppm(buffer,
+    out_path, width, height, label)`.
+    Downloads the AOV buffer into a host
+    `std::vector<float>`, copies into an
+    `Image(Rgb32F)` (direct memcpy for
+    3-channel passes; replicate-to-RGB for
+    1-channel passes), saves via the existing
+    `Image::save_ppm`. Per-pixel CPU work is
+    pure data-format marshalling (memcpy +
+    scalar-to-RGB replicate); no value
+    computation happens on the host.
+  - New handler `run_render_aovs(cfg)`.
+    Builds the same multi-sphere + textured-
+    quad + lights scene as
+    `--render-direct-lighting`, layers
+    `observer.velocity = (0, 0, -0.5)` so the
+    relativistic AOVs show visible variation,
+    allocates `make_default_aov_set()`'s six
+    buffers at `(cfg.width, cfg.height)`,
+    plumbs each `device_ptr()` into
+    `CudaRenderer::AOVTargets`, dispatches via
+    `render_scene_with_aovs`, and saves each
+    pass to its output PPM.
+  - Output filenames (fixed; `--output` is
+    ignored for this action):
+    `output/aov_beauty.ppm`,
+    `output/aov_normal.ppm`,
+    `output/aov_depth.ppm`,
+    `output/aov_albedo.ppm`,
+    `output/aov_doppler.ppm`,
+    `output/aov_searchlight.ppm`.
+  - Wired into the action dispatch + the
+    Default-action banner / hint line. Stage
+    label bumped.
+- `src/core/CommandLine.{h,cpp}`:
+  - New `Action::RenderAOVs` enum value.
+  - Parser entry recognising `--render-aovs`
+    and routing through `set_action(...)` so
+    it is mutually exclusive with every other
+    action flag.
+  - `Config::validate()` is invoked for the
+    new action.
+  - Usage text gains a paragraph describing
+    the action.
+  - Header doc-comment block + the
+    "mutually exclusive" enumeration list
+    pick up the new flag.
+- `CMakeLists.txt`: stage label bumped to
+  "Stage 14A.3: CUDA AOV writing" in both
+  the `project(...)` description and the
+  project-banner status message. No new
+  source files / new libraries.
+- `docs/BUILD_PLAN.md`: this entry +
+  status-table row for 14A.3.
+
+### Architectural decisions worth highlighting
+
+- **Device-pointer view, not full
+  `GpuAOVBuffer` reference.** `CudaRenderer`
+  lives in rr_gpu while `GpuAOVBuffer` lives
+  in rr_renderer (which depends on rr_gpu); a
+  `GpuAOVBuffer` reference in
+  `CudaRenderer.h` would create a header-
+  level cycle. Raw `float*` device pointers
+  stay one-way and match the precedent set
+  by `AccumulationBuffer` (rr_renderer)
+  feeding `launch_accumulate` (rr_gpu) by
+  raw pointer.
+- **AOV writes gated on null pointer.** The
+  kernel checks each `scene.aovs.<pass>`
+  pointer before writing; `nullptr` means
+  "skip". Default-constructed
+  `DeviceAOVView` skips every pass, so every
+  existing `render_scene` callsite keeps
+  producing exactly the same framebuffer
+  output.
+- **Encoding decisions live in the kernel.**
+  Normal is encoded as `0.5 * n + 0.5` and
+  depth as `1.0 / (1.0 + t)` on the GPU so
+  the saved PPMs are directly viewable
+  without any CPU-side per-pixel
+  computation. The "no CPU pixel
+  computations" rule is honoured strictly:
+  the values stored in the AOV buffer are
+  exactly what the kernel wrote; the host
+  save path only marshals layout (memcpy or
+  scalar-to-RGB replicate).
+- **`D^4` computed unconditionally.** The
+  searchlight beaming factor is now
+  computed regardless of
+  `enable_searchlight` so the
+  searchlight_factor AOV sees the raw
+  physical value. The beauty pass's scale
+  remains gated on the toggle - existing
+  CLI actions are byte-identical because
+  the multiplication is unchanged when the
+  toggle is off.
+- **Hoisted `albedo`.** Moving the variable
+  out of the hit branch lets the albedo
+  AOV read it on miss (where it stays at
+  the default `(0,0,0)`). The hit-branch
+  default `(0.8, 0.8, 0.8)` (used when no
+  material is assigned) is preserved -
+  it's set inside the hit branch right
+  after the hoist.
+- **`--render-aovs` uses a fixed observer
+  velocity.** β = 0.5 forward gives the
+  doppler / searchlight AOVs visible
+  gradients across the framebuffer (a
+  static observer would yield D = 1
+  everywhere). The choice is
+  intentionally non-zero so the AOV pass
+  is visually informative, not a wall of
+  uniform white.
+- **Six fixed output paths, `--output`
+  ignored.** The prompt enumerates the
+  six file names; the handler emits
+  exactly those paths under `output/`.
+  A single `--output` would conflict with
+  six different files; the existing
+  `--render-relativistic` precedent
+  similarly ignores `--output` for its
+  multi-file output.
+- **Save path is host-side data marshal,
+  not pixel computation.** The 3-channel
+  branch is `std::memcpy` from
+  `host.data()` into `img.data()`; the
+  1-channel branch is a copy loop that
+  duplicates each scalar into three
+  channels (no arithmetic). The float ->
+  uint8 quantize that follows in
+  `Image::save_ppm` is the same path
+  every other GPU-render action uses.
+
+### Hard-rule audit
+
+- All AOV values computed GPU-side -
+  **yes**, every per-pixel value the
+  AOV buffer holds was written by
+  `k_render_scene`'s per-pass branches.
+  The CPU only marshals data layout (no
+  per-pixel arithmetic).
+- No CPU pixel computations - **yes**,
+  the host save path is `memcpy` for
+  3-channel passes and a
+  `dst[i*3+0] = dst[i*3+1] = dst[i*3+2]
+  = host[i]` replicate for 1-channel
+  passes; no value math.
+- No server - **yes**, no IPC / socket /
+  protocol.
+- No C4D - **yes**, no Cinema 4D
+  headers / bridges.
+- Must compile and produce outputs -
+  the OFF + ON builds compile clean (no
+  warnings / errors under `-Wall
+  -Wextra -Wpedantic`); ctest 4/4
+  passes both ways. The "produce
+  outputs" half **requires a CUDA-
+  enabled host**: on this audit's
+  CUDA-less host the action correctly
+  short-circuits to the standard
+  requires-CUDA error and exits 1.
+  The output existence check is
+  deferred to a CUDA-enabled host run,
+  matching the same precedent
+  documented in
+  `docs/STAGE_13_VISUAL_CONFIRMATION.md`
+  for the texture-system PPMs.
+- Update docs/BUILD_PLAN.md - **yes**,
+  this entry + status-table row.
+
+### Verified at the build
+
+- `cmake -DRELATIVITYRENDER_ENABLE_OPTIX=
+  OFF ..` (clean reconfigure): builds
+  clean (no warnings / errors); banner
+  shows "Stage 14A.3: CUDA AOV writing";
+  ctest 4/4 passes;
+  `--render-aovs` returns the standard
+  requires-CUDA error and exits 1.
+- `cmake -DRELATIVITYRENDER_ENABLE_OPTIX=
+  ON ..` (clean reconfigure): same
+  result; OptiX scaffold compiles (with
+  the expected 12B.4 SDK-not-found
+  warning); ctest 4/4 passes. AOV
+  writing is orthogonal to the OptiX
+  flag.
+- `--help` lists the new action;
+  mutual-exclusion list rejects
+  `--render-aovs --render-rng-test`
+  with the full action-list error
+  message.
+- A future CUDA-enabled host run will
+  produce six PPMs under `output/`:
+  `aov_beauty.ppm`, `aov_normal.ppm`,
+  `aov_depth.ppm`, `aov_albedo.ppm`,
+  `aov_doppler.ppm`,
+  `aov_searchlight.ppm`. Beauty matches
+  the existing direct-lighting render
+  (same scene, same kernel) plus a
+  Doppler colour shift from the
+  observer velocity; Normal shows
+  encoded surface normals across the
+  spheres + quad; Depth shows
+  `1/(1+t)` where closer surfaces are
+  brighter; Albedo shows the per-
+  material baseColor (and the textured
+  quad if extended in a follow-up);
+  Doppler / Searchlight show smooth
+  forward-cone brightening / backward-
+  cone dimming gradients from the
+  β = 0.5 velocity.
 
 ## Next stage
 

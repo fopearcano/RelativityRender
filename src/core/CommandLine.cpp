@@ -55,7 +55,7 @@ bool set_action(CommandLine::Action& current, CommandLine::Action target,
                 "--render-triangle / --render-mesh-scene / "
                 "--render-material-scene / --render-direct-lighting / "
                 "--render-texture-sample-test / "
-                "--render-textured-material)";
+                "--render-textured-material / --render-aovs)";
         return false;
     }
     current = target;
@@ -227,6 +227,12 @@ CommandLine::ParseResult CommandLine::parse(int argc, char** argv) {
                 r.action = Action::Error;
                 return r;
             }
+        } else if (a == "--render-aovs") {
+            if (!set_action(r.action, Action::RenderAOVs,
+                            r.error_message)) {
+                r.action = Action::Error;
+                return r;
+            }
         } else if (a == "--output") {
             if (!take_value(argc, argv, i, a, value, r.error_message)) {
                 r.action = Action::Error;
@@ -284,7 +290,8 @@ CommandLine::ParseResult CommandLine::parse(int argc, char** argv) {
      || r.action == Action::RenderMaterialScene
      || r.action == Action::RenderDirectLighting
      || r.action == Action::RenderTextureSampleTest
-     || r.action == Action::RenderTexturedMaterial) {
+     || r.action == Action::RenderTexturedMaterial
+     || r.action == Action::RenderAOVs) {
         if (auto err = r.config.validate(); !err.empty()) {
             r.action        = Action::Error;
             r.error_message = std::move(err);
@@ -419,6 +426,21 @@ std::string CommandLine::usage(std::string_view argv0) {
                                   "reference texture. Default output\n"
        << "                        output/gpu_textured_material.ppm "
                                   "(requires CUDA).\n"
+       << "  --render-aovs         Stage 14A.3 AOV / render-pass "
+                                  "validation: build a lit multi-sphere\n"
+       << "                        + quad scene with non-zero observer "
+                                  "velocity, allocate one\n"
+       << "                        GpuAOVBuffer per declared AOVType, "
+                                  "and run the render kernel writing\n"
+       << "                        Beauty / Normal / Depth / Albedo / "
+                                  "DopplerFactor / SearchlightFactor.\n"
+       << "                        Outputs output/aov_beauty.ppm, "
+                                  "output/aov_normal.ppm,\n"
+       << "                        output/aov_depth.ppm, "
+                                  "output/aov_albedo.ppm,\n"
+       << "                        output/aov_doppler.ppm, "
+                                  "output/aov_searchlight.ppm. --output\n"
+       << "                        is ignored (requires CUDA).\n"
        << "  --output <path>       Write the rendered image to <path>.\n"
        << "                        Default for --render-gradient is "
                                   "output/gpu_gradient.ppm;\n"

@@ -163,6 +163,26 @@ namespace rr::core {
 //                           output
 //                           "output/gpu_textured_material.ppm".
 //                           Requires CUDA.
+//   --render-aovs           Stage 14A.3 AOV / render-pass
+//                           validation. Builds the multi-sphere
+//                           + quad + lit scene from
+//                           `--render-direct-lighting` plus a
+//                           non-zero observer velocity, allocates
+//                           one `GpuAOVBuffer` per declared AOV,
+//                           and runs the GPU render kernel that
+//                           additionally writes per-pixel values
+//                           for Beauty / Normal / Depth / Albedo /
+//                           DopplerFactor / SearchlightFactor.
+//                           Each pass is downloaded and saved
+//                           separately:
+//                             output/aov_beauty.ppm
+//                             output/aov_normal.ppm
+//                             output/aov_depth.ppm
+//                             output/aov_albedo.ppm
+//                             output/aov_doppler.ppm
+//                             output/aov_searchlight.ppm
+//                           `--output` is ignored; the path-set
+//                           above is fixed. Requires CUDA.
 //   --output <path>         Write the rendered image to <path>.
 //                           Default for --render-gradient is
 //                           "output/gpu_gradient.ppm";
@@ -192,9 +212,10 @@ namespace rr::core {
 // --render-relativistic / --render-scene / --render-triangle /
 // --render-mesh-scene / --render-material-scene /
 // --render-direct-lighting / --render-texture-sample-test /
-// --render-textured-material) are mutually exclusive; combining
-// them is a parse error. The remaining flags configure `Config`
-// and are accepted regardless of action.
+// --render-textured-material / --render-aovs) are mutually
+// exclusive; combining them is a parse error. The remaining
+// flags configure `Config` and are accepted regardless of
+// action.
 
 class CommandLine {
 public:
@@ -222,6 +243,7 @@ public:
         RenderDirectLighting,
         RenderTextureSampleTest,
         RenderTexturedMaterial,
+        RenderAOVs,
         Error,          // parse failure; see `error_message`
     };
 

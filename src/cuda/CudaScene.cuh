@@ -14,6 +14,7 @@
 // support is a future slice.
 
 #include "camera/CameraRay.h"
+#include "cuda/CudaAOV.cuh"       // DeviceAOVView for the AOV write slot
 #include "cuda/CudaMesh.cuh"
 #include "cuda/CudaTexture.cuh"   // DeviceTextureView for the texture array slot
 #include "geometry/Sphere.h"
@@ -65,6 +66,14 @@ struct CudaSceneView {
     // with every existing CLI action.
     const rr::cuda::DeviceTextureView* textures      = nullptr;
     int                                texture_count = 0;
+
+    // AOV write slot. Stage 14A.3 wiring (master order #19). Each
+    // member of `aovs` is a device pointer (or `nullptr` when the
+    // pass is not requested) into a per-pass `GpuAOVBuffer`. The
+    // kernel writes whichever AOVs have non-null pointers; the
+    // default-constructed view skips every pass, which keeps every
+    // existing render action's behaviour byte-identical.
+    rr::cuda::DeviceAOVView           aovs;
 };
 
 }

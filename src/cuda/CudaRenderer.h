@@ -116,6 +116,49 @@ public:
     // download / save; the device does the sampling work.
     [[nodiscard]] static Result render_texture_sample_test(int width,
                                                            int height);
+
+    // Stage 14A.3 (master order #19) AOV render path. Renders the
+    // given scene with the same `k_render_scene` kernel every
+    // other Stage 6+ action uses, but populates the kernel's
+    // `DeviceAOVView` so the kernel additionally writes per-pixel
+    // values for the requested AOVs (Beauty / Normal / Depth /
+    // Albedo / DopplerFactor / SearchlightFactor).
+    //
+    // Each pointer in `targets` is a raw device pointer into the
+    // caller's per-pass storage (typically a
+    // `rr::renderer::GpuAOVBuffer::device_ptr()`); pass `nullptr`
+    // to skip a pass. The renderer does not allocate or own the
+    // AOV buffers - the caller resizes them to (width, height)
+    // before invoking. Layout per pass matches
+    // `aov_component_count`: 3 floats / pixel for Beauty /
+    // Normal / Albedo, 1 float / pixel for Depth /
+    // DopplerFactor / SearchlightFactor.
+    //
+    // The 4-channel Rgba32F framebuffer is still allocated +
+    // written + downloaded by `run_kernel_render` so the
+    // returned `Result.image` matches the Beauty AOV's RGB;
+    // callers that only want AOV outputs can ignore it.
+    //
+    // Note that `CudaRenderer.h` lives in rr_gpu and
+    // `GpuAOVBuffer` lives in rr_renderer (which depends on
+    // rr_gpu); using raw `float*` pointers here keeps the
+    // dependency direction one-way, matching how
+    // `AccumulationBuffer` (rr_renderer) is fed into
+    // `launch_accumulate` (rr_gpu) by raw `float*` pointer.
+    struct AOVTargets {
+        float* beauty             = nullptr;
+        float* normal             = nullptr;
+        float* depth              = nullptr;
+        float* albedo             = nullptr;
+        float* doppler_factor     = nullptr;
+        float* searchlight_factor = nullptr;
+    };
+
+    [[nodiscard]] static Result render_scene_with_aovs(
+        const rr::gpu::GpuScene& scene,
+        int                      width,
+        int                      height,
+        const AOVTargets&        targets);
 };
 
 }
