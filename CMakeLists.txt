@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.20)
 
 project(RelativityRender
     VERSION     0.1.0
-    DESCRIPTION "RelativityRender - GPU renderer platform (Stage 17A.2: OptiX triangle GAS)"
+    DESCRIPTION "RelativityRender - GPU renderer platform (Stage 17A.3: OptiX pipeline skeleton)"
     LANGUAGES   CXX
 )
 
@@ -33,7 +33,7 @@ option(RELATIVITYRENDER_ENABLE_OPTIX
 
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
-message(STATUS "RelativityRender ${PROJECT_VERSION} (Stage 17A.2: OptiX triangle GAS)")
+message(STATUS "RelativityRender ${PROJECT_VERSION} (Stage 17A.3: OptiX pipeline skeleton)")
 
 message(STATUS "  Build type   : ${CMAKE_BUILD_TYPE}")
 message(STATUS "  C++ standard : ${CMAKE_CXX_STANDARD}")
@@ -389,6 +389,7 @@ if(RELATIVITYRENDER_ENABLE_OPTIX)
     add_library(rr_optix STATIC
         src/optix/OptixBackend.cpp
         src/optix/OptixAccel.cpp
+        src/optix/OptixPipeline.cpp
         src/optix/OptixRenderer.cpp
     )
     target_include_directories(rr_optix PUBLIC src)
@@ -414,6 +415,51 @@ if(RELATIVITYRENDER_ENABLE_OPTIX)
         target_include_directories(rr_optix PRIVATE
             ${RELATIVITYRENDER_OPTIX_SDK_INCLUDE_DIR})
         target_link_libraries(rr_optix PRIVATE CUDA::cudart)
+
+        # Stage 17A.3: compile src/optix/OptixPrograms.cu -> PTX
+        # via nvcc, then run cmake/EmbedPtxAsHeader.cmake to wrap
+        # the PTX text in a `static const char[]` symbol that
+        # OptixPipeline.cpp #includes. The generated header lives
+        # in the build tree (alongside other build-generated
+        # artifacts); rr_optix's PRIVATE include dir picks it up.
+        set(_optix_programs_cu
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/optix/OptixPrograms.cu)
+        set(_optix_programs_ptx
+            ${CMAKE_CURRENT_BINARY_DIR}/OptixPrograms.ptx)
+        set(_optix_programs_h
+            ${CMAKE_CURRENT_BINARY_DIR}/OptixPrograms_embedded_ptx.h)
+
+        add_custom_command(
+            OUTPUT  ${_optix_programs_ptx}
+            COMMAND ${CUDAToolkit_NVCC_EXECUTABLE}
+                    --ptx
+                    -std=c++17
+                    -O2
+                    --use_fast_math
+                    -I ${CMAKE_CURRENT_SOURCE_DIR}/src
+                    -I ${RELATIVITYRENDER_OPTIX_SDK_INCLUDE_DIR}
+                    -o ${_optix_programs_ptx}
+                    ${_optix_programs_cu}
+            DEPENDS ${_optix_programs_cu}
+            COMMENT "[OptiX] Compiling OptixPrograms.cu -> PTX")
+
+        add_custom_command(
+            OUTPUT  ${_optix_programs_h}
+            COMMAND ${CMAKE_COMMAND}
+                    -DPTX_FILE=${_optix_programs_ptx}
+                    -DOUTPUT_HEADER=${_optix_programs_h}
+                    -DSYMBOL_NAME=g_optix_programs_ptx
+                    -P ${CMAKE_SOURCE_DIR}/cmake/EmbedPtxAsHeader.cmake
+            DEPENDS ${_optix_programs_ptx}
+                    ${CMAKE_SOURCE_DIR}/cmake/EmbedPtxAsHeader.cmake
+            COMMENT "[OptiX] Embedding PTX as C header")
+
+        # Attach the generated header to rr_optix so the PTX
+        # build runs whenever any rr_optix TU is rebuilt that
+        # references the symbol.
+        target_sources(rr_optix PRIVATE ${_optix_programs_h})
+        target_include_directories(rr_optix PRIVATE
+            ${CMAKE_CURRENT_BINARY_DIR})
     endif()
 endif()
 

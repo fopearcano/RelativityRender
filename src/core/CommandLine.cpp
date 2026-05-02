@@ -56,7 +56,7 @@ bool set_action(CommandLine::Action& current, CommandLine::Action target,
                 "--render-material-scene / --render-direct-lighting / "
                 "--render-texture-sample-test / "
                 "--render-textured-material / --render-aovs / "
-                "--server)";
+                "--server / --render-optix-test)";
         return false;
     }
     current = target;
@@ -240,6 +240,12 @@ CommandLine::ParseResult CommandLine::parse(int argc, char** argv) {
                 r.action = Action::Error;
                 return r;
             }
+        } else if (a == "--render-optix-test") {
+            if (!set_action(r.action, Action::RenderOptixTest,
+                            r.error_message)) {
+                r.action = Action::Error;
+                return r;
+            }
         } else if (a == "--output") {
             if (!take_value(argc, argv, i, a, value, r.error_message)) {
                 r.action = Action::Error;
@@ -298,7 +304,8 @@ CommandLine::ParseResult CommandLine::parse(int argc, char** argv) {
      || r.action == Action::RenderDirectLighting
      || r.action == Action::RenderTextureSampleTest
      || r.action == Action::RenderTexturedMaterial
-     || r.action == Action::RenderAOVs) {
+     || r.action == Action::RenderAOVs
+     || r.action == Action::RenderOptixTest) {
         if (auto err = r.config.validate(); !err.empty()) {
             r.action        = Action::Error;
             r.error_message = std::move(err);
@@ -455,6 +462,15 @@ std::string CommandLine::usage(std::string_view argv0) {
        << "                        commands: ping -> pong. Press Ctrl-C "
                                   "(SIGINT) or send SIGTERM\n"
        << "                        to stop. Pure host code; runs without CUDA.\n"
+       << "  --render-optix-test   Stage 17A.3 OptiX pipeline-skeleton "
+                                  "validation: build raygen + miss\n"
+       << "                        pipeline + minimal SBT, run "
+                                  "optixLaunch which writes a flat\n"
+       << "                        colour to the framebuffer, save "
+                                  "PPM. Default output\n"
+       << "                        output/optix_test.ppm. Requires\n"
+       << "                        -DRELATIVITYRENDER_ENABLE_OPTIX=ON "
+                                  "+ CUDA Toolkit + OptiX SDK.\n"
        << "  --output <path>       Write the rendered image to <path>.\n"
        << "                        Default for --render-gradient is "
                                   "output/gpu_gradient.ppm;\n"

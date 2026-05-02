@@ -193,6 +193,21 @@ namespace rr::core {
 //                           SIGTERM to stop; the server logs a
 //                           shutdown line and exits with code 0.
 //                           Pure host code; runs without CUDA.
+//   --render-optix-test     Stage 17A.3 OptiX pipeline-skeleton
+//                           validation. Initialises an
+//                           OptixDeviceContext, builds a minimum-
+//                           viable pipeline (raygen + miss; no
+//                           closest-hit / materials / path tracer),
+//                           launches the raygen which writes a
+//                           flat colour to every pixel, downloads
+//                           the framebuffer, and saves it as a
+//                           PPM. Default output
+//                           "output/optix_test.ppm". Requires
+//                           `-DRELATIVITYRENDER_ENABLE_OPTIX=ON`
+//                           plus a host with the CUDA Toolkit +
+//                           OptiX SDK installed; the audit-host
+//                           fallback returns a clear "requires
+//                           OptiX" error.
 //   --output <path>         Write the rendered image to <path>.
 //                           Default for --render-gradient is
 //                           "output/gpu_gradient.ppm";
@@ -222,10 +237,10 @@ namespace rr::core {
 // --render-relativistic / --render-scene / --render-triangle /
 // --render-mesh-scene / --render-material-scene /
 // --render-direct-lighting / --render-texture-sample-test /
-// --render-textured-material / --render-aovs / --server) are
-// mutually exclusive; combining them is a parse error. The
-// remaining flags configure `Config` and are accepted regardless
-// of action.
+// --render-textured-material / --render-aovs / --server /
+// --render-optix-test) are mutually exclusive; combining them
+// is a parse error. The remaining flags configure `Config` and
+// are accepted regardless of action.
 
 class CommandLine {
 public:
@@ -255,6 +270,7 @@ public:
         RenderTexturedMaterial,
         RenderAOVs,
         Server,
+        RenderOptixTest,
         Error,          // parse failure; see `error_message`
     };
 

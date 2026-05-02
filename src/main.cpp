@@ -24,6 +24,7 @@
 // see this header and never reference the OptixBackend class.
 #ifdef RELATIVITYRENDER_ENABLE_OPTIX
     #include "optix/OptixBackend.h"
+    #include "optix/OptixRenderer.h"
 #endif
 
 #ifdef RR_HAS_CUDA
@@ -956,6 +957,59 @@ int run_render_rng_test(const rr::core::Config& cfg) {
     }
     return save_image_or_error(r.image, out_path, "GPU RNG test",
                                cfg.width, cfg.height) ? 0 : 1;
+#endif
+}
+
+// `--render-optix-test` dispatch (Stage 17A.3). Drives the
+// minimum-viable OptiX pipeline: initialise OptixBackend, build
+// pipeline (raygen + miss; no closest-hit, no path tracer),
+// allocate framebuffer, optixLaunch the raygen which writes a
+// flat colour, download, save PPM. CUDA path is unaffected.
+//
+// Default output: `output/optix_test.ppm`. `--output` overrides.
+// Requires both `-DRELATIVITYRENDER_ENABLE_OPTIX=ON` and a host
+// with the CUDA Toolkit + OptiX SDK installed; the audit-host
+// fallback returns a clear "requires OptiX" error.
+int run_render_optix_test(const rr::core::Config& cfg) {
+    using rr::core::Logger;
+
+    const std::string out_path = cfg.output_path.empty()
+        ? std::string("output/optix_test.ppm")
+        : cfg.output_path;
+
+#ifndef RELATIVITYRENDER_ENABLE_OPTIX
+    (void)cfg;
+    Logger::error("--render-optix-test requires OptiX. Rebuild "
+                  "with -DRELATIVITYRENDER_ENABLE_OPTIX=ON on a "
+                  "host with the CUDA Toolkit + OptiX SDK "
+                  "installed (also pass -DOPTIX_ROOT=/path/to/"
+                  "optix-sdk).");
+    return 1;
+#else
+    auto r = rr::optix::OptixRenderer::render_test(cfg.width, cfg.height);
+    if (!r.ok) {
+        Logger::error("optix test render failed: " + r.message);
+        return 1;
+    }
+
+    namespace fs = std::filesystem;
+    const fs::path out_fs = out_path;
+    if (out_fs.has_parent_path()) {
+        std::error_code ec;
+        fs::create_directories(out_fs.parent_path(), ec);
+    }
+    if (!r.image.save_ppm(out_fs)) {
+        Logger::error("could not write PPM: " + out_path);
+        return 1;
+    }
+
+    std::error_code ec;
+    const fs::path  abs = fs::absolute(out_fs, ec);
+    Logger::info(std::string("wrote OptiX test: ")
+               + (ec ? out_path : abs.string())
+               + " (" + std::to_string(cfg.width) + "x"
+               + std::to_string(cfg.height) + ", RGBA32F)");
+    return 0;
 #endif
 }
 
@@ -2395,6 +2449,9 @@ int main(int argc, char** argv) {
 
         case CommandLine::Action::Server:
             return run_server(result.config);
+
+        case CommandLine::Action::RenderOptixTest:
+            return run_render_optix_test(result.config);
 
         case CommandLine::Action::Error:
             Logger::error(result.error_message);

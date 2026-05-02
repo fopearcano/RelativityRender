@@ -3729,6 +3729,7 @@ sub-stages, appended to the same file.** No code is touched.
 | 15-render | Stage 15 server render command (render wire verb wired to GpuScene + CudaRenderer::render_scene; saves output/server_render.ppm; "error: no scene loaded" when no load_scene; "error: render requires CUDA" on no-CUDA builds) | ✅ |
 | 17A.1    | OptiX context init (real OptixDeviceContext via OptixBackend::initialize/shutdown; CUDA<->OptiX interop via cudaFree(0) + optixDeviceContextCreate(0,...); SDK-gated with audit-host fallback) | ✅ |
 | 17A.2    | OptiX triangle GAS (OptixAccel.h: OptixGas owner + MeshGasInput + build_mesh_gas; static / triangles only; SDK-gated with audit-host fallback) | ✅ |
+| 17A.3    | OptiX pipeline skeleton (OptixPrograms.cu raygen+miss; OptixSBT/OptixLaunchParams headers; OptixPipeline lifecycle; OptixRenderer::render_test; --render-optix-test → output/optix_test.ppm; build-time PTX embed via cmake/EmbedPtxAsHeader.cmake) | ✅ |
 
 ## Stage 12A.2.1 — OptiX raygen program design
 
@@ -10262,6 +10263,295 @@ The CUDA renderer is unaffected.**
   log line, and holds the resulting
   `OptixGas` for the IAS / pipeline
   sub-stages that follow.
+
+## Stage 17A.3 — OptiX pipeline skeleton
+
+**Scope of this slice (Stage 17A.3; master order
+#17 OptiX upgrade path): build a minimum-viable
+OptiX pipeline (raygen + miss; no closest-hit,
+no any-hit, no intersection) and run a single
+`optixLaunch` whose raygen writes a flat colour
+to a framebuffer. Stage 17A.1 shipped the device-
+context lifecycle; 17A.2 the triangle GAS. This
+slice ships the rest of the pipeline plumbing
+(programs, SBT, launch params, pipeline owner)
+plus a CLI handler that produces
+`output/optix_test.ppm`.
+
+NO closest-hit / materials / path tracer. The
+raygen does not even call `optixTrace` (the
+miss program is registered only to satisfy SBT
+layout). Subsequent 17A+ sub-stages add the
+real shading / scene-traversal path on top.
+The CUDA renderer is unaffected.**
+
+### What ships
+
+- `src/optix/OptixLaunchParams.h` (new): per
+  `OPTIX_BACKEND_PLAN.md` §23. POD shared by
+  host and device: `framebuffer` (RGBA32F
+  pointer), `width`, `height`, three `flat_
+  color_*` channels. No `<optix.h>` /
+  `<cuda_runtime.h>` include.
+- `src/optix/OptixPrograms.cu` (new): per §20.
+  `__raygen__pinhole` reads the launch index
+  + dimensions, indexes into `framebuffer`,
+  writes the flat RGB colour with alpha=1.
+  `__miss__radiance` is empty (unused at this
+  stage; the raygen does not call
+  `optixTrace`). Reads launch params from
+  the `optixLaunchParams` `__constant__`
+  symbol. Compiled to PTX by `nvcc --ptx`
+  (build system step below).
+- `src/optix/OptixSBT.h` (new): per §21. Two
+  empty record types (`RaygenSbtRecord`,
+  `MissSbtRecord`) consisting of just the
+  `OPTIX_SBT_RECORD_HEADER_SIZE` header,
+  populated by `optixSbtRecordPackHeader`.
+  SDK-gated; the audit-host build sees the
+  file but the types are absent (consumers
+  gate on the same macro).
+- `src/optix/OptixPipeline.{h,cpp}` (new):
+  per §19. Move-only owner of the
+  `OptixModule`, the `OptixProgramGroup`
+  array (raygen + miss), the linked
+  `OptixPipeline`, the on-device SBT
+  records, the host-side
+  `OptixShaderBindingTable` descriptor, and
+  the device-resident launch-params buffer.
+  `create(backend)` runs the canonical
+  OptiX 7+ pipeline-build flow:
+  `optixModuleCreate` -> `optixProgramGroup
+  Create` x2 -> `optixPipelineCreate` ->
+  `optixSbtRecordPackHeader` x2 -> upload
+  records to device -> populate SBT
+  descriptor -> allocate launch-params
+  buffer. Each failure path frees every
+  already-allocated resource before
+  returning - no leaks.
+  - Public surface avoids `<optix.h>`;
+    handles are `void*` / `uint64_t`. The
+    audit-host fallback returns `ok=false`
+    with a clear "SDK not found" message.
+- `src/optix/OptixRenderer.{h,cpp}`
+  (extended): new
+  `Result render_test(int width, int height)
+  noexcept` static. Initialises a fresh
+  `OptixBackend`, builds an
+  `OptixPipeline`, allocates a
+  `width * height * 4`-float framebuffer
+  on the device, copies launch params to
+  the pipeline's params buffer, runs
+  `optixLaunch`, synchronises, downloads
+  to a host-side `Image(Rgba32F)`,
+  returns the result. `Result` now
+  carries an `Image` field (was
+  `ok + message` only at Stage 12B.2).
+  The Stage 12B.2 placeholder
+  `render()` is kept and updated to
+  point readers at `render_test`.
+- `cmake/EmbedPtxAsHeader.cmake` (new):
+  pure-CMake helper that reads a `.ptx`
+  text file and emits a header that
+  exposes its contents as a
+  `static const char []` array plus a
+  `static const std::size_t ${name}_size`
+  constant. No `bin2c` dependency; works
+  identically on Linux + Windows.
+- `src/main.cpp`: new
+  `run_render_optix_test(cfg)` handler.
+  Default output `output/optix_test.ppm`;
+  `--output` overrides. The handler is
+  gated on `RELATIVITYRENDER_ENABLE_OPTIX`;
+  on a build without OptiX the function
+  returns a clear "requires OptiX"
+  error and exit 1. The render path
+  inlines the `create_directories` +
+  `Image::save_ppm` save logic
+  (so it works even on builds where
+  `RR_HAS_CUDA` is undefined). Wired
+  into the action dispatch.
+- `src/core/CommandLine.{h,cpp}`: new
+  `Action::RenderOptixTest` enum
+  value, parser entry recognising
+  `--render-optix-test`, mutual-
+  exclusion list update,
+  `Config::validate()` inclusion,
+  usage text + header doc-comment.
+- `CMakeLists.txt`:
+  - `rr_optix` source list gains
+    `src/optix/OptixPipeline.cpp`.
+  - When `RELATIVITYRENDER_OPTIX_SDK_
+    FOUND`, a custom-command pair
+    drives the PTX pipeline:
+    1. `nvcc --ptx -std=c++17 -O2
+       --use_fast_math` compiles
+       `OptixPrograms.cu` to
+       `${BINARY_DIR}/OptixPrograms
+       .ptx`.
+    2. `cmake -P EmbedPtxAsHeader.cmake`
+       emits
+       `${BINARY_DIR}/OptixPrograms_
+       embedded_ptx.h` containing
+       `static const char g_optix_
+       programs_ptx[]` + `g_optix_
+       programs_ptx_size`.
+    3. The header is added as a
+       PRIVATE source to rr_optix +
+       the binary dir is added as a
+       PRIVATE include path so
+       OptixPipeline.cpp's
+       `#include "OptixPrograms_
+       embedded_ptx.h"` resolves.
+  - Stage label bumped to "Stage 17A.3:
+    OptiX pipeline skeleton".
+- `docs/BUILD_PLAN.md`: this entry +
+  status-table row for 17A.3.
+
+### Architectural decisions worth highlighting
+
+- **Build-time PTX embedding via pure-CMake
+  helper.** Avoids the `bin2c` dependency
+  some setups lack; the helper file-reads
+  the PTX, escapes for a C string literal,
+  and writes a header. Same approach as
+  the OptiX SDK's `bin2c` route but
+  CMake-native. The header is regenerated
+  whenever `OptixPrograms.cu` changes
+  (CMake's dependency graph picks the .cu
+  via `add_custom_command(DEPENDS ...)`).
+- **`<optix.h>`-free public surface,
+  again.** Pipeline + SBT handles use
+  `void*` / `uint64_t`; the implementation
+  reinterprets back to typed handles
+  inside `OptixPipeline.cpp` /
+  `OptixRenderer.cpp`. Same pattern as
+  17A.1 / 17A.2.
+- **No `optixTrace` in the raygen.** The
+  spec scopes this slice to "raygen
+  writes flat colour". A direct
+  framebuffer write is the smallest
+  thing that exercises the full pipeline
+  build + launch path; subsequent
+  sub-stages add the trace + closest-hit
+  layer.
+- **Two-record SBT.** Raygen + miss only.
+  Miss exists because OptiX requires
+  `missRecordCount >= 1` whenever the
+  pipeline could trace rays; even though
+  this raygen does not, including the
+  miss record keeps the SBT future-proof
+  for the very next sub-stage (which
+  will start tracing). The records are
+  empty header-only structs.
+- **`render_test` is end-to-end host
+  orchestration.** Backend init ->
+  pipeline build -> framebuffer alloc ->
+  upload launch params -> `optixLaunch`
+  -> `cudaDeviceSynchronize` -> download
+  -> return Image. Every CUDA / OptiX
+  resource is owned by stack-local
+  RAII (the `OptixBackend` and
+  `OptixPipeline` destructors free their
+  buffers + handles); the only manual
+  `cudaFree` is for the per-call
+  framebuffer.
+- **Audit-host fallback preserved.** The
+  CLI handler, pipeline class, and
+  renderer entry point all degrade
+  gracefully when the SDK isn't
+  located: each returns a clear
+  "requires OptiX SDK" error, no
+  crashes, no `<optix.h>` references
+  reach the compiler.
+- **No CUDA-kernel changes; no CUDA-path
+  files touched.** The CUDA renderer
+  remains the primary path; OptiX is
+  the additive opt-in.
+
+### Hard-rule audit
+
+- No closest-hit yet - **yes**, only
+  raygen + miss program groups; no
+  `OPTIX_PROGRAM_GROUP_KIND_HITGROUP`,
+  no `__closesthit__*`, no
+  `__anyhit__*`, no
+  `__intersection__*`.
+- No materials - **yes**, no
+  `MaterialParams` consumed by OptiX
+  code paths; no SBT data records
+  carry material handles.
+- No path tracing - **yes**, no
+  bounce loop, no RNG, no accumulation
+  buffer in OptiX. The raygen does a
+  single write per pixel.
+- Must produce `output/optix_test.ppm`
+  (when run on a CUDA + OptiX-SDK
+  host) - **yes**, the
+  `run_render_optix_test` handler
+  inlines the
+  `Image::save_ppm("output/optix_
+  test.ppm")` save with directory
+  creation. Audit host falls back to
+  the documented "requires OptiX"
+  error + exit 1 (precedent:
+  `docs/STAGE_15_SERVER_DEFERRED.md`).
+- Update `docs/BUILD_PLAN.md` -
+  **yes**, this entry + status-table
+  row.
+
+### Verified at the build
+
+- `cmake -DRELATIVITYRENDER_ENABLE_
+  OPTIX=OFF ..` (Linux clean
+  reconfigure): rr_optix is not
+  compiled (per the 12B.3 gating);
+  banner shows "Stage 17A.3: OptiX
+  pipeline skeleton"; ctest 4/4
+  passes; `--render-optix-test`
+  returns "requires OptiX. Rebuild
+  with -DRELATIVITYRENDER_ENABLE_
+  OPTIX=ON ..." + exit 1.
+- `cmake -DRELATIVITYRENDER_ENABLE_
+  OPTIX=ON ..` (Linux clean
+  reconfigure on audit host without
+  CUDA / OptiX SDK): rr_optix
+  compiles in fallback mode (the
+  PTX-embedding pipeline is gated
+  on the SDK-found block, so it is
+  also skipped); expected 12B.4
+  SDK-not-found warning fires;
+  ctest 4/4 passes.
+  `librr_optix.a` contains the new
+  `OptixPipeline` symbols
+  (ctor / dtor / move / `create` /
+  `reset` / `pipeline_handle` /
+  `shader_binding_table` /
+  `launch_params_device_ptr` /
+  `launch_params_size_bytes` /
+  `valid`) plus the new
+  `OptixRenderer::render_test`
+  static (verified via `nm`).
+  `--render-optix-test` returns
+  the audit-host fallback's
+  "requires OptiX SDK" error.
+- A future CUDA + OptiX-SDK host
+  run exercises the populated
+  branch end-to-end:
+  `cudaFree(0)` -> `optixInit()` ->
+  `optixDeviceContextCreate(0,...)` ->
+  `optixModuleCreate` ->
+  `optixProgramGroupCreate` x2 ->
+  `optixPipelineCreate` ->
+  `optixSbtRecordPackHeader` x2 ->
+  `cudaMalloc` SBT records ->
+  `optixLaunch` -> `cudaDevice
+  Synchronize` -> `cudaMemcpy
+  d->h` -> `Image::save_ppm` ->
+  exit 0 with
+  `wrote OptiX test:
+  <abs-path>/output/optix_test.ppm
+  (W x H, RGBA32F)` log line.
 
 ## Next stage
 
