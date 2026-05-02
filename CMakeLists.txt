@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.20)
 
 project(RelativityRender
     VERSION     0.1.0
-    DESCRIPTION "RelativityRender - GPU renderer platform (CLI render path repair: --render wired to GPU pipeline)"
+    DESCRIPTION "RelativityRender - GPU renderer platform (Windows CUDA build repair: nvcc warning-flag isolation)"
     LANGUAGES   CXX
 )
 
@@ -33,7 +33,7 @@ option(RELATIVITYRENDER_ENABLE_OPTIX
 
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
-message(STATUS "RelativityRender ${PROJECT_VERSION} (CLI render path repair: --render wired to GPU pipeline)")
+message(STATUS "RelativityRender ${PROJECT_VERSION} (Windows CUDA build repair: nvcc warning-flag isolation)")
 
 message(STATUS "  Build type   : ${CMAKE_BUILD_TYPE}")
 message(STATUS "  C++ standard : ${CMAKE_CXX_STANDARD}")
@@ -76,11 +76,27 @@ endif()
 
 # Centralised warning flags. Every target goes through this so warnings
 # can't drift per target.
+#
+# Each flag is wrapped in `$<$<COMPILE_LANGUAGE:CXX>:...>` so only C++
+# translation units pick it up. CUDA targets compile their `.cu` files
+# through `nvcc`, which does not accept MSVC's `/W4` / `/permissive-`
+# (it would interpret them as input files and fail with
+# "nvcc fatal: A single input file is required for a non-link phase"
+# - see `docs/WINDOWS_CUDA_BUILD_FIX.md`). Filtering by language keeps
+# the host warnings on `.cpp` and leaves `.cu` compiles untouched.
+# If a future slice wants to forward host-side warnings into nvcc, it
+# can do so explicitly via `-Xcompiler=...` rather than letting them
+# leak in by default.
 function(rr_apply_warnings target)
     if(MSVC)
-        target_compile_options(${target} PRIVATE /W4 /permissive-)
+        target_compile_options(${target} PRIVATE
+            $<$<COMPILE_LANGUAGE:CXX>:/W4>
+            $<$<COMPILE_LANGUAGE:CXX>:/permissive->)
     else()
-        target_compile_options(${target} PRIVATE -Wall -Wextra -Wpedantic)
+        target_compile_options(${target} PRIVATE
+            $<$<COMPILE_LANGUAGE:CXX>:-Wall>
+            $<$<COMPILE_LANGUAGE:CXX>:-Wextra>
+            $<$<COMPILE_LANGUAGE:CXX>:-Wpedantic>)
     endif()
 endfunction()
 

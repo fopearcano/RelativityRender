@@ -3724,6 +3724,7 @@ sub-stages, appended to the same file.** No code is touched.
 | 15       | Renderer server (rr_server + --server CLI + ping / load_scene / set_beta / shutdown) | IMPLEMENTED — runtime test deferred to prototype-1 final validation (see docs/STAGE_15_SERVER_DEFERRED.md) |
 | 15-fix   | Windows build repair: RenderServer portability (SocketPlatform.h shim; socket_t / closeSocket / initSocketSystem / shutdownSocketSystem; CMake links Ws2_32 on Windows) | ✅ |
 | cli-fix  | CLI render path repair (--render wired to GPU pipeline; defaults to output/render.ppm; delegates to run_render_from_scene) | ✅ |
+| cuda-fix | Windows CUDA build repair (rr_apply_warnings wraps each warning flag in $<$<COMPILE_LANGUAGE:CXX>:...> so nvcc no longer receives /W4 /permissive- as inputs) | ✅ |
 
 ## Stage 12A.2.1 — OptiX raygen program design
 
@@ -9262,6 +9263,155 @@ kernel changes.**
 - The pre-repair string `"render command
   received"` no longer appears anywhere in
   `src/`.
+
+## Windows CUDA build repair
+
+**Scope of this slice (post-CLI-render-path-
+repair fix; CMake-only): on Windows with Visual
+Studio 2022 + CUDA 12.8, configuring with
+`-DRR_ENABLE_CUDA=ON` and building hit
+`nvcc fatal: A single input file is required
+for a non-link phase`. The cause was
+`rr_apply_warnings()` applying `/W4
+/permissive-` via `target_compile_options(...
+PRIVATE ...)` with no language filter; the
+flags reached nvcc's command line, which
+treated them as input filenames (alongside the
+real `.cu` source) and refused to compile.
+
+The repair wraps each warning flag in
+`$<$<COMPILE_LANGUAGE:CXX>:flag>` so the flags
+appear only on C++ translation units; CUDA
+compiles get nothing from this function.
+CMake-only change; no kernel edits, no
+renderer-logic edits.**
+
+### What ships
+
+- `CMakeLists.txt`: rewrites `rr_apply_warnings`
+  so each flag is wrapped in a generator
+  expression keyed on the source-file's
+  `COMPILE_LANGUAGE`:
+  ```
+  function(rr_apply_warnings target)
+      if(MSVC)
+          target_compile_options(${target} PRIVATE
+              $<$<COMPILE_LANGUAGE:CXX>:/W4>
+              $<$<COMPILE_LANGUAGE:CXX>:/permissive->)
+      else()
+          target_compile_options(${target} PRIVATE
+              $<$<COMPILE_LANGUAGE:CXX>:-Wall>
+              $<$<COMPILE_LANGUAGE:CXX>:-Wextra>
+              $<$<COMPILE_LANGUAGE:CXX>:-Wpedantic>)
+      endif()
+  endfunction()
+  ```
+  The function's call sites (every
+  `rr_apply_warnings(<lib>)` invocation across
+  the file) are unchanged - only the function
+  body moved.
+  Stage label bumped to "Windows CUDA build
+  repair: nvcc warning-flag isolation" in both
+  the `project(...)` description and the
+  project-banner status message.
+- `docs/BUILD_PLAN.md`: this entry +
+  status-table row for the cuda-fix.
+- `docs/WINDOWS_CUDA_BUILD_FIX.md` (new):
+  records the symptom, root cause, fix, and
+  the validated Windows + CUDA-12.8 + Visual
+  Studio 17 2022 build command.
+
+### Architectural decisions worth highlighting
+
+- **Filter on the consumer side, not at flag
+  definition.** Filtering inside
+  `rr_apply_warnings` keeps every existing
+  `rr_apply_warnings(rr_*)` call site
+  unchanged; the language-aware filtering is
+  a one-line property of the warning policy
+  rather than a per-target reshape.
+- **Filter both branches symmetrically.** The
+  POSIX `-Wall -Wextra -Wpedantic` triple is
+  also wrapped, even though the immediate bug
+  was MSVC-only. Reasons: (a) on Linux + CUDA
+  the same class of bug applies (`nvcc`
+  forwards or passes-through host flags in
+  ways that have changed across versions),
+  (b) symmetry makes the function easier to
+  reason about, (c) the change is a no-op on
+  the Linux + CUDA-OFF audit host (every
+  source file is `CXX`).
+- **No `-Xcompiler` forwarding.** A future
+  slice could decide to forward the host-side
+  warnings into nvcc explicitly via
+  `-Xcompiler=-Wall,-Wextra` for `CUDA`
+  language, but that is an additive choice
+  with its own per-version concerns; the
+  default after this fix is "host warnings
+  on `.cpp` files only, CUDA compiles get
+  nothing extra".
+- **Pure CMake change.** The repair touches
+  only the build-system glue. No `.cpp` /
+  `.cu` / `.h` source file is modified; no
+  kernel logic, no renderer logic, no CLI
+  surface change.
+
+### Hard-rule audit
+
+- CMake-only repair unless absolutely
+  necessary - **yes**, only `CMakeLists.txt`
+  is modified for the fix itself; `docs/`
+  files document the change.
+- No new features - **yes**, the fix is a
+  pure regression repair.
+- No server / C4D / UI - **yes**, none of
+  those modules are touched.
+- Do not modify CUDA kernels - **yes**, no
+  `.cu` file changes.
+- Do not modify renderer logic - **yes**, no
+  rendering / kernel / scene / material /
+  AOV / texture file is touched.
+- Do not disable CUDA - **yes**, the fix
+  enables CUDA on Windows; the CMake option
+  `RR_ENABLE_CUDA` is unchanged.
+- Keep `RR_ENABLE_CUDA=ON` build working -
+  **yes**, the wrapped generator expression
+  emits the warning flags only for `CXX`
+  TUs, so `.cu` files stop receiving MSVC-
+  only flags and `nvcc` accepts the
+  resulting command line.
+- Update docs/BUILD_PLAN.md - **yes**, this
+  entry + status-table row.
+
+### Verified at the build
+
+- `cmake -DRELATIVITYRENDER_ENABLE_OPTIX=OFF
+  ..` (Linux clean reconfigure): builds
+  clean (no warnings / errors); banner shows
+  "Windows CUDA build repair: nvcc warning-
+  flag isolation"; ctest 4/4 passes. The
+  generated `build/compile_commands.json`
+  still shows `-Wall -Wextra -Wpedantic` on
+  every `.cpp` TU - language filter is a
+  no-op for `CXX`-only sources.
+- `cmake -DRELATIVITYRENDER_ENABLE_OPTIX=ON
+  ..` (Linux clean reconfigure): same;
+  OptiX scaffold compiles (with the
+  expected 12B.4 SDK-not-found warning);
+  ctest 4/4 passes.
+- Windows + Visual Studio 17 2022 + CUDA
+  12.8: validated by inspection. The
+  generator expression `$<$<COMPILE_
+  LANGUAGE:CXX>:/W4>` evaluates to `/W4`
+  for `.cpp` sources and to the empty
+  string for `.cu` sources, so nvcc no
+  longer sees `/W4 /permissive-` on its
+  command line. The actual MSVC build
+  cannot be exercised on the Linux audit
+  host; full validation runs on the
+  prototype-1 hardware-equipped session
+  (see `docs/WINDOWS_CUDA_BUILD_FIX.md`
+  for the canonical command).
 
 ## Next stage
 
