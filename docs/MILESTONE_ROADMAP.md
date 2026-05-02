@@ -12,6 +12,149 @@ M16) are complete, per the master instructions.
 
 ---
 
+## Maturity semantics
+
+Per-milestone status uses the following five tiers (weakest →
+strongest). They are stricter than `docs/MODULE_MAP.md`'s
+six-tier module legend because milestones are scored against
+their stated **exit criteria**, not against whether some code
+under the relevant `src/` directory compiles. A milestone is
+not "landed" unless its exit criteria are *truly* satisfied.
+
+- **spec only** — design or planning documents exist, but no
+  code yet (or only an inert placeholder file).
+- **foundation landed** — host-side data PODs / scaffold
+  types / enums compile and have unit-test coverage where
+  applicable, but the milestone's **exit criteria are not
+  satisfied** because the system has no real runtime
+  function at the milestone's intended scope. Example: a
+  `Light` POD union exists but no shadow rays / NEE — so a
+  milestone whose exit criterion is "lit shaded scene with
+  multiple light types" is not landed even though the
+  lighting *data model* compiles.
+- **partial implementation** — at least one production-style
+  runtime path is in place, but key features are missing OR
+  the GPU / SDK path that the milestone depends on is
+  unverified on real hardware. The exit criteria's *visual*
+  or *runtime* clauses are not pinned.
+- **landed** — the milestone's exit criteria are satisfied
+  end-to-end on the supported test matrix; the scope the
+  milestone defined ships and works. The system has not yet
+  been hardened with cross-cutting validation, regression
+  baselines, or stress coverage.
+- **production ready** — same as landed, plus regression
+  baselines pinned, edge cases covered, and no documented
+  "deferred" gate exists for the milestone's core runtime
+  behaviour.
+
+The line between **foundation landed** and **partial
+implementation** is whether *any* runtime feature works; the
+line between **partial implementation** and **landed** is
+whether the *exit criteria* are satisfied. Milestones whose
+exit criteria phrase a *visual* result ("output image clearly
+shows...", "scene rendered at relativistic speeds shows...")
+cannot graduate past "partial implementation" until a CUDA +
+OptiX-SDK host run pins the visual baseline.
+
+### Project-wide validation gate
+
+A single project-wide gate caps every milestone whose exit
+criteria is GPU-side at "partial implementation" until a
+CUDA + OptiX-SDK host run pins regression baselines (per
+`README.md` and `docs/STAGE_19_DENOISER_AUDIT.md` Q1 / Q2).
+The audit-host build (no CUDA, no OptiX SDK) verifies code
+structure + fallback semantics; runtime GPU output is
+unexercised in this branch. The next step that lifts every
+GPU-side milestone in lockstep is a single CUDA + OptiX-SDK
+host run (Stage 19E or equivalent).
+
+---
+
+## Milestone status snapshot
+
+Last verified: 2026-05-02 (post-Stage 19D + roadmap-consistency
+audit + RR_ENABLE_OPTIX flag rename + module-status pass).
+The fuller per-module status (which architectural module
+backs each milestone) lives in `docs/MODULE_MAP.md`.
+
+| #   | Milestone                              | Status                  | Validation needed? |
+|-----|----------------------------------------|-------------------------|:------------------:|
+| M0  | Architecture & Documentation           | landed                  | —                  |
+| M1  | Repository Skeleton & Build System     | landed                  | —                  |
+| M2  | Core Engine: Logging, Config, Lifecycle | partial implementation | host-only          |
+| M3  | Math Library                           | landed                  | —                  |
+| M4  | Image / Framebuffer System             | partial implementation  | host-only          |
+| M5  | CUDA Device Layer                      | landed                  | —                  |
+| M6  | CUDA Framebuffer & First Kernel        | partial implementation  | **GPU host**       |
+| M7  | Camera System & GPU Camera Rays        | partial implementation  | **GPU host**       |
+| M8  | GPU Primitive Intersection             | partial implementation  | **GPU host**       |
+| M9  | Relativistic Camera Model (First Pass) | partial implementation  | **GPU host**       |
+| M10 | GPU Scene Upload & Triangle Mesh       | partial implementation  | **GPU host**       |
+| M11 | Material System (Foundations)          | foundation landed       | **GPU host** (after BSDFs land) |
+| M12 | Lighting System (Foundations)          | foundation landed       | **GPU host** (after NEE / shadows land) |
+| M13 | Scene File Format & Parser             | partial implementation  | host-only          |
+| M14 | Path Tracing Foundation                | partial implementation  | **GPU host**       |
+| M15 | OptiX Backend (Upgrade Path)           | partial implementation  | **OptiX-SDK host** |
+| M16 | Texture System                         | foundation landed       | **GPU host** (after sampling lands) |
+| M17 | Render Passes / AOVs                   | partial implementation  | **GPU host**       |
+| M18 | Renderer Server                        | partial implementation  | **GPU host**       |
+| M19 | Cinema 4D Bridge (Plugin)              | not started             | (pending M18)      |
+| M20 | Preview UI                             | not started             | (pending M18)      |
+| M21 | Material Node Graph (Editor)           | not started             | (pending M11)      |
+| M22 | Denoiser Integration                   | partial implementation  | **OptiX-SDK host** |
+| M23 | Native Cinema 4D Renderer Integration  | not started             | (pending M19)      |
+
+Rollup: 4 landed (M0 / M1 / M3 / M5 — host-only milestones
+whose exit criteria are met today), 13 partial-implementation
+(every GPU-side milestone whose visual exit criteria is
+gated on a real-hardware run, plus M2 / M4 / M13 whose host-
+only deliverables are incomplete), 3 foundation-landed (M11
+/ M12 / M16 — data PODs compile but the runtime feature the
+milestone is named for is not on the device), 4 not-started
+(M19 / M20 / M21 / M23), 0 spec-only.
+
+### Milestones flagged for validation before landing
+
+The following milestones require a one-time CUDA + OptiX-SDK
+host run to graduate from "partial implementation" to
+"landed". They are listed in dependency order; a single host
+run can lift every entry in the GPU-host group in lockstep,
+followed by the OptiX-SDK runs for M15 / M22. (Status of
+each milestone is unchanged by the eventual run; the run
+*pins* the exit criteria.)
+
+- **GPU-host validation** (one CUDA-host run lifts all of
+  these): M6, M7, M8, M9, M10, M13 (loader integration
+  smoke test only), M14, M17, M18.
+- **OptiX-SDK-host validation** (one OptiX-SDK-host run
+  lifts both): M15, M22.
+- **Per-module follow-ups before validation can lift the
+  status** (each requires a slice of additional source code
+  before the GPU-host run can pin its exit criteria):
+    - M11: BSDF eval / sample / pdf must land first.
+      Today's facing-ratio fallback does not satisfy "Same
+      scene renders with real BSDFs."
+    - M12: shadow rays + NEE must land first. Today's
+      Point + Directional are real but Area + Environment
+      are flagged PLACEHOLDER in source.
+    - M16: GPU sampling beyond nearest-neighbour + path-
+      tracer integration must land first. Today's POD +
+      smoke-test sampler does not satisfy "Textured
+      materials render correctly under the path tracer".
+- **M2 follow-ups before landing**: `core::App` lifecycle,
+  `core::Error` type, and `core::FileSystem` from the
+  deliverables list. Today's Logger / Config / CommandLine
+  satisfy the *exit criteria* literally ("tests for logging
+  and config; CLI uses the engine to produce structured
+  logs") but the deliverables list contains items not yet
+  implemented; flagged here so the gap is visible.
+- **M4 follow-ups before landing**: EXR + PNG load/save
+  from the deliverables list. Today only PPM is
+  implemented; M17's "Multi-channel EXR" exit criterion is
+  blocked on this.
+
+---
+
 ## M0 — Architecture & Documentation (CURRENT)
 
 - **Goal:** Establish the platform's identity, layering, module map, rules,

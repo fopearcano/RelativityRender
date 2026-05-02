@@ -112,6 +112,76 @@ project-wide gate (no end-to-end visual validation on a real
 CUDA + OptiX-SDK host in this branch) is the dominant cap on
 every GPU-side module; it is not a per-module bug.
 
+### Milestone status (rollup; canonical detail in `docs/MILESTONE_ROADMAP.md`)
+
+The module-status table above scores *architectural modules*
+(does the code compile and run?). The milestone-status table
+below scores M0-M23 against their stated **exit criteria**
+(does the milestone's defined scope actually ship and work?).
+The two tables intentionally use different status tiers and
+intentionally produce different verdicts in some rows
+(e.g. module #13 Relativistic Camera Model is "production
+ready" because its math leaf works host-side; milestone M9
+"Relativistic Camera Model (First Pass)" is "partial
+implementation" because the milestone's *visual* exit
+criterion — "scene rendered at relativistic speeds shows
+expected aberration / Doppler behavior" — is gated on a real-
+hardware run that has not happened in this branch).
+
+**Maturity tiers used by the milestone table** (canonical
+definitions in `docs/MILESTONE_ROADMAP.md` "Maturity
+semantics"): spec only / foundation landed / partial
+implementation / landed / production ready. The line between
+**foundation landed** and **partial implementation** is
+whether *any* runtime feature works; the line between
+**partial implementation** and **landed** is whether the
+*exit criteria* are satisfied. Milestones whose exit criteria
+phrase a *visual* result cannot graduate past "partial
+implementation" until a CUDA + OptiX-SDK host run pins the
+visual baseline.
+
+| #   | Milestone                              | Status                  | Validation needed? |
+|-----|----------------------------------------|-------------------------|:------------------:|
+| M0  | Architecture & Documentation           | landed                  | —                  |
+| M1  | Repository Skeleton & Build System     | landed                  | —                  |
+| M2  | Core Engine: Logging, Config, Lifecycle | partial implementation | host-only          |
+| M3  | Math Library                           | landed                  | —                  |
+| M4  | Image / Framebuffer System             | partial implementation  | host-only          |
+| M5  | CUDA Device Layer                      | landed                  | —                  |
+| M6  | CUDA Framebuffer & First Kernel        | partial implementation  | **GPU host**       |
+| M7  | Camera System & GPU Camera Rays        | partial implementation  | **GPU host**       |
+| M8  | GPU Primitive Intersection             | partial implementation  | **GPU host**       |
+| M9  | Relativistic Camera Model (First Pass) | partial implementation  | **GPU host**       |
+| M10 | GPU Scene Upload & Triangle Mesh       | partial implementation  | **GPU host**       |
+| M11 | Material System (Foundations)          | foundation landed       | **GPU host** (after BSDFs land) |
+| M12 | Lighting System (Foundations)          | foundation landed       | **GPU host** (after NEE / shadows land) |
+| M13 | Scene File Format & Parser             | partial implementation  | host-only          |
+| M14 | Path Tracing Foundation                | partial implementation  | **GPU host**       |
+| M15 | OptiX Backend (Upgrade Path)           | partial implementation  | **OptiX-SDK host** |
+| M16 | Texture System                         | foundation landed       | **GPU host** (after sampling lands) |
+| M17 | Render Passes / AOVs                   | partial implementation  | **GPU host**       |
+| M18 | Renderer Server                        | partial implementation  | **GPU host**       |
+| M19 | Cinema 4D Bridge (Plugin)              | not started             | (pending M18)      |
+| M20 | Preview UI                             | not started             | (pending M18)      |
+| M21 | Material Node Graph (Editor)           | not started             | (pending M11)      |
+| M22 | Denoiser Integration                   | partial implementation  | **OptiX-SDK host** |
+| M23 | Native Cinema 4D Renderer Integration  | not started             | (pending M19)      |
+
+Rollup: 4 landed (M0 / M1 / M3 / M5 — host-only milestones
+whose exit criteria are met today), 13 partial-
+implementation, 3 foundation-landed (M11 / M12 / M16),
+4 not-started (M19 / M20 / M21 / M23), 0 spec-only.
+
+A single CUDA + OptiX-SDK host run lifts every GPU-side
+"partial implementation" milestone whose only blocker is the
+project-wide visual-validation gate (M6 / M7 / M8 / M9 /
+M10 / M14 / M17 / M18 on the CUDA-host run; M15 / M22 on
+the OptiX-SDK-host run). M11 / M12 / M16 each need an
+additional source-code slice before the GPU-host run can
+pin them; see `docs/MILESTONE_ROADMAP.md` "Milestones
+flagged for validation before landing" for the per-row
+follow-up list.
+
 ### Files in scope
 
 | File                       | Role                                                |
@@ -14865,6 +14935,227 @@ ready":
   Denoising entries; rollup math
   (3 + 9 + 6 + 4 + 0 = 22) matches
   the 22-module count exactly.
+
+## Milestone status normalization
+
+**Scope of this slice (cross-cutting;
+no master-order #): documentation-only
+honest-status pass for every M0-M23
+milestone in
+`docs/MILESTONE_ROADMAP.md`. The
+trigger was that the previous module-
+status pass scored *architectural
+modules* (does the code compile and
+run?) but the milestone roadmap was
+silent on per-milestone status — the
+intro clause "A milestone is complete
+only when its exit criteria are met"
+was visible but no per-milestone
+verdict was published. This slice
+adds the per-milestone status table +
+a "Maturity semantics" section that
+defines five tiers used by the
+milestone table (spec only /
+foundation landed / partial
+implementation / landed / production
+ready), and flags the milestones that
+need a real-hardware validation run
+to graduate from partial to landed.**
+
+### What ships
+
+- `docs/MILESTONE_ROADMAP.md`:
+  additive sections inserted between
+  the existing intro and the existing
+  M0 entry. **No M0-M23 entry was
+  modified**; the per-milestone
+  prose, deliverables lists, and exit
+  criteria are byte-identical pre-/
+  post-slice. The new sections are:
+    - "Maturity semantics" (status
+      legend with five tiers; explicit
+      prose on the foundation-landed →
+      partial-implementation → landed
+      progression; project-wide
+      validation gate paragraph).
+    - "Milestone status snapshot"
+      (24-row table covering M0-M23
+      with status + per-row
+      validation-needed flag).
+    - "Milestones flagged for
+      validation before landing"
+      (groups GPU-host vs OptiX-SDK-
+      host validation runs; lists per-
+      module follow-ups for M11 / M12
+      / M16 that need source-code
+      slices before validation can
+      lift the status; lists M2 / M4
+      deliverable-list gaps separate
+      from the visual-validation
+      gate).
+- `docs/BUILD_PLAN.md`: a "Milestone
+  status (rollup)" subsection added
+  immediately under the existing
+  module-status rollup, with the same
+  24-row table + a paragraph
+  explaining why module status and
+  milestone status intentionally
+  produce different verdicts in some
+  rows (modules score "is the code
+  working?"; milestones score "did
+  the exit criteria pass?"). Cites
+  MILESTONE_ROADMAP.md as the
+  canonical-detail source. **No
+  canonical historical row was
+  modified**; the new subsection +
+  this slice-closing entry are
+  additive housekeeping per the
+  standard pattern.
+
+### Honest verdicts (the milestones
+  this slice does *not* claim are
+  landed)
+
+The following milestones are
+explicitly **not landed**, with the
+specific gap that prevents landing:
+
+- **M2 (Core Engine)**: partial
+  implementation. Logger / Config /
+  CommandLine satisfy the literal
+  exit criteria, but the deliverables
+  list `core::App` / `core::Error` /
+  `core::FileSystem` are not
+  implemented. Flagged so the gap is
+  visible.
+- **M4 (Image / Framebuffer)**:
+  partial implementation. PPM
+  round-trip works; **EXR + PNG
+  load/save are not implemented**.
+  M17's "Multi-channel EXR" exit
+  criterion is downstream-blocked
+  on this.
+- **M6 / M7 / M8 / M9 / M10 / M14 /
+  M17 / M18 (GPU-side milestones)**:
+  partial implementation. Code
+  links cleanly via the audit-host
+  fallback; visual exit criteria
+  unverified on real hardware
+  (project-wide gate).
+- **M11 (Material)**: **foundation
+  landed**, not partial. Material
+  POD + presets compile but the
+  device path is a facing-ratio
+  fallback; "Same scene renders
+  with real BSDFs" cannot be
+  satisfied without a BSDF eval /
+  sample / pdf source slice.
+- **M12 (Lighting)**: **foundation
+  landed**. Light POD union exists;
+  Area + Environment are flagged
+  PLACEHOLDER in source; no shadow
+  rays, no NEE; "lit shaded scene
+  with multiple light types" not
+  satisfied.
+- **M15 (OptiX Backend)**: partial
+  implementation. Pipeline + GAS +
+  programs link; **never executed
+  on a real OptiX-SDK host**;
+  "Path tracer renders the same
+  scene through both the CUDA and
+  OptiX paths" not pinned (also:
+  the path tracer is not yet wired
+  through OptiX).
+- **M16 (Texture)**: **foundation
+  landed**. ImageTexture POD +
+  nearest-neighbour sampler smoke
+  test; no MIP / UDIM / HDR / wrap
+  modes; "Textured materials
+  render correctly under the path
+  tracer" not satisfied.
+- **M22 (Denoiser)**: partial
+  implementation. STAGE_19_
+  DENOISER_AUDIT.md Q1 PARTIAL /
+  Q2 DEFERRED.
+- **M19 / M20 / M21 / M23**: not
+  started. No source code in the
+  tree.
+
+### Hard-rule audit
+
+- Documentation only - **yes**. No
+  source files modified. No build
+  targets, no CLI surface, no
+  public API, no test coverage
+  added or removed. The slice
+  edits two doc files only.
+- "Do not change source code" -
+  **yes**. `git diff --stat src/`
+  is empty.
+- "Do not rewrite the whole
+  roadmap" - **yes**. Every M0-M23
+  prose entry, deliverables list,
+  and exit-criteria line is byte-
+  identical pre-/post-slice. The
+  three new sections are inserted
+  ahead of M0; the existing
+  structure is preserved.
+- "Preserve the current milestone
+  order unless a contradiction is
+  unavoidable" - **yes**. M0-M23
+  remain in their original
+  numerical order with original
+  scope.
+- "A milestone is not 'landed'
+  unless its exit criteria are
+  truly satisfied" - **yes**. Only
+  4 of 24 milestones (M0 / M1 /
+  M3 / M5) are scored as
+  "landed"; every other entry
+  carries either "partial
+  implementation", "foundation
+  landed", or "not started"
+  with a specific, citable
+  reason for not landing.
+- BUILD_PLAN.md canonical content
+  unchanged - **yes**. The new
+  rollup subsection is additive
+  documentation under "Module
+  status (rollup)"; no prior
+  slice's row / prose / verification-
+  bullet was modified.
+- Update docs/BUILD_PLAN.md -
+  **yes**, this entry + the
+  rollup subsection.
+
+### Verified at the build
+
+- `cmake -S . -B build` (defaults,
+  audit host): banner unchanged
+  ("RR_ENABLE_OPTIX flag rename" —
+  no CMakeLists edit this slice);
+  ctest 4/4 green.
+- `git diff --stat src/` returns
+  empty: zero source files
+  touched.
+- Cross-checked the 24-row
+  milestone table against
+  `docs/MILESTONE_ROADMAP.md` (24
+  M-level entries: M0 + M1-M23 =
+  24); rollup math (4 + 13 + 3 +
+  4 + 0 = 24) matches.
+- Cross-checked each "partial
+  implementation" milestone's gap
+  against the upstream evidence:
+  the project-wide visual-
+  validation gate (README,
+  STAGE_19_DENOISER_AUDIT.md);
+  STAGE_15_SERVER_DEFERRED.md for
+  M18; STAGE_19_DENOISER_AUDIT.md
+  Q1 / Q2 for M22; the missing-
+  feature notes from
+  `docs/MODULE_MAP.md` rows for
+  M11 / M12 / M16.
 
 ## Next stage
 
