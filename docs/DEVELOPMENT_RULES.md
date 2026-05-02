@@ -57,6 +57,20 @@ work.
    layer. The higher layer implements it.
 7. **CUDA Backend is below OptiX Backend.** OptiX may use CUDA. CUDA never
    uses OptiX.
+8. **Cinema 4D / UI integration must never block the standalone renderer
+   milestone.** The dependency arrow points one way: standalone milestones
+   (M0 – M18 in `docs/MILESTONE_ROADMAP.md`) gate Cinema 4D / preview-UI /
+   node-editor work, not the other way around. A blocker, schedule slip, or
+   API churn on the C4D / UI side must not pause the renderer's core
+   progression. The corollary of rule 3.3 (the bridge does not link renderer
+   internals): the renderer also does not import bridge / UI assumptions
+   into its design — no "we will need this for C4D" hooks bolted into the
+   core, no preview-UI-driven API shapes leaking into the renderer's public
+   surface. Per `docs/MODULE_MAP.md` the four C4D / UI items (#20 Cinema 4D
+   Bridge, #21 Future Native Cinema 4D Renderer, #22 Node Editor / Material
+   Graph, master-order #22 Preview UI) are tracked at status `not started`;
+   they cannot graduate until the standalone renderer's prerequisites land,
+   and their absence cannot hold up any standalone slice.
 
 ## 4. Build / Repository Rules
 

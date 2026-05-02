@@ -15705,6 +15705,214 @@ analytically.**
   unrelated actions per the
   documented contract.
 
+## C4D / UI coupling audit
+
+**Scope of this slice (cross-cutting;
+no master-order #): documentation-
+only audit verifying that nothing in
+the renderer core imports, includes,
+links, or quietly depends on Cinema
+4D / native plugin / node editor /
+preview UI code, and that every
+status-table row + roadmap entry
+that names one of those subsystems
+honestly reflects "not started"
+state. The slice also adds the
+explicit non-blocking rule the
+audit prompt asked for so the
+direction of the dependency arrow
+is enforced in the rules tree.**
+
+### Audit findings
+
+Source / build (zero matches found
+for `cinema *4d` / `c4d_bridge` /
+`c4d_native` / `node_editor` /
+`preview_ui` / `maxon\.` / `melange`
+across `*.cpp` / `*.h` / `*.cu` /
+`*.cuh` / `CMakeLists.txt`):
+- `src/`: 18 directories, no C4D /
+  UI references in any source file.
+- `CMakeLists.txt`: no C4D / UI
+  targets, no `find_package(Cinema4D
+  ...)`, no SDK link edges, no
+  `bridges/` / `tools/` paths in
+  any include / link rule.
+- `tests/`: 6 ctest binaries, no
+  C4D / UI references.
+- Top-level layout: `bridges/` and
+  `tools/` directories do not
+  exist (per the
+  `docs/MASTER_ARCHITECTURE.md` §8
+  "Not yet present" comment block);
+  no skeleton / placeholder files
+  preempt the future modules.
+
+Status-table accuracy:
+- `docs/MODULE_MAP.md` rows #20 /
+  #21 / #22 + cross-cutting
+  master-order #22 Preview UI: all
+  four marked **not started**.
+- `docs/BUILD_PLAN.md` module-
+  status rollup (rows #20 / #21 /
+  #22) and milestone-status rollup
+  (M19 / M20 / M21 / M23): all six
+  rows marked **not started**.
+- `docs/MILESTONE_ROADMAP.md`
+  milestone-status snapshot
+  (M19 / M20 / M21 / M23): all
+  four marked **not started**.
+- `git grep` for "in progress" /
+  "in-progress" / "partial
+  implementation" against any
+  C4D / Cinema / node / preview row
+  returned **zero matches**. No
+  status downgrade was needed.
+
+Wording / dependency-boundary
+accuracy:
+- `docs/MASTER_ARCHITECTURE.md` §1
+  ("Eventually integrated with
+  Cinema 4D"; "Eventually shippable
+  as a native Cinema 4D renderer";
+  the "Just a Cinema 4D plugin" non-
+  goal in §2): correctly future-
+  facing.
+- `docs/MASTER_ARCHITECTURE.md` §4
+  module 21 is named "**Future**
+  Native Cinema 4D Renderer" — the
+  "Future" qualifier was already in
+  place pre-slice.
+- `docs/MASTER_ARCHITECTURE.md` §6
+  forbidden-dependency table rows:
+  every renderer-core entry forbids
+  `UI` and `Cinema 4D` (rows for
+  modules 1–19); the bridge row
+  forbids "Renderer internals
+  (anything other than format /
+  protocol)". Already correct
+  pre-slice.
+- `docs/MASTER_ARCHITECTURE.md` §8
+  "Not yet present" comment block
+  correctly lists `bridges/c4d_bridge/`
+  / `bridges/c4d_native/` /
+  `tools/node_editor/` /
+  `tools/preview_ui/` as planned-
+  future paths. Already correct
+  pre-slice.
+- `docs/MILESTONE_ROADMAP.md` intro
+  already said "Cinema 4D
+  integration begins only after
+  standalone milestones M0–M16 are
+  complete." This slice adds the
+  *reverse* direction (the work-
+  stream cannot block standalone
+  progression).
+- `docs/DEVELOPMENT_RULES.md` §2.4
+  ("Do not jump ahead") + §3.1
+  ("Renderer core never depends on
+  UI") + §3.2 ("Renderer core
+  never depends on Cinema 4D") +
+  §3.3 ("The Cinema 4D Bridge does
+  not link renderer internals"):
+  all already in place pre-slice.
+
+### What ships
+
+- `docs/DEVELOPMENT_RULES.md` §3:
+  new rule **3.8** "Cinema 4D / UI
+  integration must never block the
+  standalone renderer milestone."
+  Records the dependency direction
+  in both directions (standalone
+  gates C4D, AND C4D cannot pause
+  standalone), names the four
+  affected modules, and pins their
+  current `not started` status as
+  the reason their absence cannot
+  block any standalone slice.
+- `docs/MILESTONE_ROADMAP.md`
+  intro: complementary paragraph
+  added immediately after the
+  pre-existing "Cinema 4D
+  integration begins only after
+  M0–M16" sentence. Cross-references
+  DEVELOPMENT_RULES §3.8 so the
+  rule is visible from both
+  documents.
+- `docs/BUILD_PLAN.md`: this
+  slice-closing entry. **No
+  module-status row, milestone-
+  status row, or canonical
+  historical entry was modified.**
+
+### Hard-rule audit
+
+- Do not implement C4D code -
+  **yes**. Zero source / build /
+  test files modified.
+- Do not remove docs - **yes**.
+  The slice only *adds* one rule
+  + one paragraph; no doc lines
+  were deleted.
+- Only correct status, wording,
+  and dependency boundaries -
+  **yes**. No status was
+  incorrect, so no status was
+  changed. Wording was already
+  honest, so no wording was
+  re-written. The dependency-
+  boundary side adds the missing
+  reverse-direction rule
+  (DEVELOPMENT_RULES §3.8).
+- Renderer core does not include
+  or link UI / Cinema 4D code -
+  **yes**, verified by source-
+  tree grep (zero matches).
+- C4D bridge / native docs are
+  clearly marked as future / spec
+  unless implemented - **yes**.
+  Module 21 carries the literal
+  "Future" prefix; modules 20 /
+  22 + Preview UI are flagged
+  "not started" in three
+  separate status tables.
+- BUILD_PLAN.md marks no C4D /
+  node-editor item as "in
+  progress" - **yes**, verified
+  by grep.
+
+### Verified at the build
+
+- `cmake -S . -B build` (audit
+  host, no CUDA): banner
+  unchanged ("Stage 19E.2:
+  render-demo + --beta" — no
+  CMakeLists edit this slice);
+  ctest 6/6 green (unchanged
+  from prior slice).
+- `git diff --stat src/` and
+  `git diff --stat tests/` and
+  `git diff --stat CMakeLists.txt`
+  all return empty: zero source
+  / build / test changes.
+- Source-tree grep:
+  `grep -rn -iE 'cinema *4d|c4d_bridge|c4d_native|node_editor|preview_ui|maxon\.|melange'`
+  across `src/` + `tests/` +
+  `CMakeLists.txt` returns zero
+  matches.
+- Status-table grep: no row
+  containing "C4D" / "Cinema" /
+  "node" / "preview" anywhere
+  in `docs/MODULE_MAP.md`,
+  `docs/BUILD_PLAN.md`, or
+  `docs/MILESTONE_ROADMAP.md`
+  carries the strings "in
+  progress" or "partial
+  implementation" or "landed"
+  — every such row is "not
+  started".
+
 ## Next stage
 
 When prompted, the natural follow-ups are:

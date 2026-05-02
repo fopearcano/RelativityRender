@@ -10,6 +10,16 @@ A milestone is **complete** only when its exit criteria are met *and*
 Cinema 4D integration begins only after standalone milestones (M0 through
 M16) are complete, per the master instructions.
 
+The reverse direction is also a hard rule: **Cinema 4D / preview-UI /
+node-editor work must never block the standalone renderer milestone**
+(see `docs/DEVELOPMENT_RULES.md` §3.8). The dependency arrow points one
+way: standalone milestones gate C4D / UI work, not the other way around.
+A blocker, schedule slip, or API change on the C4D / UI side must not
+pause the renderer core's progression. The four relevant items
+(M19 / M20 / M21 / M23 above and master-order #22 Preview UI) are tracked
+at status `not started` in `docs/MODULE_MAP.md`; their absence is not a
+gate on any standalone slice.
+
 ---
 
 ## Maturity semantics
