@@ -28,6 +28,22 @@ struct Config {
     // output exactly as today.
     bool        denoise_enabled = false;
 
+    // Stage 19E.2: artist-supplied observer-velocity magnitude
+    // along the camera's forward axis (-Z) for the
+    // `--render-demo` action. `--beta` is a *modifier* flag
+    // (like `--denoise`); it is stored regardless of action so
+    // the parser stays simple, but only `--render-demo` reads
+    // it. Sentinel `-1.0f` means "the user did not pass
+    // --beta"; the action substitutes its own default. The
+    // value is the magnitude `|beta|` in c-units; the sign is
+    // chosen by the action (the demo points the observer at
+    // -Z, the camera's default forward direction). Range is
+    // not clamped at parse time — the action passes the value
+    // through `rr::relativity::clampBeta` when it is consumed,
+    // which silently caps |beta| at 0.999999 per the existing
+    // design (see tests/relativity_tests.cpp #6).
+    float       beta             = -1.0f;
+
     // Returns an empty string when the configuration is internally
     // consistent. Otherwise returns a human-readable description of
     // the first problem.

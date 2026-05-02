@@ -1688,6 +1688,172 @@ int run_render_relativistic(const rr::core::Config& cfg) {
 #endif
 }
 
+// `--render-demo` dispatch (Stage 19E.2; master order #14).
+//
+// Smallest meaningful relativistic-render demo. The scene is the
+// minimum the prompt asks for:
+//   - one sphere (centred at z = -3.0; radius 1.0; "neutral" diffuse)
+//   - one diffuse material (warm grey baseColor)
+//   - one environment light (cool blue ambient; produces visible
+//     base shading without needing a directional / point light)
+//   - one camera (pinhole; default forward = -Z; aspect set from
+//     cfg.width / cfg.height)
+//   - one observer; velocity = (0, 0, -|beta|) so positive beta
+//     means "approaching the sphere", and the relativistic effects
+//     show up forward of the camera (the visible side of the
+//     sphere in this scene).
+//
+// Beta source:
+//   - cfg.beta == -1.0f (sentinel, default): use 0.7f.
+//   - cfg.beta == 0.0f: classical render (every relativity formula
+//     degenerates to identity per `tests/relativity_tests.cpp`
+//     test_identity_at_zero_beta), so the output looks like a
+//     non-relativistic render of the same scene.
+//   - any other value: clamped to <= 0.999999 by clampBeta.
+//
+// Output:
+//   - output/demo_beauty.ppm    — Beauty AOV (RGB)
+//   - output/demo_doppler.ppm   — Doppler-factor AOV
+//                                  (scalar; replicated to RGB by
+//                                  `save_aov_to_ppm`)
+//
+// All per-pixel work runs on the GPU through the existing
+// `CudaRenderer::render_scene_with_aovs` path. The CPU's only
+// contribution is constructing the Scene, uploading via
+// GpuScene, allocating AOV buffers, and saving the two PPMs. On
+// a build without CUDA (`RR_HAS_CUDA` undefined) the action
+// returns the same documented "requires CUDA" error every other
+// GPU-bound action does.
+int run_render_demo(const rr::core::Config& cfg) {
+#ifndef RR_HAS_CUDA
+    (void)cfg;
+    rr::core::Logger::error("--render-demo requires CUDA. Rebuild "
+                            "with -DRR_ENABLE_CUDA=ON on a host with "
+                            "the CUDA Toolkit and a CUDA-capable GPU.");
+    return 1;
+#else
+    // Pick the user-supplied beta (or the documented default).
+    const float beta_user = (cfg.beta < 0.0f) ? 0.7f : cfg.beta;
+    const float beta_mag  = rr::relativity::clampBeta(
+        beta_user, /*max_beta=*/0.999999f);
+
+    rr::scene::Scene scene;
+    scene.render_settings.width  = cfg.width;
+    scene.render_settings.height = cfg.height;
+    scene.camera.set_aspect(static_cast<float>(cfg.width)
+                          / static_cast<float>(cfg.height));
+
+    // One material (warm grey diffuse).
+    auto neutral = rr::material::Material::make_diffuse(
+        rr::math::Vec3{0.75f, 0.70f, 0.65f});
+    scene.materials.push_back({0, "neutral", neutral.params()});
+
+    // One sphere on the camera's forward axis.
+    {
+        rr::scene::SceneSphere s;
+        s.object.name = "demo-sphere";
+        s.geometry    = rr::geometry::Sphere{
+            rr::math::Vec3{0.0f, 0.0f, -3.0f}, 1.0f, /*material_index=*/0};
+        scene.spheres.push_back(s);
+    }
+
+    // One environment light (cool blue ambient). Stage 9B's
+    // direct-lighting kernel reads environment lights as flat
+    // ambient; no shadow rays / NEE needed.
+    scene.lights.push_back({{}, rr::lighting::make_environment_light(
+        rr::math::Vec3{0.55f, 0.65f, 0.85f},
+        /*intensity=*/0.75f)});
+
+    // Observer along the camera's forward axis (-Z). beta_mag = 0
+    // exactly matches a classical render (Identity at |beta|=0,
+    // verified by tests/relativity_tests.cpp #1). Positive beta
+    // means "approaching": forward-cone blueshift + searchlight
+    // brightening; backward-cone redshift + dimming on the
+    // edges. Default RelativityParams keeps every effect on at
+    // strength 1.
+    scene.observer.velocity = rr::math::Vec3{0.0f, 0.0f, -beta_mag};
+
+    // Upload via GpuScene (camera / relativity / spheres /
+    // materials / lights). No mesh, no texture.
+    std::vector<rr::geometry::Sphere> sphere_pods;
+    sphere_pods.reserve(scene.spheres.size());
+    for (const auto& s : scene.spheres) {
+        if (s.object.visible) sphere_pods.push_back(s.geometry);
+    }
+    std::vector<rr::material::MaterialParams> material_pods;
+    material_pods.reserve(scene.materials.size());
+    for (const auto& m : scene.materials) {
+        material_pods.push_back(m.params);
+    }
+    std::vector<rr::lighting::Light> light_pods;
+    light_pods.reserve(scene.lights.size());
+    for (const auto& L : scene.lights) light_pods.push_back(L.data);
+
+    rr::gpu::GpuScene gpu_scene;
+    if (!gpu_scene.upload_camera(scene.camera))
+        { rr::core::Logger::error("demo: upload_camera failed"); return 1; }
+    if (!gpu_scene.upload_relativity(scene.observer, scene.relativity))
+        { rr::core::Logger::error("demo: upload_relativity failed"); return 1; }
+    if (!gpu_scene.upload_spheres(sphere_pods.data(), sphere_pods.size()))
+        { rr::core::Logger::error("demo: upload_spheres failed"); return 1; }
+    if (!gpu_scene.upload_materials(material_pods.data(),
+                                    material_pods.size()))
+        { rr::core::Logger::error("demo: upload_materials failed"); return 1; }
+    if (!gpu_scene.upload_lights(light_pods.data(), light_pods.size()))
+        { rr::core::Logger::error("demo: upload_lights failed"); return 1; }
+
+    // Allocate the standard six AOV buffers. We only save Beauty
+    // [0] and DopplerFactor [4] but the kernel needs the full
+    // target struct populated, and the cost of allocating four
+    // unused buffers is negligible (a 1280x720 framebuffer is
+    // 3.5 MB / channel).
+    auto aov_set = rr::renderer::make_default_aov_set();
+    for (auto& b : aov_set) {
+        if (!b.resize(cfg.width, cfg.height)) {
+            rr::core::Logger::error("demo: AOV resize failed for "
+                + std::string(rr::renderer::aov_type_name(b.type())));
+            return 1;
+        }
+    }
+
+    rr::cuda::CudaRenderer::AOVTargets targets;
+    targets.beauty             = aov_set[0].device_ptr();
+    targets.normal             = aov_set[1].device_ptr();
+    targets.depth              = aov_set[2].device_ptr();
+    targets.albedo             = aov_set[3].device_ptr();
+    targets.doppler_factor     = aov_set[4].device_ptr();
+    targets.searchlight_factor = aov_set[5].device_ptr();
+
+    auto r = rr::cuda::CudaRenderer::render_scene_with_aovs(
+        gpu_scene, cfg.width, cfg.height, targets);
+    if (!r.ok) {
+        rr::core::Logger::error("demo render failed: " + r.message);
+        return 1;
+    }
+
+    {
+        const std::string label = std::string("render-demo (beta=")
+                                + std::to_string(beta_mag) + ")";
+        log_gpu_timing(label.c_str(), cfg.width, cfg.height, r.gpu_time_ms);
+    }
+
+    // Save Beauty + DopplerFactor PPMs to the documented paths.
+    // `save_aov_to_ppm` replicates the scalar Doppler factor
+    // across RGB so the resulting PPM is viewable, exactly the
+    // same handling `--render-aovs` uses.
+    bool all_ok = true;
+    if (!save_aov_to_ppm(aov_set[0], "output/demo_beauty.ppm",
+                         cfg.width, cfg.height, "demo beauty")) {
+        all_ok = false;
+    }
+    if (!save_aov_to_ppm(aov_set[4], "output/demo_doppler.ppm",
+                         cfg.width, cfg.height, "demo doppler")) {
+        all_ok = false;
+    }
+    return all_ok ? 0 : 1;
+#endif
+}
+
 // `--render-scene` dispatch. Builds the built-in multi-sphere demo
 // scene, uploads it via GpuScene, runs the GPU closest-hit kernel,
 // and writes the PPM. The CPU's only contribution is constructing
@@ -2939,6 +3105,9 @@ int main(int argc, char** argv) {
 
         case CommandLine::Action::RenderRelativistic:
             return run_render_relativistic(result.config);
+
+        case CommandLine::Action::RenderDemo:
+            return run_render_demo(result.config);
 
         case CommandLine::Action::RenderScene:
             return run_render_scene(result.config);

@@ -178,7 +178,7 @@ RelativityRender/
     cuda/                                 # CUDA backend (kernels + launchers)
     optix/                                # OptiX backend + denoiser
     server/                               # rr_server (TCP)
-  tests/                                  # ctest 5/5 (math / image / gpu / pathtracer / relativity)
+  tests/                                  # ctest 6/6 (math / image / gpu / pathtracer / relativity / demo)
 ```
 
 `docs/MASTER_ARCHITECTURE.md` §8 "Build / Repository Shape"

@@ -342,6 +342,12 @@ public:
         RenderOptixTriangle,
         RenderOptixRelativity,
         RenderDenoise,
+        // Stage 19E.2: smallest-meaningful-relativistic-render demo.
+        // Single sphere + one diffuse material + one environment
+        // light + camera with --beta-configurable observer.
+        // Outputs `output/demo_beauty.ppm` and a Doppler-factor
+        // AOV `output/demo_doppler.ppm`. Honours `--beta` modifier.
+        RenderDemo,
         Error,          // parse failure; see `error_message`
     };
 

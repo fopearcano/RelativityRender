@@ -15381,6 +15381,330 @@ future maintainer):
   discipline. No CUDA / OptiX /
   rr_gpu link edges added.
 
+## Stage 19E.2 — render-demo + --beta
+
+**Scope of this slice (Stage 19E.2;
+master order #14, "Relativistic Camera
+Model"): the smallest meaningful
+relativistic-render demo. The existing
+`--render-relativistic` runs a fixed
+4-beta sweep + writes Beauty PPMs
+only; the existing `--render-aovs`
+runs a multi-sphere lit scene + writes
+six AOV PPMs at a hard-coded
+beta = -0.5z. Neither matches the
+prompt's "smallest meaningful demo"
+shape (one sphere, one material, one
+light, configurable beta, beauty +
+one relativistic AOV). This slice
+adds a new CLI action `--render-demo`
+that ships exactly that shape, plus a
+`--beta <float>` modifier flag that
+configures the observer's velocity
+magnitude, plus a host-side
+validation test that pins the demo's
+relativistic-perception layer
+analytically.**
+
+### What ships
+
+- New CLI surface:
+    - `--render-demo` (action). One
+      sphere centred at z = -3, one
+      "neutral" diffuse material, one
+      cool-blue environment light,
+      pinhole camera with
+      `--beta`-configurable observer
+      along the camera's forward
+      axis (-Z). Reuses the existing
+      `CudaRenderer::render_scene_with_aovs`
+      pipeline; allocates the
+      standard six AOV buffers and
+      saves Beauty + DopplerFactor
+      to `output/demo_beauty.ppm`
+      and `output/demo_doppler.ppm`.
+      Audit-host fallback returns
+      the documented "requires CUDA"
+      error.
+    - `--beta <float>` (modifier).
+      Stored on `Config::beta` (default
+      `-1.0f` = "user did not pass
+      --beta" sentinel; the action
+      substitutes its own default of
+      0.7). Magnitude is clamped to
+      <= 0.999999 by
+      `rr::relativity::clampBeta` at
+      consume-time. Silently ignored
+      by every action other than
+      `--render-demo`. Invalid floats
+      are rejected by the parser
+      ("invalid float for --beta:
+      ...").
+- `src/main.cpp`: new
+  `run_render_demo(const Config&)`
+  dispatcher (mirrors
+  `--render-aovs` shape, single-
+  sphere scene, only Beauty +
+  DopplerFactor saved). New
+  `case RenderDemo:` branch in the
+  action switch.
+- `src/core/CommandLine.{h,cpp}`:
+  new `Action::RenderDemo` enum
+  value; new parser branches for
+  `--render-demo` and `--beta`;
+  help-text entries for both;
+  mutual-exclusion error message
+  updated.
+- `src/core/Config.h`: new `float
+  beta = -1.0f;` field with the
+  sentinel-default convention
+  documented inline.
+- `tests/demo_tests.cpp` (NEW, **5
+  named test functions, 10 699
+  hand-rolled `RR_CHECK`
+  assertions**) covering the demo's
+  relativistic-perception layer
+  end-to-end on the host:
+    1. `test_demo_beta_zero_is_classical`
+       — at beta = 0, every pixel
+       across a representative grid
+       has D = 1 exactly, satisfying
+       the prompt's requirement #1
+       ("beta = 0 render should
+       behave like normal camera
+       mode").
+    2. `test_demo_beta_zero_seven_blueshift`
+       — at beta = 0.7 / 0.9 the
+       central pixel of an odd-dim
+       fixture (where the centre
+       pixel is exactly on the
+       forward axis) matches the
+       closed-form longitudinal
+       Doppler factor
+       sqrt((1+b)/(1-b)) within
+       relative float32 tolerance.
+       Strict monotonicity
+       D(0) < D(0.7) < D(0.9) at
+       the central pixel. Satisfies
+       requirement #2 ("beta = 0.7
+       or beta = 0.9 should visibly
+       change the output").
+    3. `test_demo_beta_corner_dimmer_than_center`
+       — at beta = 0.7 the four
+       corner pixels each produce
+       D < D_center, pinning the
+       forward-beaming pattern that
+       makes the relativistic
+       effect visible.
+    4. `test_demo_doppler_is_deterministic`
+       — re-running the same
+       (camera, beta, pixel) triple
+       twice produces bit-identical
+       D (no RNG, no time-derived
+       state, no FP drift between
+       calls). Across 5 betas × 32
+       × 18 pixels. Satisfies
+       requirement #4 ("output
+       files should be deterministic
+       enough for smoke tests") at
+       the host-validation layer.
+    5. `test_demo_clamps_invalid_beta`
+       — under the demo's exact
+       observer pattern, any
+       |beta| >= 1 input still
+       yields a finite + positive
+       Doppler factor at every
+       pixel after going through
+       `clampBeta`.
+- `CMakeLists.txt`: new
+  `add_executable(demo_tests
+  tests/demo_tests.cpp)` +
+  `target_link_libraries(...
+  rr_camera rr_relativity)` +
+  `add_test`. Banner / project
+  description bumped to
+  "Stage 19E.2: render-demo +
+  --beta".
+- `README.md`: ctest count
+  updated 5/5 -> 6/6 (math /
+  image / gpu / pathtracer /
+  relativity / demo).
+
+### Documented contracts
+
+- **Beta convention**: `--beta`
+  takes a magnitude (sign is
+  picked by the action). The
+  demo points the observer along
+  -Z (the camera's default
+  forward axis), so positive
+  beta means "approaching the
+  sphere" -> blueshift on the
+  forward cone +
+  searchlight brightening +
+  forward-aberrated rays.
+  beta = 0 is exactly identical
+  to the classical render
+  (every relativity formula
+  degenerates to identity per
+  Stage 19E.1's
+  `test_identity_at_zero_beta`).
+- **Beta range**: clamped to
+  <= 0.999999 by clampBeta at
+  consume-time, not by the
+  parser. The CLI accepts any
+  float (including negative);
+  the action's contract is
+  documented in the help text.
+- **Output paths**: fixed
+  (`output/demo_beauty.ppm`,
+  `output/demo_doppler.ppm`).
+  `--output` is ignored; same
+  pattern as `--render-relativistic`.
+- **AOV choice**: Doppler
+  factor (one of the three
+  relativistic AOVs the prompt
+  listed). The kernel writes
+  the scalar Doppler factor
+  per-pixel; `save_aov_to_ppm`
+  replicates it across RGB so
+  the resulting PPM is
+  viewable.
+
+### Hard-rule audit
+
+- Smallest meaningful demo -
+  **yes**. One sphere, one
+  material, one light, one
+  camera, one observer-knob,
+  Beauty + Doppler outputs.
+- beta = 0 == classical render -
+  **yes**, pinned by
+  `test_demo_beta_zero_is_classical`
+  (D = 1 per pixel) and the
+  upstream
+  `test_identity_at_zero_beta`
+  in `relativity_tests.cpp`.
+- beta = 0.7 / 0.9 visibly
+  changes the output - **yes**,
+  pinned by
+  `test_demo_beta_zero_seven_blueshift`
+  (analytic D match + strict
+  monotonicity).
+- CLI flag for setting beta -
+  **yes**, `--beta <float>`.
+- Deterministic output - **yes**,
+  pinned by
+  `test_demo_doppler_is_deterministic`
+  at the host-validation layer.
+  PPM-bytes determinism on a
+  CUDA host is downstream of GPU
+  rounding and lives in a
+  CUDA-host run.
+- One test or scripted validation
+  - **yes**, the new
+  `demo_tests` ctest target.
+- "Do not implement Cinema 4D,
+  node editor, denoiser, or
+  server changes" - **yes**.
+  Module #16 (Denoiser),
+  Module #19 (Server), Module
+  #20 (C4D Bridge), Module #22
+  (Node Editor) are all
+  byte-identical pre-/
+  post-slice. Status table
+  rows for those modules are
+  unchanged.
+
+### Module / milestone status touch
+
+- **Module #13** (Relativistic
+  Camera Model): status
+  unchanged ("production
+  ready"); the leaf was already
+  pinned by Stage 19E.1's 800-
+  assertion test pass. This
+  slice adds a *composition*
+  test (camera + observer ->
+  per-pixel Doppler factor)
+  that closes the host-side
+  side of the demo's contract.
+- **Module #5 / #15 / #17**
+  (CUDA Backend / Progressive
+  Renderer / AOVs): status
+  unchanged ("partial
+  implementation"). The demo
+  exercises these modules but
+  the visual output remains
+  gated on a CUDA + OptiX-SDK
+  host run (project-wide
+  visual-validation gate).
+- **Milestone M9**
+  (Relativistic Camera Model
+  First Pass): status
+  unchanged ("partial
+  implementation"). The
+  milestone's visual exit
+  criterion ("scene rendered
+  at relativistic speeds shows
+  expected aberration / Doppler
+  behavior on the simple GPU
+  primitive from M8") still
+  needs a real-hardware run.
+  The math-leaf side of M9 is
+  now both unit-tested
+  (Stage 19E.1) AND
+  composition-tested
+  (Stage 19E.2). The CLI
+  surface that exercises it
+  (`--render-demo`) is wired
+  end-to-end.
+
+### Verified at the build
+
+- `cmake -S . -B build` (audit
+  host, no CUDA): banner shows
+  "Stage 19E.2: render-demo +
+  --beta"; clean build; ctest
+  6/6 green (was 5/5).
+- `build/bin/demo_tests` run
+  directly prints
+  `demo_tests: 10699 / 10699
+  passed`.
+- `build/bin/RelativityRender
+  --help` shows the new
+  `--render-demo` action and
+  `--beta` modifier with their
+  documented defaults.
+- `build/bin/RelativityRender
+  --render-demo` returns the
+  documented "requires CUDA"
+  error and exits 1 (same
+  audit-host fallback shape
+  every other GPU action
+  uses).
+- `build/bin/RelativityRender
+  --render-demo --beta xyz`
+  returns "invalid float for
+  --beta: xyz" and the usage
+  banner; exits non-zero.
+- `build/bin/RelativityRender
+  --render-demo
+  --render-relativistic`
+  returns the mutual-exclusion
+  error message, which now
+  includes `--render-demo`
+  alongside the other render-*
+  actions.
+- `build/bin/RelativityRender
+  --render-gradient --beta 0.5`
+  returns the documented
+  `--render-gradient requires
+  CUDA` error — the modifier
+  flag is silently swallowed by
+  unrelated actions per the
+  documented contract.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:

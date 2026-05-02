@@ -59,7 +59,8 @@ bool set_action(CommandLine::Action& current, CommandLine::Action target,
                 "--server / --render-optix-test / "
                 "--render-optix-triangle / "
                 "--render-optix-relativity / "
-                "--render-denoise)";
+                "--render-denoise / "
+                "--render-demo)";
         return false;
     }
     current = target;
@@ -189,6 +190,15 @@ CommandLine::ParseResult CommandLine::parse(int argc, char** argv) {
                 r.action = Action::Error;
                 return r;
             }
+        } else if (a == "--render-demo") {
+            // Stage 19E.2: smallest-meaningful-relativistic-render
+            // demo. Mutually exclusive with the other render-*
+            // actions; reads the optional `--beta` modifier.
+            if (!set_action(r.action, Action::RenderDemo,
+                            r.error_message)) {
+                r.action = Action::Error;
+                return r;
+            }
         } else if (a == "--render-scene") {
             if (!set_action(r.action, Action::RenderScene,
                             r.error_message)) {
@@ -281,6 +291,27 @@ CommandLine::ParseResult CommandLine::parse(int argc, char** argv) {
                 return r;
             }
             r.config.output_path.assign(value);
+        } else if (a == "--beta") {
+            // Stage 19E.2 modifier flag. Stores the artist-supplied
+            // observer-velocity magnitude on Config; only the
+            // `--render-demo` action reads it. Negative values are
+            // accepted at parse time (the action interprets the sign
+            // relative to its forward axis and clamps the magnitude
+            // via `rr::relativity::clampBeta`).
+            if (!take_value(argc, argv, i, a, value, r.error_message)) {
+                r.action = Action::Error;
+                return r;
+            }
+            float beta_value = 0.0f;
+            const auto* end = value.data() + value.size();
+            const auto  res = std::from_chars(value.data(), end, beta_value);
+            if (res.ec != std::errc{} || res.ptr != end) {
+                r.action        = Action::Error;
+                r.error_message = "invalid float for --beta: "
+                                + std::string(value);
+                return r;
+            }
+            r.config.beta = beta_value;
         } else if (a == "--width") {
             if (!take_value(argc, argv, i, a, value, r.error_message)) {
                 r.action = Action::Error;
@@ -427,6 +458,15 @@ std::string CommandLine::usage(std::string_view argv0) {
        << "                        speeds (beta = 0.00, 0.25, 0.75, "
                                   "0.95) and write the four PPMs\n"
        << "                        into output/. Requires CUDA.\n"
+       << "  --render-demo         Stage 19E.2 smallest-meaningful "
+                                  "relativistic-render demo: one\n"
+       << "                        sphere + one diffuse material + "
+                                  "one environment light + camera\n"
+       << "                        with --beta-configurable observer. "
+                                  "Outputs output/demo_beauty.ppm\n"
+       << "                        and output/demo_doppler.ppm. "
+                                  "Defaults to beta = 0.7 if --beta\n"
+       << "                        is not given. Requires CUDA.\n"
        << "  --render-scene        Render a built-in multi-sphere scene "
                                   "via the GpuScene upload\n"
        << "                        path (requires CUDA).\n"
@@ -567,6 +607,18 @@ std::string CommandLine::usage(std::string_view argv0) {
        << "                        default for --render-direct-lighting is "
                                   "output/gpu_direct_lighting.ppm.\n"
        << "                        Ignored for --render-relativistic.\n"
+       << "  --beta   <float>      Stage 19E.2 modifier flag (not an "
+                                  "action). Sets the observer's\n"
+       << "                        velocity magnitude in c-units for "
+                                  "--render-demo only;\n"
+       << "                        silently ignored by every other "
+                                  "action. Magnitude is clamped\n"
+       << "                        to <= 0.999999 by "
+                                  "rr::relativity::clampBeta. The\n"
+       << "                        sign and direction are chosen by "
+                                  "the action (the demo points\n"
+       << "                        the observer along the camera's "
+                                  "default forward axis -Z).\n"
        << "  --width  <int>        Render width in pixels "
                                   "(default 1280).\n"
        << "  --height <int>        Render height in pixels "

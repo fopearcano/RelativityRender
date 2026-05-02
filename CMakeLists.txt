@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.20)
 
 project(RelativityRender
     VERSION     0.1.0
-    DESCRIPTION "RelativityRender - GPU renderer platform (Stage 19E.1: relativity tests)"
+    DESCRIPTION "RelativityRender - GPU renderer platform (Stage 19E.2: render-demo + --beta)"
     LANGUAGES   CXX
 )
 
@@ -59,7 +59,7 @@ endif()
 
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
-message(STATUS "RelativityRender ${PROJECT_VERSION} (Stage 19E.1: relativity tests)")
+message(STATUS "RelativityRender ${PROJECT_VERSION} (Stage 19E.2: render-demo + --beta)")
 
 message(STATUS "  Build type   : ${CMAKE_BUILD_TYPE}")
 message(STATUS "  C++ standard : ${CMAKE_CXX_STANDARD}")
@@ -677,4 +677,20 @@ if(RR_BUILD_TESTS)
     target_link_libraries(relativity_tests PRIVATE rr_relativity)
     rr_apply_warnings(relativity_tests)
     add_test(NAME relativity_tests COMMAND relativity_tests)
+
+    # demo_tests (Stage 19E.2) covers the `--render-demo` action's
+    # relativistic-perception layer end-to-end on the host: the
+    # demo's exact camera / observer composition fed through
+    # `generate_camera_ray` (RR_HD inline) and `dopplerFactor`
+    # (RR_HD inline) reproduces the closed-form longitudinal
+    # blueshift at the central pixel; beta = 0 produces D == 1
+    # everywhere; beta = 0.7 produces D > 1 at center with
+    # forward beaming (corner D < center D); the same input
+    # twice produces bit-identical output (smoke-test
+    # determinism); out-of-range |beta| is silently clamped to
+    # <= 0.999999. Runs without CUDA.
+    add_executable(demo_tests tests/demo_tests.cpp)
+    target_link_libraries(demo_tests PRIVATE rr_camera rr_relativity)
+    rr_apply_warnings(demo_tests)
+    add_test(NAME demo_tests COMMAND demo_tests)
 endif()
