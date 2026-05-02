@@ -3737,6 +3737,7 @@ sub-stages, appended to the same file.** No code is touched.
 | 18A.3    | Relativity precompute (single redundant-math fix: PrecomputedRelativity POD + `precompute_relativity()` factory + precomputed-input overloads of aberrateDirection / dopplerFactor in RelativityMath.h; k_sphere_relativistic / k_render_scene / OptixPrograms.cu raygen + apply_doppler_and_searchlight all snapshot once at thread entry instead of paying redundant `length(beta_vec)` + `gamma(beta_mag)` reductions inside both the aberration and the Doppler call; saves 2 sqrts per pixel on the relativistic-stack-on path) | ✅ |
 | 18A.4    | Progressive optimization (float4-vectorised k_accum_add + k_accum_resolve fast paths on Rgba32F-aligned buffers — 1/4 the threads, 1/4 the memory transactions, 16-byte coalesced ld/st; new launch_accum_first_sample (cudaMemcpy D2D) routes samples_==0 through the memory-controller bulk-copy path and skips the read-of-zeros + add-kernel launch; AccumulationBuffer::accumulate_sample dispatches first-sample vs add; bit-identical pixel output) | ✅ |
 | 19A.1    | Denoiser scope (docs/DENOISER_PLAN.md §1-§7: purpose = reduce noise in path-traced output + enable low-spp renders; modes = final-frame (19B target) + progressive (future, gated on motion vectors); backend = NVIDIA OptiX denoiser primary on shared OptixDeviceContext, CPU fallback future/optional; constraints = GPU-only, must not modify core renderer logic, operates on existing Stage 14A AOV buffers; planning-only, no code) | ✅ |
+| 19A.2    | Denoiser inputs (docs/DENOISER_PLAN.md §8: required inputs = Beauty (noisy) / Albedo / Normal, all 3 floats per pixel, world-space normals, all already produced by Stage 14A render_scene_with_aovs; optional inputs = Depth (future, not consumed by OptiX denoiser today) + Motion (future, requires new AOVType::Motion); concrete one-to-one mapping to make_default_aov_set() entries + targets.* fields; FLOAT3-vs-FLOAT4 Beauty format ambiguity documented with route (B) recommended to preserve §4.2 "no renderer changes"; planning-only, no code) | ✅ |
 
 ## Stage 12A.2.1 — OptiX raygen program design
 
@@ -12199,6 +12200,188 @@ project's existing planning docs share.**
   the prompt's four required sections plus
   the slice-discipline framing the rest of
   the project's planning docs share.
+
+## Stage 19A.2 — Denoiser inputs
+
+**Scope of this slice (Stage 19A.2; master order
+#24): planning-only refinement of the denoiser
+input contract. Appends a new §8 "Required and
+optional inputs" to `docs/DENOISER_PLAN.md` that
+formally defines the required vs optional input
+set and maps each one concretely to the existing
+Stage 14A AOV buffers. No code, no kernel
+changes, no header additions. The slice's
+`§7` follow-up roadmap is updated so 19A.2 = this
+slice; the rest of the 19A bucket slides down
+one number (19A.3 API surface, 19A.4 buffer-flow
+design, 19A.5 CLI integration, 19A.6 audit + risk
+review).**
+
+### What ships
+
+- `docs/DENOISER_PLAN.md` (extended): new
+  top-level §8 "Required and optional inputs"
+  with five subsections.
+    - **§8.1 Required inputs.** Beauty (noisy),
+      Albedo, Normal - all three required for
+      the 19B implementation despite OptiX
+      formally declaring Albedo + Normal as
+      optional, because (a) the Stage 14A
+      pipeline produces all three side-by-side
+      without extra work and (b) Beauty-only
+      denoising visibly degrades on the
+      relativistic-shading edge cases this
+      project specifically targets. Per-input
+      definition / source / "why it helps" /
+      world-space convention notes.
+    - **§8.2 Optional inputs.** Depth (declared
+      for future custom-denoiser experiments +
+      adaptive-sampling driver, NOT consumed by
+      OptiX 7.5+ today) and Motion (the OptiX
+      temporal-mode flow buffer; gated on a
+      future motion-vector slice that adds
+      `AOVType::Motion` to the existing AOV
+      enum). Both are 19B-rejected with a
+      documented "not yet supported" error.
+    - **§8.3 Mapping to existing Stage 14A
+      AOV buffers.** Concrete one-to-one
+      table: `AOVType::Beauty` <->
+      `make_default_aov_set()[0]` <->
+      `targets.beauty`; same shape for Normal
+      and Albedo. Depth row included for
+      completeness. Motion row flagged as
+      missing (the only required-but-missing
+      AOV; tracked here so the 19A.3 API
+      surface and the eventual 19C work have a
+      known dependency to schedule).
+    - **§8.3.1 Component-count cross-check vs
+      OptiX.** All three required-input AOVs
+      already match OPTIX_PIXEL_FORMAT_FLOAT3
+      exactly; no padding / swizzling / per-
+      channel conversion is needed. Beauty's
+      FLOAT3-vs-FLOAT4 ambiguity (the AOV is
+      FLOAT3 but `resolve_to_image()` produces
+      FLOAT4) is flagged with two routes:
+      (A) wire the path tracer to also write a
+      Beauty AOV (renderer-side change,
+      violates §4.2), or (B) read the FLOAT4
+      resolve output directly (recommended).
+      19A.4 finalises the choice.
+    - **§8.4 Buffer-flow direction (preview).**
+      The denoiser API takes `const float*`
+      device pointers, not host buffers; the
+      caller (the renderer host orchestration)
+      keeps the underlying `GpuAOVBuffer` /
+      `GpuBuffer` alive across the denoiser
+      call. Mirrors the existing
+      `CudaRenderer::AOVTargets` pattern.
+    - **§8.5 What this sub-stage commits to.**
+      Required-input set, optional-input set,
+      AOV mapping, format-mismatch risk,
+      no-code-no-headers boundary. Explicitly
+      defers the API surface to 19A.3 and the
+      buffer-flow diagram to 19A.4.
+
+- `docs/DENOISER_PLAN.md` §7 (updated): the
+  follow-up sub-stage roadmap is renumbered so
+  19A.2 = "Denoiser inputs" (this slice;
+  documented in §8). Previous draft entries
+  (19A.2 → "API surface", 19A.3 → "Buffer-flow
+  design", 19A.4 → "Integration with CLI
+  handlers", 19A.5 → "Audit + risk review")
+  slide down by one. 19B remains unchanged.
+
+- `CMakeLists.txt`: stage label bumped to
+  "Stage 19A.2: denoiser inputs" in both
+  `project(...)` and the configure-time banner.
+
+- `docs/BUILD_PLAN.md`: this entry +
+  status-table row.
+
+### Architectural decisions worth highlighting
+
+- **All three guides treated as required.**
+  OptiX formally lists Albedo and Normal as
+  optional; the project's 19B contract
+  upgrades them to required because the
+  Stage 14A AOV pipeline already produces them
+  side-by-side and the relativistic-shading
+  edge cases benefit visibly from both guides.
+  The cost is zero: callers who wanted Beauty
+  alone still pay the AOV-pass cost on every
+  render that uses
+  `render_scene_with_aovs`.
+- **Depth declared but not consumed.** The
+  OptiX 7.5+ AI denoiser does not have a depth
+  slot. Reserving the input channel in the
+  19A.3 API surface keeps future custom-
+  denoiser / adaptive-sampling slices from
+  re-litigating it; 19B simply rejects any
+  caller that passes a depth buffer in. The
+  slot's existence is a forward-compatibility
+  signal, not a working feature.
+- **Motion AOV is the only known missing
+  piece.** Spelling it out as
+  required-but-missing (rather than just
+  "deferred") tells future readers exactly
+  what 19C work needs scheduled before the
+  OptiX temporal denoiser can land - a new
+  `AOVType::Motion` (component count = 2)
+  plus the `render_scene_with_aovs` writer +
+  per-pixel previous-frame reprojection.
+- **No new AOV types in this slice.** The
+  denoiser is strictly a consumer of the
+  existing Stage 14A enum. The Motion gap is
+  documented but its remediation lives in a
+  future slice; 19A.2 / 19B do not touch
+  `AOV.h` / `GpuAOVBuffer` / `AOVType`.
+- **FLOAT3-vs-FLOAT4 Beauty ambiguity locked
+  to route (B).** The AOV pipeline today
+  produces FLOAT3 Beauty but the path tracer's
+  resolve produces FLOAT4. Reading the FLOAT4
+  resolve output directly preserves §4.2's
+  "must not modify core renderer logic" rule;
+  the alternative (wiring the path tracer to
+  also write the AOV) requires renderer-side
+  changes that are explicitly out of scope.
+
+### Hard-rule audit
+
+- Documentation only - **yes**, the slice adds
+  zero source files, no build targets, no CLI
+  surface, no public API, no test coverage.
+  The only non-doc change is the
+  `CMakeLists.txt` stage-label bump.
+- Do not implement code - **yes**, the
+  document explicitly defers the
+  `Denoiser::Inputs` struct shape and the
+  factory signature to 19A.3, and the buffer-
+  flow diagram to 19A.4.
+- Append (not rewrite) the existing plan -
+  **yes**, §8 is appended to the end of the
+  document; existing §1-§6 are unchanged; §7's
+  follow-up roadmap is updated to acknowledge
+  that 19A.2 is this slice.
+- Update docs/BUILD_PLAN.md - **yes**, this
+  entry + status-table row.
+
+### Verified at the build
+
+- `cmake -DRR_ENABLE_CUDA=OFF
+   -DRELATIVITYRENDER_ENABLE_OPTIX=OFF`
+  (Linux): banner shows "Stage 19A.2:
+  denoiser inputs"; no source files changed;
+  ctest 4/4 green.
+- `cmake -DRELATIVITYRENDER_ENABLE_OPTIX=ON`
+  (Linux audit-host): banner bumped; rr_optix
+  unchanged; ctest 4/4 green.
+- `docs/DENOISER_PLAN.md` §8 reviewed against
+  the prompt's required vs optional split, the
+  AOV-mapping requirement, and the "no code"
+  rule. Cross-checked the AOV component
+  counts vs `src/renderer/AOV.h` and the
+  renderer-write contract vs
+  `src/cuda/CudaRenderer.h::AOVTargets`.
 
 ## Next stage
 

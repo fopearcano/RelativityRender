@@ -532,21 +532,25 @@ This is the planning-only slice. The criteria are:
 
 The 19A planning bucket extends as needed; today's plan:
 
-- **19A.2 — API surface.** `Denoiser` class shape, the
+- **19A.2 — Denoiser inputs.** Formal definition of the
+  required vs optional input set, mapped concretely to the
+  Stage 14A AOV buffers. Format / layout / unit notes for
+  each input. Documented in §8 below.
+- **19A.3 — API surface.** `Denoiser` class shape, the
   `make_denoiser(Backend)` factory, the `Result` struct,
   the buffer-flow direction (device-buffer-in /
   device-buffer-out vs Image-in / Image-out).
-- **19A.3 — Buffer-flow design.** Concrete diagram of how
+- **19A.4 — Buffer-flow design.** Concrete diagram of how
   Beauty / Normal / Albedo move from the renderer's
   device-side AOV buffers through the denoiser to the
   PPM file, including which buffer the resolve writes to
   and which buffer the denoiser writes to.
-- **19A.4 — Integration with existing CLI handlers.**
+- **19A.5 — Integration with existing CLI handlers.**
   Where the denoiser plugs into `--render-pathtrace`, how
   the server's `render` verb selects denoise on / off,
   the `--denoise` / `--no-denoise` CLI surface, the
   `[GPU] denoiser: time = X.XXX ms` log line shape.
-- **19A.5 — Audit + risk review.** Documented before any
+- **19A.6 — Audit + risk review.** Documented before any
   code lands: the OptiX denoiser's memory footprint vs
   current device-VRAM tally, version-pinning of the
   OptiX SDK, the SDK-not-found audit-host fallback, the
@@ -559,3 +563,355 @@ The 19A planning bucket extends as needed; today's plan:
 Subsequent C-bucket slices (19C, 19D, …) layer
 progressive mode, motion-vector integration, and adaptive
 sampling on top of 19B's API.
+
+---
+
+## 8. Required and optional inputs (Stage 19A.2)
+
+This section is the formal version of the input contract
+sketched in §4.3. §4.3 says "the denoiser consumes existing
+Stage 14A AOVs"; this section is the concrete mapping —
+exactly which AOV feeds which denoiser slot, in what layout,
+in what units, and with what optional-vs-required posture.
+
+The slice is documentation-only; no code, no header
+additions, no kernel changes. The mapping is what 19B's
+implementation slice will program against.
+
+### 8.1 Required inputs
+
+The OptiX denoiser's "RGB + albedo + normal" model — the
+project's primary 19B target — has one required input
+(Beauty) and two optional inputs (Albedo, Normal) that are
+recommended in practice. We treat all three as **required**
+for the project's 19B contract because (a) the existing AOV
+pipeline produces all three side-by-side without extra work
+and (b) running the denoiser on Beauty alone produces
+visibly worse output on the relativistic-shading edge cases
+this project specifically wants to handle.
+
+| # | Input | OptiX role          | Component count | Required for 19B |
+|---|-------|---------------------|-----------------|------------------|
+| 1 | Beauty (noisy) | input layer            | RGB (3 floats / pixel) | **yes** |
+| 2 | Albedo         | guide layer (denoise hint) | RGB (3 floats / pixel) | **yes** |
+| 3 | Normal         | guide layer (denoise hint) | XYZ (3 floats / pixel) | **yes** |
+
+The "noisy" qualifier on Beauty is the OptiX terminology:
+the denoiser's input layer is the un-cleaned Monte Carlo
+estimate that came out of the path tracer's spp loop. The
+denoised result is what 19B writes back to the host.
+
+#### 8.1.1 Beauty (noisy)
+
+**Definition.** The path tracer's resolved per-pixel
+radiance estimate. After `AccumulationBuffer::resolve_to
+_image()` divides the per-pixel sum by `samples_count()`,
+this is the buffer that today's CLI handler downloads
+and writes to PPM. Linear-space RGB; no tone mapping
+applied; no gamma encoding; values are unbounded floats
+representing physical-ish radiance (the path tracer is
+not energy-calibrated but the units are internally
+consistent).
+
+**Source.** Per §1.2 of `RELATIVITYRENDER_CLAUDE_MASTER_
+INSTRUCTIONS.txt`, the path tracer is the primary noise
+source the denoiser exists to clean up. Today's path
+tracer produces this buffer through two device-side
+steps:
+
+1. `launch_pathtrace_sample(...)` writes one sample
+   frame into a per-launch sample buffer (Rgba32F).
+2. `AccumulationBuffer::accumulate_sample(...)` adds it
+   to the running sum (Stage 18A.4 fast path on the
+   first sample).
+3. `AccumulationBuffer::resolve_to_image()` divides by
+   the sample count via `launch_accum_resolve` (Stage
+   18A.4 float4 fast path) into a fresh device-side
+   display buffer.
+
+The denoiser consumes the resolve output (or its
+direct device-side equivalent) — see §8.4 for the
+buffer-flow choice 19A.4 will finalise.
+
+**Special-case note for non-pathtrace renders.** The
+existing scene-render path (`CudaRenderer::render
+_scene{,_with_aovs}`) produces a Beauty buffer directly
+without going through `AccumulationBuffer`. The Stage
+14A AOV pipeline already populates a separate
+`GpuAOVBuffer` for `AOVType::Beauty` when the caller
+requests it (`render_scene_with_aovs`). For
+non-pathtrace inputs the denoiser is essentially a
+no-op (single-sample renders have no Monte Carlo
+variance), but the input contract is the same shape.
+
+#### 8.1.2 Albedo
+
+**Definition.** The base reflectance colour at the hit
+point, **before** lighting and before the relativistic
+Doppler / searchlight transforms. Linear-space RGB,
+typical values in `[0, 1]` for physically-plausible
+materials; HDR base colours (>1) are allowed and the
+denoiser tolerates them.
+
+**Why it helps.** The OptiX denoiser uses albedo as a
+guide for "where there are sharp colour edges that the
+beauty noise should be denoised *along*, not *across*".
+Without it, two adjacent pixels with different
+materials but similar noisy radiance get smoothed
+together; with it, the denoiser preserves the material
+boundary.
+
+**Source.** The Stage 14A.3 kernel
+`render_scene_with_aovs` writes per-pixel albedo into
+the `targets.albedo` device pointer. The kernel reads
+the hit's `MaterialParams::baseColor` (or, when
+`useBaseColorTexture` is set, samples the texture at
+the hit's interpolated UV) and writes the un-lit value
+into the AOV buffer. Per the AOV documentation in
+`AOV.h`, the field is "RGB (3 floats). Base colour at
+the hit *before* lighting, after texture lookup."
+
+This is exactly the OptiX denoiser's albedo
+expectation — no additional preprocessing is needed.
+
+#### 8.1.3 Normal
+
+**Definition.** The shading normal at the hit point in
+**world space**, components in `[-1, 1]`. The OptiX
+denoiser explicitly documents its normal input as
+world-space XYZ, not view-space; the project's AOV
+already produces world-space normals so the contract
+matches.
+
+**Why it helps.** The denoiser uses surface-normal
+similarity as its second "smooth along, not across"
+guide. Curved surfaces with varying normal direction
+produce noise that the denoiser must respect rather
+than flatten; sharp normal discontinuities (a cube's
+edge, a hard normal break) are similarly preserved.
+
+**Source.** The Stage 14A.3 kernel writes the hit's
+geometric or shading normal into `targets.normal`. The
+existing CUDA code path uses `Hit::normal` directly,
+which is the world-space hit-normal `intersect_sphere`
+/ `intersect_triangle` produce. No transform / re-frame
+step is required between AOV write and denoiser read.
+
+The world-space convention is consistent across all
+the project's render paths (CUDA closest-hit and OptiX
+closest-hit), so the denoiser sees the same field
+shape regardless of which backend produced the AOV.
+
+### 8.2 Optional inputs
+
+Two optional inputs are **declared** today so the API
+surface lands stably in 19A.3, but neither is consumed
+by the 19B implementation. Both are deferred for
+documented reasons.
+
+| # | Input | OptiX role | Component count | Status |
+|---|-------|------------|-----------------|--------|
+| 4 | Depth  | (not a standard OptiX denoiser input today) | 1 float / pixel | **future** |
+| 5 | Motion | guide layer (temporal flow vectors) | 2 floats / pixel | **future** |
+
+#### 8.2.1 Depth (future)
+
+**Why optional / future.** The OptiX 7.5+ AI denoiser
+does **not** consume a depth buffer as part of its
+documented input set. The standard "Beauty + Albedo +
+Normal" model has no depth slot; the temporal model
+adds a flow buffer (motion vectors) but not depth.
+
+The reason to keep depth on the input list at all is:
+
+- **Future custom-denoiser experiments.** A
+  spatiotemporal filter built around a custom kernel
+  (e.g. an A-trous wavelet pass with edge-stopping
+  functions) frequently uses depth to identify
+  surfaces; reserving the slot now means the API
+  surface designed in 19A.3 already has the input
+  channel and 19C+ work doesn't need to re-litigate.
+- **Future adaptive-sampling driver.** A future slice
+  that pairs the renderer with variance-driven sample
+  redistribution would benefit from depth as a
+  surface-identity signal; same plumbing.
+- **Author / debug visualisation.** The Stage 14A AOV
+  is already authored and saved as `aov_depth.ppm`;
+  the denoiser slice does not need to re-introduce
+  it, just declare the optional consumer slot.
+
+19B will reject any caller that provides Depth as a
+denoiser input and document that "Depth is an
+optional future input; no current denoiser backend
+consumes it."
+
+**Source (already exists).** The Stage 14A.3 kernel
+writes per-pixel depth into `targets.depth`. The unit
+choice ("ray `t`, view-space Z, or true distance") is
+explicitly the renderer's, per `AOV.h`; today the
+implementation uses the hit's `t` value directly.
+Whatever the chosen unit ends up being, it is what
+the denoiser sees if a future slice flips the
+optional-input switch on.
+
+#### 8.2.2 Motion (future)
+
+**Why optional / future.** The OptiX denoiser's
+**temporal** mode (the same one progressive denoise
+in §2.2 will eventually use) consumes a 2-channel
+motion-vector buffer that says, per pixel,
+"this pixel's image-plane projection moved by
+(`dx`, `dy`) since the previous frame." Without
+that buffer, temporal denoising falls back to
+re-running the spatial denoiser on each frame
+independently — same quality as final-frame mode,
+no temporal stability.
+
+The project does not produce motion vectors today
+(documented as out-of-scope in §5; the prerequisites
+land in master-order #25, native Cinema 4D renderer
+integration). The denoiser slice declares the slot
+so 19A.3's API surface includes the optional motion
+input from day one; 19B refuses callers that try to
+supply it; 19C ships the actual temporal denoiser
+once the renderer can populate the buffer.
+
+**No existing AOV.** Unlike Depth, **Motion is not
+a Stage 14A AOV today.** The Stage 14A enum has six
+entries (Beauty / Normal / Depth / Albedo /
+DopplerFactor / SearchlightFactor); none of them
+encodes per-pixel image-plane velocity. A future
+slice (likely 19C or its prerequisite) extends the
+AOV enum with `AOVType::Motion` (component count =
+2), wires `render_scene_with_aovs` to populate it
+from per-pixel previous-frame reprojection, and
+plumbs the resulting `GpuAOVBuffer` through to the
+denoiser.
+
+This is the only required-but-missing AOV the
+denoiser plan calls for. Spelling it out here means
+the 19A.3 API surface and the eventual 19C work
+have a known dependency to schedule.
+
+### 8.3 Mapping to existing Stage 14A AOV buffers
+
+For every input the denoiser consumes today, this is
+the concrete plumbing — which `GpuAOVBuffer` the
+denoiser reads and which `render_scene_with_aovs`
+target field populates it.
+
+| Denoiser input | `AOVType` | `GpuAOVBuffer` source | Renderer write path | Component count |
+|----------------|-----------|------------------------|---------------------|-----------------|
+| Beauty (noisy) | `AOVType::Beauty` | `make_default_aov_set()[0]` | `render_scene_with_aovs(...).targets.beauty` | 3 floats / pixel |
+| Albedo         | `AOVType::Albedo` | `make_default_aov_set()[3]` | `render_scene_with_aovs(...).targets.albedo` | 3 floats / pixel |
+| Normal         | `AOVType::Normal` | `make_default_aov_set()[1]` | `render_scene_with_aovs(...).targets.normal` | 3 floats / pixel |
+| Depth (future) | `AOVType::Depth`  | `make_default_aov_set()[2]` | `render_scene_with_aovs(...).targets.depth` | 1 float / pixel |
+| Motion (future) | (not yet defined) | (NEW: future `AOVType::Motion`) | (NEW: future `targets.motion`)                          | 2 floats / pixel |
+
+The first three rows define the 19B input contract
+end-to-end: the host-side caller allocates the
+`make_default_aov_set()` buffers, the renderer's AOV
+pass writes into them, the denoiser reads from them.
+No new AOV plumbing is added by the denoiser slice
+itself.
+
+The fourth row is the depth row that exists in the AOV
+set today but is not consumed by 19B. The fifth row is
+the only missing piece; it is gated on the future
+motion-vector slice.
+
+#### 8.3.1 Component-count cross-check vs OptiX
+
+The OptiX denoiser's `OptixImage2D` struct has a
+`format` field that selects channel count.
+
+| Input | OptiX format expected | AOV component count | Match? |
+|-------|------------------------|---------------------|--------|
+| Beauty | `OPTIX_PIXEL_FORMAT_FLOAT3` (or `FLOAT4`) | 3 | **yes** (FLOAT3) |
+| Albedo | `OPTIX_PIXEL_FORMAT_FLOAT3` | 3 | **yes** |
+| Normal | `OPTIX_PIXEL_FORMAT_FLOAT3` | 3 | **yes** |
+
+The Stage 14A AOV layout is already exactly what the
+OptiX denoiser expects for the three required inputs;
+no padding, no swizzling, no per-channel conversion is
+needed between the renderer's write and the denoiser's
+read.
+
+The non-trivial format decision is on Beauty: OptiX
+accepts both FLOAT3 and FLOAT4. The 14A AOV is
+FLOAT3, which is the smallest viable layout. The
+path-tracer's `resolve_to_image()` produces an
+`Image::PixelFormat::Rgba32F` (FLOAT4) device buffer
+internally before download. **The 19B implementation
+slice picks one of two routes**:
+
+- **(A) Read the FLOAT3 AOV directly.** Requires
+  `render_scene_with_aovs` to produce a Beauty AOV.
+  The path tracer does not currently call into
+  `render_scene_with_aovs` — it has its own kernel
+  + `AccumulationBuffer::resolve` flow. Wiring the
+  path tracer to also write the AOV is renderer-side
+  work that violates §4.2's "must not modify core
+  renderer logic" rule.
+- **(B) Read the FLOAT4 resolve output.** Tells
+  OptiX `OPTIX_PIXEL_FORMAT_FLOAT4` and reads the
+  resolve buffer directly; the alpha channel is
+  ignored by the denoiser. No renderer changes
+  required; the denoiser slice strictly post-
+  processes what `resolve_to_image()` produced.
+
+19A.4 (buffer-flow design) finalises the choice;
+today's strong recommendation is (B) for §4.2
+compliance. This is the kind of decision the
+follow-up sub-stage exists to lock in before
+implementation starts.
+
+### 8.4 Buffer-flow direction (preview)
+
+Detailed wiring lands in 19A.4 (buffer-flow design),
+but the input contract drives one decision now: the
+denoiser reads device pointers, not host buffers. For
+each required input the denoiser slice's API takes a
+`const float*` device pointer plus dimensions. The
+caller — the renderer host orchestration — keeps the
+underlying `GpuAOVBuffer` (or the path tracer's
+internal display buffer) alive across the denoiser
+call.
+
+This matches the existing `CudaRenderer::AOVTargets`
+pattern: raw `float*` pointers passed into a CUDA-
+side kernel, the host owns the `GpuAOVBuffer` /
+`GpuBuffer`. The denoiser is structurally identical
+on the input side.
+
+### 8.5 What this sub-stage commits to
+
+- **Required-input set.** Beauty, Albedo, Normal —
+  all three are required for the 19B implementation,
+  per the rationale in §8.1.
+- **Optional-input set.** Depth and Motion are
+  declared so the API surface designed in 19A.3
+  includes the optional channels, but neither is
+  consumed by 19B. Depth's optional-future status
+  is documented; Motion needs a new AOV
+  (`AOVType::Motion`, 2 floats / pixel) that is
+  out of scope for any 19A or 19B sub-stage.
+- **AOV mapping.** Concrete, one-to-one mapping
+  between each input and the existing Stage 14A
+  AOV buffer that supplies it. No new AOV types
+  are added by the denoiser slice; the only gap
+  (Motion) is owned by a future slice and tracked
+  here.
+- **Format-mismatch risk.** Beauty's FLOAT3 vs
+  FLOAT4 ambiguity is documented; 19A.4 picks
+  the buffer-flow route, with route (B) — read
+  the FLOAT4 path-tracer resolve output —
+  recommended to preserve the §4.2 "no renderer
+  changes" rule.
+- **No code, no API headers.** Per the prompt's
+  "Do not implement code" rule, this sub-stage
+  ships only documentation. The
+  `Denoiser::Inputs` struct shape and the
+  `make_denoiser` factory signature are 19A.3's
+  output; the buffer-flow diagram is 19A.4's;
+  the implementation is 19B's.
