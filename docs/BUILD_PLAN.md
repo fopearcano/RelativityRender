@@ -3749,6 +3749,7 @@ sub-stages, appended to the same file.** No code is touched.
 | 19C.2.3  | Denoiser mismatch check (docs/DENOISER_MEMORY_AUDIT_C.md: two yes/no answers pairing Part A and Part B — "any allocation without obvious free? No"; "any duplicate allocation? No"; three supporting one-line bullets mapping A.1–A.2 to B.1–B.9, A.3–A.7 to B.10–B.14, A.8 to B.15; max 5 bullets, no deep reasoning; no code changes outside the CMakeLists stage label bump) | ✅ |
 | 19C.3    | Denoiser fallback (denoise_aov_buffers_to_ppm gains a save_noisy_fallback lambda that downloads the noisy Beauty AOV directly, widens FLOAT3 → RGBA32F (alpha=1), and saves it at the requested out_path with a Logger::warning; every denoiser-side failure path (OptixBackend init, OptixDenoiser init, set_inputs, output buffer alloc, invoke, denoised download) now returns through the fallback instead of returning false; the user always gets a saved image at the requested path; renderer never crashes due to denoiser failure; the only false-return path is when even the noisy-fallback download/save itself fails (genuine catastrophe); denoise:invoke / denoise:total timing lines skipped on the fallback path because no successful denoiser pass ran to time) | ✅ |
 | 19D      | Denoiser validation (docs/STAGE_19_DENOISER_AUDIT.md: four-question audit — Q1 file existence: PARTIAL (failure path verified on audit-host; success path deferred to CUDA + OptiX-SDK host); Q2 visual smoothness: DEFERRED (configuration verified correct, visual diff gated on CUDA + OptiX-SDK host); Q3 renderer still works without denoiser: PASS (--denoise defaults off; existing CLI surface byte-identical to Stage 19A.3 baseline); Q4 GPU/CPU violations: PASS with one documented exception (host-side constant-alpha widen loop justified under "save image files" rule and called out in-source); documentation only; no code changes outside the CMakeLists stage label bump) | ✅ |
+| roadmap-audit | Roadmap consistency audit (docs/ROADMAP_AUDIT.md: master 25-step order vs BUILD_PLAN's "Stage NN" labels vs README/MILESTONE_ROADMAP/NEXT_STEPS — eight mismatches identified, two-axis verdict (architecture: presentational risk only, no runtime impact; dependencies: no risk); docs/ROADMAP_PROPOSED_ALIGNMENT.md: proposes a two-axis numbering convention + accepts the skipped-then-shipped pattern for master #24 + cross-cutting "Xn" bucket label, no canonical changes; README.md: rewritten Status / Documentation / Layout sections to honestly reflect implementation through Stage 19D, with no overselling and no new technical claims; BUILD_PLAN canonical content unchanged) | ✅ |
 
 ## Stage 12A.2.1 — OptiX raygen program design
 
@@ -14299,6 +14300,123 @@ CUDA + OptiX-SDK host run.**
   factual claim in the verdicts can be
   walked back to a specific source-line
   citation in the audited tree.
+
+## Roadmap consistency audit
+
+**Scope of this slice (cross-cutting; no
+master-order #): documentation-only audit
+comparing the master 25-step DEVELOPMENT
+ORDER, the BUILD_PLAN status table, the
+MILESTONE_ROADMAP M0–M23 list, the
+NEXT_STEPS Step-1–5 queue, and the README
+status line. Per the prompt's "Do NOT
+modify BUILD_PLAN.md" rule, the canonical
+status-table content (every row above) is
+preserved unchanged; this slice adds only
+the new audit + alignment docs + a README
+rewrite + the standard status-row entry
+for traceability.**
+
+### What ships
+
+- `docs/ROADMAP_AUDIT.md` (NEW): the
+  audit. Five sections — canonical order,
+  actual implemented order, eight
+  detected mismatches, risk analysis
+  (architecture: presentational only;
+  dependencies: no risk), summary table.
+- `docs/ROADMAP_PROPOSED_ALIGNMENT.md`
+  (NEW): proposed two-axis numbering
+  (master order # ↔ BUILD_PLAN Stage
+  NN), explicit acknowledgement of the
+  skipped #21 / #22 / #23 → shipped #24
+  pattern with dependency-safety
+  citation, suggested "Xn" prefix for
+  cross-cutting buckets, priority list
+  for the next slices (Stage 19E
+  validation pass + master #21 C4D
+  bridge + #22 / #23 / #25 in order).
+- `README.md` (rewritten): the previous
+  Status section claimed "Stage 1 — Core
+  app. The repository currently contains
+  only the skeleton C++20 application"
+  which was severely stale (actual
+  state: Stage 19D, with 11 master-order
+  modules implemented end-to-end). The
+  new Status section honestly summarises
+  capabilities (CUDA + OptiX backends,
+  path tracer, denoiser, scene parser,
+  server, AOVs, observability) without
+  overselling (visual verification gated
+  on CUDA + OptiX-SDK host is still
+  documented as pending). The Layout
+  block is updated to reflect the
+  current `src/` tree (it previously
+  listed only `Logger.{h,cpp}` and
+  `Version.h`).
+- `CMakeLists.txt`: stage label bumped
+  to "roadmap consistency audit" in
+  both `project(...)` description and
+  the configure-time banner.
+- `docs/BUILD_PLAN.md`: this entry +
+  status-table row. **No canonical
+  per-stage row was modified**; only
+  the new "roadmap-audit" row + this
+  entry were added.
+
+### Hard-rule audit
+
+- No code changes - **yes**, the slice
+  adds zero source files in `src/`,
+  no build targets, no CLI surface, no
+  public API, no test coverage.
+- No feature additions - **yes**, the
+  README's Status section enumerates
+  only capabilities already in the
+  tree (cross-checked against the
+  BUILD_PLAN status table); no
+  forward-looking claims, no
+  promises of future work.
+- BUILD_PLAN.md canonical content
+  unchanged - **yes**. The 19D row
+  and every prior row are untouched.
+  The new "roadmap-audit" row + this
+  entry are additive housekeeping
+  per the standard slice-closing
+  pattern.
+- Documentation only - **yes**. Three
+  doc files (ROADMAP_AUDIT.md,
+  ROADMAP_PROPOSED_ALIGNMENT.md,
+  README.md) and the BUILD_PLAN
+  status-row + entry. CMakeLists.txt
+  stage-label bump is the standard
+  cross-slice marker, not code.
+- Update docs/BUILD_PLAN.md - **yes**,
+  per the standard pattern (status
+  row + entry).
+
+### Verified at the build
+
+- `cmake -DRR_ENABLE_CUDA=OFF
+   -DRELATIVITYRENDER_ENABLE_OPTIX=OFF`
+  (Linux): banner shows "roadmap
+  consistency audit"; no source files
+  changed; ctest 4/4 green.
+- `cmake -DRELATIVITYRENDER_ENABLE_OPTIX
+  =ON` (Linux audit-host): banner
+  bumped; rr_optix unchanged; ctest
+  4/4 green.
+- The audit + alignment + README
+  documents were cross-checked against
+  the BUILD_PLAN status-table rows
+  (every "Stage NN" reference in the
+  audit maps to a real status-table
+  row) and against
+  RELATIVITYRENDER_CLAUDE_MASTER
+  _INSTRUCTIONS.txt's 25-step
+  DEVELOPMENT ORDER block (every
+  master # reference maps to a real
+  master-order entry).
 
 ## Next stage
 
