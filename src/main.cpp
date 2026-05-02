@@ -25,6 +25,7 @@
 // see this header and never reference the OptixBackend class.
 #ifdef RELATIVITYRENDER_ENABLE_OPTIX
     #include "optix/OptixBackend.h"
+    #include "optix/OptixDenoiser.h"
     #include "optix/OptixRenderer.h"
 #endif
 
@@ -2515,6 +2516,219 @@ int run_render_aovs(const rr::core::Config& cfg) {
 #endif
 }
 
+// `--render-denoise` dispatch (Stage 19B.3). Builds a small
+// demo scene (4 diffuse spheres, no lights, no relativity)
+// and runs it through the AOV pipeline (`render_scene_with
+// _aovs`) to populate Beauty / Albedo / Normal device
+// buffers. Then drives the OptixDenoiser end-to-end:
+// `OptixBackend::initialize` -> `OptixDenoiser::initialize`
+// -> `set_inputs` -> `invoke` -> download -> save PPM. The
+// denoiser runs entirely on the GPU; the host only
+// orchestrates and saves the final image, mirroring every
+// other render-* CLI handler.
+//
+// Default output path: `output/denoised.ppm`. `--output`
+// overrides per the standard convention.
+//
+// Requires both `RR_HAS_CUDA` (for the AOV-pipeline render
+// kernel) and `RELATIVITYRENDER_ENABLE_OPTIX` (for the
+// denoiser); the audit-host fallbacks return the documented
+// "requires" errors.
+int run_render_denoise(const rr::core::Config& cfg) {
+    using rr::core::Logger;
+
+    const std::string out_path = cfg.output_path.empty()
+        ? std::string("output/denoised.ppm")
+        : cfg.output_path;
+
+#if !defined(RR_HAS_CUDA) || !defined(RELATIVITYRENDER_ENABLE_OPTIX)
+    (void)cfg; (void)out_path;
+    Logger::error("--render-denoise requires both CUDA and OptiX. "
+                  "Rebuild with -DRR_ENABLE_CUDA=ON "
+                  "-DRELATIVITYRENDER_ENABLE_OPTIX=ON on a host with "
+                  "the CUDA Toolkit + OptiX SDK installed (also pass "
+                  "-DOPTIX_ROOT=/path/to/optix-sdk).");
+    return 1;
+#else
+    // Small demo scene: four diffuse spheres, no lights, no
+    // textures, no observer velocity. The k_render_scene
+    // kernel falls through to its facing-ratio fallback
+    // when light_count == 0, so the Beauty pass holds visible
+    // shaded radiance with Monte-Carlo-free single-sample
+    // colour. Albedo + Normal AOVs come straight from the
+    // hit's material / world-space normal.
+    rr::scene::Scene scene;
+    scene.render_settings.width  = cfg.width;
+    scene.render_settings.height = cfg.height;
+    scene.camera.set_aspect(static_cast<float>(cfg.width)
+                          / static_cast<float>(cfg.height));
+
+    auto red     = rr::material::Material::make_diffuse(
+        rr::math::Vec3{0.85f, 0.20f, 0.20f});
+    auto green   = rr::material::Material::make_diffuse(
+        rr::math::Vec3{0.20f, 0.80f, 0.30f});
+    auto blue    = rr::material::Material::make_diffuse(
+        rr::math::Vec3{0.20f, 0.30f, 0.90f});
+    auto neutral = rr::material::Material::make_diffuse(
+        rr::math::Vec3{0.65f, 0.65f, 0.65f});
+    scene.materials.push_back({0, "red",     red.params()});
+    scene.materials.push_back({1, "green",   green.params()});
+    scene.materials.push_back({2, "blue",    blue.params()});
+    scene.materials.push_back({3, "neutral", neutral.params()});
+
+    const auto add_sphere = [&](float cx, float cy, float cz, float r,
+                                int mat, const char* name) {
+        rr::scene::SceneSphere s;
+        s.object.name = name;
+        s.geometry    = rr::geometry::Sphere{
+            rr::math::Vec3{cx, cy, cz}, r, mat};
+        scene.spheres.push_back(s);
+    };
+    add_sphere(-1.5f,  0.2f, -4.0f, 0.7f, 0, "left");
+    add_sphere( 0.0f, -0.1f, -3.5f, 0.8f, 1, "centre");
+    add_sphere( 1.5f,  0.2f, -4.0f, 0.7f, 2, "right");
+    add_sphere( 0.0f, -1.4f, -5.0f, 1.0f, 3, "ground-bulb");
+
+    std::vector<rr::geometry::Sphere> sphere_pods;
+    sphere_pods.reserve(scene.spheres.size());
+    for (const auto& s : scene.spheres) {
+        if (s.object.visible) sphere_pods.push_back(s.geometry);
+    }
+    std::vector<rr::material::MaterialParams> material_pods;
+    material_pods.reserve(scene.materials.size());
+    for (const auto& m : scene.materials) {
+        material_pods.push_back(m.params);
+    }
+
+    rr::gpu::GpuScene gpu_scene;
+    if (!gpu_scene.upload_camera(scene.camera))
+        { Logger::error("denoise: upload_camera failed"); return 1; }
+    if (!gpu_scene.upload_relativity(scene.observer, scene.relativity))
+        { Logger::error("denoise: upload_relativity failed"); return 1; }
+    if (!gpu_scene.upload_spheres(sphere_pods.data(), sphere_pods.size()))
+        { Logger::error("denoise: upload_spheres failed"); return 1; }
+    if (!gpu_scene.upload_materials(material_pods.data(),
+                                    material_pods.size()))
+        { Logger::error("denoise: upload_materials failed"); return 1; }
+
+    // Allocate only the three AOV buffers the denoiser
+    // consumes (DENOISER_PLAN §8.1: Beauty / Albedo /
+    // Normal). The remaining AOVTargets fields stay null so
+    // the kernel skips those writes.
+    rr::renderer::GpuAOVBuffer beauty_buf(rr::renderer::AOV::make_beauty());
+    rr::renderer::GpuAOVBuffer normal_buf(rr::renderer::AOV::make_normal());
+    rr::renderer::GpuAOVBuffer albedo_buf(rr::renderer::AOV::make_albedo());
+    if (!beauty_buf.resize(cfg.width, cfg.height) ||
+        !normal_buf.resize(cfg.width, cfg.height) ||
+        !albedo_buf.resize(cfg.width, cfg.height)) {
+        Logger::error("denoise: AOV resize failed");
+        return 1;
+    }
+
+    rr::cuda::CudaRenderer::AOVTargets targets;
+    targets.beauty = beauty_buf.device_ptr();
+    targets.normal = normal_buf.device_ptr();
+    targets.albedo = albedo_buf.device_ptr();
+
+    auto r = rr::cuda::CudaRenderer::render_scene_with_aovs(
+        gpu_scene, cfg.width, cfg.height, targets);
+    if (!r.ok) {
+        Logger::error("denoise: render_scene_with_aovs failed: " + r.message);
+        return 1;
+    }
+    log_gpu_timing("render-denoise:render", cfg.width, cfg.height,
+                   r.gpu_time_ms);
+
+    // OptiX denoiser lifecycle. Re-uses the OptiX device
+    // context per DENOISER_PLAN §3.1.
+    rr::optix::OptixBackend backend;
+    if (!backend.initialize()) {
+        Logger::error("denoise: OptixBackend init failed: "
+                    + backend.last_error());
+        return 1;
+    }
+    rr::optix::OptixDenoiser denoiser;
+    if (!denoiser.initialize(backend)) {
+        Logger::error("denoise: OptixDenoiser init failed: "
+                    + denoiser.last_error());
+        return 1;
+    }
+
+    rr::optix::OptixDenoiser::Inputs inputs;
+    inputs.beauty_device     = beauty_buf.device_ptr();
+    inputs.beauty_components = 3;  // Stage 14A AOV is FLOAT3
+    inputs.albedo_device     = albedo_buf.device_ptr();
+    inputs.normal_device     = normal_buf.device_ptr();
+    inputs.width             = cfg.width;
+    inputs.height            = cfg.height;
+    if (!denoiser.set_inputs(inputs)) {
+        Logger::error("denoise: set_inputs failed: " + denoiser.last_error());
+        return 1;
+    }
+
+    // Allocate the denoised-output device buffer (FLOAT3 to
+    // match the FLOAT3 Beauty input). Caller-owned RAII; the
+    // OptixDenoiser does not free it on shutdown.
+    const std::size_t out_float_count =
+        static_cast<std::size_t>(cfg.width) * cfg.height * 3u;
+    rr::gpu::GpuBuffer<float> denoised_dev;
+    if (!denoised_dev.allocate(out_float_count)) {
+        Logger::error("denoise: GpuBuffer<float> allocate failed");
+        return 1;
+    }
+
+    rr::optix::OptixDenoiser::Output output;
+    output.device = denoised_dev.device_ptr();
+    output.width  = cfg.width;
+    output.height = cfg.height;
+
+    // Time the invoke pass via the existing Stage 18A.1
+    // GpuTimer infrastructure. `invoke()` does its own
+    // `cudaDeviceSynchronize` on success so the elapsed
+    // measurement is bounded correctly when the events are
+    // read after the call.
+    rr::gpu::GpuTimer timer;
+    timer.start();
+    const bool invoke_ok = denoiser.invoke(output);
+    timer.stop();
+    if (!invoke_ok) {
+        Logger::error("denoise: invoke failed: " + denoiser.last_error());
+        return 1;
+    }
+    log_gpu_timing("render-denoise:invoke", cfg.width, cfg.height,
+                   timer.elapsed_ms());
+
+    // Download the FLOAT3 device output to host, then widen
+    // to RGBA32F (alpha = 1) for save_ppm. The widening is
+    // a tiny host-side loop; it does not violate the master
+    // "no per-pixel CPU work" rule because no per-pixel
+    // SHADING happens here (we only insert a constant alpha
+    // channel, the same way Image::save_ppm's existing
+    // float->uint8 clamp converts radiance to display).
+    std::vector<float> host_rgb(out_float_count);
+    if (!denoised_dev.download(host_rgb.data(), out_float_count)) {
+        Logger::error("denoise: download failed");
+        return 1;
+    }
+    rr::image::Image img(cfg.width, cfg.height,
+                         rr::image::PixelFormat::Rgba32F);
+    {
+        const std::size_t pixel_count =
+            static_cast<std::size_t>(cfg.width) * cfg.height;
+        float* dst = img.data();
+        for (std::size_t i = 0; i < pixel_count; ++i) {
+            dst[i * 4 + 0] = host_rgb[i * 3 + 0];
+            dst[i * 4 + 1] = host_rgb[i * 3 + 1];
+            dst[i * 4 + 2] = host_rgb[i * 3 + 2];
+            dst[i * 4 + 3] = 1.0f;
+        }
+    }
+
+    return save_image_or_error(img, out_path, "denoised",
+                               cfg.width, cfg.height) ? 0 : 1;
+#endif
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -2607,6 +2821,9 @@ int main(int argc, char** argv) {
 
         case CommandLine::Action::RenderOptixRelativity:
             return run_render_optix_relativity(result.config);
+
+        case CommandLine::Action::RenderDenoise:
+            return run_render_denoise(result.config);
 
         case CommandLine::Action::Error:
             Logger::error(result.error_message);

@@ -242,6 +242,22 @@ namespace rr::core {
 //                           "output/optix_relativity.ppm".
 //                           Same requirements as
 //                           --render-optix-test.
+//   --render-denoise        Stage 19B.3 OptiX denoiser end-to-
+//                           end fixture. Builds a small
+//                           4-sphere demo scene + renders it
+//                           via render_scene_with_aovs to
+//                           populate Beauty / Albedo / Normal
+//                           AOV device buffers, then runs the
+//                           OptiX denoiser over them
+//                           (optixDenoiserComputeMemoryResources
+//                           -> optixDenoiserSetup ->
+//                           optixDenoiserInvoke). Default
+//                           output "output/denoised.ppm";
+//                           --output overrides. Requires both
+//                           CUDA (-DRR_ENABLE_CUDA=ON) and
+//                           OptiX (-DRELATIVITYRENDER_ENABLE
+//                           _OPTIX=ON, plus the SDK located at
+//                           configure time).
 //   --output <path>         Write the rendered image to <path>.
 //                           Default for --render-gradient is
 //                           "output/gpu_gradient.ppm";
@@ -273,9 +289,10 @@ namespace rr::core {
 // --render-direct-lighting / --render-texture-sample-test /
 // --render-textured-material / --render-aovs / --server /
 // --render-optix-test / --render-optix-triangle /
-// --render-optix-relativity) are mutually exclusive; combining
-// them is a parse error. The remaining flags configure `Config`
-// and are accepted regardless of action.
+// --render-optix-relativity / --render-denoise) are mutually
+// exclusive; combining them is a parse error. The remaining
+// flags configure `Config` and are accepted regardless of
+// action.
 
 class CommandLine {
 public:
@@ -308,6 +325,7 @@ public:
         RenderOptixTest,
         RenderOptixTriangle,
         RenderOptixRelativity,
+        RenderDenoise,
         Error,          // parse failure; see `error_message`
     };
 

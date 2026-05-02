@@ -4,6 +4,7 @@
 #include <utility>
 
 #ifdef RELATIVITYRENDER_OPTIX_SDK_FOUND
+    #include <cuda_runtime.h>
     #include <optix.h>
     #include <optix_stubs.h>
 
@@ -27,31 +28,35 @@ OptixDenoiser::OptixDenoiser(OptixDenoiser&& other) noexcept
       inputs_set_(other.inputs_set_),
       input_width_(other.input_width_),
       input_height_(other.input_height_),
+      input_beauty_components_(other.input_beauty_components_),
       last_error_(std::move(other.last_error_)) {
-    other.denoiser_     = nullptr;
-    other.initialized_  = false;
-    other.input_images_ = nullptr;
-    other.inputs_set_   = false;
-    other.input_width_  = 0;
-    other.input_height_ = 0;
+    other.denoiser_                = nullptr;
+    other.initialized_             = false;
+    other.input_images_            = nullptr;
+    other.inputs_set_              = false;
+    other.input_width_             = 0;
+    other.input_height_            = 0;
+    other.input_beauty_components_ = 0;
 }
 
 OptixDenoiser& OptixDenoiser::operator=(OptixDenoiser&& other) noexcept {
     if (this != &other) {
         shutdown();
-        denoiser_           = other.denoiser_;
-        initialized_        = other.initialized_;
-        input_images_       = other.input_images_;
-        inputs_set_         = other.inputs_set_;
-        input_width_        = other.input_width_;
-        input_height_       = other.input_height_;
-        last_error_         = std::move(other.last_error_);
-        other.denoiser_     = nullptr;
-        other.initialized_  = false;
-        other.input_images_ = nullptr;
-        other.inputs_set_   = false;
-        other.input_width_  = 0;
-        other.input_height_ = 0;
+        denoiser_                = other.denoiser_;
+        initialized_             = other.initialized_;
+        input_images_            = other.input_images_;
+        inputs_set_              = other.inputs_set_;
+        input_width_             = other.input_width_;
+        input_height_            = other.input_height_;
+        input_beauty_components_ = other.input_beauty_components_;
+        last_error_              = std::move(other.last_error_);
+        other.denoiser_                = nullptr;
+        other.initialized_             = false;
+        other.input_images_            = nullptr;
+        other.inputs_set_              = false;
+        other.input_width_             = 0;
+        other.input_height_            = 0;
+        other.input_beauty_components_ = 0;
     }
     return *this;
 }
@@ -203,6 +208,13 @@ bool OptixDenoiser::set_inputs(const Inputs& inputs) noexcept {
             "(width and height must be > 0)";
         return false;
     }
+    if (inputs.beauty_components != 3 && inputs.beauty_components != 4) {
+        last_error_ =
+            "OptixDenoiser::set_inputs: beauty_components must be "
+            "3 (FLOAT3, AOV-pipeline default) or 4 (FLOAT4, "
+            "path-tracer resolve)";
+        return false;
+    }
 
     // Drop any prior descriptor allocation so re-binding is
     // safe. The `delete[]` handles a null left-over fine.
@@ -210,13 +222,14 @@ bool OptixDenoiser::set_inputs(const Inputs& inputs) noexcept {
         delete[] static_cast<::OptixImage2D*>(input_images_);
         input_images_ = nullptr;
     }
-    inputs_set_   = false;
-    input_width_  = 0;
-    input_height_ = 0;
+    inputs_set_       = false;
+    input_width_      = 0;
+    input_height_     = 0;
+    input_beauty_components_ = 0;
 
     // Build the OptixImage2D[3] triplet on the host. Slot
     // order [Beauty, Albedo, Normal] is the canonical 19B
-    // ordering; the next sub-stage's invoke wires slot 0 ->
+    // ordering; `invoke()` wires slot 0 ->
     // OptixDenoiserLayer.input and slots 1/2 ->
     // OptixDenoiserGuideLayer.albedo / .normal.
     const auto w = static_cast<unsigned int>(inputs.width);
@@ -232,17 +245,27 @@ bool OptixDenoiser::set_inputs(const Inputs& inputs) noexcept {
         return false;
     }
 
-    // Slot 0: Beauty (Rgba32F, 4 floats / pixel; the path
-    // tracer's resolve buffer per DENOISER_PLAN §8.3.1
-    // route B). Format FLOAT4 so alpha passes through under
-    // OPTIX_DENOISER_ALPHA_MODE_COPY.
+    // Slot 0: Beauty. FLOAT3 (3 floats / pixel; the AOV
+    // pipeline's Beauty buffer per DENOISER_PLAN §8.3.1
+    // route A) by default; FLOAT4 (the path-tracer's
+    // resolve output, route B) when beauty_components == 4.
+    // Under FLOAT4 alpha passes through unchanged per
+    // OPTIX_DENOISER_ALPHA_MODE_COPY (set in 19B.1
+    // OptixDenoiserOptions).
+    const unsigned int beauty_pixel_bytes =
+        (inputs.beauty_components == 4) ? kFloat4Bytes : kFloat3Bytes;
+    const ::OptixPixelFormat beauty_format =
+        (inputs.beauty_components == 4)
+            ? OPTIX_PIXEL_FORMAT_FLOAT4
+            : OPTIX_PIXEL_FORMAT_FLOAT3;
+
     images[0].data = reinterpret_cast<::CUdeviceptr>(
         const_cast<float*>(inputs.beauty_device));
     images[0].width              = w;
     images[0].height             = h;
-    images[0].rowStrideInBytes   = w * kFloat4Bytes;
-    images[0].pixelStrideInBytes = kFloat4Bytes;
-    images[0].format             = OPTIX_PIXEL_FORMAT_FLOAT4;
+    images[0].rowStrideInBytes   = w * beauty_pixel_bytes;
+    images[0].pixelStrideInBytes = beauty_pixel_bytes;
+    images[0].format             = beauty_format;
 
     // Slot 1: Albedo (linear-space RGB, 3 floats / pixel;
     // Stage 14A AOV layout). Format FLOAT3.
@@ -267,18 +290,222 @@ bool OptixDenoiser::set_inputs(const Inputs& inputs) noexcept {
     images[2].pixelStrideInBytes = kFloat3Bytes;
     images[2].format             = OPTIX_PIXEL_FORMAT_FLOAT3;
 
-    input_images_ = images;
-    inputs_set_   = true;
-    input_width_  = inputs.width;
-    input_height_ = inputs.height;
+    input_images_            = images;
+    inputs_set_              = true;
+    input_width_             = inputs.width;
+    input_height_            = inputs.height;
+    input_beauty_components_ = inputs.beauty_components;
 
     std::fprintf(stderr,
                  "[OptiX:INFO] OptixDenoiser inputs bound: "
-                 "Beauty %dx%d FLOAT4, Albedo %dx%d FLOAT3, "
+                 "Beauty %dx%d FLOAT%d, Albedo %dx%d FLOAT3, "
                  "Normal %dx%d FLOAT3.\n",
-                 inputs.width, inputs.height,
+                 inputs.width, inputs.height, inputs.beauty_components,
                  inputs.width, inputs.height,
                  inputs.width, inputs.height);
+    return true;
+}
+
+// Stage 19B.3: run the denoiser end-to-end against the
+// bound inputs and the caller-supplied output buffer.
+// Sequence: optixDenoiserComputeMemoryResources ->
+// cudaMalloc state + scratch -> optixDenoiserSetup ->
+// optixDenoiserInvoke -> cudaDeviceSynchronize -> cudaFree
+// state + scratch. The state + scratch buffers are
+// function-scope; they are allocated fresh on every call
+// and freed before return so the denoiser's host-side
+// footprint stays at the OptixDenoiser handle plus the
+// OptixImage2D[3] descriptor array. A future slice may
+// cache them across invocations when dimensions are
+// stable.
+bool OptixDenoiser::invoke(const Output& output) noexcept {
+    last_error_.clear();
+
+    // Pre-condition checks. Mismatch is documented in the
+    // header doc-comment.
+    if (!initialized_) {
+        last_error_ =
+            "OptixDenoiser::invoke: denoiser is not initialised; "
+            "call initialize(backend) first.";
+        return false;
+    }
+    if (!inputs_set_) {
+        last_error_ =
+            "OptixDenoiser::invoke: inputs are not bound; "
+            "call set_inputs(...) first.";
+        return false;
+    }
+    if (output.device == nullptr) {
+        last_error_ =
+            "OptixDenoiser::invoke: output.device is null";
+        return false;
+    }
+    if (output.width <= 0 || output.height <= 0) {
+        last_error_ =
+            "OptixDenoiser::invoke: invalid output dimensions "
+            "(width and height must be > 0)";
+        return false;
+    }
+    if (output.width != input_width_ || output.height != input_height_) {
+        last_error_ =
+            "OptixDenoiser::invoke: output dimensions "
+            "must match the bound input dimensions";
+        return false;
+    }
+
+    auto* denoiser = static_cast<::OptixDenoiser>(denoiser_);
+    auto* images   = static_cast<::OptixImage2D*>(input_images_);
+    const auto w   = static_cast<unsigned int>(input_width_);
+    const auto h   = static_cast<unsigned int>(input_height_);
+
+    // 1. Compute memory resources for the bound dims.
+    ::OptixDenoiserSizes sizes{};
+    {
+        const ::OptixResult res =
+            ::optixDenoiserComputeMemoryResources(denoiser, w, h, &sizes);
+        if (res != OPTIX_SUCCESS) {
+            last_error_ =
+                std::string("optixDenoiserComputeMemoryResources failed: ")
+              + ::optixGetErrorName(res);
+            return false;
+        }
+    }
+
+    // 2. Allocate state + scratch device buffers.
+    void* d_state   = nullptr;
+    void* d_scratch = nullptr;
+    {
+        const ::cudaError_t e = ::cudaMalloc(&d_state, sizes.stateSizeInBytes);
+        if (e != cudaSuccess) {
+            last_error_ =
+                std::string("cudaMalloc(denoiser state) failed: ")
+              + ::cudaGetErrorString(e);
+            return false;
+        }
+    }
+    // OptiX reports two scratch sizes: one for the no-overlap
+    // (single-tile) fast path, one for the larger overlap
+    // path used in tiled invocations. 19B.3 invokes the whole
+    // framebuffer as one tile, so the no-overlap size is the
+    // correct allocation.
+    {
+        const ::cudaError_t e =
+            ::cudaMalloc(&d_scratch, sizes.withoutOverlapScratchSizeInBytes);
+        if (e != cudaSuccess) {
+            ::cudaFree(d_state);
+            last_error_ =
+                std::string("cudaMalloc(denoiser scratch) failed: ")
+              + ::cudaGetErrorString(e);
+            return false;
+        }
+    }
+
+    // 3. Setup the per-resolution state.
+    {
+        const ::OptixResult res = ::optixDenoiserSetup(
+            denoiser,
+            /*stream=*/0,
+            w, h,
+            reinterpret_cast<::CUdeviceptr>(d_state),
+            sizes.stateSizeInBytes,
+            reinterpret_cast<::CUdeviceptr>(d_scratch),
+            sizes.withoutOverlapScratchSizeInBytes);
+        if (res != OPTIX_SUCCESS) {
+            ::cudaFree(d_scratch);
+            ::cudaFree(d_state);
+            last_error_ =
+                std::string("optixDenoiserSetup failed: ")
+              + ::optixGetErrorName(res);
+            return false;
+        }
+    }
+
+    // 4. Build the per-launch params + guide layer + render
+    //    layer. denoiseAlpha lives in the OptixDenoiserOptions
+    //    pinned at create time (19B.1); the params struct's
+    //    field of the same name is left zero-initialised
+    //    (== OPTIX_DENOISER_ALPHA_MODE_COPY, matching the
+    //    options).
+    ::OptixDenoiserParams params{};
+    params.blendFactor = 0.0f;  // 0 = full denoise; 1 = passthrough
+
+    // Slot 0 = Beauty (the input layer); slots 1 / 2 are
+    // the guide layers (Albedo / Normal) per DENOISER_PLAN
+    // §8.3.
+    ::OptixDenoiserGuideLayer guide{};
+    guide.albedo = images[1];
+    guide.normal = images[2];
+    // flow / previousOutputInternalGuideLayer /
+    // outputInternalGuideLayer left default-zero - temporal
+    // mode is a future slice (DENOISER_PLAN §2.2).
+
+    // Output layer descriptor. Format matches the bound
+    // Beauty input's beauty_components (FLOAT3 -> FLOAT3,
+    // FLOAT4 -> FLOAT4) per the header's Output doc-comment.
+    constexpr unsigned int kFloat4Bytes = 4u * sizeof(float);
+    constexpr unsigned int kFloat3Bytes = 3u * sizeof(float);
+    const unsigned int output_pixel_bytes =
+        (input_beauty_components_ == 4) ? kFloat4Bytes : kFloat3Bytes;
+    const ::OptixPixelFormat output_format =
+        (input_beauty_components_ == 4)
+            ? OPTIX_PIXEL_FORMAT_FLOAT4
+            : OPTIX_PIXEL_FORMAT_FLOAT3;
+
+    ::OptixDenoiserLayer layer{};
+    layer.input  = images[0];  // Beauty (noisy)
+    layer.output.data = reinterpret_cast<::CUdeviceptr>(output.device);
+    layer.output.width              = w;
+    layer.output.height             = h;
+    layer.output.rowStrideInBytes   = w * output_pixel_bytes;
+    layer.output.pixelStrideInBytes = output_pixel_bytes;
+    layer.output.format             = output_format;
+    // previousOutput left default - no temporal accumulation.
+
+    // 5. Invoke the denoiser.
+    {
+        const ::OptixResult res = ::optixDenoiserInvoke(
+            denoiser,
+            /*stream=*/0,
+            &params,
+            reinterpret_cast<::CUdeviceptr>(d_state),
+            sizes.stateSizeInBytes,
+            &guide,
+            &layer,
+            /*numLayers=*/1u,
+            /*inputOffsetX=*/0u,
+            /*inputOffsetY=*/0u,
+            reinterpret_cast<::CUdeviceptr>(d_scratch),
+            sizes.withoutOverlapScratchSizeInBytes);
+        if (res != OPTIX_SUCCESS) {
+            ::cudaFree(d_scratch);
+            ::cudaFree(d_state);
+            last_error_ =
+                std::string("optixDenoiserInvoke failed: ")
+              + ::optixGetErrorName(res);
+            return false;
+        }
+    }
+
+    // 6. Synchronise so the host knows the output buffer is
+    //    fully written before the caller proceeds to download
+    //    / save.
+    if (::cudaDeviceSynchronize() != cudaSuccess) {
+        ::cudaFree(d_scratch);
+        ::cudaFree(d_state);
+        last_error_ =
+            "OptixDenoiser::invoke: cudaDeviceSynchronize failed";
+        return false;
+    }
+
+    // 7. Free the state + scratch buffers. The output buffer
+    //    is the caller's; we do not free it.
+    ::cudaFree(d_scratch);
+    ::cudaFree(d_state);
+
+    std::fprintf(stderr,
+                 "[OptiX:INFO] OptixDenoiser invoked: "
+                 "%ux%u, output FLOAT%d.\n",
+                 w, h, input_beauty_components_);
     return true;
 }
 
@@ -291,9 +518,10 @@ void OptixDenoiser::shutdown() noexcept {
         delete[] static_cast<::OptixImage2D*>(input_images_);
         input_images_ = nullptr;
     }
-    inputs_set_   = false;
-    input_width_  = 0;
-    input_height_ = 0;
+    inputs_set_              = false;
+    input_width_             = 0;
+    input_height_            = 0;
+    input_beauty_components_ = 0;
 
     if (denoiser_ != nullptr) {
         // Best-effort destroy. The SDK docs say
@@ -336,16 +564,31 @@ bool OptixDenoiser::set_inputs(const Inputs& /*inputs*/) noexcept {
     return false;
 }
 
+bool OptixDenoiser::invoke(const Output& /*output*/) noexcept {
+    // Stage 19B.3 audit-host fallback. The invoke path is
+    // pure OptiX-runtime + CUDA-runtime work (compute-memory
+    // -resources, setup, invoke, cudaMalloc / cudaFree); none
+    // of those are available without the SDK. Document the
+    // failure; no GPU work is launched.
+    last_error_ =
+        "OptixDenoiser::invoke requires the OptiX SDK; "
+        "rebuild with -DRELATIVITYRENDER_ENABLE_OPTIX=ON and "
+        "pass -DOPTIX_ROOT=/path/to/optix-sdk so <optix.h> is "
+        "available. The CUDA path is unaffected.";
+    return false;
+}
+
 void OptixDenoiser::shutdown() noexcept {
     // Audit-host fallback never produces a populated state,
     // so shutdown has nothing to free. All pointers stay
     // null.
-    initialized_  = false;
-    denoiser_     = nullptr;
-    input_images_ = nullptr;
-    inputs_set_   = false;
-    input_width_  = 0;
-    input_height_ = 0;
+    initialized_             = false;
+    denoiser_                = nullptr;
+    input_images_            = nullptr;
+    inputs_set_              = false;
+    input_width_             = 0;
+    input_height_            = 0;
+    input_beauty_components_ = 0;
 }
 
 #endif  // RELATIVITYRENDER_OPTIX_SDK_FOUND

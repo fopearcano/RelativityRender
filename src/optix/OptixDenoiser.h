@@ -75,12 +75,15 @@ public:
     // pointers per DENOISER_PLAN §8.1 (Beauty / Albedo /
     // Normal) plus the framebuffer dimensions. All three
     // pointers must be device-resident; the caller owns the
-    // underlying memory (typically a path-tracer resolve
-    // buffer + two `GpuAOVBuffer`s). Beauty is FLOAT4
-    // (Rgba32F, 4 floats / pixel - the path tracer's
-    // resolve output per DENOISER_PLAN §8.3.1 route B);
-    // Albedo and Normal are FLOAT3 (RGB / XYZ, 3 floats /
-    // pixel - the Stage 14A AOV layout).
+    // underlying memory (typically the Stage 14A AOV
+    // buffers + optionally the path-tracer's resolve
+    // output). Beauty defaults to FLOAT3 (3 floats / pixel,
+    // matching the Stage 14A `AOVType::Beauty` layout per
+    // DENOISER_PLAN §8.3.1 route A); a caller that prefers
+    // route B (FLOAT4 from the path-tracer's
+    // `resolve_to_image()`) sets `beauty_components = 4`
+    // explicitly.  Albedo and Normal are always FLOAT3
+    // (RGB / XYZ, the Stage 14A AOV layout).
     //
     // The optional Depth + Motion inputs declared in
     // DENOISER_PLAN §8.2 are intentionally absent here:
@@ -89,13 +92,19 @@ public:
     // renderer does not produce yet. Adding them is a
     // future slice's responsibility.
     struct Inputs {
-        // Beauty (noisy radiance), Rgba32F device buffer.
-        // Layout: `width * height * 4` floats, channel-
-        // interleaved, top-left origin. Mapped to
-        // `OPTIX_PIXEL_FORMAT_FLOAT4` so the alpha channel
-        // (always 1 in this project) passes through under
-        // `OPTIX_DENOISER_ALPHA_MODE_COPY`.
-        const float* beauty_device = nullptr;
+        // Beauty (noisy radiance). Linear-space; no tone
+        // mapping. Layout depends on `beauty_components`:
+        // 3 floats / pixel (FLOAT3, the AOV pipeline's
+        // Beauty buffer; default) or 4 floats / pixel
+        // (FLOAT4, the path-tracer's Rgba32F resolve
+        // buffer). The OptiX denoiser maps each to
+        // `OPTIX_PIXEL_FORMAT_FLOAT3` /
+        // `OPTIX_PIXEL_FORMAT_FLOAT4` respectively; under
+        // FLOAT4 the alpha channel passes through unchanged
+        // per the `OPTIX_DENOISER_ALPHA_MODE_COPY` setting
+        // pinned in 19B.1.
+        const float* beauty_device     = nullptr;
+        int          beauty_components = 3;
 
         // Albedo (linear-space RGB, base colour at hit before
         // lighting), 3 floats / pixel device buffer. Mapped
@@ -117,6 +126,24 @@ public:
         // dims across Beauty + guide layers.
         int          width  = 0;
         int          height = 0;
+    };
+
+    // Stage 19B.3 output binding. Single device-side buffer
+    // the denoiser writes into. Component count must match
+    // the bound Beauty input's `beauty_components` (the
+    // OptiX denoiser preserves the input layer's pixel
+    // format on output). The caller owns the buffer; the
+    // denoiser does not allocate or free it.
+    //
+    // The buffer must be sized to
+    // `width * height * beauty_components` floats, with the
+    // same width / height passed to `set_inputs`. Mismatched
+    // dimensions are a `set_inputs(...)` / `invoke(...)`
+    // validation failure.
+    struct Output {
+        float* device = nullptr;
+        int    width  = 0;
+        int    height = 0;
     };
 
     OptixDenoiser() noexcept = default;
@@ -165,6 +192,48 @@ public:
     // On the audit-host fallback this always returns `false`
     // with the documented "requires OptiX SDK" error.
     [[nodiscard]] bool set_inputs(const Inputs& inputs) noexcept;
+
+    // Stage 19B.3: run the denoiser end-to-end against the
+    // bound inputs and the caller-supplied output buffer.
+    // The slice ships exactly the OptiX calls the prompt
+    // requires:
+    // - `optixDenoiserComputeMemoryResources` (one call to
+    //   query the state + scratch buffer sizes for the
+    //   bound dimensions);
+    // - `cudaMalloc` for the state + scratch device
+    //   buffers (function-scope; freed before return);
+    // - `optixDenoiserSetup` (initialise the per-resolution
+    //   state buffer);
+    // - `optixDenoiserInvoke` (the actual denoise pass);
+    // - `cudaDeviceSynchronize` (so the host knows the
+    //   write to `output.device` is complete before the
+    //   caller proceeds to download).
+    //
+    // Pre-conditions:
+    // - `is_initialized() == true` (denoiser handle exists);
+    // - `inputs_set() == true` (the AOV descriptors are
+    //   bound);
+    // - `output.device != nullptr`;
+    // - `output.width  == input_width()`;
+    // - `output.height == input_height()`.
+    // Mismatch triggers a `false` return + `last_error()`
+    // populated; no GPU work is launched on the failure
+    // path.
+    //
+    // The output buffer's layout matches the bound Beauty
+    // input's `beauty_components`: FLOAT3 (3 floats / pixel)
+    // when 3, FLOAT4 (4 floats / pixel) when 4.
+    //
+    // Per master rule "All per-pixel work runs on the GPU":
+    // every byte of the denoised result is produced by the
+    // OptiX denoiser kernels on the device. The host only
+    // orchestrates the launch + synchronisation; downloading
+    // the output and saving it to PPM are the caller's
+    // responsibility.
+    //
+    // On the audit-host fallback this always returns `false`
+    // with the documented "requires OptiX SDK" error.
+    [[nodiscard]] bool invoke(const Output& output) noexcept;
 
     // Destroy the underlying `OptixDenoiser` (if any) and
     // reset internal state, including any `set_inputs`
@@ -216,6 +285,14 @@ private:
     bool        inputs_set_   = false;
     int         input_width_  = 0;
     int         input_height_ = 0;
+
+    // Stage 19B.3: Beauty's components-per-pixel snapshot
+    // from the most recent successful `set_inputs(...)`.
+    // 3 (FLOAT3, AOV pipeline default) or 4 (FLOAT4, path-
+    // tracer resolve). 0 when no inputs are bound. The
+    // value drives `invoke(...)`'s output-buffer layout and
+    // its OptixImage2D output descriptor.
+    int         input_beauty_components_ = 0;
 
     std::string last_error_;
 };

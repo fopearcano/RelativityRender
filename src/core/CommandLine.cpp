@@ -58,7 +58,8 @@ bool set_action(CommandLine::Action& current, CommandLine::Action target,
                 "--render-textured-material / --render-aovs / "
                 "--server / --render-optix-test / "
                 "--render-optix-triangle / "
-                "--render-optix-relativity)";
+                "--render-optix-relativity / "
+                "--render-denoise)";
         return false;
     }
     current = target;
@@ -260,6 +261,12 @@ CommandLine::ParseResult CommandLine::parse(int argc, char** argv) {
                 r.action = Action::Error;
                 return r;
             }
+        } else if (a == "--render-denoise") {
+            if (!set_action(r.action, Action::RenderDenoise,
+                            r.error_message)) {
+                r.action = Action::Error;
+                return r;
+            }
         } else if (a == "--output") {
             if (!take_value(argc, argv, i, a, value, r.error_message)) {
                 r.action = Action::Error;
@@ -321,7 +328,8 @@ CommandLine::ParseResult CommandLine::parse(int argc, char** argv) {
      || r.action == Action::RenderAOVs
      || r.action == Action::RenderOptixTest
      || r.action == Action::RenderOptixTriangle
-     || r.action == Action::RenderOptixRelativity) {
+     || r.action == Action::RenderOptixRelativity
+     || r.action == Action::RenderDenoise) {
         if (auto err = r.config.validate(); !err.empty()) {
             r.action        = Action::Error;
             r.error_message = std::move(err);
@@ -509,6 +517,18 @@ std::string CommandLine::usage(std::string_view argv0) {
                                   "Default output\n"
        << "                        output/optix_relativity.ppm. Same "
                                   "OptiX requirements as above.\n"
+       << "  --render-denoise      Stage 19B.3 OptiX denoiser end-to-end "
+                                  "fixture. Builds a small\n"
+       << "                        4-sphere demo scene + renders it via "
+                                  "render_scene_with_aovs to\n"
+       << "                        populate Beauty / Albedo / Normal AOV "
+                                  "device buffers, then runs the\n"
+       << "                        OptiX denoiser over them "
+                                  "(optixDenoiserComputeMemoryResources ->\n"
+       << "                        optixDenoiserSetup -> "
+                                  "optixDenoiserInvoke). Default output\n"
+       << "                        output/denoised.ppm. Requires both "
+                                  "CUDA and OptiX SDK.\n"
        << "  --output <path>       Write the rendered image to <path>.\n"
        << "                        Default for --render-gradient is "
                                   "output/gpu_gradient.ppm;\n"

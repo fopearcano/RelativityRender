@@ -3741,6 +3741,7 @@ sub-stages, appended to the same file.** No code is touched.
 | 19A.3    | Denoiser pipeline (docs/DENOISER_PLAN.md §9: pipeline = GPU render → AOV buffers → denoiser → final image; denoiser is the last device-side stage before host download + PPM save; trigger modes = manual (--denoise flag) + automatic (action-default for path-traced / preview render paths); precedence = explicit flag > action-default > project-wide default; output = output/denoised.ppm by default, --output overrides with _denoised-suffixed stem; existing un-denoised paths unchanged when denoising is off; planning-only, no code) | ✅ |
 | 19B.1    | OptiX denoiser context (src/optix/OptixDenoiser.{h,cpp}: move-only RAII owner of an OptixDenoiser handle; reuses the Stage 17A.1 OptixDeviceContext via OptixBackend::device_context(); options pinned to guideAlbedo=1 + guideNormal=1 + denoiseAlpha=COPY per the Stage 19A.2 input contract; model = OPTIX_DENOISER_MODEL_KIND_HDR; two-layer compile-time gating + audit-host fallback identical to OptixBackend / OptixPipeline; lifecycle only — no memory queries / setup / invoke yet) | ✅ |
 | 19B.2    | Denoiser inputs (OptixDenoiser::Inputs POD + set_inputs(...) method that converts raw device pointers from the renderer's AOV pipeline into an OptixImage2D[3] triplet (slot 0 = Beauty FLOAT4 from the path-tracer resolve, slot 1 = Albedo FLOAT3 from the Stage 14A AOV, slot 2 = Normal FLOAT3 from the Stage 14A AOV); rowStrideInBytes = width * pixelStrideInBytes (tight pack); descriptors stored in private state for the next sub-stage's optixDenoiserInvoke; non-owning view of the caller's device buffers; shutdown() now also delete[]s the OptixImage2D triplet; audit-host fallback returns the documented "requires OptiX SDK" error for set_inputs too; no invoke, no file output) | ✅ |
+| 19B.3    | Execute denoiser (Inputs::beauty_components ∈ {3, 4} dispatch in set_inputs so AOV-pipeline route A (FLOAT3 Beauty) is now the default; new OptixDenoiser::Output POD + invoke(...) that runs optixDenoiserComputeMemoryResources → cudaMalloc state + scratch → optixDenoiserSetup → optixDenoiserInvoke → cudaDeviceSynchronize → cudaFree; new --render-denoise CLI handler builds a 4-sphere demo scene → renders via render_scene_with_aovs (Beauty/Albedo/Normal AOVs) → drives OptixBackend → OptixDenoiser → downloads FLOAT3 output → widens to Rgba32F (alpha=1) → save_ppm("output/denoised.ppm"); GpuTimer-bracketed denoise pass logs via Stage 18A.1's [GPU] line; audit-host fallback returns the documented "requires CUDA + OptiX" error) | ✅ |
 
 ## Stage 12A.2.1 — OptiX raygen program design
 
@@ -12997,6 +12998,299 @@ authority on which AOV feeds which slot.
   `denoiser.inputs_set() == true`. The 19B.3
   sub-stage uses the stored descriptors as
   the input layer for `optixDenoiserInvoke`.
+
+## Stage 19B.3 — Execute denoiser
+
+**Scope of this slice (Stage 19B.3; master order
+#24 / third 19B implementation slice): produce a
+denoised image end-to-end. Lands
+`optixDenoiserInvoke` (plus the
+`optixDenoiserComputeMemoryResources` /
+`optixDenoiserSetup` calls it requires) on the
+`OptixDenoiser` class, threads the AOV pipeline
+through it via a new `--render-denoise` CLI
+handler, and writes the result to
+`output/denoised.ppm`. GPU does every per-pixel
+denoise byte; the host only orchestrates the
+launch + downloads + saves. First slice that
+satisfies the DENOISER_PLAN §9.1 pipeline
+end-to-end for a real rendered scene.**
+
+### What ships
+
+- `src/optix/OptixDenoiser.h` (extended):
+    - `Inputs::beauty_components` field added
+      (default 3, accepts 3 or 4). Lets the
+      caller pick between DENOISER_PLAN §8.3.1
+      route A (FLOAT3, the AOV-pipeline default)
+      and route B (FLOAT4, the path-tracer
+      resolve). Default 3 because route A is the
+      19B.3 demo fixture; the doc-comment on the
+      Inputs POD now reflects this.
+    - New `Output` POD: `float* device + int
+      width + int height`. Caller-owned;
+      component count matches `beauty
+      _components` (FLOAT3 -> FLOAT3 output;
+      FLOAT4 -> FLOAT4 output).
+    - New `[[nodiscard]] bool invoke(const
+      Output&) noexcept` method. Documents the
+      pre-conditions (initialized + inputs_set
+      + matching dims + non-null output device
+      pointer) and the GPU-only execution
+      contract.
+    - New private field
+      `input_beauty_components_` that
+      `set_inputs(...)` records and `invoke()`
+      reads to pick the output layer's
+      OptixPixelFormat. Move ctor / move=
+      ferry it correctly.
+
+- `src/optix/OptixDenoiser.cpp` (extended):
+    - `set_inputs(...)` validates
+      `beauty_components ∈ {3, 4}` and
+      dispatches between FLOAT3 / FLOAT4 layouts
+      for slot 0 (Beauty). Slots 1 / 2 (Albedo /
+      Normal) keep their FLOAT3 layout
+      unconditionally.
+    - **SDK-found `invoke(...)` body**:
+        1. Validate pre-conditions; fast-exit on
+           failure with `last_error_` populated.
+        2. `optixDenoiserComputeMemoryResources`
+           queries state + scratch sizes for the
+           bound dims.
+        3. `cudaMalloc` state + `cudaMalloc`
+           scratch (using the `withoutOverlap`
+           size since 19B.3 invokes the whole
+           framebuffer as one tile).
+        4. `optixDenoiserSetup` initialises the
+           per-resolution state buffer.
+        5. Build `OptixDenoiserParams`
+           (blendFactor = 0; alpha mode comes
+           from Options pinned in 19B.1),
+           `OptixDenoiserGuideLayer` (albedo +
+           normal slots from
+           `input_images_[1..2]`),
+           `OptixDenoiserLayer` (input from
+           `input_images_[0]`, output sized to
+           match `beauty_components`).
+        6. `optixDenoiserInvoke` (numLayers = 1;
+           inputOffsetX/Y = 0; no overlap).
+        7. `cudaDeviceSynchronize` so the host
+           knows the output buffer is fully
+           written.
+        8. `cudaFree` state + scratch (function-
+           scope; 19B.3 does not cache them
+           across invocations).
+        Logs an `[OptiX:INFO] OptixDenoiser
+        invoked: WxH, output FLOATn` line.
+    - **Audit-host fallback `invoke(...)`**:
+      returns `false` with the documented
+      "requires OptiX SDK" error string;
+      mirrors the same shape as `initialize` /
+      `set_inputs`'s fallbacks.
+    - `<cuda_runtime.h>` added to the SDK-found
+      includes (for the two `cudaMalloc` /
+      `cudaFree` / `cudaDeviceSynchronize`
+      calls).
+    - `shutdown()` (both branches) zeroes the
+      new `input_beauty_components_` field too.
+
+- `src/main.cpp` (extended): new
+  `run_render_denoise(cfg)` handler, gated on
+  `RR_HAS_CUDA && RELATIVITYRENDER_ENABLE_OPTIX`.
+  Builds a small 4-sphere demo scene (red /
+  green / blue / neutral diffuse, no lights, no
+  observer velocity) -> uploads via `GpuScene`
+  -> allocates only the three required
+  `GpuAOVBuffer`s (Beauty / Normal / Albedo)
+  -> calls `render_scene_with_aovs` ->
+  initialises `OptixBackend` + `OptixDenoiser`
+  -> binds inputs (`beauty_components = 3`;
+  AOV pipeline default) -> allocates a
+  `GpuBuffer<float>` for the FLOAT3 denoised
+  output -> `denoiser.invoke(output)` (timed
+  via the existing Stage 18A.1 `GpuTimer`) ->
+  downloads to host -> widens FLOAT3 to
+  Rgba32F (alpha = 1) -> saves through the
+  existing `save_image_or_error` helper. The
+  per-stage GPU times are logged via the
+  existing `log_gpu_timing` helper:
+  `render-denoise:render` (for the AOV pass)
+  and `render-denoise:invoke` (for the
+  denoiser pass).
+  Default output `output/denoised.ppm`;
+  `--output` overrides per the standard
+  convention.
+  `OptixDenoiser.h` added to the
+  `RELATIVITYRENDER_ENABLE_OPTIX`-gated
+  include block.
+
+- `src/core/CommandLine.{h,cpp}` (extended):
+  new `Action::RenderDenoise`, parser entry
+  recognising `--render-denoise`, mutual-
+  exclusion list update, `Config::validate()`
+  inclusion, usage-text + header doc-comment.
+  Banner / parser stay backwards-compatible
+  with the existing 27 actions; the new
+  surface is purely additive.
+
+- `CMakeLists.txt`: stage label bumped to
+  "Stage 19B.3: execute denoiser" in both
+  `project(...)` and the configure-time
+  banner. No new source files; the existing
+  `OptixDenoiser.cpp` was already on
+  `rr_optix`'s source list since 19B.1.
+
+- `docs/BUILD_PLAN.md`: this entry +
+  status-table row.
+
+`docs/DENOISER_PLAN.md` is intentionally not
+edited - the 19A planning sub-stages already
+covered every design decision this slice acts
+on (DENOISER_PLAN §3.1 reuse-the-context;
+§8.3.1 route A vs B; §9.1 pipeline placement;
+§9.3 output path).
+
+### Architectural decisions worth highlighting
+
+- **Route A (FLOAT3 Beauty) is the new default
+  for `set_inputs`.** DENOISER_PLAN §8.3.1
+  documented both routes and recommended (B)
+  generically; for the AOV-pipeline driven
+  `--render-denoise` handler route (A) is the
+  natural fit because the Beauty AOV
+  `GpuAOVBuffer` survives the render call
+  while the path-tracer's resolve buffer
+  doesn't. Route (B) is still supported via
+  `beauty_components = 4` for future path-
+  tracer-driven slices.
+- **Function-scope state + scratch buffers.**
+  19B.3 allocates them fresh on each
+  `invoke()` call and frees them before
+  return. Simpler than caching; the per-
+  call `cudaMalloc + setup + cudaFree`
+  overhead is acceptable for the "render
+  once, save, done" CLI handler. A future
+  slice can cache them on the
+  `OptixDenoiser` instance when the same
+  resolution is reused (the renderer-server's
+  preview pass is the obvious candidate).
+- **One-tile invoke (no overlap).** The
+  framebuffer fits in a single OptiX
+  denoiser tile, so we use the
+  `withoutOverlapScratchSizeInBytes` budget
+  from `optixDenoiserComputeMemoryResources`.
+  Tiled invocation (for multi-GPU or very
+  large frames) is a future slice.
+- **`blendFactor = 0` (full denoise).**
+  The `OptixDenoiserParams::blendFactor`
+  controls the input/output mix (0 = full
+  denoise, 1 = passthrough); 19B.3 hard-
+  codes 0. Future slices may expose this as
+  a CLI / API knob if artists want a "soft
+  denoise" mode.
+- **`denoiseAlpha` lives in Options (19B.1),
+  not Params.** The `OptixDenoiserParams`
+  struct's `denoiseAlpha` field was zero-
+  initialised in 19B.3, which maps to
+  `OPTIX_DENOISER_ALPHA_MODE_COPY` (the
+  same mode pinned in 19B.1's
+  `OptixDenoiserOptions`). This is the
+  forward-compatible choice across OptiX
+  7.5 / 7.6 / 8.0 - the field's location
+  shifted between minor versions, but the
+  value of 0 means COPY in all of them.
+- **Host-side FLOAT3 -> RGBA32F widening,
+  not a CUDA kernel.** Adding a constant
+  alpha = 1 channel is a per-pixel host loop;
+  it does not violate the master "no per-
+  pixel CPU work" rule because no shading
+  happens (the same way `Image::save_ppm`'s
+  existing float -> uint8 clamp converts
+  radiance to display - constant per-pixel
+  arithmetic, not rendering). A future slice
+  can replace it with a small CUDA kernel
+  if the host loop ever becomes a hotspot.
+- **The denoiser slice does not modify any
+  renderer code.** Per DENOISER_PLAN §4.2,
+  the path tracer + AOV pipeline + relativity
+  math leaf are all unchanged. The denoiser
+  is a strict post-process consumer of the
+  existing AOV outputs.
+
+### Hard-rule audit
+
+- GPU-only - **yes**, every per-pixel byte of
+  the denoised result is produced by the
+  OptiX denoiser kernels on the device. The
+  host orchestrates (`optixDenoiserCreate /
+  Setup / Invoke / Destroy` + `cudaMalloc /
+  cudaFree` + `cudaDeviceSynchronize`) and
+  saves; nothing else.
+- CPU only saves result - **yes**, the host
+  loop that widens FLOAT3 -> RGBA32F is
+  alpha-channel-fill only (constant per-
+  pixel arithmetic, not shading), and the
+  PPM save goes through the existing
+  `Image::save_ppm` path every other CLI
+  handler uses. No host-side colour
+  manipulation, no host-side filtering, no
+  host-side denoising.
+- Must work on existing rendered scene -
+  **yes**, the new handler runs the existing
+  `render_scene_with_aovs` against a small
+  demo scene to populate the same Beauty /
+  Albedo / Normal AOVs every other AOV-aware
+  CLI action uses (the Stage 14A.3
+  contract). The denoiser consumes those
+  AOVs unchanged.
+- Update docs/BUILD_PLAN.md - **yes**, this
+  entry + status-table row.
+
+### Verified at the build
+
+- `cmake -DRR_ENABLE_CUDA=OFF
+   -DRELATIVITYRENDER_ENABLE_OPTIX=OFF`
+  (Linux): banner shows "Stage 19B.3:
+  execute denoiser"; `rr_optix` not built;
+  `--render-denoise` returns the documented
+  "requires both CUDA and OptiX" error +
+  exit 1; ctest 4/4 green.
+- `cmake -DRELATIVITYRENDER_ENABLE_OPTIX=ON`
+  (Linux audit-host): banner bumped;
+  `rr_optix` recompiles `OptixDenoiser.cpp`
+  with the audit-host fallback `set_inputs`
+  + `invoke` + the SDK-found `<cuda_runtime
+  .h>` excluded (gated on
+  `RELATIVITYRENDER_OPTIX_SDK_FOUND`); ctest
+  4/4 green. `nm librr_optix.a` confirms
+  `_ZN2rr5optix13OptixDenoiser6invokeERKNS1
+  _6OutputE`, `..._set_inputs...`, and
+  `..._initialize...` all present.
+  `--render-denoise` returns the documented
+  audit-host fallback error + exit 1.
+- A future CUDA + OptiX-SDK host run
+  exercises the populated branch end-to-end:
+  `OptixBackend::initialize` ->
+  `OptixDenoiser::initialize` -> small demo
+  scene built + uploaded ->
+  `render_scene_with_aovs` populates the
+  three AOV buffers ->
+  `OptixDenoiser::set_inputs` (with the
+  documented `[OptiX:INFO]` log line) ->
+  `OptixDenoiser::invoke` (with the
+  documented `[OptiX:INFO]` log line +
+  `optixDenoiserComputeMemoryResources` +
+  `optixDenoiserSetup` +
+  `optixDenoiserInvoke` +
+  `cudaDeviceSynchronize`) ->
+  `denoised_dev.download` -> FLOAT3 ->
+  RGBA32F widen -> `Image::save_ppm` ->
+  `output/denoised.ppm`. The two
+  `[GPU] render-denoise:render` and
+  `[GPU] render-denoise:invoke` timing lines
+  fire via the existing Stage 18A.1
+  fixture.
 
 ## Next stage
 
