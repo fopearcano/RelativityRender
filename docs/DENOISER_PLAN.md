@@ -11,10 +11,11 @@ render output until at least Stage 19B.
 
 This sub-stage (19A.1) covers only the four sections requested
 by the prompt — Purpose, Modes, Backend, Constraints. Subsequent
-sub-stages (19A.2+) append the API surface, integration plan,
-buffer-flow diagrams, error-handling, and migration risks before
-any denoiser code lands. Stage 19B is the minimum-viable
-implementation slice.
+sub-stages (19A.2+) append the input contract (19A.2),
+the pipeline placement (19A.3), the API surface (19A.4),
+the buffer-flow diagram (19A.5), CLI integration (19A.6), and
+the audit + risk review (19A.7) before any denoiser code lands.
+Stage 19B is the minimum-viable implementation slice.
 
 ---
 
@@ -222,7 +223,7 @@ output buffer shape.
 
 ### 2.3 Mode selection at the API level
 
-The 19A.2 sub-stage (still planning) will land the API
+The 19A.4 sub-stage (still planning) will land the API
 surface. The intent is that the renderer server / CLI
 handler picks the mode by passing an enum to a single
 `Denoiser::run(...)` method:
@@ -331,7 +332,7 @@ without a rebuild of the gating layer.
 
 ### 3.3 Backend selection at the API level
 
-Subsequent sub-stages (19A.2+) finalise the surface;
+Subsequent sub-stages (19A.4+) finalise the surface;
 today's intent is one factory function on the host side
 that returns a `std::unique_ptr<DenoiserBackend>` based on
 build-time gating + runtime queries, in the same shape as
@@ -377,7 +378,7 @@ This rule has consequences:
   and state buffers from `optixDenoiserComputeMemory
   Resources`) are device-resident and follow the existing
   RAII pattern (`GpuBuffer<std::byte>` or a dedicated
-  owner; finalised in 19A.2).
+  owner; finalised in 19A.4).
 - The CPU fallback (§3.2) is the only exception, and is
   not in 19B scope.
 
@@ -455,7 +456,7 @@ that resolve). For non-pathtrace renders that is the
 `run_kernel_render` framebuffer the existing CUDA kernels
 write. The denoiser slice picks the buffer-flow direction
 (consume the device buffer directly vs. consume an `Image`
-the host owns) in 19A.2; today's commitment is just that
+the host owns) in 19A.5; today's commitment is just that
 **no Beauty / Normal / Albedo recomputation happens
 inside the denoiser slice**.
 
@@ -466,7 +467,7 @@ only." rule, this sub-stage adds no source files. The
 gating on whether `rr_denoiser` exists at all is a Stage
 19B decision; today the project has no denoiser
 translation unit, no `Denoiser` class, no CMake target.
-The 19A.2+ sub-stages append API-surface design,
+The 19A.4+ sub-stages append API-surface design,
 buffer-flow design, and integration-risk audits — still
 documentation-only — before 19B starts implementing.
 
@@ -536,21 +537,26 @@ The 19A planning bucket extends as needed; today's plan:
   required vs optional input set, mapped concretely to the
   Stage 14A AOV buffers. Format / layout / unit notes for
   each input. Documented in §8 below.
-- **19A.3 — API surface.** `Denoiser` class shape, the
+- **19A.3 — Denoiser pipeline.** Where the denoiser runs in
+  the project's render flow: GPU render → AOV buffers →
+  denoiser → final image. Trigger modes (manual vs
+  automatic-after-render). Output path. Documented in §9
+  below.
+- **19A.4 — API surface.** `Denoiser` class shape, the
   `make_denoiser(Backend)` factory, the `Result` struct,
   the buffer-flow direction (device-buffer-in /
   device-buffer-out vs Image-in / Image-out).
-- **19A.4 — Buffer-flow design.** Concrete diagram of how
+- **19A.5 — Buffer-flow design.** Concrete diagram of how
   Beauty / Normal / Albedo move from the renderer's
   device-side AOV buffers through the denoiser to the
   PPM file, including which buffer the resolve writes to
   and which buffer the denoiser writes to.
-- **19A.5 — Integration with existing CLI handlers.**
+- **19A.6 — Integration with existing CLI handlers.**
   Where the denoiser plugs into `--render-pathtrace`, how
   the server's `render` verb selects denoise on / off,
   the `--denoise` / `--no-denoise` CLI surface, the
   `[GPU] denoiser: time = X.XXX ms` log line shape.
-- **19A.6 — Audit + risk review.** Documented before any
+- **19A.7 — Audit + risk review.** Documented before any
   code lands: the OptiX denoiser's memory footprint vs
   current device-VRAM tally, version-pinning of the
   OptiX SDK, the SDK-not-found audit-host fallback, the
@@ -631,7 +637,7 @@ steps:
 
 The denoiser consumes the resolve output (or its
 direct device-side equivalent) — see §8.4 for the
-buffer-flow choice 19A.4 will finalise.
+buffer-flow choice 19A.5 will finalise.
 
 **Special-case note for non-pathtrace renders.** The
 existing scene-render path (`CudaRenderer::render
@@ -705,7 +711,7 @@ shape regardless of which backend produced the AOV.
 ### 8.2 Optional inputs
 
 Two optional inputs are **declared** today so the API
-surface lands stably in 19A.3, but neither is consumed
+surface lands stably in 19A.4, but neither is consumed
 by the 19B implementation. Both are deferred for
 documented reasons.
 
@@ -729,7 +735,7 @@ The reason to keep depth on the input list at all is:
   (e.g. an A-trous wavelet pass with edge-stopping
   functions) frequently uses depth to identify
   surfaces; reserving the slot now means the API
-  surface designed in 19A.3 already has the input
+  surface designed in 19A.4 already has the input
   channel and 19C+ work doesn't need to re-litigate.
 - **Future adaptive-sampling driver.** A future slice
   that pairs the renderer with variance-driven sample
@@ -771,7 +777,7 @@ The project does not produce motion vectors today
 (documented as out-of-scope in §5; the prerequisites
 land in master-order #25, native Cinema 4D renderer
 integration). The denoiser slice declares the slot
-so 19A.3's API surface includes the optional motion
+so 19A.4's API surface includes the optional motion
 input from day one; 19B refuses callers that try to
 supply it; 19C ships the actual temporal denoiser
 once the renderer can populate the buffer.
@@ -790,7 +796,7 @@ denoiser.
 
 This is the only required-but-missing AOV the
 denoiser plan calls for. Spelling it out here means
-the 19A.3 API surface and the eventual 19C work
+the 19A.4 API surface and the eventual 19C work
 have a known dependency to schedule.
 
 ### 8.3 Mapping to existing Stage 14A AOV buffers
@@ -860,7 +866,7 @@ slice picks one of two routes**:
   required; the denoiser slice strictly post-
   processes what `resolve_to_image()` produced.
 
-19A.4 (buffer-flow design) finalises the choice;
+19A.5 (buffer-flow design) finalises the choice;
 today's strong recommendation is (B) for §4.2
 compliance. This is the kind of decision the
 follow-up sub-stage exists to lock in before
@@ -868,7 +874,7 @@ implementation starts.
 
 ### 8.4 Buffer-flow direction (preview)
 
-Detailed wiring lands in 19A.4 (buffer-flow design),
+Detailed wiring lands in 19A.5 (buffer-flow design),
 but the input contract drives one decision now: the
 denoiser reads device pointers, not host buffers. For
 each required input the denoiser slice's API takes a
@@ -912,6 +918,283 @@ on the input side.
   "Do not implement code" rule, this sub-stage
   ships only documentation. The
   `Denoiser::Inputs` struct shape and the
-  `make_denoiser` factory signature are 19A.3's
-  output; the buffer-flow diagram is 19A.4's;
+  `make_denoiser` factory signature are 19A.4's
+  output; the buffer-flow diagram is 19A.5's;
   the implementation is 19B's.
+
+---
+
+## 9. Pipeline (Stage 19A.3)
+
+§8 fixes the input contract; §9 fixes **where** the
+denoiser sits in the project's render flow, **when** it
+runs, and **where** its output goes. The buffer-flow
+direction (which device buffer the denoiser reads, which
+device buffer it writes to) is intentionally deferred
+to 19A.5; this section is the higher-level pipeline
+placement that 19A.5 will plug a concrete diagram into.
+
+### 9.1 Pipeline placement
+
+The denoiser is a strict post-process stage at the tail
+of the render pipeline. The data flow:
+
+```text
+┌───────────┐   ┌──────────────┐   ┌──────────┐   ┌───────────┐
+│ GPU render│──▶│ AOV buffers  │──▶│ Denoiser │──▶│Final image│
+└───────────┘   └──────────────┘   └──────────┘   └───────────┘
+   (Stage 11C   (Stage 14A.3       (Stage 19B    (host-side
+    PathTracer  GpuAOVBuffer x N    on the same   Image::save_ppm
+    + Stage     populated by        OptixDevice   write to PPM,
+    11B accum   render_scene_       Context the   exactly the
+    + Stage     with_aovs)          renderer      same path the
+    18A.4 fast                      already       un-denoised
+    paths)                          owns)         output uses)
+```
+
+**Stage by stage:**
+
+1. **GPU render.** The path tracer (or any other
+   render-* CLI handler that consumes
+   `render_scene_with_aovs`) produces a per-pixel
+   noisy radiance estimate on the device. Today the
+   spp loop + `AccumulationBuffer::resolve_to_image()`
+   yield the resolved Beauty buffer; the same kernel
+   pass populates the side-channel `GpuAOVBuffer`s for
+   Normal / Albedo. No new GPU work is added by 19A.3.
+2. **AOV buffers.** The Stage 14A.3 `GpuAOVBuffer`
+   set is the data hand-off layer. The denoiser
+   reads from these device pointers in place; the
+   renderer is the buffer's writer, the denoiser is
+   its reader. §8.3 gives the concrete
+   AOVType-to-buffer mapping; this section stays
+   higher-level.
+3. **Denoiser.** A single `Denoiser::run(...)` call
+   on the host that ferries the device pointers into
+   `optixDenoiserInvoke` (or the future CPU
+   fallback). The denoised result lands in a fresh
+   device buffer the caller owns. Time is captured
+   under the same Stage 18A.1 `[GPU] denoiser:
+   render time = X.XXX ms` line as every other
+   GPU pass.
+4. **Final image.** The host downloads the denoised
+   device buffer into an `rr::image::Image`
+   (Rgba32F) and writes it through
+   `Image::save_ppm`, exactly the same path
+   `--render-pathtrace` and every other CLI handler
+   uses today. The denoiser slice does not introduce
+   a new image-IO format, a new colour-space hook,
+   or a new tone-mapper.
+
+The pipeline shape is identical to the un-denoised
+flow (`GPU render → host download → save PPM`) plus
+one extra stage between "AOV buffers" and "save". The
+denoiser does **not** sit anywhere else - in
+particular, it does not run before resolution, it
+does not run inside the spp loop, and it does not
+modify the renderer's per-sample buffer. Per §4.2,
+no renderer-side change is needed to land 19A.3's
+pipeline.
+
+### 9.2 Trigger modes
+
+Two ways to launch the denoiser stage. Both share the
+same `Denoiser::run(...)` API surface designed in
+19A.4; they differ only in **who** calls it and
+**when**.
+
+#### 9.2.1 Manual trigger
+
+The CLI / API caller decides whether to denoise.
+Concrete shape: a `--denoise` flag on the existing
+`--render-pathtrace` action (and any other render-*
+action that exposes Beauty / Normal / Albedo AOVs
+via `render_scene_with_aovs`). When the flag is
+present the handler runs the spp loop, captures
+the AOV buffers, calls `Denoiser::run`, and writes
+the denoised PPM. When the flag is absent the
+handler short-circuits the denoiser and writes the
+un-denoised PPM exactly the way it does today.
+
+A symmetric `--no-denoise` flag is documented in
+the 19A.6 CLI-integration sub-stage; it is the
+default for handlers that opt into automatic mode
+(see §9.2.2). Together the two flags let a caller
+override the action's default in either direction
+without touching any other configuration.
+
+The server's `render` verb (Stage 15) gets the same
+manual-trigger control: the protocol gains a
+boolean `denoise` argument that maps to the same
+host-side switch. The protocol surface is finalised
+in 19A.6.
+
+**Why manual is the default for 19B.** The first
+implementation slice cares about *correctness* of
+the pipeline placement, not artist-grade defaults.
+Forcing the caller to opt in keeps the un-denoised
+behaviour identical to the Stage 18A.4 baseline
+(useful for the existing CLI tests + the BUILD_PLAN
+"visual outputs match the Stage NNNN baseline
+byte-for-byte" guarantees) and means 19B's
+acceptance criteria can be a strict superset of
+19A.x without any visual-baseline regression.
+
+#### 9.2.2 Automatic after render
+
+A render-time flag on the action that says "always
+denoise". When set, the handler runs the same
+end-of-render denoise pass without the caller
+having to remember `--denoise` on every CLI line.
+
+This is the right default for an interactive /
+artist-facing workflow:
+
+- **Server preview pass.** The Stage 15 `render`
+  verb's preview mode (low-spp, tied to the
+  artist's edit cadence) is unusable without
+  denoising at 1-4 spp. Automatic mode is what
+  makes the server's preview channel correct.
+- **Cinema 4D bridge.** A future bridge slice
+  (master order #21) calls into the server
+  per-frame; the bridge's render-button is
+  semantically "produce a clean image", not
+  "produce a noisy image and a denoised image".
+  Automatic mode matches that contract.
+- **`--render-pathtrace` for headless batch.** The
+  un-decorated CLI command "render this scene"
+  reasonably means "produce a clean image"; the
+  manual flag exists to opt **out** for
+  diagnostic / training / before-after compare
+  purposes.
+
+Automatic mode is **not** silent: it still emits
+the Stage 18A.1 `[GPU] denoiser: ...` timing line
+and the `wrote denoised: <path>` log message. The
+artist sees that the denoiser ran; the absence of
+that log line on a render that should have hit
+automatic mode is a regression signal.
+
+#### 9.2.3 Mode-selection precedence
+
+Within a single render dispatch the precedence is
+explicit-flag > action-default > project-wide
+default. Concretely:
+
+1. `--no-denoise` on the CLI → never denoise, even
+   if the action defaults to automatic.
+2. `--denoise` on the CLI → always denoise, even if
+   the action defaults to manual / no-denoise.
+3. Action-default → the per-action policy (e.g.
+   `--render-pathtrace` defaults to automatic if
+   19A.6 lands that way; the bare `--render-scene`
+   defaults to manual because there is no spp
+   loop and therefore no noise to remove).
+4. Project-wide default → today, manual everywhere
+   (no flag = un-denoised), so the existing CLI
+   acceptance tests stay green for the 19B slice.
+
+The 19A.6 CLI-integration sub-stage finalises the
+per-action defaults and the precedence rules; this
+section commits to the precedence shape, not the
+specific defaults.
+
+### 9.3 Output
+
+The denoised result goes to `output/denoised.ppm`
+by default. The full output rules:
+
+| Action | Default un-denoised path | Default denoised path |
+|--------|---------------------------|------------------------|
+| `--render-pathtrace`        | `output/pathtrace_spp_*.ppm` (one per spp run) | `output/denoised.ppm` (single, of the highest-spp run) |
+| `--render-scene` / `--render-scene-from-file` | `output/gpu_scene_spheres.ppm` / `output/from_scene_spheres.ppm` | `output/denoised.ppm` |
+| Server `render` verb         | `output/server_render.ppm` | `output/denoised.ppm` |
+| Any action with `--output`   | `--output` value | the same value with `_denoised` inserted before the extension, e.g. `output/foo.ppm` → `output/foo_denoised.ppm` |
+
+Three rules the table encodes:
+
+1. **`output/denoised.ppm` is the project-wide
+   default name** when the caller does not pass
+   `--output` and the action's denoise mode is on.
+   Fixed name; one image per render dispatch. The
+   denoiser does not retain previous frames.
+2. **`--output` overrides the path but injects
+   `_denoised` into the stem** so a single render
+   dispatch with both un-denoised and denoised
+   outputs (a future "compare" mode, deferred)
+   does not collide on the same file.
+3. **Existing un-denoised outputs are unchanged**
+   when denoising is off. The Stage 18A.4 baseline
+   PPM bytes are preserved exactly when no denoise
+   flag is present.
+
+Format: PPM, RGBA32F internal → uint8 clamp via
+the existing `Image::save_ppm` path. Linear-space
+radiance in, sRGB-display PPM out (the float→uint8
+clamp's existing behaviour, unchanged from
+today). The denoiser slice does **not** introduce
+EXR / HDR output, a colour-space hook, or a tone
+mapper - all are deferred per §4.4.
+
+When the OptiX SDK is not present (audit-host
+fallback) and the denoise mode is on, the handler
+returns a documented "requires OptiX SDK" error
+without producing the denoised PPM. The
+un-denoised output is also not produced (the
+caller asked for denoised output; refusing the
+request is more honest than silently dropping the
+denoise step). When the denoise mode is off the
+handler runs exactly as it does today.
+
+### 9.4 Where this slice does NOT change the pipeline
+
+For symmetry with §4 and §8.5, an explicit list of
+what 19A.3 / 19B leave untouched:
+
+- The renderer's per-sample kernel
+  (`launch_pathtrace_sample`, `k_render_scene`,
+  the OptiX programs). No denoiser-aware sampling,
+  no variance feedback, no early termination.
+- `AccumulationBuffer`'s clear / accumulate /
+  resolve flow (Stage 11B / Stage 18A.4 fast
+  paths). The denoiser reads what `resolve_to
+  _image()` produces; it does not pre-empt the
+  resolve.
+- The AOV pipeline (`render_scene_with_aovs`,
+  `GpuAOVBuffer`, `AOV.{h,cpp}`). The denoiser
+  consumes existing AOVs without adding new
+  types; the only future-required AOV (Motion;
+  see §8.2.2) is owned by a separate slice.
+- `Image::save_ppm`. The denoiser writes through
+  the same host-side IO path; no PPM-format hook,
+  no compression flag, no metadata sidecar.
+- Server protocol verbs other than `render` (Stage
+  15A.2's `ping`, Stage 15B.1's `load_scene`,
+  Stage 15B.3's `set_beta`). The denoiser slice
+  adds at most a `denoise` argument to the
+  existing `render` verb in 19A.6.
+
+### 9.5 What this sub-stage commits to
+
+- **Pipeline placement.** Denoiser is the last
+  device-side stage before host download +
+  PPM save. Reads the existing AOV buffers; writes
+  to a fresh device buffer the caller downloads.
+- **Two trigger modes.** Manual (explicit
+  `--denoise` flag) and automatic (action-default
+  on for path-traced / preview render paths).
+  Precedence rule: explicit flag > action-default
+  > project-wide default.
+- **Output path.** `output/denoised.ppm` by
+  default; `--output` overrides with
+  `_denoised`-suffixed stem. Existing un-denoised
+  paths unchanged when denoising is off.
+- **No code.** Per the prompt's "Do not
+  implement code" rule. The `Denoiser::run` API
+  surface is 19A.4's; the per-action defaults
+  are 19A.6's; the implementation is 19B's.
+- **No renderer-side change.** Per §4.2 +
+  §9.4, the existing render kernels +
+  AccumulationBuffer + AOV pipeline +
+  `Image::save_ppm` are all unaffected by 19A.3
+  / 19B.

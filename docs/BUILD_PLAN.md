@@ -3738,6 +3738,7 @@ sub-stages, appended to the same file.** No code is touched.
 | 18A.4    | Progressive optimization (float4-vectorised k_accum_add + k_accum_resolve fast paths on Rgba32F-aligned buffers — 1/4 the threads, 1/4 the memory transactions, 16-byte coalesced ld/st; new launch_accum_first_sample (cudaMemcpy D2D) routes samples_==0 through the memory-controller bulk-copy path and skips the read-of-zeros + add-kernel launch; AccumulationBuffer::accumulate_sample dispatches first-sample vs add; bit-identical pixel output) | ✅ |
 | 19A.1    | Denoiser scope (docs/DENOISER_PLAN.md §1-§7: purpose = reduce noise in path-traced output + enable low-spp renders; modes = final-frame (19B target) + progressive (future, gated on motion vectors); backend = NVIDIA OptiX denoiser primary on shared OptixDeviceContext, CPU fallback future/optional; constraints = GPU-only, must not modify core renderer logic, operates on existing Stage 14A AOV buffers; planning-only, no code) | ✅ |
 | 19A.2    | Denoiser inputs (docs/DENOISER_PLAN.md §8: required inputs = Beauty (noisy) / Albedo / Normal, all 3 floats per pixel, world-space normals, all already produced by Stage 14A render_scene_with_aovs; optional inputs = Depth (future, not consumed by OptiX denoiser today) + Motion (future, requires new AOVType::Motion); concrete one-to-one mapping to make_default_aov_set() entries + targets.* fields; FLOAT3-vs-FLOAT4 Beauty format ambiguity documented with route (B) recommended to preserve §4.2 "no renderer changes"; planning-only, no code) | ✅ |
+| 19A.3    | Denoiser pipeline (docs/DENOISER_PLAN.md §9: pipeline = GPU render → AOV buffers → denoiser → final image; denoiser is the last device-side stage before host download + PPM save; trigger modes = manual (--denoise flag) + automatic (action-default for path-traced / preview render paths); precedence = explicit flag > action-default > project-wide default; output = output/denoised.ppm by default, --output overrides with _denoised-suffixed stem; existing un-denoised paths unchanged when denoising is off; planning-only, no code) | ✅ |
 
 ## Stage 12A.2.1 — OptiX raygen program design
 
@@ -12382,6 +12383,196 @@ review).**
   counts vs `src/renderer/AOV.h` and the
   renderer-write contract vs
   `src/cuda/CudaRenderer.h::AOVTargets`.
+
+## Stage 19A.3 — Denoiser pipeline
+
+**Scope of this slice (Stage 19A.3; master order
+#24): planning-only refinement of *where* the
+denoiser sits in the project's render flow and
+*when* it runs. Appends a new §9 "Pipeline" to
+`docs/DENOISER_PLAN.md` covering the pipeline
+placement, trigger modes (manual vs
+automatic-after-render), and the default output
+path. No code, no kernel changes, no header
+additions. The slice's `§7` follow-up roadmap is
+updated so 19A.3 = this slice; the rest of the
+19A bucket slides down one number (19A.4 API
+surface, 19A.5 buffer-flow design, 19A.6 CLI
+integration, 19A.7 audit + risk review).
+Cross-references throughout §0-§4 / §8 are
+updated to point at the new numbering.**
+
+### What ships
+
+- `docs/DENOISER_PLAN.md` (extended): new
+  top-level §9 "Pipeline" with five subsections.
+    - **§9.1 Pipeline placement.** ASCII diagram
+      and per-stage walkthrough:
+      `GPU render → AOV buffers → denoiser →
+      final image`. Stage-by-stage explanation
+      of which existing project component owns
+      each box (Stage 11C path tracer + Stage
+      11B accumulator + Stage 18A.4 fast paths
+      → Stage 14A.3 GpuAOVBuffer set → Stage
+      19B Denoiser on the shared
+      OptixDeviceContext → Stage-existing
+      `Image::save_ppm`). Identical to the
+      un-denoised flow plus one extra stage;
+      no renderer-side change required (per
+      §4.2 + §9.4).
+    - **§9.2 Trigger modes.** Two ways to
+      launch the denoiser: manual (an explicit
+      `--denoise` flag on `--render-pathtrace`
+      and any other render-* action that
+      exposes Beauty / Normal / Albedo) and
+      automatic (an action-default that
+      always denoises at the end of the spp
+      loop; right default for server preview
+      / Cinema 4D bridge / headless batch).
+      Mode-selection precedence rule:
+      explicit flag > action-default >
+      project-wide default. 19A.6 finalises
+      the per-action defaults; this section
+      commits to the precedence shape.
+    - **§9.3 Output.** `output/denoised.ppm`
+      by default; `--output` overrides with
+      `_denoised`-suffixed stem; existing
+      un-denoised paths unchanged when
+      denoising is off; PPM (Rgba32F → uint8
+      clamp via existing `Image::save_ppm`);
+      audit-host fallback returns the
+      documented "requires OptiX SDK" error
+      without producing a denoised PPM.
+    - **§9.4 Where this slice does NOT change
+      the pipeline.** Explicit list mirroring
+      §4 / §8.5: per-sample kernels,
+      `AccumulationBuffer`, AOV pipeline,
+      `Image::save_ppm`, server protocol
+      verbs other than `render`.
+    - **§9.5 What this sub-stage commits to.**
+      Pipeline placement + two trigger modes +
+      `output/denoised.ppm` default + no-code
+      boundary.
+
+- `docs/DENOISER_PLAN.md` §7 (updated):
+  follow-up roadmap renumbered. 19A.3 =
+  "Denoiser pipeline" (this slice; documented
+  in §9). API surface slides to 19A.4,
+  buffer-flow to 19A.5, CLI integration to
+  19A.6, audit + risk to 19A.7. 19B
+  unchanged.
+
+- `docs/DENOISER_PLAN.md` §0 / §2 / §3 / §4 /
+  §8 (cross-references updated): every
+  reference like "19A.2 sub-stage will land
+  the API surface" / "19A.3's API surface" /
+  "19A.4 buffer-flow choice" was rewritten to
+  match the new numbering. The semantic
+  meaning of each reference is preserved;
+  only the slice number changed.
+
+- `CMakeLists.txt`: stage label bumped to
+  "Stage 19A.3: denoiser pipeline" in both
+  `project(...)` and the configure-time banner.
+
+- `docs/BUILD_PLAN.md`: this entry +
+  status-table row.
+
+### Architectural decisions worth highlighting
+
+- **Denoiser is the last device-side stage.**
+  Per the §9.1 walkthrough, the denoiser sits
+  between "AOV buffers" and "host download".
+  It does not run before resolution, does not
+  run inside the spp loop, and does not modify
+  the renderer's per-sample buffer. This
+  preserves §4.2's "must not modify core
+  renderer logic" rule.
+- **Pipeline shape is the existing flow + one
+  stage.** No new image-IO format, no new
+  colour-space hook, no new tone-mapper. The
+  denoiser produces a Rgba32F device buffer
+  and the host downloads + saves it through
+  the same `Image::save_ppm` path every other
+  CLI handler uses today.
+- **Manual is the default for 19B.** First
+  implementation slice cares about
+  *correctness* of the pipeline placement,
+  not artist-grade defaults. Forcing the
+  caller to opt in keeps the un-denoised
+  behaviour identical to the Stage 18A.4
+  baseline (preserves the BUILD_PLAN
+  "byte-for-byte" guarantees) and means
+  19B's acceptance criteria can be a strict
+  superset of 19A.x without any visual-
+  baseline regression.
+- **Automatic is the right default for
+  interactive / artist-facing workflows.**
+  Server preview at 1-4 spp is unusable
+  without it; Cinema 4D bridge's render-
+  button is semantically "produce a clean
+  image"; headless batch
+  (`--render-pathtrace`) reasonably means
+  "produce a clean image". 19A.6 picks the
+  per-action defaults; this section locks
+  in that automatic mode exists and the
+  precedence rule that lets manual flags
+  override.
+- **`output/denoised.ppm` is the project-
+  wide default name.** Fixed name; one
+  image per render dispatch; no previous-
+  frame retention. Mirrors the existing
+  `output/server_render.ppm` /
+  `output/optix_*.ppm` / `output/aov_*.ppm`
+  naming conventions.
+- **`--output` injects `_denoised` into the
+  stem, not just appends.** A single render
+  dispatch with both un-denoised and
+  denoised outputs (a future "compare" mode,
+  deferred) does not collide on the same
+  file; the PPM extension stays where the
+  caller put it.
+
+### Hard-rule audit
+
+- Documentation only - **yes**, the slice
+  adds zero source files, no build targets,
+  no CLI surface, no public API, no test
+  coverage. The only non-doc change is the
+  `CMakeLists.txt` stage-label bump.
+- Do not implement code - **yes**, the
+  document explicitly defers the
+  `Denoiser::run` API surface to 19A.4, the
+  per-action defaults to 19A.6, and the
+  implementation to 19B.
+- Append (not rewrite) the existing plan -
+  **yes**, §9 is appended to the end of
+  the document; existing §1-§6 / §8 are
+  unchanged in semantic content; §7's
+  roadmap and the slice-number cross-
+  references in §0 / §2 / §3 / §4 / §8 are
+  updated to match the new numbering (the
+  meaning is preserved; only the slice
+  numbers changed).
+- Update docs/BUILD_PLAN.md - **yes**, this
+  entry + status-table row.
+
+### Verified at the build
+
+- `cmake -DRR_ENABLE_CUDA=OFF
+   -DRELATIVITYRENDER_ENABLE_OPTIX=OFF`
+  (Linux): banner shows "Stage 19A.3:
+  denoiser pipeline"; no source files
+  changed; ctest 4/4 green.
+- `cmake -DRELATIVITYRENDER_ENABLE_OPTIX=ON`
+  (Linux audit-host): banner bumped;
+  rr_optix unchanged; ctest 4/4 green.
+- §9 reviewed against the prompt's required
+  pipeline-shape, trigger-modes, and output-
+  path elements. Cross-referenced against
+  §4.2 (must not modify core renderer
+  logic) and §8 (input contract); the
+  pipeline placement is consistent with both.
 
 ## Next stage
 
