@@ -258,6 +258,22 @@ namespace rr::core {
 //                           OptiX (-DRELATIVITYRENDER_ENABLE
 //                           _OPTIX=ON, plus the SDK located at
 //                           configure time).
+//   --denoise               Stage 19B.4 modifier flag (NOT an
+//                           action). When combined with an
+//                           AOV-aware render action that
+//                           exposes Beauty / Albedo / Normal
+//                           buffers, run the OptiX denoiser on
+//                           those buffers and write the
+//                           denoised result to
+//                           "output/denoised.ppm" alongside
+//                           the action's standard outputs. Per
+//                           DENOISER_PLAN §9.2 this is the
+//                           manual-trigger mode. Today
+//                           supported by --render-aovs;
+//                           silently ignored by other actions
+//                           (no error, no denoise pass). Same
+//                           CUDA + OptiX SDK requirements as
+//                           --render-denoise.
 //   --output <path>         Write the rendered image to <path>.
 //                           Default for --render-gradient is
 //                           "output/gpu_gradient.ppm";

@@ -2506,6 +2506,37 @@ int run_render_aovs(const rr::core::Config& cfg) {
         }
     }
 
+    // Stage 19B.4: when --denoise is set, additionally
+    // invoke the OptiX denoiser on the Beauty / Albedo /
+    // Normal AOV buffers and save output/denoised.ppm
+    // alongside the standard six AOV PPMs. Per DENOISER
+    // _PLAN §9.2.1 (manual trigger mode) + §9.3 (fixed
+    // output path); --output is ignored by --render-aovs
+    // and the denoised output uses the documented default.
+    // The flag is silently ignored when OptiX is not
+    // compiled in (per DENOISER_PLAN §9.4); a clear error
+    // is logged so the user knows the denoise pass did
+    // not happen.
+    if (cfg.denoise_enabled) {
+#ifdef RELATIVITYRENDER_ENABLE_OPTIX
+        const std::string denoised_path = "output/denoised.ppm";
+        if (!denoise_aov_buffers_to_ppm(
+                /*beauty=*/aov_set[0],
+                /*albedo=*/aov_set[3],
+                /*normal=*/aov_set[1],
+                cfg.width, cfg.height,
+                denoised_path)) {
+            all_ok = false;
+        }
+#else
+        rr::core::Logger::error(
+            "--denoise requires OptiX. Rebuild with "
+            "-DRELATIVITYRENDER_ENABLE_OPTIX=ON on a host "
+            "with the OptiX SDK installed.");
+        all_ok = false;
+#endif
+    }
+
     rr::core::Logger::info("aovs: "
                          + std::to_string(aov_set.size())
                          + " AOV(s) rendered, "
@@ -2516,13 +2547,124 @@ int run_render_aovs(const rr::core::Config& cfg) {
 #endif
 }
 
+#if defined(RR_HAS_CUDA) && defined(RELATIVITYRENDER_ENABLE_OPTIX)
+// Stage 19B.4 helper. Drives the full OptiX-denoiser
+// orchestration (backend + denoiser init -> set_inputs ->
+// allocate FLOAT3 output buffer -> invoke (timed) ->
+// download -> widen FLOAT3 -> RGBA32F (alpha = 1) -> save
+// PPM) given three already-populated `GpuAOVBuffer`s
+// (Beauty / Albedo / Normal) and an output path. Shared
+// between `run_render_denoise` (Stage 19B.3 dedicated
+// demo) and `run_render_aovs` (Stage 19B.4
+// `--denoise`-modifier integration).
+//
+// Returns true on success. Logs `[GPU] denoise:invoke ...`
+// and `wrote denoised: ...` lines on success; logs an
+// error and returns false on any failure.
+//
+// Pre-condition: both `RR_HAS_CUDA` and
+// `RELATIVITYRENDER_ENABLE_OPTIX` are defined. The function
+// itself is gated on the same combination so callers do
+// not need to repeat the macro checks.
+bool denoise_aov_buffers_to_ppm(
+        const rr::renderer::GpuAOVBuffer& beauty_buf,
+        const rr::renderer::GpuAOVBuffer& albedo_buf,
+        const rr::renderer::GpuAOVBuffer& normal_buf,
+        int                                width,
+        int                                height,
+        const std::string&                 out_path) {
+    using rr::core::Logger;
+
+    if (!beauty_buf.valid() || !albedo_buf.valid() || !normal_buf.valid()) {
+        Logger::error("denoise: one or more AOV buffers is invalid");
+        return false;
+    }
+
+    rr::optix::OptixBackend backend;
+    if (!backend.initialize()) {
+        Logger::error("denoise: OptixBackend init failed: "
+                    + backend.last_error());
+        return false;
+    }
+    rr::optix::OptixDenoiser denoiser;
+    if (!denoiser.initialize(backend)) {
+        Logger::error("denoise: OptixDenoiser init failed: "
+                    + denoiser.last_error());
+        return false;
+    }
+
+    rr::optix::OptixDenoiser::Inputs inputs;
+    inputs.beauty_device     = beauty_buf.device_ptr();
+    inputs.beauty_components = 3;  // Stage 14A AOV is FLOAT3
+    inputs.albedo_device     = albedo_buf.device_ptr();
+    inputs.normal_device     = normal_buf.device_ptr();
+    inputs.width             = width;
+    inputs.height            = height;
+    if (!denoiser.set_inputs(inputs)) {
+        Logger::error("denoise: set_inputs failed: " + denoiser.last_error());
+        return false;
+    }
+
+    // Allocate the denoised-output device buffer (FLOAT3 to
+    // match the FLOAT3 Beauty input). Caller-side RAII;
+    // OptixDenoiser does not free it on shutdown.
+    const std::size_t out_float_count =
+        static_cast<std::size_t>(width) * height * 3u;
+    rr::gpu::GpuBuffer<float> denoised_dev;
+    if (!denoised_dev.allocate(out_float_count)) {
+        Logger::error("denoise: GpuBuffer<float> allocate failed");
+        return false;
+    }
+
+    rr::optix::OptixDenoiser::Output output;
+    output.device = denoised_dev.device_ptr();
+    output.width  = width;
+    output.height = height;
+
+    rr::gpu::GpuTimer timer;
+    timer.start();
+    const bool invoke_ok = denoiser.invoke(output);
+    timer.stop();
+    if (!invoke_ok) {
+        Logger::error("denoise: invoke failed: " + denoiser.last_error());
+        return false;
+    }
+    log_gpu_timing("denoise:invoke", width, height, timer.elapsed_ms());
+
+    // Download FLOAT3 device output -> host vector, then
+    // widen to RGBA32F (alpha = 1) for save_ppm. Per
+    // DENOISER_PLAN §9.5 + Stage 19B.3 architectural notes:
+    // constant-alpha fill is per-pixel host arithmetic, not
+    // shading - it does not violate the master "no per-
+    // pixel CPU work" rule.
+    std::vector<float> host_rgb(out_float_count);
+    if (!denoised_dev.download(host_rgb.data(), out_float_count)) {
+        Logger::error("denoise: download failed");
+        return false;
+    }
+    rr::image::Image img(width, height, rr::image::PixelFormat::Rgba32F);
+    {
+        const std::size_t pixel_count =
+            static_cast<std::size_t>(width) * height;
+        float* dst = img.data();
+        for (std::size_t i = 0; i < pixel_count; ++i) {
+            dst[i * 4 + 0] = host_rgb[i * 3 + 0];
+            dst[i * 4 + 1] = host_rgb[i * 3 + 1];
+            dst[i * 4 + 2] = host_rgb[i * 3 + 2];
+            dst[i * 4 + 3] = 1.0f;
+        }
+    }
+
+    return save_image_or_error(img, out_path, "denoised", width, height);
+}
+#endif  // RR_HAS_CUDA && RELATIVITYRENDER_ENABLE_OPTIX
+
 // `--render-denoise` dispatch (Stage 19B.3). Builds a small
 // demo scene (4 diffuse spheres, no lights, no relativity)
 // and runs it through the AOV pipeline (`render_scene_with
 // _aovs`) to populate Beauty / Albedo / Normal device
-// buffers. Then drives the OptixDenoiser end-to-end:
-// `OptixBackend::initialize` -> `OptixDenoiser::initialize`
-// -> `set_inputs` -> `invoke` -> download -> save PPM. The
+// buffers. Then drives the OptixDenoiser end-to-end via
+// the shared `denoise_aov_buffers_to_ppm` helper. The
 // denoiser runs entirely on the GPU; the host only
 // orchestrates and saves the final image, mirroring every
 // other render-* CLI handler.
@@ -2639,93 +2781,13 @@ int run_render_denoise(const rr::core::Config& cfg) {
     log_gpu_timing("render-denoise:render", cfg.width, cfg.height,
                    r.gpu_time_ms);
 
-    // OptiX denoiser lifecycle. Re-uses the OptiX device
-    // context per DENOISER_PLAN §3.1.
-    rr::optix::OptixBackend backend;
-    if (!backend.initialize()) {
-        Logger::error("denoise: OptixBackend init failed: "
-                    + backend.last_error());
-        return 1;
-    }
-    rr::optix::OptixDenoiser denoiser;
-    if (!denoiser.initialize(backend)) {
-        Logger::error("denoise: OptixDenoiser init failed: "
-                    + denoiser.last_error());
-        return 1;
-    }
-
-    rr::optix::OptixDenoiser::Inputs inputs;
-    inputs.beauty_device     = beauty_buf.device_ptr();
-    inputs.beauty_components = 3;  // Stage 14A AOV is FLOAT3
-    inputs.albedo_device     = albedo_buf.device_ptr();
-    inputs.normal_device     = normal_buf.device_ptr();
-    inputs.width             = cfg.width;
-    inputs.height            = cfg.height;
-    if (!denoiser.set_inputs(inputs)) {
-        Logger::error("denoise: set_inputs failed: " + denoiser.last_error());
-        return 1;
-    }
-
-    // Allocate the denoised-output device buffer (FLOAT3 to
-    // match the FLOAT3 Beauty input). Caller-owned RAII; the
-    // OptixDenoiser does not free it on shutdown.
-    const std::size_t out_float_count =
-        static_cast<std::size_t>(cfg.width) * cfg.height * 3u;
-    rr::gpu::GpuBuffer<float> denoised_dev;
-    if (!denoised_dev.allocate(out_float_count)) {
-        Logger::error("denoise: GpuBuffer<float> allocate failed");
-        return 1;
-    }
-
-    rr::optix::OptixDenoiser::Output output;
-    output.device = denoised_dev.device_ptr();
-    output.width  = cfg.width;
-    output.height = cfg.height;
-
-    // Time the invoke pass via the existing Stage 18A.1
-    // GpuTimer infrastructure. `invoke()` does its own
-    // `cudaDeviceSynchronize` on success so the elapsed
-    // measurement is bounded correctly when the events are
-    // read after the call.
-    rr::gpu::GpuTimer timer;
-    timer.start();
-    const bool invoke_ok = denoiser.invoke(output);
-    timer.stop();
-    if (!invoke_ok) {
-        Logger::error("denoise: invoke failed: " + denoiser.last_error());
-        return 1;
-    }
-    log_gpu_timing("render-denoise:invoke", cfg.width, cfg.height,
-                   timer.elapsed_ms());
-
-    // Download the FLOAT3 device output to host, then widen
-    // to RGBA32F (alpha = 1) for save_ppm. The widening is
-    // a tiny host-side loop; it does not violate the master
-    // "no per-pixel CPU work" rule because no per-pixel
-    // SHADING happens here (we only insert a constant alpha
-    // channel, the same way Image::save_ppm's existing
-    // float->uint8 clamp converts radiance to display).
-    std::vector<float> host_rgb(out_float_count);
-    if (!denoised_dev.download(host_rgb.data(), out_float_count)) {
-        Logger::error("denoise: download failed");
-        return 1;
-    }
-    rr::image::Image img(cfg.width, cfg.height,
-                         rr::image::PixelFormat::Rgba32F);
-    {
-        const std::size_t pixel_count =
-            static_cast<std::size_t>(cfg.width) * cfg.height;
-        float* dst = img.data();
-        for (std::size_t i = 0; i < pixel_count; ++i) {
-            dst[i * 4 + 0] = host_rgb[i * 3 + 0];
-            dst[i * 4 + 1] = host_rgb[i * 3 + 1];
-            dst[i * 4 + 2] = host_rgb[i * 3 + 2];
-            dst[i * 4 + 3] = 1.0f;
-        }
-    }
-
-    return save_image_or_error(img, out_path, "denoised",
-                               cfg.width, cfg.height) ? 0 : 1;
+    // Stage 19B.4: hand the three required AOV buffers to
+    // the shared denoiser orchestration helper. The helper
+    // owns the full OptixBackend / OptixDenoiser /
+    // set_inputs / invoke / download / save sequence.
+    return denoise_aov_buffers_to_ppm(
+        beauty_buf, albedo_buf, normal_buf,
+        cfg.width, cfg.height, out_path) ? 0 : 1;
 #endif
 }
 

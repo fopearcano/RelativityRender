@@ -3742,6 +3742,7 @@ sub-stages, appended to the same file.** No code is touched.
 | 19B.1    | OptiX denoiser context (src/optix/OptixDenoiser.{h,cpp}: move-only RAII owner of an OptixDenoiser handle; reuses the Stage 17A.1 OptixDeviceContext via OptixBackend::device_context(); options pinned to guideAlbedo=1 + guideNormal=1 + denoiseAlpha=COPY per the Stage 19A.2 input contract; model = OPTIX_DENOISER_MODEL_KIND_HDR; two-layer compile-time gating + audit-host fallback identical to OptixBackend / OptixPipeline; lifecycle only — no memory queries / setup / invoke yet) | ✅ |
 | 19B.2    | Denoiser inputs (OptixDenoiser::Inputs POD + set_inputs(...) method that converts raw device pointers from the renderer's AOV pipeline into an OptixImage2D[3] triplet (slot 0 = Beauty FLOAT4 from the path-tracer resolve, slot 1 = Albedo FLOAT3 from the Stage 14A AOV, slot 2 = Normal FLOAT3 from the Stage 14A AOV); rowStrideInBytes = width * pixelStrideInBytes (tight pack); descriptors stored in private state for the next sub-stage's optixDenoiserInvoke; non-owning view of the caller's device buffers; shutdown() now also delete[]s the OptixImage2D triplet; audit-host fallback returns the documented "requires OptiX SDK" error for set_inputs too; no invoke, no file output) | ✅ |
 | 19B.3    | Execute denoiser (Inputs::beauty_components ∈ {3, 4} dispatch in set_inputs so AOV-pipeline route A (FLOAT3 Beauty) is now the default; new OptixDenoiser::Output POD + invoke(...) that runs optixDenoiserComputeMemoryResources → cudaMalloc state + scratch → optixDenoiserSetup → optixDenoiserInvoke → cudaDeviceSynchronize → cudaFree; new --render-denoise CLI handler builds a 4-sphere demo scene → renders via render_scene_with_aovs (Beauty/Albedo/Normal AOVs) → drives OptixBackend → OptixDenoiser → downloads FLOAT3 output → widens to Rgba32F (alpha=1) → save_ppm("output/denoised.ppm"); GpuTimer-bracketed denoise pass logs via Stage 18A.1's [GPU] line; audit-host fallback returns the documented "requires CUDA + OptiX" error) | ✅ |
+| 19B.4    | CLI denoise (new --denoise modifier flag; not an action so mutual-exclusion exempt; sets Config::denoise_enabled; integrated into --render-aovs which now invokes the OptiX denoiser on Beauty/Albedo/Normal AOVs after the standard 6-AOV save loop and writes output/denoised.ppm; silently ignored by actions that do not expose those AOVs (per DENOISER_PLAN §9.2.1 manual-trigger mode); shared denoise_aov_buffers_to_ppm helper extracted from Stage 19B.3's run_render_denoise so both call sites share the OptixBackend → set_inputs → invoke → download → widen → save sequence; existing --render-aovs (without --denoise) is byte-identical to the Stage 19B.3 baseline) | ✅ |
 
 ## Stage 12A.2.1 — OptiX raygen program design
 
@@ -13289,6 +13290,252 @@ on (DENOISER_PLAN §3.1 reuse-the-context;
   `output/denoised.ppm`. The two
   `[GPU] render-denoise:render` and
   `[GPU] render-denoise:invoke` timing lines
+  fire via the existing Stage 18A.1
+  fixture.
+
+## Stage 19B.4 — CLI denoise
+
+**Scope of this slice (Stage 19B.4; master order
+#24 / fourth 19B implementation slice): expose
+the OptiX denoiser through a generic
+`--denoise` CLI modifier flag. NOT a new
+action - it composes with existing AOV-aware
+actions to produce a denoised output alongside
+the action's standard outputs. Per the prompt
+"Do not modify render pipeline deeply": the
+slice touches only the host-side CLI handler
+(`run_render_aovs`), the shared denoiser
+orchestration helper (factored out of Stage
+19B.3's `run_render_denoise`), and the
+CommandLine + Config plumbing. No kernel
+changes, no AOV pipeline changes, no
+renderer-side changes.**
+
+### What ships
+
+- `src/core/Config.h` (extended): new
+  `bool denoise_enabled = false` field.
+  Defaults to off so the existing CLI
+  acceptance baselines (every render-* action
+  byte-for-byte vs Stage 19B.3) stay green.
+- `src/core/CommandLine.{h,cpp}` (extended):
+    - new `--denoise` parser entry that sets
+      `r.config.denoise_enabled = true`. NOT
+      an action: it does not call
+      `set_action`, so it can be combined
+      with any action flag without triggering
+      the mutual-exclusion check.
+    - usage-text + header doc-comment for
+      `--denoise` documenting the flag's
+      manual-trigger semantics
+      (DENOISER_PLAN §9.2.1) and the "today
+      supported by --render-aovs; silently
+      ignored by other actions" status.
+- `src/main.cpp` (extended):
+    - **NEW** private helper
+      `denoise_aov_buffers_to_ppm(beauty,
+       albedo, normal, w, h, out_path)`
+      gated on
+      `RR_HAS_CUDA && RELATIVITYRENDER
+       _ENABLE_OPTIX`. Drives the full
+      OptiX-denoiser orchestration:
+      `OptixBackend::initialize` ->
+      `OptixDenoiser::initialize` ->
+      `set_inputs` ->
+      allocate FLOAT3 `GpuBuffer<float>`
+      output -> `invoke` (timed via Stage
+      18A.1's `GpuTimer`, logged as
+      `[GPU] denoise:invoke ...`) ->
+      download -> widen FLOAT3 -> RGBA32F
+      (alpha = 1) -> `save_image_or_error`.
+      Returns `true` on success.
+    - `run_render_denoise` (Stage 19B.3
+      handler) refactored to call the new
+      helper after the AOV render. The
+      previous inline orchestration block
+      (~50 lines) is replaced by a single
+      `return denoise_aov_buffers_to_ppm
+      (...) ? 0 : 1;`. Behaviour is
+      byte-for-byte identical to Stage
+      19B.3.
+    - `run_render_aovs` (Stage 14A.3
+      handler) extended with an
+      `if (cfg.denoise_enabled) { ... }`
+      branch placed AFTER the existing 6-AOV
+      save loop (so the un-denoised flow is
+      strictly a superset of the Stage
+      19B.3 baseline). The branch:
+        - When `RELATIVITYRENDER_ENABLE_
+          OPTIX` is defined, calls
+          `denoise_aov_buffers_to_ppm` with
+          `aov_set[0] / aov_set[3] /
+          aov_set[1]` (Beauty / Albedo /
+          Normal); writes
+          `output/denoised.ppm`. Failure
+          flips the function's `all_ok`
+          flag.
+        - When OptiX is NOT compiled in,
+          logs a clear error: "--denoise
+          requires OptiX. Rebuild with
+          -DRELATIVITYRENDER_ENABLE_OPTIX
+          =ON ...". This is the explicit
+          version of "silently ignored" -
+          the user is told the denoise pass
+          did not happen.
+- `CMakeLists.txt`: stage label bumped to
+  "Stage 19B.4: CLI denoise" in both
+  `project(...)` and the configure-time
+  banner. No new source files; no new
+  link dependencies.
+- `docs/BUILD_PLAN.md`: this entry +
+  status-table row.
+
+`docs/DENOISER_PLAN.md` is intentionally
+not edited - the §9.2 / §9.3 / §9.4 design
+already specified the precedence rules,
+the output path, and the
+"do-not-modify-renderer" boundary that this
+slice implements.
+
+### Architectural decisions worth highlighting
+
+- **`--denoise` is a modifier, not an
+  action.** Per DENOISER_PLAN §9.2 + §9.2.3
+  the precedence is "explicit flag >
+  action-default > project-wide default".
+  Modelling `--denoise` as a non-action
+  modifier means it bypasses the
+  mutual-exclusion check on action flags,
+  composes naturally with future action-
+  defaults (when those land), and is
+  invariant to ordering on the command
+  line.
+- **Wired into `--render-aovs` only for
+  19B.4.** That action is the one existing
+  CLI surface that already produces the
+  three required AOVs (Beauty / Albedo /
+  Normal) via `render_scene_with_aovs`
+  (Stage 14A.3). Wiring the flag into
+  `--render-pathtrace` or `--render-scene`
+  would require those actions to gain
+  AOV-pass writes, which is a renderer-side
+  change and out of scope. Per the prompt's
+  "Do not modify render pipeline deeply"
+  rule, those integrations are deferred.
+- **Shared `denoise_aov_buffers_to_ppm`
+  helper.** Both 19B.3's
+  `run_render_denoise` and 19B.4's
+  `--render-aovs --denoise` flow now go
+  through one orchestration helper. The
+  duplication that the planning §8.5
+  flagged as a future cleanup is
+  eliminated as a side effect of this
+  slice. The helper takes
+  `GpuAOVBuffer` references (non-owning
+  views) plus dims + out_path; the caller
+  keeps the buffers alive for the
+  duration of the call.
+- **Output path is fixed at
+  `output/denoised.ppm` for the
+  `--render-aovs` integration.** The
+  existing `--render-aovs` action ignores
+  `--output` and writes to fixed paths
+  (output/aov_*.ppm); the denoised output
+  follows the same convention to match
+  user expectations. `--render-denoise`
+  (the dedicated action) still honours
+  `--output` per its 19B.3 contract.
+- **Silent-ignore vs explicit-error.**
+  When OptiX is not compiled in,
+  `--render-aovs --denoise` would
+  silently produce only the 6 AOV PPMs
+  without the denoised output, which is
+  surprising. We log an explicit error
+  ("--denoise requires OptiX...") and
+  set `all_ok = false` so the user knows
+  the denoise pass did not happen. The
+  AOVs themselves still save correctly.
+- **No renderer-side changes.** The
+  renderer kernels, the AOV pipeline,
+  `AccumulationBuffer`, the relativity
+  math leaf, and `Image::save_ppm` are
+  all unchanged. The slice's surface is
+  strictly host-side: a Config field, a
+  parser entry, a usage-text line, and
+  one new branch + one helper in
+  main.cpp.
+- **Backward compatibility.** Existing
+  CLI invocations without `--denoise` are
+  byte-for-byte identical to the Stage
+  19B.3 baseline. The Stage 14A.3
+  `--render-aovs` 6-AOV save loop runs
+  unchanged; the 19B.3
+  `--render-denoise` handler produces
+  the same `output/denoised.ppm`
+  bytes as before.
+
+### Hard-rule audit
+
+- Do not modify render pipeline deeply -
+  **yes**, the slice does not change any
+  kernel, any rr_gpu source, any
+  rr_renderer source, any rr_optix source
+  (apart from the OptixDenoiser orchestration
+  which lives in main.cpp). Renderer
+  libraries are byte-identical to Stage
+  19B.3.
+- Must remain optional - **yes**,
+  `Config::denoise_enabled` defaults to
+  `false`. Every CLI invocation that does
+  not pass `--denoise` produces the
+  un-denoised output set unchanged. The
+  flag is silently ignored by actions
+  that do not consume it (per
+  DENOISER_PLAN §9.4) - except for the
+  CUDA-required ones, which still hit
+  their existing CUDA-required errors
+  before the flag is checked.
+- Update docs/BUILD_PLAN.md - **yes**,
+  this entry + status-table row.
+
+### Verified at the build
+
+- `cmake -DRR_ENABLE_CUDA=OFF
+   -DRELATIVITYRENDER_ENABLE_OPTIX=OFF`
+  (Linux): banner shows "Stage 19B.4:
+  CLI denoise"; the new --denoise flag
+  parses cleanly (`/home/.../bin/
+  RelativityRender --denoise` exits 0
+  with the standard welcome banner).
+  `--render-aovs --denoise` returns the
+  existing "--render-aovs requires CUDA"
+  error (the CUDA gate fires before the
+  denoise branch is reached); ctest
+  4/4 green.
+- `cmake -DRELATIVITYRENDER_ENABLE_OPTIX=ON`
+  (Linux audit-host without CUDA):
+  banner bumped; --render-aovs hits
+  the same CUDA-required gate as above
+  (the AOV pipeline needs CUDA);
+  rr_optix recompiles with the audit-
+  host fallback OptixDenoiser branches;
+  ctest 4/4 green. The new --denoise
+  parser entry / Config field / usage-
+  text line / `denoise_aov_buffers_to_
+  ppm` helper all compile.
+- `--help` text reviewed:
+  `--denoise` line documents the
+  modifier-flag semantics + the
+  "today supported by --render-aovs"
+  status.
+- A future CUDA + OptiX-SDK host run
+  exercises the full path:
+  `--render-aovs --denoise` produces
+  the standard 6 AOV PPMs (output/
+  aov_*.ppm) AND
+  `output/denoised.ppm`; the two
+  `[GPU] render-aovs` and
+  `[GPU] denoise:invoke` timing lines
   fire via the existing Stage 18A.1
   fixture.
 

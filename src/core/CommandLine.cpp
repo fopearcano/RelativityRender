@@ -267,6 +267,14 @@ CommandLine::ParseResult CommandLine::parse(int argc, char** argv) {
                 r.action = Action::Error;
                 return r;
             }
+        } else if (a == "--denoise") {
+            // Stage 19B.4 modifier flag. NOT an action - it
+            // does not call set_action; combining it with any
+            // action flag is allowed (and required for it to
+            // do anything). Sets the denoise_enabled bit on
+            // Config; the per-action handler decides whether
+            // to honour it.
+            r.config.denoise_enabled = true;
         } else if (a == "--output") {
             if (!take_value(argc, argv, i, a, value, r.error_message)) {
                 r.action = Action::Error;
@@ -529,6 +537,18 @@ std::string CommandLine::usage(std::string_view argv0) {
                                   "optixDenoiserInvoke). Default output\n"
        << "                        output/denoised.ppm. Requires both "
                                   "CUDA and OptiX SDK.\n"
+       << "  --denoise             Stage 19B.4 modifier flag (not an "
+                                  "action). When combined with an\n"
+       << "                        AOV-aware action (today: --render-aovs), "
+                                  "run the OptiX denoiser on\n"
+       << "                        the action's Beauty / Albedo / Normal "
+                                  "AOV buffers and write the\n"
+       << "                        result to output/denoised.ppm "
+                                  "alongside the standard outputs.\n"
+       << "                        Silently ignored by actions that do "
+                                  "not expose those AOVs.\n"
+       << "                        Same CUDA + OptiX SDK requirements as "
+                                  "--render-denoise.\n"
        << "  --output <path>       Write the rendered image to <path>.\n"
        << "                        Default for --render-gradient is "
                                   "output/gpu_gradient.ppm;\n"
