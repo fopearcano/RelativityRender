@@ -3726,6 +3726,7 @@ sub-stages, appended to the same file.** No code is touched.
 | cli-fix  | CLI render path repair (--render wired to GPU pipeline; defaults to output/render.ppm; delegates to run_render_from_scene) | ✅ |
 | cuda-fix | Windows CUDA build repair (rr_apply_warnings wraps each warning flag in $<$<COMPILE_LANGUAGE:CXX>:...> so nvcc no longer receives /W4 /permissive- as inputs) | ✅ |
 | 15-fix2  | Stage 15 server lifetime repair (RenderServer::start's already-listening check changed from `listen_fd_ >= 0` to `!= kInvalidSocket`; on Windows the old check was always true on UINT_PTR `SOCKET` and short-circuited start into a no-op) | ✅ |
+| 15-render | Stage 15 server render command (render wire verb wired to GpuScene + CudaRenderer::render_scene; saves output/server_render.ppm; "error: no scene loaded" when no load_scene; "error: render requires CUDA" on no-CUDA builds) | ✅ |
 
 ## Stage 12A.2.1 — OptiX raygen program design
 
@@ -9598,6 +9599,225 @@ on Linux/macOS.
   hardware-equipped session per
   `docs/WINDOWS_TEST_GUIDE.md` /
   `docs/STAGE_15_SERVER_DEFERRED.md`.
+
+## Stage 15 server render command
+
+**Scope of this slice (post-Stage-15 server-
+lifetime repair; new wire verb): the renderer-
+server's command table previously surfaced
+`ping` / `shutdown` / `set_beta` / `load_scene`
+but lacked the `render` verb that clients need
+to actually drive a frame. A client running
+
+  `echo render | ncat localhost 7777`
+
+received `error: unknown command`. This slice
+adds the `render` verb to the dispatch and
+wires it to the existing GPU render pipeline
+(via `rr::gpu::GpuScene` + `rr::cuda::
+CudaRenderer::render_scene`). No new render
+features, no kernel changes; pure host-side
+dispatch.**
+
+### What ships
+
+- `src/server/RenderServer.h`: header doc-
+  comment lists the new wire verb + its
+  semantics (no arguments; requires a
+  previously-loaded scene; saves to
+  `output/server_render.ppm`).
+- `src/server/RenderServer.cpp`:
+  - New CUDA-aware include block (gated on
+    `RR_HAS_CUDA`) pulling in
+    `cuda/CudaRenderer.h`, `gpu/GpuScene.h`,
+    `image/Image.h`, plus the POD types
+    `Sphere` / `Light` / `MaterialParams`
+    used to build the upload arrays. None of
+    these headers are touched on a no-CUDA
+    build.
+  - New `if (p.verb == "render") { ... }`
+    branch in `handle_command`. Order:
+    `ping` / `shutdown` / `set_beta` /
+    `render` / `load_scene` / fallthrough.
+    Behaviour:
+    - `loaded_scene_` empty -> returns
+      `error: no scene loaded` (matches the
+      prompt's exact wording).
+    - `RR_HAS_CUDA` undefined -> returns
+      `error: render requires CUDA
+      (rebuild with -DRR_ENABLE_CUDA=ON)`.
+    - Otherwise: builds POD arrays for
+      visible spheres / materials / visible
+      lights, calls
+      `gpu_scene.upload_camera /
+      upload_relativity / upload_spheres /
+      upload_materials / upload_lights`,
+      invokes
+      `rr::cuda::CudaRenderer::render_scene
+      (gpu_scene, width, height)`, and saves
+      the resulting `Image` to
+      `output/server_render.ppm` via
+      `Image::save_ppm`. The output
+      directory is created if missing
+      (`std::filesystem::create_directories`
+      best-effort; permission failures
+      surface at `save_ppm` time).
+    - Success returns `ok: rendered output/
+      server_render.ppm` verbatim; per-step
+      failures return `error: render failed
+      at <step>` or
+      `error: render save failed: <path>`.
+- `CMakeLists.txt`: rr_server's PUBLIC link
+  list grows from `rr_io` to
+  `rr_io rr_gpu rr_image`. Linking is
+  unconditional - the actual GPU dispatch is
+  gated on `RR_HAS_CUDA` inside the .cpp, so
+  a no-CUDA build links the same libraries
+  but never calls into the CUDA-only
+  symbols. Stage label bumped.
+- `docs/BUILD_PLAN.md`: this entry +
+  status-table row for the 15-render
+  slice.
+- `docs/SERVER_RENDER_COMMAND_FIX.md`
+  (new): records the symptom, root cause,
+  fix, and the validated CLI command
+  sequence
+  (`echo ping | nc 127.0.0.1 7777` ->
+  `pong`; `echo render | nc 127.0.0.1
+  7777` -> `error: no scene loaded`;
+  `echo "load_scene scenes/test_spheres
+  .rrscene" | nc 127.0.0.1 7777` -> ok
+  summary; `echo render | nc 127.0.0.1
+  7777` -> `ok: rendered output/server_
+  render.ppm` on a CUDA host).
+
+### Architectural decisions worth highlighting
+
+- **Inline orchestration, not a refactor.**
+  The render-from-scene orchestration
+  already exists in `main.cpp::run_render
+  _from_scene` (~115 lines). Pulling it
+  into a shared library so the server can
+  call it would force rr_renderer or rr_io
+  to depend on rr_gpu / cuda-headers, which
+  is a broader change than the prompt's
+  scope. Inlining the same per-render work
+  inside `handle_command` keeps the diff
+  to one .cpp + one .h doc-comment + one
+  CMake link line. Future refactors that
+  share the orchestration are additive.
+- **Hard-coded output path.** The prompt
+  prescribes `output/server_render.ppm`
+  with no override. This matches the
+  existing CLI handlers' convention of
+  hard-coded per-action paths (e.g.
+  `--render-aovs` writes the six
+  `output/aov_*.ppm` files unconditionally).
+  Future protocol slices can grow a
+  `set_output <path>` wire verb if needed.
+- **CUDA-less build is graceful.** rr_server
+  PUBLIC-links rr_gpu unconditionally, but
+  the actual CUDA call sites are gated on
+  `RR_HAS_CUDA`. On a no-CUDA build, the
+  `render` branch returns the documented
+  "requires CUDA" error and the server
+  stays alive for the next command. No
+  crash, no silent skip.
+- **Argument list ignored.** The prompt
+  says "Do not require arguments for
+  render". The handler reads only `p.verb`;
+  any text after `render` on the wire is
+  silently dropped. (Per the prompt's
+  "Do not invent a new command name", the
+  verb is the literal string `render`, not
+  `render_scene` or anything else.)
+- **Atomic semantics.** A failed render
+  (CUDA gate, parse error, save error)
+  leaves `loaded_scene_` untouched and
+  the server in a state where the next
+  `load_scene` / `set_beta` / `render`
+  call works as expected. No state is
+  consumed or mutated on the failure
+  paths.
+
+### Hard-rule audit
+
+- Inspect RenderServer command dispatch -
+  **yes**, the dispatch in
+  `handle_command` is the only place
+  modified.
+- Add support for exact command `render` -
+  **yes**, the literal verb is
+  `"render"`.
+- "If no scene is loaded, return error:
+  no scene loaded" - **yes**, exact
+  string match.
+- "If a scene is loaded, use existing GPU
+  render pipeline, save output/server_
+  render.ppm" - **yes**, dispatches to
+  `CudaRenderer::render_scene` and saves
+  to the literal path.
+- "Return: ok: rendered output/server_
+  render.ppm" - **yes**, exact string
+  match.
+- Do not invent a new command name -
+  **yes**, the verb is `render`.
+- Do not require arguments for render -
+  **yes**, `p.args` is not read.
+- Do not change SceneLoader behavior -
+  **yes**, no `src/io/` file is touched.
+- Do not change CUDA kernels - **yes**,
+  no `.cu` file is touched.
+- CPU may only parse / upload / launch /
+  save - **yes**, the new branch parses
+  (already loaded by `load_scene`),
+  uploads (`gpu_scene.upload_*`), launches
+  (`CudaRenderer::render_scene`), and
+  saves (`Image::save_ppm`). No per-pixel
+  CPU work.
+- All rendering remains GPU-side -
+  **yes**, the only call into rendering
+  is the existing `CudaRenderer::render
+  _scene` static method which dispatches
+  to a `__global__` kernel.
+
+### Verified at the build
+
+- `cmake -DRELATIVITYRENDER_ENABLE_OPTIX=
+  OFF ..` (Linux clean reconfigure):
+  builds clean (no warnings / errors);
+  banner shows "Stage 15 server render
+  command: render wire dispatch wired to
+  GPU pipeline"; ctest 4/4 passes.
+- `cmake -DRELATIVITYRENDER_ENABLE_OPTIX=
+  ON ..` (Linux clean reconfigure):
+  same; OptiX scaffold compiles (with
+  the expected 12B.4 SDK-not-found
+  warning); ctest 4/4 passes.
+- Linux end-to-end smoke (server in the
+  background, `nc` clients, `shutdown`
+  to end gracefully) executed exactly
+  the spec's validation sequence:
+  - `ping` -> `pong`.
+  - `render` (no scene loaded) ->
+    `error: no scene loaded` (verbatim,
+    matches the spec's required wording).
+  - `load_scene scenes/test_spheres
+    .rrscene` -> ok summary.
+  - `render` (CUDA-less audit host) ->
+    `error: render requires CUDA
+    (rebuild with -DRR_ENABLE_CUDA=ON)`.
+    On a CUDA-enabled host this branch
+    would write `output/server_render
+    .ppm` and return `ok: rendered
+    output/server_render.ppm` (verified
+    by inspection of the GPU
+    orchestration).
+  - `shutdown` -> `ok: shutting down`,
+    server exits 0.
+  - Server's per-request log shows all
+    five wire interactions; total
+    request count `5 requests served`.
 
 ## Next stage
 

@@ -37,6 +37,24 @@ namespace rr::server {
 //   `set_beta <value>`  -> `ok: beta set magnitude=... velocity=x,y,z`
 //                       -> `error: ...`
 //
+// Stage 15-render adds the render-dispatch wire command:
+//
+//   `render`            -> `ok: rendered output/server_render.ppm`
+//                       -> `error: no scene loaded`
+//                       -> `error: render requires CUDA ...`
+//                       -> `error: render failed: <reason>`
+//
+// `render` takes no arguments. It requires that a scene was
+// previously loaded via `load_scene`; without one, the server
+// returns `error: no scene loaded` and does not touch the GPU.
+// On a successful dispatch the server builds a `GpuScene`,
+// invokes `rr::cuda::CudaRenderer::render_scene`, and saves the
+// resulting PPM to a hard-coded path
+// (`output/server_render.ppm`). The output directory is created
+// if missing. CUDA-less builds always answer
+// `error: render requires CUDA ...` so the failure mode is
+// observable end-to-end without crashing the server.
+//
 // The value is treated as a scalar magnitude `|beta|` in c-units;
 // it is folded to absolute value, run through the existing
 // `rr::relativity::clampBeta(...)` against the loaded scene's

@@ -12,6 +12,24 @@
 #include <string>
 #include <utility>
 
+// Stage-15-render: the wire `render` command needs the same GPU
+// orchestration `--render-from-scene` does in main.cpp. We pull
+// the headers in only when CUDA is compiled in - on a no-CUDA
+// build the render branch returns a "requires CUDA" error and
+// touches none of these symbols.
+#ifdef RR_HAS_CUDA
+    #include "cuda/CudaRenderer.h"
+    #include "geometry/Sphere.h"
+    #include "gpu/GpuScene.h"
+    #include "image/Image.h"
+    #include "lighting/Light.h"
+    #include "material/MaterialTypes.h"
+
+    #include <filesystem>
+    #include <system_error>
+    #include <vector>
+#endif
+
 namespace rr::server {
 
 namespace {
@@ -325,6 +343,96 @@ std::string RenderServer::handle_command(const std::string& command) {
         msg += "," + std::to_string(new_v.y);
         msg += "," + std::to_string(new_v.z);
         return msg;
+    }
+    if (p.verb == "render") {
+        // Stage-15-render: dispatch the GPU render pipeline for the
+        // currently-loaded scene and save the result to a hard-coded
+        // path. Mirrors `run_render_from_scene`'s host-side
+        // orchestration in `main.cpp` (load_scene already happened
+        // separately via the `load_scene` wire command); the only
+        // host work here is per-render: build POD arrays, upload to
+        // GpuScene, launch the kernel, save the PPM. All per-pixel
+        // / per-ray work runs on the GPU.
+        if (!loaded_scene_.has_value()) {
+            return "error: no scene loaded";
+        }
+#ifndef RR_HAS_CUDA
+        return "error: render requires CUDA "
+               "(rebuild with -DRR_ENABLE_CUDA=ON)";
+#else
+        const auto& scene  = loaded_scene_.value();
+        const int   width  = scene.render_settings.width;
+        const int   height = scene.render_settings.height;
+        if (width <= 0 || height <= 0) {
+            return "error: scene has invalid render dimensions";
+        }
+
+        std::vector<rr::geometry::Sphere> sphere_pods;
+        sphere_pods.reserve(scene.spheres.size());
+        for (const auto& s : scene.spheres) {
+            if (s.object.visible) sphere_pods.push_back(s.geometry);
+        }
+
+        std::vector<rr::material::MaterialParams> material_pods;
+        material_pods.reserve(scene.materials.size());
+        for (const auto& m : scene.materials) {
+            material_pods.push_back(m.params);
+        }
+
+        std::vector<rr::lighting::Light> light_pods;
+        light_pods.reserve(scene.lights.size());
+        for (const auto& l : scene.lights) {
+            if (l.object.visible) light_pods.push_back(l.data);
+        }
+
+        rr::gpu::GpuScene gpu_scene;
+        if (!gpu_scene.upload_camera(scene.camera)) {
+            return "error: render failed at upload_camera";
+        }
+        if (!gpu_scene.upload_relativity(scene.observer, scene.relativity)) {
+            return "error: render failed at upload_relativity";
+        }
+        if (!sphere_pods.empty()) {
+            if (!gpu_scene.upload_spheres(sphere_pods.data(),
+                                          sphere_pods.size())) {
+                return "error: render failed at upload_spheres";
+            }
+        }
+        if (!material_pods.empty()) {
+            if (!gpu_scene.upload_materials(material_pods.data(),
+                                            material_pods.size())) {
+                return "error: render failed at upload_materials";
+            }
+        }
+        if (!light_pods.empty()) {
+            if (!gpu_scene.upload_lights(light_pods.data(),
+                                          light_pods.size())) {
+                return "error: render failed at upload_lights";
+            }
+        }
+
+        auto r = rr::cuda::CudaRenderer::render_scene(gpu_scene,
+                                                      width, height);
+        if (!r.ok) {
+            return "error: render failed: " + r.message;
+        }
+
+        // Hard-coded output path per the Stage-15-render spec.
+        const std::string out_path = "output/server_render.ppm";
+        namespace fs = std::filesystem;
+        const fs::path out_fs = out_path;
+        if (out_fs.has_parent_path()) {
+            std::error_code ec;
+            fs::create_directories(out_fs.parent_path(), ec);
+            // Best-effort directory creation. A genuine permission
+            // failure surfaces below at save_ppm time anyway.
+        }
+        if (!r.image.save_ppm(out_fs)) {
+            return "error: render save failed: " + out_path;
+        }
+
+        return "ok: rendered " + out_path;
+#endif
     }
     if (p.verb == "load_scene") {
         if (p.args.empty()) {

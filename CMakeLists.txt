@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.20)
 
 project(RelativityRender
     VERSION     0.1.0
-    DESCRIPTION "RelativityRender - GPU renderer platform (Stage 15 server lifetime repair: --server no longer exits immediately on Windows)"
+    DESCRIPTION "RelativityRender - GPU renderer platform (Stage 15 server render command: render wire dispatch wired to GPU pipeline)"
     LANGUAGES   CXX
 )
 
@@ -33,7 +33,7 @@ option(RELATIVITYRENDER_ENABLE_OPTIX
 
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
-message(STATUS "RelativityRender ${PROJECT_VERSION} (Stage 15 server lifetime repair: --server no longer exits immediately on Windows)")
+message(STATUS "RelativityRender ${PROJECT_VERSION} (Stage 15 server render command: render wire dispatch wired to GPU pipeline)")
 
 message(STATUS "  Build type   : ${CMAKE_BUILD_TYPE}")
 message(STATUS "  C++ standard : ${CMAKE_CXX_STANDARD}")
@@ -285,7 +285,14 @@ target_include_directories(rr_server PUBLIC src)
 # server's state. PUBLIC-link rr_io (which already pulls
 # rr_scene transitively) so the server's header surface is
 # self-contained for downstream consumers.
-target_link_libraries(rr_server PUBLIC rr_io)
+#
+# Stage-15-render: the wire `render` command also needs the GPU
+# upload + render path. Linking rr_gpu (for `GpuScene` +
+# `CudaRenderer` declarations) and rr_image (for `Image::save_ppm`)
+# is unconditional - the actual render code in RenderServer.cpp
+# is gated on `RR_HAS_CUDA`, so a no-CUDA build links the same
+# libraries but never calls into the CUDA-only symbols.
+target_link_libraries(rr_server PUBLIC rr_io rr_gpu rr_image)
 # Windows-portability slice: link Ws2_32 for the Winsock2 ABI
 # (socket / bind / listen / accept / closesocket / shutdown /
 # inet_pton / WSAStartup / WSACleanup). PUBLIC-link so the
