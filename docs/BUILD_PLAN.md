@@ -16427,6 +16427,182 @@ canonical wording to land on.
   shows the two-line banner
   bump.
 
+## Stage 20A — OptiX compile baseline (verification only)
+
+**Scope of this slice (Stage 20A;
+master order #17, "OptiX upgrade
+path"): the prompt asks for the
+OptiX *compile baseline*: include
+real OptiX headers, initialize
+`OptixDeviceContext`, log OptiX
+availability, keep the CUDA
+renderer unchanged, and ensure the
+project still compiles with OptiX
+OFF. The prompt explicitly says
+"No OptiX rendering yet, no
+raygen/miss/hit programs yet."**
+
+**Status: every Stage 20A
+acceptance criterion was already
+met by Stage 17A.1 (OptiX context
+init), Stage 12B.5 (OptiX
+availability reporting in
+`--device-info`), and the existing
+RR_HAS_CUDA / `RELATIVITYRENDER_
+ENABLE_OPTIX` build gating.
+Subsequent slices (17A.2 GAS,
+17A.3 pipeline + raygen + miss,
+17A.4 closest-hit triangle render,
+17A.5 relativistic shading on
+closest-hit + miss, 19B OptiX
+denoiser) shipped MORE than the
+20A baseline asks for. This slice
+re-verifies the four criteria on
+the current tree, bumps the CMake
+banner, and leaves the existing
+downstream OptiX code intact.**
+
+### Why no source code was removed
+
+Per master rule §3 ("Do not implement
+fake stubs pretending to be complete
+systems") and master rule §12 ("Do
+not overbuild a later system before
+the current layer works"), neither
+of which is being violated by the
+existing OptiX rendering code:
+
+- The 17A.2-19B code is real,
+  tested (audit-host fallback
+  smoke-tested on every CLI
+  action), and downstream-
+  consumed (CLI surfaces
+  `--render-optix-test`,
+  `--render-optix-triangle`,
+  `--render-optix-relativity`,
+  `--render-denoise` all
+  depend on it).
+- Removing it to "match the
+  phased plan" would be
+  destructive: it would orphan
+  four CLI surfaces, demote
+  module #6 (OptiX Backend)
+  from "partial implementation"
+  back to "foundation landed",
+  and demote master order #17
+  from a deeply progressed
+  state back to a baseline.
+  Per the master "CURRENT
+  PROMPT RULE" ("If a requested
+  change violates the order
+  above, document the issue
+  and implement only the safe
+  prerequisite work"), the
+  safe prerequisite work *is
+  the compile baseline*, and
+  it is already done.
+
+If a future prompt explicitly
+asks for a regression slice
+(roll OptiX state back to a pre-
+17A.2 baseline so a different
+upgrade path can be tried), this
+slice's BUILD_PLAN entry will be
+the documented branch point.
+
+### Stage 20A acceptance criteria (verified on the current tree)
+
+| Criterion | Verification |
+|-----------|--------------|
+| Include real OptiX headers | `src/optix/OptixBackend.cpp` lines 13–20 include `<optix.h>`, `<optix_function_table_definition.h>`, `<optix_stubs.h>` inside the `RELATIVITYRENDER_ENABLE_OPTIX` + `RELATIVITYRENDER_OPTIX_SDK_FOUND` gate. |
+| Initialize `OptixDeviceContext` | `OptixBackend::initialize()` at `src/optix/OptixBackend.cpp` lines 115–177 calls `cudaFree(0)` -> `optixInit()` -> `optixDeviceContextCreate(0, &opts, &ctx)` and stores the handle on the singleton. `OptixBackend::shutdown()` lines 180–190 calls `optixDeviceContextDestroy()`. |
+| Log OptiX availability | (a) `--device-info` (Stage 12B.5; `src/main.cpp` lines 93–108) prints three compile-time-fact lines: `OptiX build enabled: yes/no`, `OptiX SDK found: yes/no`, `OptiX renderer status: <stage label>`; (b) `OptixBackend::initialize()` writes `[OptiX:INFO] OptixDeviceContext created.` on success; failure paths write `[OptiX:ERROR] init failed: <reason>`; `shutdown()` writes `[OptiX:INFO] OptixDeviceContext destroyed.` |
+| Keep CUDA renderer unchanged | `git diff --stat src/cuda/ src/gpu/` empty; the CUDA backend (`rr_gpu` STATIC + `src/cuda/*.cu` translation units) is byte-identical pre-/post-slice. |
+| Compile with OptiX OFF | Verified by clean build of `cmake -S . -B build` (no flags); ctest 6/6 green. The OFF build does not pull `<optix.h>` and does not link `rr_optix` (CMake `if(RR_ENABLE_OPTIX)` block at lines 333–507 is skipped). |
+
+### What ships this slice
+
+- `CMakeLists.txt`: banner / project
+  description bumped from "stabilization
+  pass: 7-tier maturity" to "Stage 20A:
+  OptiX compile baseline verified".
+  Two-line cosmetic change; no other
+  CMake edit.
+- `docs/BUILD_PLAN.md`: this entry.
+  **No source / build-target / link-
+  edge / test changes.** No module-
+  status row, milestone-status row, or
+  canonical historical entry was
+  modified.
+
+### Why module #6 / milestone M15 status is unchanged
+
+Module #6 (OptiX Backend) and milestone
+M15 (OptiX Backend Upgrade Path) both
+sit at "partial implementation" today.
+The 20A acceptance criteria are about
+the *compile baseline*; verifying it
+does not lift the status because the
+project-wide cap is still in place:
+**no frame has been rendered through
+the OptiX path on a real OptiX-SDK
+host in this branch.** That is the
+gate for 20A → 20B / Stage 19E /
+M15-landed promotion, not the
+compile-baseline check. Status
+verdicts in MODULE_MAP and BUILD_PLAN
+remain byte-identical.
+
+### Hard-rule audit
+
+- No OptiX rendering added by this
+  slice - **yes**. `git diff --stat
+  src/optix/` empty; the only edits
+  are the CMakeLists banner bump
+  and this BUILD_PLAN entry.
+- No raygen/miss/hit programs added
+  by this slice - **yes**. Same as
+  above; no `OptixPrograms.cu` /
+  `OptixPipeline.cpp` / `OptixSBT.h`
+  edits this slice. (These files
+  exist from prior shipped slices
+  17A.3-17A.5; they were not added
+  here, and are not removed here.)
+- Must still compile with OptiX OFF -
+  **yes**, verified.
+- CUDA renderer unchanged - **yes**,
+  verified by `git diff --stat
+  src/cuda/ src/gpu/` (empty).
+- Update docs/BUILD_PLAN.md -
+  **yes**, this entry.
+
+### Verified at the build
+
+- `cmake -S . -B build` (audit
+  host, no CUDA, no OptiX SDK):
+  banner shows "Stage 20A: OptiX
+  compile baseline verified";
+  clean build; ctest 6/6 green
+  (math / image / gpu / pathtracer
+  / relativity / demo).
+- `cmake -S . -B /tmp/rr-on
+  -DRR_ENABLE_OPTIX=ON` (audit
+  host; no SDK located):
+  configure emits the documented
+  "OptiX SDK could not be
+  located..." warning and the
+  detection block is non-blocking
+  per Stage 12B.4; rr_optix file
+  skeleton compiles via the two-
+  layer audit-host fallback; full
+  build clean; ctest 6/6 green.
+- A real OptiX-SDK host run that
+  exercises `optixInit()` +
+  `optixDeviceContextCreate()` is
+  the next gate (Stage 19E /
+  M15-landed); not part of 20A's
+  acceptance criteria.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
