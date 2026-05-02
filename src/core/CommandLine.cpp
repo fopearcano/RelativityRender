@@ -57,7 +57,8 @@ bool set_action(CommandLine::Action& current, CommandLine::Action target,
                 "--render-texture-sample-test / "
                 "--render-textured-material / --render-aovs / "
                 "--server / --render-optix-test / "
-                "--render-optix-triangle)";
+                "--render-optix-triangle / "
+                "--render-optix-relativity)";
         return false;
     }
     current = target;
@@ -253,6 +254,12 @@ CommandLine::ParseResult CommandLine::parse(int argc, char** argv) {
                 r.action = Action::Error;
                 return r;
             }
+        } else if (a == "--render-optix-relativity") {
+            if (!set_action(r.action, Action::RenderOptixRelativity,
+                            r.error_message)) {
+                r.action = Action::Error;
+                return r;
+            }
         } else if (a == "--output") {
             if (!take_value(argc, argv, i, a, value, r.error_message)) {
                 r.action = Action::Error;
@@ -313,7 +320,8 @@ CommandLine::ParseResult CommandLine::parse(int argc, char** argv) {
      || r.action == Action::RenderTexturedMaterial
      || r.action == Action::RenderAOVs
      || r.action == Action::RenderOptixTest
-     || r.action == Action::RenderOptixTriangle) {
+     || r.action == Action::RenderOptixTriangle
+     || r.action == Action::RenderOptixRelativity) {
         if (auto err = r.config.validate(); !err.empty()) {
             r.action        = Action::Error;
             r.error_message = std::move(err);
@@ -487,6 +495,19 @@ std::string CommandLine::usage(std::string_view argv0) {
        << "                        CUDA --render-triangle output. "
                                   "Default output\n"
        << "                        output/optix_triangle.ppm. Same "
+                                  "OptiX requirements as above.\n"
+       << "  --render-optix-relativity\n"
+       << "                        Stage 17A.5 OptiX relativistic "
+                                  "render: same single-triangle GAS as\n"
+       << "                        --render-optix-triangle, but with "
+                                  "a non-zero observer velocity\n"
+       << "                        (beta = 0.5 along -Z). The OptiX "
+                                  "raygen Lorentz-aberrates the\n"
+       << "                        primary ray; closest-hit / miss "
+                                  "apply the Doppler colour shift +\n"
+       << "                        the bolometric searchlight scale. "
+                                  "Default output\n"
+       << "                        output/optix_relativity.ppm. Same "
                                   "OptiX requirements as above.\n"
        << "  --output <path>       Write the rendered image to <path>.\n"
        << "                        Default for --render-gradient is "

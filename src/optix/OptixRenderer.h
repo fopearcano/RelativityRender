@@ -62,6 +62,27 @@ public:
     //
     // Same audit-host fallback semantics as render_test.
     [[nodiscard]] static Result render_triangle(int width, int height) noexcept;
+
+    // Stage 17A.5 relativistic triangle render. Same pipeline
+    // and same single-triangle GAS as `render_triangle`, but
+    // the launch parameters carry a non-zero `Observer` (beta
+    // = 0.5 along -Z, the camera's default forward direction)
+    // plus the default `RelativityParams` (all effects enabled
+    // at strength 1.0). The raygen Lorentz-aberrates the
+    // primary ray; the closest-hit / miss programs apply the
+    // Doppler colour shift + the bolometric searchlight scale
+    // to their respective base shades. The math leaf is the
+    // same `rr::relativity::*` header the CUDA path uses, so
+    // both backends agree pixel-for-pixel for matched inputs.
+    //
+    // Default beta choice mirrors `--render-aovs` (Stage
+    // 14A.3): a moderate -Z velocity that produces a clearly
+    // visible blueshift + forward aberration + beaming
+    // brightening, but stays well clear of the high-beta
+    // numerical regime.
+    //
+    // Same audit-host fallback semantics as render_test.
+    [[nodiscard]] static Result render_relativistic(int width, int height) noexcept;
 };
 
 }  // namespace rr::optix

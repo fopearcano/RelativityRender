@@ -3731,6 +3731,7 @@ sub-stages, appended to the same file.** No code is touched.
 | 17A.2    | OptiX triangle GAS (OptixAccel.h: OptixGas owner + MeshGasInput + build_mesh_gas; static / triangles only; SDK-gated with audit-host fallback) | ✅ |
 | 17A.3    | OptiX pipeline skeleton (OptixPrograms.cu raygen+miss; OptixSBT/OptixLaunchParams headers; OptixPipeline lifecycle; OptixRenderer::render_test; --render-optix-test → output/optix_test.ppm; build-time PTX embed via cmake/EmbedPtxAsHeader.cmake) | ✅ |
 | 17A.4    | OptiX triangle render (closest-hit normal-as-colour + miss sky gradient; raygen `optixTrace`; HitGroupSbtRecord; launch params gain camera + scene_handle; OptixRenderer::render_triangle; --render-optix-triangle → output/optix_triangle.ppm; visually matches CUDA --render-triangle) | ✅ |
+| 17A.5    | OptiX relativity (raygen Lorentz-aberration; closest-hit + miss apply Doppler colour shift + bolometric searchlight scale via shared `rr::relativity::*` math leaf; launch params gain Observer + RelativityParams; OptixRenderer::render_relativistic; --render-optix-relativity → output/optix_relativity.ppm; beta = 0.5 along -Z mirroring --render-aovs) | ✅ |
 
 ## Stage 12A.2.1 — OptiX raygen program design
 
@@ -10825,6 +10826,293 @@ unaffected.**
   `output/gpu_triangle.ppm` from the
   existing CUDA `--render-triangle`
   handler.
+
+## Stage 17A.5 — OptiX relativity
+
+**Scope of this slice (Stage 17A.5; master order
+#17 OptiX upgrade path): apply the relativistic
+camera model inside the OptiX pipeline. Stages
+17A.1 / 17A.2 / 17A.3 / 17A.4 shipped the device-
+context lifecycle, the triangle GAS, the raygen
++miss+closest-hit pipeline, and a normal-as-
+colour single-triangle render. This slice layers
+the same three relativistic transforms the CUDA
+path uses on top of that pipeline:
+
+- aberration in the raygen (Lorentz-boost the
+  primary ray direction in the observer's frame
+  before tracing),
+- Doppler colour shift in closest-hit + miss
+  (`applyDopplerColor(rgb, D, strength)`),
+- bolometric searchlight scale in closest-hit +
+  miss (`1 + (D^4 - 1) * searchlight_strength`).
+
+The math leaf is the existing
+`rr::relativity::*` header set, so both backends
+agree pixel-for-pixel for matched inputs (same
+camera, same observer, same params, same
+geometry). NO path tracing, NO materials, NO
+RNG, NO any-hit / intersection programs. The
+CUDA renderer is unaffected.**
+
+### What ships
+
+- `src/optix/OptixLaunchParams.h` (extended):
+  the launch-params POD grows with two more
+  fields - `rr::relativity::Observer observer{}`
+  (carrying the 3-velocity beta in scene-rest
+  natural units) and
+  `rr::relativity::RelativityParams params{}`
+  (per-effect enable bits + strength multipliers
+  + beta cap). At default-constructed values
+  every effect degenerates to identity, so the
+  Stage 17A.4 triangle pipeline keeps its
+  existing pixel output - the relativity
+  divergence only fires when the host populates
+  a non-zero observer velocity.
+- `src/optix/OptixPrograms.cu` (rewrite):
+  `__raygen__pinhole` now (after generating the
+  primary ray via `rr::camera::generate_camera
+  _ray` and before `optixTrace`) calls
+  `rr::relativity::aberrateDirection(
+  observer.velocity, ray.direction)` when
+  `params.enable_aberration`. The aberrated
+  direction is what reaches `optixTrace`, so
+  every downstream program (closest-hit, miss)
+  sees the photon's direction in the scene
+  frame.
+  `__closesthit__radiance` and
+  `__miss__radiance` first compute their Stage
+  17A.4 base shade (normal-as-colour for hits,
+  vertical sky gradient for misses), then both
+  call a small device-side helper
+  `apply_doppler_and_searchlight(base_color,
+  ray_dir_world)` that:
+    1. computes `D = dopplerFactor(observer.
+       velocity, ray_dir_world)` once,
+    2. applies `applyDopplerColor(...)` to the
+       base colour when `params.enable_doppler`,
+    3. multiplies by
+       `1 + (D^4 - 1) * searchlight_strength`
+       when `params.enable_searchlight`.
+  The `ray_dir_world` input is sourced from
+  `optixGetWorldRayDirection()` so no payload
+  is needed to ferry the aberrated direction
+  back from the raygen.
+- `src/optix/OptixRenderer.{h,cpp}` (extended):
+  - new
+    `Result render_relativistic(int width, int
+    height) noexcept` static. Uses the same
+    single-triangle fixture as `render
+    _triangle` (and the CUDA `--render
+    -triangle` handler) so the only variable
+    between the Stage 17A.4 and 17A.5 outputs
+    is the relativistic state. Visual diff
+    between `output/optix_triangle.ppm` and
+    `output/optix_relativity.ppm` therefore
+    isolates the effect of aberration +
+    Doppler + searchlight.
+  - launch-param population mirrors `render
+    _triangle` plus two more fields:
+    `lp.observer.velocity = Vec3{0, 0, -0.5}`
+    (mirroring `--render-aovs`) and
+    `lp.params = RelativityParams{}` (default-
+    constructed: every effect on at strength
+    1.0). Default beta choice produces a
+    clearly visible blueshift + forward
+    aberration + searchlight brightening, but
+    stays well clear of the high-beta numerical
+    regime.
+  - audit-host fallback returns the documented
+    "requires OptiX SDK" error, mirroring
+    the Stage 17A.3 / 17A.4 fallbacks.
+- `src/main.cpp`: new
+  `run_render_optix_relativity(cfg)` handler.
+  Default output `output/optix_relativity.ppm`;
+  `--output` overrides. Same audit-host
+  fallback shape as the Stage 17A.3 / 17A.4
+  handlers. Wired into the action dispatch.
+- `src/core/CommandLine.{h,cpp}`: new
+  `Action::RenderOptixRelativity`, parser
+  entry recognising `--render-optix-
+  relativity`, mutual-exclusion list update,
+  `Config::validate()` inclusion, usage
+  text + header doc-comment.
+- `CMakeLists.txt`: stage label bumped to
+  "Stage 17A.5: OptiX relativity" in both
+  the `project(...)` description and the
+  project-banner status message. No new
+  source files; the relativity headers live
+  under `src/relativity/` and are already
+  on the `-I src` include path that the
+  PTX-compile uses.
+- `docs/BUILD_PLAN.md`: this entry +
+  status-table row for 17A.5.
+
+### Architectural decisions worth highlighting
+
+- **Same math leaf as the CUDA path.** The
+  `aberrateDirection` / `dopplerFactor` /
+  `searchlightFactor` / `applyDopplerColor`
+  helpers from
+  `src/relativity/RelativityMath.h` are all
+  `RR_HD inline` and compile straight into
+  PTX. Sharing them is the difference between
+  "OptiX does relativity" and "OptiX does
+  approximately the same relativity in slightly
+  different shaders"; the latter is a future
+  bug magnet.
+- **Relativity state lives in launch params,
+  not in payload.** A POD on the
+  device-resident launch-params buffer is
+  read by every program every launch; carrying
+  the same data through three payload
+  registers per ray instead would (a) burn
+  registers we'll need for path-tracer state,
+  (b) duplicate the constant data into each
+  thread, (c) decouple the host's notion of
+  "current observer" from what the closest-hit
+  / miss programs see. Keeping state in launch
+  params keeps the host the single source of
+  truth.
+- **`optixGetWorldRayDirection()` instead of
+  payload-passing the aberrated direction.**
+  OptiX guarantees `optixGetWorldRayDirection
+  ()` returns the direction passed to
+  `optixTrace`, which is exactly the
+  aberrated photon direction the raygen
+  computed. No payload registers are spent on
+  ferrying it back to closest-hit / miss.
+- **No bounce loop, no RNG, no materials.**
+  Per the prompt's hard rules and the
+  17A.5 scope. The base shade is unchanged
+  from 17A.4; only the post-shade transform
+  set is new.
+- **Single shared
+  `apply_doppler_and_searchlight` helper.**
+  Closest-hit and miss apply the same
+  Doppler / searchlight stack; factoring the
+  helper keeps the math in one place. The
+  CUDA path's `k_sphere_relativistic` /
+  `k_render_scene` use the helpers
+  inline-by-step (steps 5/6/7 of their
+  eight-step pipeline); the OptiX path
+  collapses those three steps into one
+  device-side function for clarity.
+- **Default beta choice mirrors `--render-
+  aovs`.** Stage 14A.3 already established
+  `Vec3{0, 0, -0.5}` as the standard
+  "relativity is on; effects clearly visible;
+  numerics still well-behaved" reference; the
+  OptiX path uses the same value so visual
+  parity between the two backends is easy to
+  eyeball.
+- **Identity at `|beta| = 0`.** Every helper
+  in `RelativityMath.h` is identity at
+  `|beta| = 0` (and the params guards short-
+  circuit when their enable bits are false),
+  so a caller leaving the new launch-param
+  fields default-constructed gets the Stage
+  17A.4 pixels byte-for-byte. `render_test`
+  and `render_triangle` are unaffected.
+- **Audit-host fallback preserved.** The
+  renderer + CLI handler degrade gracefully
+  when SDK isn't located: each returns the
+  documented "requires OptiX SDK" error;
+  no `<optix.h>` references reach the
+  compiler in the fallback build.
+
+### Hard-rule audit
+
+- Aberration in raygen - **yes**, gated on
+  `params.enable_aberration`, applied between
+  primary-ray generation and `optixTrace`.
+- Doppler + searchlight in shading - **yes**,
+  applied in both closest-hit and miss after
+  the base shade; `D` computed once per
+  program from the world-frame ray direction.
+- Must match CUDA relativity behavior -
+  **yes**, by construction:
+  - Same camera POD + same `generate_camera
+    _ray` for primary rays.
+  - Same `aberrateDirection` /
+    `dopplerFactor` / `searchlightFactor` /
+    `applyDopplerColor` math leaf
+    (`src/relativity/RelativityMath.h`,
+    RR_HD inline; identical bytes to what
+    `k_render_scene` calls).
+  - Same eight-step ordering: aberrate ray
+    -> intersect -> base shade -> compute D
+    from possibly-aberrated dir -> Doppler
+    colour -> searchlight scale.
+  - Same default beta + default params as
+    `--render-aovs` (Stage 14A.3 reference
+    fixture).
+  Visual confirmation requires a CUDA +
+  OptiX-SDK host (audit host falls back to
+  the documented "requires OptiX" error +
+  exit 1).
+- All math GPU-side - **yes**, every helper
+  the relativity pipeline calls runs in
+  `__raygen__pinhole` /
+  `__closesthit__radiance` / `__miss__
+  radiance`, all of which run on the device.
+  No host-side per-pixel work.
+- Update docs/BUILD_PLAN.md - **yes**, this
+  entry + status-table row.
+
+### Verified at the build
+
+- `cmake -DRELATIVITYRENDER_ENABLE_OPTIX=
+  OFF ..` (Linux clean build): rr_optix not
+  compiled (per the 12B.3 gating); banner
+  shows "Stage 17A.5: OptiX relativity";
+  ctest 4/4. `--render-optix-relativity` is
+  a valid CLI surface but the no-OptiX
+  handler returns the "requires OptiX.
+  Rebuild ..." error + exit 1.
+- `cmake -DRELATIVITYRENDER_ENABLE_OPTIX=
+  ON ..` (Linux clean reconfigure on
+  audit host without CUDA / OptiX SDK):
+  rr_optix compiles in fallback mode (PTX-
+  embedding pipeline gated on SDK-found
+  block, also skipped); expected 12B.4
+  SDK-not-found warning fires; ctest 4/4.
+  `librr_optix.a` contains the new
+  `OptixRenderer::render_relativistic`
+  symbol (verified via `nm`).
+  `--render-optix-relativity` returns the
+  audit-host fallback's "requires OptiX
+  SDK" error.
+- `--help` lists the new action; the
+  mutual-exclusion error message includes
+  `--render-optix-relativity`.
+- A future CUDA + OptiX-SDK host run
+  exercises the populated branch end-to-
+  end: backend init -> pipeline build (3
+  PGs / 3-record SBT) -> upload triangle
+  vertices + indices -> `build_mesh_gas`
+  -> populate launch params (camera +
+  scene handle + observer + params) ->
+  `optixLaunch` -> `cudaDeviceSynchronize`
+  -> download -> `Image::save_ppm`
+  ("output/optix_relativity.ppm", W x H,
+  RGBA32F). The result is the Stage 17A.4
+  triangle image with the three
+  relativistic transforms applied:
+  forward-bunched aberration of the
+  visible triangle (rays arrive earlier
+  / from wider angles), blueshifted
+  colours (Doppler tint pushes the
+  base normal-as-colour toward the
+  cool-tint mix `{0.6, 0.8, 1.0}` per
+  `applyDopplerColor`'s tanh remap),
+  and brighter overall radiance
+  (`searchlightFactor(D) = D^4` with
+  `D > 1` for the approaching observer).
+  The same outputs would be produced by
+  the CUDA path if it traced the same
+  triangle with the same observer.
 
 ## Next stage
 

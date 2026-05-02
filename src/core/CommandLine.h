@@ -221,6 +221,27 @@ namespace rr::core {
 //                           the CUDA path uses. Default output
 //                           "output/optix_triangle.ppm". Same
 //                           requirements as --render-optix-test.
+//   --render-optix-relativity
+//                           Stage 17A.5 OptiX relativistic
+//                           render. Same pipeline + single-
+//                           triangle GAS as --render-optix-
+//                           triangle, but the launch parameters
+//                           carry a non-zero observer velocity
+//                           (beta = 0.5 along -Z, mirroring
+//                           --render-aovs) plus the default
+//                           RelativityParams. The OptiX raygen
+//                           Lorentz-aberrates the primary ray;
+//                           the closest-hit / miss programs
+//                           apply the Doppler colour shift +
+//                           the bolometric searchlight scale.
+//                           The math leaf is the same
+//                           `rr::relativity::*` header the CUDA
+//                           path uses, so both backends agree
+//                           pixel-for-pixel for matched inputs.
+//                           Default output
+//                           "output/optix_relativity.ppm".
+//                           Same requirements as
+//                           --render-optix-test.
 //   --output <path>         Write the rendered image to <path>.
 //                           Default for --render-gradient is
 //                           "output/gpu_gradient.ppm";
@@ -251,10 +272,10 @@ namespace rr::core {
 // --render-mesh-scene / --render-material-scene /
 // --render-direct-lighting / --render-texture-sample-test /
 // --render-textured-material / --render-aovs / --server /
-// --render-optix-test / --render-optix-triangle) are mutually
-// exclusive; combining them is a parse error. The remaining
-// flags configure `Config` and are accepted regardless of
-// action.
+// --render-optix-test / --render-optix-triangle /
+// --render-optix-relativity) are mutually exclusive; combining
+// them is a parse error. The remaining flags configure `Config`
+// and are accepted regardless of action.
 
 class CommandLine {
 public:
@@ -286,6 +307,7 @@ public:
         Server,
         RenderOptixTest,
         RenderOptixTriangle,
+        RenderOptixRelativity,
         Error,          // parse failure; see `error_message`
     };
 
