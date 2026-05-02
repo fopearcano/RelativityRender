@@ -3736,6 +3736,7 @@ sub-stages, appended to the same file.** No code is touched.
 | 18A.2    | GPU memory audit (docs/GPU_MEMORY_AUDIT.md catalogues every cudaMalloc/cudaFree + RAII owner; verifies no leaks, no double-frees, no orphan allocations; documents two intentional duplications (OptiX triangle prologue duplication across render_triangle/render_relativistic, CUDA-vs-OptiX triangle storage layouts) with future-fix paths; pure documentation, no code changes) | ✅ |
 | 18A.3    | Relativity precompute (single redundant-math fix: PrecomputedRelativity POD + `precompute_relativity()` factory + precomputed-input overloads of aberrateDirection / dopplerFactor in RelativityMath.h; k_sphere_relativistic / k_render_scene / OptixPrograms.cu raygen + apply_doppler_and_searchlight all snapshot once at thread entry instead of paying redundant `length(beta_vec)` + `gamma(beta_mag)` reductions inside both the aberration and the Doppler call; saves 2 sqrts per pixel on the relativistic-stack-on path) | ✅ |
 | 18A.4    | Progressive optimization (float4-vectorised k_accum_add + k_accum_resolve fast paths on Rgba32F-aligned buffers — 1/4 the threads, 1/4 the memory transactions, 16-byte coalesced ld/st; new launch_accum_first_sample (cudaMemcpy D2D) routes samples_==0 through the memory-controller bulk-copy path and skips the read-of-zeros + add-kernel launch; AccumulationBuffer::accumulate_sample dispatches first-sample vs add; bit-identical pixel output) | ✅ |
+| 19A.1    | Denoiser scope (docs/DENOISER_PLAN.md §1-§7: purpose = reduce noise in path-traced output + enable low-spp renders; modes = final-frame (19B target) + progressive (future, gated on motion vectors); backend = NVIDIA OptiX denoiser primary on shared OptixDeviceContext, CPU fallback future/optional; constraints = GPU-only, must not modify core renderer logic, operates on existing Stage 14A AOV buffers; planning-only, no code) | ✅ |
 
 ## Stage 12A.2.1 — OptiX raygen program design
 
@@ -12036,6 +12037,168 @@ delta.
   `--render-accumulation-test` and
   `--render-pathtrace` paths exercise both
   fast paths end-to-end.
+
+## Stage 19A.1 — Denoiser scope
+
+**Scope of this slice (Stage 19A.1; master order
+#24 / "Denoising"): planning-only design document
+defining the denoiser's role inside
+RelativityRender. No code, no build-target
+additions, no API surface yet. The four sections
+the prompt requires - Purpose, Modes, Backend,
+Constraints - land in `docs/DENOISER_PLAN.md`,
+plus the supporting framing (where the slice
+fits in the master order, what is out of scope,
+acceptance criteria, follow-up sub-stages) the
+project's existing planning docs share.**
+
+### What ships
+
+- `docs/DENOISER_PLAN.md` (NEW): a 7-section
+  planning document.
+    1. **Purpose**: reduce noise in path-traced
+       output (breaks the `1/sqrt(N)` link
+       between sample count and image quality);
+       enable low-sample renders (server preview
+       pass at 1-4 spp; eventual Cinema 4D
+       bridge re-renders); explicit list of what
+       the denoiser is **not** for (does not
+       replace bounce budget, does not hide
+       shading bugs, does not fix the
+       relativistic camera model, does not
+       substitute for a tone mapper).
+    2. **Modes**: final-frame denoise (Stage
+       19B target; runs once after the spp
+       loop's `resolve_to_image`), and
+       progressive denoise (deferred, gated on
+       motion vectors + a server progress
+       channel + adaptive-sampling slice).
+       Mode-selection-at-the-API-level sketch.
+    3. **Backend**: NVIDIA OptiX denoiser
+       (primary; reuses Stage 17A.1's
+       `OptixDeviceContext` via
+       `OptixBackend::device_context()`; same
+       two-layer compile-time gating
+       (`RELATIVITYRENDER_ENABLE_OPTIX` +
+       `RELATIVITYRENDER_OPTIX_SDK_FOUND`) and
+       audit-host fallback as the rest of
+       rr_optix). CPU fallback (future,
+       optional; OIDN / equivalent; out of 19B
+       scope; documented as a graceful-degrade
+       target).
+    4. **Constraints**: GPU-only (denoiser's
+       per-pixel work runs on the device; host
+       only orchestrates); must not modify core
+       renderer logic (no changes to
+       `PathTracer::render`, the CUDA closest-
+       hit / shading kernels, the OptiX
+       programs, the relativity math leaf, or
+       `AccumulationBuffer`); operates on AOV
+       buffers (Beauty / Normal / Albedo from
+       the Stage 14A `render_scene_with_aovs`
+       pipeline; relativity factor AOVs
+       intentionally out of scope for 19B);
+       no code in this sub-stage.
+    5. **Out-of-scope**: temporal stability
+       / motion vectors, variance-driven
+       adaptive sampling, network-streamed
+       denoised previews, denoiser-driven AOV
+       variants, integration with the
+       `--render-optix-*` actions, Cinema 4D
+       bridge integration.
+    6. **Acceptance criteria** for this
+       (planning-only) slice.
+    7. **Follow-up sub-stages**: 19A.2 (API
+       surface), 19A.3 (buffer-flow design),
+       19A.4 (integration with CLI handlers),
+       19A.5 (audit + risk review), 19B
+       (minimum-viable implementation).
+
+- `CMakeLists.txt`: stage label bumped to
+  "Stage 19A.1: denoiser scope" in both
+  `project(...)` and the configure-time banner.
+
+- `docs/BUILD_PLAN.md`: this entry +
+  status-table row.
+
+### Architectural decisions worth highlighting
+
+- **Doc-first slice, mirroring Stage 12A.1.**
+  The OptiX backend was planned the same way:
+  a planning-only motivation document landed
+  before any implementation slice started, so
+  the migration shape was settled before
+  anything was written. The denoiser slice
+  follows the same cadence; 19A.x sub-stages
+  append the API surface + buffer-flow + risk
+  review **before** 19B writes any code.
+- **Reuse the OptiX device context.** The
+  OptiX denoiser takes an
+  `OptixDeviceContext` argument, which the
+  project already creates and owns through
+  `OptixBackend` (Stage 17A.1). The denoiser
+  slice does not introduce a second runtime
+  context, a second CUDA primary context, or
+  duplicated init/shutdown logic - it is a
+  client of the existing OptiX backend.
+- **Reuse the existing AOV pipeline.** The
+  Stage 14A `GpuAOVBuffer` + `render_scene_
+  with_aovs` flow already produces Beauty,
+  Normal, and Albedo. The denoiser consumes
+  those device pointers in place; no new
+  AOV types, no new upload paths, no new
+  per-pixel writes from the denoiser side.
+- **Do not modify renderer logic.** The
+  denoiser is post-process only. Per master
+  rule "Do not overbuild a later system
+  before the current layer works", the
+  19A/19B slice is forbidden from changing
+  `PathTracer`, the CUDA kernels, the OptiX
+  programs, the relativity math leaf, or
+  `AccumulationBuffer`. If a 19B audit
+  reveals the renderer needs to expose a
+  buffer differently for the denoiser, that
+  change is its own follow-up slice.
+- **Final-frame mode first; progressive
+  deferred behind real prerequisites.** The
+  progressive mode pays dividends only when
+  motion vectors + server progress channel
+  + adaptive sampling all exist. Each is a
+  separate multi-slice piece of work; 19B
+  ships final-frame end-to-end and leaves
+  the progressive surface declared but
+  unimplemented.
+
+### Hard-rule audit
+
+- Documentation only - **yes**, the slice
+  adds zero source files, no build targets,
+  no CLI surface, no public API, no test
+  coverage. The only non-doc change is the
+  `CMakeLists.txt` stage-label bump.
+- Do not implement code - **yes**, the
+  document explicitly defers every code-
+  shape decision to 19A.2+ / 19B. The
+  Backend / Mode enum sketches in the plan
+  use `text` code blocks and are
+  intentionally not headers.
+- Update docs/BUILD_PLAN.md - **yes**, this
+  entry + status-table row.
+
+### Verified at the build
+
+- `cmake -DRR_ENABLE_CUDA=OFF
+   -DRELATIVITYRENDER_ENABLE_OPTIX=OFF`
+  (Linux): banner shows "Stage 19A.1:
+  denoiser scope"; no source files changed;
+  ctest 4/4 green.
+- `cmake -DRELATIVITYRENDER_ENABLE_OPTIX=ON`
+  (Linux audit-host): banner bumped; rr_optix
+  unchanged; ctest 4/4 green.
+- `docs/DENOISER_PLAN.md` reviewed against
+  the prompt's four required sections plus
+  the slice-discipline framing the rest of
+  the project's planning docs share.
 
 ## Next stage
 
