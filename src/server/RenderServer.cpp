@@ -176,7 +176,18 @@ RenderServer& RenderServer::operator=(RenderServer&& other) noexcept {
 }
 
 bool RenderServer::start() {
-    if (listen_fd_ >= 0) {
+    // Already-listening check. Must use the explicit
+    // `!= kInvalidSocket` form because on Windows `socket_t` is
+    // `SOCKET` (unsigned UINT_PTR) - the legacy `listen_fd_ >= 0`
+    // form is always true on Windows (unsigned types are always
+    // non-negative) and would short-circuit the very first
+    // `start()` call into a no-op success, leaving `listen_fd_`
+    // at `kInvalidSocket` and the caller's serve loop with
+    // `is_listening() == false`. See
+    // `docs/SERVER_LIFETIME_FIX.md` for the symptom this caused
+    // ("renderer server stopped (0 requests served)" immediately
+    // on Windows).
+    if (listen_fd_ != kInvalidSocket) {
         return true;  // already listening
     }
     last_error_.clear();

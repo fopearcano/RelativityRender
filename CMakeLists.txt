@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.20)
 
 project(RelativityRender
     VERSION     0.1.0
-    DESCRIPTION "RelativityRender - GPU renderer platform (Windows CUDA build repair: nvcc warning-flag isolation)"
+    DESCRIPTION "RelativityRender - GPU renderer platform (Stage 15 server lifetime repair: --server no longer exits immediately on Windows)"
     LANGUAGES   CXX
 )
 
@@ -33,7 +33,7 @@ option(RELATIVITYRENDER_ENABLE_OPTIX
 
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
-message(STATUS "RelativityRender ${PROJECT_VERSION} (Windows CUDA build repair: nvcc warning-flag isolation)")
+message(STATUS "RelativityRender ${PROJECT_VERSION} (Stage 15 server lifetime repair: --server no longer exits immediately on Windows)")
 
 message(STATUS "  Build type   : ${CMAKE_BUILD_TYPE}")
 message(STATUS "  C++ standard : ${CMAKE_CXX_STANDARD}")

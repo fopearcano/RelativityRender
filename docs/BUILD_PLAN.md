@@ -3725,6 +3725,7 @@ sub-stages, appended to the same file.** No code is touched.
 | 15-fix   | Windows build repair: RenderServer portability (SocketPlatform.h shim; socket_t / closeSocket / initSocketSystem / shutdownSocketSystem; CMake links Ws2_32 on Windows) | ✅ |
 | cli-fix  | CLI render path repair (--render wired to GPU pipeline; defaults to output/render.ppm; delegates to run_render_from_scene) | ✅ |
 | cuda-fix | Windows CUDA build repair (rr_apply_warnings wraps each warning flag in $<$<COMPILE_LANGUAGE:CXX>:...> so nvcc no longer receives /W4 /permissive- as inputs) | ✅ |
+| 15-fix2  | Stage 15 server lifetime repair (RenderServer::start's already-listening check changed from `listen_fd_ >= 0` to `!= kInvalidSocket`; on Windows the old check was always true on UINT_PTR `SOCKET` and short-circuited start into a no-op) | ✅ |
 
 ## Stage 12A.2.1 — OptiX raygen program design
 
@@ -9412,6 +9413,191 @@ renderer-logic edits.**
   prototype-1 hardware-equipped session
   (see `docs/WINDOWS_CUDA_BUILD_FIX.md`
   for the canonical command).
+
+## Stage 15 server lifetime repair
+
+**Scope of this slice (post-Windows-CUDA-build
+fix; one-line source change): on Windows users
+running
+
+  `RelativityRender.exe --server`
+
+reported the server printing
+"renderer server started on 127.0.0.1:7777"
+followed immediately by
+"renderer server stopped (0 requests served)"
+without ever blocking on `accept()`. Linux was
+unaffected. Pure Windows symptom; no Linux
+behaviour change.**
+
+### Root cause
+
+`RenderServer::start()` had a legacy
+"already listening" guard at the top:
+
+```cpp
+if (listen_fd_ >= 0) {
+    return true;  // already listening
+}
+```
+
+The Windows-portability slice
+(`docs/BUILD_PLAN.md`'s
+"Windows build repair: RenderServer
+portability" entry) changed `listen_fd_`'s
+type from `int` to `rr::server::socket_t`.
+On Windows `socket_t` is `SOCKET`, an
+unsigned `UINT_PTR`. After that change, the
+comparison `listen_fd_ >= 0` is **always
+true** because unsigned types are always
+non-negative.
+
+Consequence: the very first
+`server.start()` call returned `true`
+without creating a socket, leaving
+`listen_fd_` at its default value
+`kInvalidSocket = INVALID_SOCKET`. The
+caller's serve loop then evaluated
+`is_listening()`, which is
+`listen_fd_ != kInvalidSocket` and
+returned `false`. The loop body never
+ran; the program fell through to
+`server.stop()` + the
+"renderer server stopped (0 requests
+served)" log line.
+
+POSIX builds were unaffected because
+`socket_t = int` and `kInvalidSocket = -1`,
+so `>= 0` correctly meant "valid fd"
+on Linux/macOS.
+
+### What ships
+
+- `src/server/RenderServer.cpp`: replaces
+  the `listen_fd_ >= 0` already-listening
+  guard with the explicit
+  `listen_fd_ != kInvalidSocket` form (the
+  same comparison the rest of the file
+  uses; the early guard was the only
+  remaining `>= 0` check missed by the
+  Windows-portability slice). Function
+  signature, behaviour on Linux, and every
+  call site are unchanged.
+- `CMakeLists.txt`: stage label bumped to
+  "Stage 15 server lifetime repair: --server
+  no longer exits immediately on Windows" in
+  both the `project(...)` description and
+  the project-banner status message.
+- `docs/BUILD_PLAN.md`: this entry +
+  status-table row for 15-fix2.
+- `docs/SERVER_LIFETIME_FIX.md` (new):
+  records the Windows-specific symptom,
+  root cause, fix, and re-validates the
+  server lifetime contract (must block on
+  accept; must respond to ping with pong;
+  must not exit immediately when no client
+  connects; must stop on Ctrl-C or wire
+  `shutdown` command).
+
+### Architectural decisions worth highlighting
+
+- **One-line source change.** The bug was a
+  single signed/unsigned comparison the
+  Windows-portability slice missed. The
+  repair is a one-line source edit; nothing
+  else needs to move.
+- **Explicit sentinel, not signedness-
+  dependent comparison.** Every other
+  `listen_fd_` comparison in the file
+  already uses `== kInvalidSocket` /
+  `!= kInvalidSocket` (the Windows-
+  portability slice updated them all). The
+  early guard at the top of `start()` was
+  the only one left; this slice brings it
+  in line with the rest of the file's
+  convention.
+- **Linux behaviour unchanged.** On POSIX
+  `socket_t = int` and
+  `kInvalidSocket = -1`. The new guard
+  `listen_fd_ != kInvalidSocket` is
+  semantically identical to the old
+  `listen_fd_ >= 0` for any valid fd
+  (no fd is ever `>= 0` AND `== -1`).
+  Linux smoke confirmed
+  `--server` continues to block + serve
+  ping + accept the wire `shutdown`
+  command + exit 0.
+- **Windows behaviour repaired.** With the
+  guard in its correct form, the first
+  `start()` call now correctly proceeds
+  past the "already listening" check,
+  creates the socket, binds, listens, and
+  returns with `listen_fd_` set to a real
+  socket. The caller's serve loop then
+  blocks on `accept()` as documented.
+
+### Hard-rule audit
+
+- Do not modify renderer logic - **yes**,
+  no rendering / kernel / scene /
+  material / AOV / texture file is
+  touched.
+- Do not add C4D / UI - **yes**.
+- Do not implement new protocol commands -
+  **yes**, the wire-command table is
+  unchanged (ping / shutdown / set_beta /
+  load_scene).
+- Do not run long-lived server inside
+  Claude Code without timeout - **yes**,
+  the smoke test ends every server with
+  the wire `shutdown` command so no
+  orphan process remains.
+- Keep build working - **yes**, OFF + ON
+  reconfigures both build clean (no
+  warnings, no errors); ctest 4/4 passes
+  both ways.
+- Update docs/BUILD_PLAN.md - **yes**,
+  this entry + status-table row.
+
+### Verified at the build
+
+- `cmake -DRELATIVITYRENDER_ENABLE_OPTIX=
+  OFF ..` (Linux clean reconfigure):
+  builds clean (no warnings / errors);
+  banner shows "Stage 15 server lifetime
+  repair: --server no longer exits
+  immediately on Windows"; ctest 4/4
+  passes.
+- `cmake -DRELATIVITYRENDER_ENABLE_OPTIX=
+  ON ..` (Linux clean reconfigure): same;
+  OptiX scaffold compiles (with the
+  expected 12B.4 SDK-not-found warning);
+  ctest 4/4 passes.
+- Linux server smoke (`--server` in the
+  background, `nc` clients, `shutdown`
+  to end gracefully):
+  - `ping` -> `pong` (still works).
+  - `shutdown` -> `ok: shutting down`,
+    server exits **0**.
+  - Log shows: started -> served ping ->
+    served shutdown -> "shutdown
+    requested by client" -> "stopped
+    (2 requests served)". Server
+    properly blocks between cycles;
+    Linux was never broken (the bug
+    was Windows-only).
+- Windows path is repaired by inspection:
+  with `listen_fd_ != kInvalidSocket`
+  the guard returns `false` for a
+  default-constructed `RenderServer`,
+  the rest of `start()` runs, `listen_fd_`
+  is set to the real socket, and the
+  caller's serve loop blocks on
+  `accept()` as documented. Full Windows
+  validation runs on the prototype-1
+  hardware-equipped session per
+  `docs/WINDOWS_TEST_GUIDE.md` /
+  `docs/STAGE_15_SERVER_DEFERRED.md`.
 
 ## Next stage
 
