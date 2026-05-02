@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.20)
 
 project(RelativityRender
     VERSION     0.1.0
-    DESCRIPTION "RelativityRender - GPU renderer platform (Stage 19A.3: denoiser pipeline)"
+    DESCRIPTION "RelativityRender - GPU renderer platform (Stage 19B.1: OptiX denoiser context)"
     LANGUAGES   CXX
 )
 
@@ -33,7 +33,7 @@ option(RELATIVITYRENDER_ENABLE_OPTIX
 
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
-message(STATUS "RelativityRender ${PROJECT_VERSION} (Stage 19A.3: denoiser pipeline)")
+message(STATUS "RelativityRender ${PROJECT_VERSION} (Stage 19B.1: OptiX denoiser context)")
 
 message(STATUS "  Build type   : ${CMAKE_BUILD_TYPE}")
 message(STATUS "  C++ standard : ${CMAKE_CXX_STANDARD}")
@@ -391,6 +391,7 @@ if(RELATIVITYRENDER_ENABLE_OPTIX)
         src/optix/OptixAccel.cpp
         src/optix/OptixPipeline.cpp
         src/optix/OptixRenderer.cpp
+        src/optix/OptixDenoiser.cpp
     )
     target_include_directories(rr_optix PUBLIC src)
     # Stage 18A.1: rr_optix consumes `rr::gpu::GpuTimer` +

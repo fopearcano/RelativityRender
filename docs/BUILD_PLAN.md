@@ -3739,6 +3739,7 @@ sub-stages, appended to the same file.** No code is touched.
 | 19A.1    | Denoiser scope (docs/DENOISER_PLAN.md §1-§7: purpose = reduce noise in path-traced output + enable low-spp renders; modes = final-frame (19B target) + progressive (future, gated on motion vectors); backend = NVIDIA OptiX denoiser primary on shared OptixDeviceContext, CPU fallback future/optional; constraints = GPU-only, must not modify core renderer logic, operates on existing Stage 14A AOV buffers; planning-only, no code) | ✅ |
 | 19A.2    | Denoiser inputs (docs/DENOISER_PLAN.md §8: required inputs = Beauty (noisy) / Albedo / Normal, all 3 floats per pixel, world-space normals, all already produced by Stage 14A render_scene_with_aovs; optional inputs = Depth (future, not consumed by OptiX denoiser today) + Motion (future, requires new AOVType::Motion); concrete one-to-one mapping to make_default_aov_set() entries + targets.* fields; FLOAT3-vs-FLOAT4 Beauty format ambiguity documented with route (B) recommended to preserve §4.2 "no renderer changes"; planning-only, no code) | ✅ |
 | 19A.3    | Denoiser pipeline (docs/DENOISER_PLAN.md §9: pipeline = GPU render → AOV buffers → denoiser → final image; denoiser is the last device-side stage before host download + PPM save; trigger modes = manual (--denoise flag) + automatic (action-default for path-traced / preview render paths); precedence = explicit flag > action-default > project-wide default; output = output/denoised.ppm by default, --output overrides with _denoised-suffixed stem; existing un-denoised paths unchanged when denoising is off; planning-only, no code) | ✅ |
+| 19B.1    | OptiX denoiser context (src/optix/OptixDenoiser.{h,cpp}: move-only RAII owner of an OptixDenoiser handle; reuses the Stage 17A.1 OptixDeviceContext via OptixBackend::device_context(); options pinned to guideAlbedo=1 + guideNormal=1 + denoiseAlpha=COPY per the Stage 19A.2 input contract; model = OPTIX_DENOISER_MODEL_KIND_HDR; two-layer compile-time gating + audit-host fallback identical to OptixBackend / OptixPipeline; lifecycle only — no memory queries / setup / invoke yet) | ✅ |
 
 ## Stage 12A.2.1 — OptiX raygen program design
 
@@ -12573,6 +12574,207 @@ updated to point at the new numbering.**
   §4.2 (must not modify core renderer
   logic) and §8 (input contract); the
   pipeline placement is consistent with both.
+
+## Stage 19B.1 — OptiX denoiser context
+
+**Scope of this slice (Stage 19B.1; master order
+#24 / first 19B implementation slice): land the
+OptiX denoiser's lifecycle owner. Two new files
+under `src/optix/` — `OptixDenoiser.{h,cpp}` —
+that wrap `optixDenoiserCreate` /
+`optixDenoiserDestroy` in the same move-only
+RAII shape every other rr_optix subsystem uses
+(`OptixBackend`, `OptixGas`, `OptixPipeline`).
+No memory-resource queries, no working-buffer
+allocation, no `optixDenoiserSetup`, no
+`optixDenoiserInvoke`, no image processing of
+any kind. Subsequent 19B sub-stages add those
+on top.**
+
+### What ships
+
+- `src/optix/OptixDenoiser.h` (NEW): public
+  host-facing header. Pure host C++; no
+  `<optix.h>` dependency. Move-only RAII owner
+  with five accessors + the
+  `initialize(OptixBackend&)` / `shutdown()`
+  lifecycle pair. The opaque denoiser handle
+  is exposed as `void*` (real type:
+  `OptixDenoiser`, an SDK typedef for
+  `OptixDenoiser_t*`); consumers reinterpret
+  in their own .cpp after including
+  `<optix.h>`. Same SDK-leakage discipline as
+  `OptixBackend.h` / `OptixPipeline.h`.
+
+- `src/optix/OptixDenoiser.cpp` (NEW): two
+  compile branches gated on
+  `RELATIVITYRENDER_OPTIX_SDK_FOUND`:
+    - **SDK-found branch**: real
+      `optixDenoiserCreate` + populated
+      `OptixDenoiserOptions`. Options pinned
+      per Stage 19A.2's input contract:
+      `guideAlbedo = 1` (Albedo guide layer
+      required, DENOISER_PLAN §8.1.2);
+      `guideNormal = 1` (Normal guide layer
+      required, §8.1.3);
+      `denoiseAlpha = OPTIX_DENOISER_ALPHA_
+      MODE_COPY` (Beauty alpha is always 1,
+      no alpha noise to remove). Model kind:
+      `OPTIX_DENOISER_MODEL_KIND_HDR` (the
+      path tracer produces unbounded
+      radiance, §8.1.1; LDR would clip
+      values >1; AOV / TEMPORAL models are
+      future-slice territory). Logs an
+      `[OptiX:INFO]` line on success with
+      the chosen options + model kind.
+      `shutdown()` calls
+      `optixDenoiserDestroy` and logs an
+      `[OptiX:INFO]` line on cleanup.
+    - **Audit-host fallback branch** (SDK
+      not found): `initialize(...)` returns
+      `false` with the documented "requires
+      OptiX SDK" error string mirroring
+      every other rr_optix subsystem's
+      fallback shape. `shutdown()` is a
+      no-op state reset. The class compiles
+      + links cleanly without `<optix.h>`.
+
+- `CMakeLists.txt`: `src/optix/OptixDenoiser
+  .cpp` added to `rr_optix`'s source list
+  (right after `OptixRenderer.cpp`); stage
+  label bumped to "Stage 19B.1: OptiX
+  denoiser context" in both `project(...)`
+  and the configure-time banner.
+
+- `docs/BUILD_PLAN.md`: this entry +
+  status-table row.
+
+`docs/DENOISER_PLAN.md` is intentionally not
+edited in this slice — the planning sub-stages
+(19A.1-19A.3) already covered every design
+decision this implementation slice acts on, so
+re-touching the plan would be busywork. Future
+19B sub-stages may amend §9.x as their scope
+evolves (e.g. 19B.2's memory-resource queries
+will surface in §9.5 or §10).
+
+### Architectural decisions worth highlighting
+
+- **Reuse `OptixBackend::device_context()`.**
+  The constructor takes the existing backend
+  by reference and reads its
+  `OptixDeviceContext` pointer; no new
+  device context, no second
+  CUDA-primary-context priming, no second
+  init/shutdown pair. Direct application of
+  DENOISER_PLAN §3.1.
+- **Move-only RAII, default-constructible.**
+  Mirrors `OptixBackend` / `OptixPipeline` /
+  `OptixGas`. The destructor calls
+  `shutdown()` which is itself idempotent;
+  move-from leaves the source with
+  `denoiser_ = nullptr` and
+  `initialized_ = false`. No copy
+  constructor / assignment.
+- **Two-layer gating + audit-host fallback.**
+  `RELATIVITYRENDER_ENABLE_OPTIX` undefined →
+  `rr_optix` is not built; this header /
+  source are not compiled. `RELATIVITYRENDER_
+  OPTIX_SDK_FOUND` undefined → fallback
+  branch compiles and `initialize()` returns
+  the documented error. Identical pattern to
+  every other rr_optix subsystem.
+- **Options + model kind hard-coded for
+  19B.1.** Per the "ONE fix only"-style
+  discipline of slice planning: the slice's
+  job is to make the lifecycle work with the
+  exact options the Stage 19A.2 input
+  contract specified. Future slices that
+  want LDR / AOV / TEMPORAL models or
+  different guide-layer combos pass them
+  through a richer `OptixDenoiserOptions`
+  carrier; today's API surface stays
+  minimal.
+- **`<optix.h>` does NOT leak into the
+  public header.** The denoiser handle is
+  exposed as `void*`; consumers
+  reinterpret_cast on their own side. Same
+  rule as the existing rr_optix headers; a
+  future `OptixDenoiser::run(...)` will
+  take device pointers (`const float*` for
+  Beauty / Albedo / Normal) per
+  DENOISER_PLAN §8.4 / §9.5, again with no
+  SDK leakage.
+- **No CLI surface, no test fixture in
+  this slice.** Stage 17A.1 (OptiX
+  context init) followed the same shape:
+  it landed `OptixBackend` without a
+  `--render-optix-test` action, and the
+  test action joined in Stage 17A.3 when
+  there was something to render. The
+  19B.x equivalent of `--render-optix-
+  test` joins in 19B.2 once
+  `optixDenoiserInvoke` is on the surface.
+
+### Hard-rule audit
+
+- No image processing yet - **yes**, the
+  slice ships exactly two real OptiX
+  calls: `optixDenoiserCreate` on init,
+  `optixDenoiserDestroy` on shutdown. No
+  `optixDenoiserSetup` / `optixDenoiser
+  ComputeMemoryResources` / `optixDenoiser
+  Invoke`; no buffer allocations; no
+  kernel launches; no host-side image
+  manipulation.
+- Must compile with OptiX ON - **yes**, the
+  audit-host ON build (`RELATIVITYRENDER
+  _ENABLE_OPTIX=ON` without an SDK)
+  compiles `OptixDenoiser.cpp` via the
+  fallback branch and links into
+  `librr_optix.a`. `nm` confirms all five
+  public symbols
+  (`initialize` / `shutdown` / `~OptixDenoiser`
+  / move ctor / move=) are present.
+- Must not break CUDA-only builds - **yes**,
+  the OFF build (`RR_ENABLE_CUDA=ON`,
+  `RELATIVITYRENDER_ENABLE_OPTIX=OFF`)
+  does not build `rr_optix` at all, so the
+  new files are never compiled. The
+  CUDA-only baseline is byte-identical to
+  the Stage 19A.3 build.
+- Update docs/BUILD_PLAN.md - **yes**, this
+  entry + status-table row.
+
+### Verified at the build
+
+- `cmake -DRR_ENABLE_CUDA=OFF
+   -DRELATIVITYRENDER_ENABLE_OPTIX=OFF`
+  (Linux): banner shows "Stage 19B.1: OptiX
+  denoiser context"; `rr_optix` not built;
+  `OptixDenoiser.{h,cpp}` not compiled;
+  ctest 4/4 green.
+- `cmake -DRELATIVITYRENDER_ENABLE_OPTIX=ON`
+  (Linux audit-host clean reconfigure):
+  banner bumped; `rr_optix` recompiles with
+  `OptixDenoiser.cpp.o` in the source list;
+  audit-host fallback branch compiles
+  cleanly; ctest 4/4 green. `nm
+  librr_optix.a` confirms all five public
+  `OptixDenoiser` symbols present
+  (`_ZN2rr5optix13OptixDenoiser10initialize
+  ...`, `...8shutdown...`, `...D1Ev`,
+  `...C1EOS1_`, `...aSEOS1_`).
+- A future CUDA + OptiX-SDK host run
+  exercises the populated branch end-to-
+  end: `OptixBackend::initialize` →
+  `OptixDenoiser::initialize` (calls
+  `optixDenoiserCreate` with HDR model +
+  guideAlbedo / guideNormal / alpha-COPY) →
+  scope exit → `OptixDenoiser::shutdown`
+  (`optixDenoiserDestroy`). Both INFO log
+  lines fire. The 19B.2 sub-stage will
+  exercise this in a CLI fixture.
 
 ## Next stage
 
