@@ -11,6 +11,7 @@
 #include "core/Logger.h"
 #include "core/Version.h"
 #include "gpu/GpuDevice.h"
+#include "gpu/GpuTiming.h"  // Stage 18A.1: format_gpu_timing_line
 #include "io/SceneLoader.h"
 #include "server/RenderServer.h"
 #include "server/SocketPlatform.h"  // shutdown(2) wakeup + portable shim
@@ -105,6 +106,25 @@ void report_device_info() {
     // lines are meaningless when the backend was never built in.
     Logger::info("OptiX build enabled: no");
 #endif
+}
+
+// Stage 18A.1: emit a single console line with the renderer's
+// GPU-side kernel time + a primary-rays/sec estimate. Pure
+// instrumentation - the renderers populate `gpu_time_ms` via a
+// `cudaEvent_t` pair around the launch region; this helper just
+// formats and logs. A `gpu_time_ms <= 0` (no-CUDA build, early
+// exit, audit-host OptiX fallback, etc.) silently skips the log
+// line. Defined outside the `RR_HAS_CUDA` gate because the OptiX
+// CLI handlers consume it on hosts that have OptiX enabled but
+// not CUDA.
+inline void log_gpu_timing(const char* label,
+                           int width, int height,
+                           float gpu_time_ms) {
+    auto line = rr::gpu::format_gpu_timing_line(label, width, height,
+                                                gpu_time_ms);
+    if (!line.empty()) {
+        rr::core::Logger::info(line);
+    }
 }
 
 #ifdef RR_HAS_CUDA
@@ -715,6 +735,7 @@ int run_render_from_scene(const rr::core::Config& cfg) {
         Logger::error("render-from-scene failed: " + r.message);
         return 1;
     }
+    log_gpu_timing("render-from-scene", width, height, r.gpu_time_ms);
 
     Logger::info("scene file  : " + cfg.scene_path);
     Logger::info("scene-render: "
@@ -908,6 +929,7 @@ int run_render_full_scene(const rr::core::Config& cfg) {
         Logger::error("render-full-scene failed: " + r.message);
         return 1;
     }
+    log_gpu_timing("render-full-scene", width, height, r.gpu_time_ms);
 
     Logger::info("scene file       : " + cfg.scene_path);
     Logger::info("scene-render-full: "
@@ -955,6 +977,7 @@ int run_render_rng_test(const rr::core::Config& cfg) {
         rr::core::Logger::error("rng-test render failed: " + r.message);
         return 1;
     }
+    log_gpu_timing("render-rng-test", cfg.width, cfg.height, r.gpu_time_ms);
     return save_image_or_error(r.image, out_path, "GPU RNG test",
                                cfg.width, cfg.height) ? 0 : 1;
 #endif
@@ -988,6 +1011,7 @@ int run_render_optix_triangle(const rr::core::Config& cfg) {
         Logger::error("optix triangle render failed: " + r.message);
         return 1;
     }
+    log_gpu_timing("render-optix-triangle", cfg.width, cfg.height, r.gpu_time_ms);
 
     namespace fs = std::filesystem;
     const fs::path out_fs = out_path;
@@ -1045,6 +1069,7 @@ int run_render_optix_relativity(const rr::core::Config& cfg) {
         Logger::error("optix relativistic render failed: " + r.message);
         return 1;
     }
+    log_gpu_timing("render-optix-relativity", cfg.width, cfg.height, r.gpu_time_ms);
 
     namespace fs = std::filesystem;
     const fs::path out_fs = out_path;
@@ -1098,6 +1123,7 @@ int run_render_optix_test(const rr::core::Config& cfg) {
         Logger::error("optix test render failed: " + r.message);
         return 1;
     }
+    log_gpu_timing("render-optix-test", cfg.width, cfg.height, r.gpu_time_ms);
 
     namespace fs = std::filesystem;
     const fs::path out_fs = out_path;
@@ -1152,6 +1178,8 @@ int run_render_texture_sample_test(const rr::core::Config& cfg) {
                               + r.message);
         return 1;
     }
+    log_gpu_timing("render-texture-sample-test",
+                   cfg.width, cfg.height, r.gpu_time_ms);
     return save_image_or_error(r.image, out_path,
                                "GPU texture sample test",
                                cfg.width, cfg.height) ? 0 : 1;
@@ -1369,6 +1397,7 @@ int run_render_pathtrace(const rr::core::Config& cfg) {
             ++failures;
             continue;
         }
+        log_gpu_timing(run.label, width, height, r.gpu_time_ms);
 
         Logger::info(std::string("scene file       : ") + cfg.scene_path);
         Logger::info("framebuffer      : "
@@ -1411,6 +1440,7 @@ int run_render_gradient(const rr::core::Config& cfg) {
         rr::core::Logger::error("gradient render failed: " + r.message);
         return 1;
     }
+    log_gpu_timing("render-gradient", cfg.width, cfg.height, r.gpu_time_ms);
     return save_image_or_error(r.image, out_path, "GPU gradient",
                                cfg.width, cfg.height) ? 0 : 1;
 #endif
@@ -1443,6 +1473,7 @@ int run_render_camera_rays(const rr::core::Config& cfg) {
         rr::core::Logger::error("camera-ray render failed: " + r.message);
         return 1;
     }
+    log_gpu_timing("render-rays", cfg.width, cfg.height, r.gpu_time_ms);
     return save_image_or_error(r.image, out_path, "GPU camera rays",
                                cfg.width, cfg.height) ? 0 : 1;
 #endif
@@ -1484,6 +1515,7 @@ int run_render_sphere(const rr::core::Config& cfg) {
         rr::core::Logger::error("sphere render failed: " + r.message);
         return 1;
     }
+    log_gpu_timing("render-sphere", cfg.width, cfg.height, r.gpu_time_ms);
     return save_image_or_error(r.image, out_path, "GPU sphere",
                                cfg.width, cfg.height) ? 0 : 1;
 #endif
@@ -1629,6 +1661,7 @@ int run_render_relativistic(const rr::core::Config& cfg) {
         const std::string label = std::string("GPU relativistic sphere "
                                               "(beta=") +
                                   std::to_string(run.beta) + ")";
+        log_gpu_timing(label.c_str(), cfg.width, cfg.height, r.gpu_time_ms);
         if (!save_image_or_error(r.image, run.path, label,
                                  cfg.width, cfg.height)) {
             ++failures;
@@ -1688,6 +1721,7 @@ int run_render_scene(const rr::core::Config& cfg) {
         rr::core::Logger::error("scene render failed: " + r.message);
         return 1;
     }
+    log_gpu_timing("render-scene", cfg.width, cfg.height, r.gpu_time_ms);
 
     rr::core::Logger::info("scene: " + std::to_string(sphere_pods.size())
                          + " sphere(s) uploaded, "
@@ -1745,6 +1779,7 @@ int run_render_triangle(const rr::core::Config& cfg) {
         rr::core::Logger::error("triangle render failed: " + r.message);
         return 1;
     }
+    log_gpu_timing("render-triangle", cfg.width, cfg.height, r.gpu_time_ms);
 
     rr::core::Logger::info("triangle: 0 spheres + "
                          + std::to_string(mesh.triangle_count())
@@ -1807,6 +1842,7 @@ int run_render_mesh_scene(const rr::core::Config& cfg) {
         rr::core::Logger::error("mesh-scene render failed: " + r.message);
         return 1;
     }
+    log_gpu_timing("render-mesh-scene", cfg.width, cfg.height, r.gpu_time_ms);
 
     rr::core::Logger::info("mesh-scene: "
                          + std::to_string(sphere_pods.size())
@@ -1943,6 +1979,7 @@ int run_render_material_scene(const rr::core::Config& cfg) {
         rr::core::Logger::error("material-scene render failed: " + r.message);
         return 1;
     }
+    log_gpu_timing("render-material-scene", cfg.width, cfg.height, r.gpu_time_ms);
 
     rr::core::Logger::info("material-scene: "
                          + std::to_string(sphere_pods.size())
@@ -2108,6 +2145,8 @@ int run_render_textured_material(const rr::core::Config& cfg) {
         rr::core::Logger::error("textured-material render failed: " + r.message);
         return 1;
     }
+    log_gpu_timing("render-textured-material",
+                   cfg.width, cfg.height, r.gpu_time_ms);
 
     rr::core::Logger::info("textured-material: "
                          + std::to_string(sphere_pods.size())
@@ -2265,6 +2304,8 @@ int run_render_direct_lighting(const rr::core::Config& cfg) {
         rr::core::Logger::error("direct-lighting render failed: " + r.message);
         return 1;
     }
+    log_gpu_timing("render-direct-lighting",
+                   cfg.width, cfg.height, r.gpu_time_ms);
 
     rr::core::Logger::info("direct-lighting: "
                          + std::to_string(sphere_pods.size())
@@ -2440,6 +2481,7 @@ int run_render_aovs(const rr::core::Config& cfg) {
         rr::core::Logger::error("aovs render failed: " + r.message);
         return 1;
     }
+    log_gpu_timing("render-aovs", cfg.width, cfg.height, r.gpu_time_ms);
 
     // Save each AOV to its named PPM. Output filenames match the
     // prompt's spec; the doppler / searchlight passes use the

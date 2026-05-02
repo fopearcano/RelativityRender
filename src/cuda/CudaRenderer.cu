@@ -8,6 +8,7 @@
 #include "gpu/GpuBuffer.h"
 #include "gpu/GpuScene.h"
 #include "gpu/GpuTexture.h"
+#include "gpu/GpuTiming.h"
 #include "image/Image.h"
 #include "relativity/RelativityParams.h"
 #include "texture/ImageTexture.h"
@@ -33,6 +34,14 @@ std::string cuda_error_string(cudaError_t e) {
 // one or more kernels writing the Rgba32F framebuffer), drain CUDA
 // errors, and download into a host Image. `launch_kernel` does the
 // per-pixel work; the host never iterates over pixels here.
+//
+// Stage 18A.1: a `rr::gpu::GpuTimer` brackets the kernel-launch
+// region. The events are recorded on the default stream and read
+// back after the existing `cudaDeviceSynchronize()`, so the
+// per-render cost is one async event-record per marker plus one
+// in-cache `cudaEventSynchronize` + `cudaEventElapsedTime` after
+// the work is already done. The renderer's pixel output is
+// unchanged.
 template <typename Launch>
 CudaRenderer::Result run_kernel_render(int width, int height,
                                        Launch&& launch_kernel) {
@@ -54,7 +63,10 @@ CudaRenderer::Result run_kernel_render(int width, int height,
         return result;
     }
 
+    rr::gpu::GpuTimer timer;
+    timer.start();
     launch_kernel(dev.device_ptr(), width, height);
+    timer.stop();
 
     if (const auto launch_err = cudaGetLastError(); launch_err != cudaSuccess) {
         result.message = "kernel launch failed: " + cuda_error_string(launch_err);
@@ -65,6 +77,11 @@ CudaRenderer::Result run_kernel_render(int width, int height,
         (void)cudaGetLastError();
         return result;
     }
+
+    // Read elapsed kernel time after the host has already
+    // synchronised, so this is a fast in-cache check rather than a
+    // real wait.
+    result.gpu_time_ms = timer.elapsed_ms();
 
     rr::image::Image img(width, height, rr::image::PixelFormat::Rgba32F);
     if (!dev.download(img.data(), img.size_in_floats())) {

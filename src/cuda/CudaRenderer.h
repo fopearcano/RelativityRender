@@ -33,6 +33,15 @@ public:
         bool             ok = false;
         rr::image::Image image;    // populated only when ok == true
         std::string      message;  // populated only when ok == false
+        // Stage 18A.1 GPU timing. Elapsed kernel time in
+        // milliseconds, measured via a `cudaEvent_t` pair around
+        // the kernel-launch region inside `run_kernel_render`.
+        // 0 means timing was not captured (allocation failure or
+        // early exit before the stop event recorded). Callers
+        // typically format this via
+        // `rr::gpu::format_gpu_timing_line` and emit a line via
+        // `Logger::info`.
+        float            gpu_time_ms = 0.0f;
     };
 
     // Render a UV-gradient framebuffer of the given size on the GPU

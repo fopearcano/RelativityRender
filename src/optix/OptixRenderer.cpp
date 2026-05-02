@@ -10,6 +10,7 @@
     #include <optix_stubs.h>
 
     #include "camera/Camera.h"
+    #include "gpu/GpuTiming.h"
     #include "math/Vec3.h"
     #include "optix/OptixLaunchParams.h"
     #include "relativity/RelativityParams.h"
@@ -104,10 +105,15 @@ OptixRenderer::render_test(int width, int height) noexcept {
         }
     }
 
-    // Launch.
+    // Launch. Stage 18A.1: GpuTimer brackets `optixLaunch` so the
+    // OptiX path reports kernel time the same way the CUDA path
+    // does. Events on the default stream; elapsed time is read
+    // back after the existing `cudaDeviceSynchronize()`.
+    rr::gpu::GpuTimer timer;
     {
         const auto* sbt = static_cast<const ::OptixShaderBindingTable*>(
             pipeline.shader_binding_table());
+        timer.start();
         const ::OptixResult res = ::optixLaunch(
             static_cast<::OptixPipeline>(pipeline.pipeline_handle()),
             /*stream=*/0,
@@ -117,6 +123,7 @@ OptixRenderer::render_test(int width, int height) noexcept {
             static_cast<unsigned>(width),
             static_cast<unsigned>(height),
             /*depth=*/1u);
+        timer.stop();
         if (res != OPTIX_SUCCESS) {
             ::cudaFree(d_framebuffer);
             r.message = std::string("OptixRenderer::render_test: "
@@ -132,6 +139,7 @@ OptixRenderer::render_test(int width, int height) noexcept {
         r.message = "OptixRenderer::render_test: cudaDeviceSynchronize failed";
         return r;
     }
+    r.gpu_time_ms = timer.elapsed_ms();
 
     rr::image::Image img(width, height, rr::image::PixelFormat::Rgba32F);
     if (::cudaMemcpy(img.data(), d_framebuffer, framebuffer_bytes,
@@ -284,10 +292,12 @@ OptixRenderer::render_triangle(int width, int height) noexcept {
         }
     }
 
-    // Launch.
+    // Launch. Stage 18A.1 instrumentation matching `render_test`.
+    rr::gpu::GpuTimer timer;
     {
         const auto* sbt = static_cast<const ::OptixShaderBindingTable*>(
             pipeline.shader_binding_table());
+        timer.start();
         const ::OptixResult res = ::optixLaunch(
             static_cast<::OptixPipeline>(pipeline.pipeline_handle()),
             /*stream=*/0,
@@ -297,6 +307,7 @@ OptixRenderer::render_triangle(int width, int height) noexcept {
             static_cast<unsigned>(width),
             static_cast<unsigned>(height),
             /*depth=*/1u);
+        timer.stop();
         if (res != OPTIX_SUCCESS) {
             ::cudaFree(d_framebuffer);
             ::cudaFree(d_indices);
@@ -315,6 +326,7 @@ OptixRenderer::render_triangle(int width, int height) noexcept {
         r.message = "OptixRenderer::render_triangle: cudaDeviceSynchronize failed";
         return r;
     }
+    r.gpu_time_ms = timer.elapsed_ms();
 
     rr::image::Image img(width, height, rr::image::PixelFormat::Rgba32F);
     if (::cudaMemcpy(img.data(), d_framebuffer, framebuffer_bytes,
@@ -473,9 +485,11 @@ OptixRenderer::render_relativistic(int width, int height) noexcept {
         }
     }
 
+    rr::gpu::GpuTimer timer;
     {
         const auto* sbt = static_cast<const ::OptixShaderBindingTable*>(
             pipeline.shader_binding_table());
+        timer.start();
         const ::OptixResult res = ::optixLaunch(
             static_cast<::OptixPipeline>(pipeline.pipeline_handle()),
             /*stream=*/0,
@@ -485,6 +499,7 @@ OptixRenderer::render_relativistic(int width, int height) noexcept {
             static_cast<unsigned>(width),
             static_cast<unsigned>(height),
             /*depth=*/1u);
+        timer.stop();
         if (res != OPTIX_SUCCESS) {
             ::cudaFree(d_framebuffer);
             ::cudaFree(d_indices);
@@ -503,6 +518,7 @@ OptixRenderer::render_relativistic(int width, int height) noexcept {
         r.message = "OptixRenderer::render_relativistic: cudaDeviceSynchronize failed";
         return r;
     }
+    r.gpu_time_ms = timer.elapsed_ms();
 
     rr::image::Image img(width, height, rr::image::PixelFormat::Rgba32F);
     if (::cudaMemcpy(img.data(), d_framebuffer, framebuffer_bytes,

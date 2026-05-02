@@ -50,6 +50,12 @@ struct PathTraceResult {
     bool             ok = false;
     rr::image::Image image;     // populated only when ok == true
     std::string      message;   // populated only when ok == false
+    // Stage 18A.1 GPU timing. Cumulative kernel time in
+    // milliseconds across the entire spp loop (per-sample
+    // path-trace kernel + per-sample accumulate kernel). 0 means
+    // timing was not captured. Format via
+    // `rr::gpu::format_gpu_timing_line`.
+    float            gpu_time_ms = 0.0f;
 };
 
 // Minimal diffuse GPU path tracer. Stage 11C foundation; the

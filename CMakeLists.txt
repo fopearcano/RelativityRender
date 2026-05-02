@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.20)
 
 project(RelativityRender
     VERSION     0.1.0
-    DESCRIPTION "RelativityRender - GPU renderer platform (Stage 17A.5: OptiX relativity)"
+    DESCRIPTION "RelativityRender - GPU renderer platform (Stage 18A.1: GPU timing)"
     LANGUAGES   CXX
 )
 
@@ -33,7 +33,7 @@ option(RELATIVITYRENDER_ENABLE_OPTIX
 
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
-message(STATUS "RelativityRender ${PROJECT_VERSION} (Stage 17A.5: OptiX relativity)")
+message(STATUS "RelativityRender ${PROJECT_VERSION} (Stage 18A.1: GPU timing)")
 
 message(STATUS "  Build type   : ${CMAKE_BUILD_TYPE}")
 message(STATUS "  C++ standard : ${CMAKE_CXX_STANDARD}")
@@ -393,6 +393,13 @@ if(RELATIVITYRENDER_ENABLE_OPTIX)
         src/optix/OptixRenderer.cpp
     )
     target_include_directories(rr_optix PUBLIC src)
+    # Stage 18A.1: rr_optix consumes `rr::gpu::GpuTimer` +
+    # `rr::gpu::format_gpu_timing_line` from rr_gpu when CUDA is
+    # enabled (audit-host build keeps the link too; the no-op
+    # fallback satisfies the symbol). PRIVATE - the timer is used
+    # only inside OptixRenderer.cpp; the rr_optix public header
+    # surface is unchanged.
+    target_link_libraries(rr_optix PRIVATE rr_gpu)
     rr_apply_warnings(rr_optix)
     # PUBLIC so consumers of rr_optix see the same macro state
     # the library was compiled against. Today only OptixBackend.cpp
@@ -510,6 +517,7 @@ add_library(rr_gpu STATIC
     src/gpu/GpuScene.cpp
     src/gpu/GpuMesh.cpp
     src/gpu/GpuTexture.cpp
+    src/gpu/GpuTiming.cpp
 )
 target_include_directories(rr_gpu PUBLIC src)
 # rr_gpu's GpuScene exposes Camera / Observer / RelativityParams /
@@ -525,6 +533,7 @@ if(RR_ENABLE_CUDA)
     target_sources(rr_gpu PRIVATE
         src/cuda/CudaContext.cpp
         src/cuda/CudaBuffer.cpp
+        src/cuda/CudaTiming.cpp
         src/cuda/CudaTestKernel.cu
         src/cuda/CudaRngTestKernel.cu
         src/cuda/CudaAccumulation.cu

@@ -2,6 +2,7 @@
 
 #include "gpu/GpuBuffer.h"
 #include "gpu/GpuScene.h"
+#include "gpu/GpuTiming.h"
 #include "renderer/AccumulationBuffer.h"
 
 #ifdef RR_HAS_CUDA
@@ -63,6 +64,17 @@ PathTraceResult PathTracer::render(const rr::gpu::GpuScene& scene,
         return result;
     }
 
+    // Stage 18A.1 GPU timing: a single GpuTimer pair brackets the
+    // full spp loop (per-sample path-trace kernel + per-sample
+    // accumulate kernel). Both kernels enqueue on the default
+    // stream, so the start / stop events bound the sum of every
+    // GPU-side kernel run for this render. The events are read
+    // back after the loop (which already implicitly synchronises
+    // via `accumulate_sample` / `resolve_to_image`), so the per-
+    // launch cost is one async marker write per sample-kernel
+    // boundary rather than per-pixel work.
+    rr::gpu::GpuTimer timer;
+    timer.start();
     for (int s = 0; s < cfg.samples_per_pixel; ++s) {
         if (!rr::cuda::launch_pathtrace_sample(
                 sample.device_ptr(), width, height,
@@ -84,12 +96,19 @@ PathTraceResult PathTracer::render(const rr::gpu::GpuScene& scene,
             return result;
         }
     }
+    timer.stop();
 
     rr::image::Image img = accum.resolve_to_image();
     if (img.empty()) {
         result.message = "resolve_to_image returned empty";
         return result;
     }
+
+    // `resolve_to_image` performs a device-to-host download that
+    // implicitly synchronises the stream, so by the time we read
+    // `elapsed_ms` the stop event's timestamp is already
+    // available - no extra wait.
+    result.gpu_time_ms = timer.elapsed_ms();
 
     result.image = std::move(img);
     result.ok    = true;

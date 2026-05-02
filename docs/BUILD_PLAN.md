@@ -3732,6 +3732,7 @@ sub-stages, appended to the same file.** No code is touched.
 | 17A.3    | OptiX pipeline skeleton (OptixPrograms.cu raygen+miss; OptixSBT/OptixLaunchParams headers; OptixPipeline lifecycle; OptixRenderer::render_test; --render-optix-test → output/optix_test.ppm; build-time PTX embed via cmake/EmbedPtxAsHeader.cmake) | ✅ |
 | 17A.4    | OptiX triangle render (closest-hit normal-as-colour + miss sky gradient; raygen `optixTrace`; HitGroupSbtRecord; launch params gain camera + scene_handle; OptixRenderer::render_triangle; --render-optix-triangle → output/optix_triangle.ppm; visually matches CUDA --render-triangle) | ✅ |
 | 17A.5    | OptiX relativity (raygen Lorentz-aberration; closest-hit + miss apply Doppler colour shift + bolometric searchlight scale via shared `rr::relativity::*` math leaf; launch params gain Observer + RelativityParams; OptixRenderer::render_relativistic; --render-optix-relativity → output/optix_relativity.ppm; beta = 0.5 along -Z mirroring --render-aovs) | ✅ |
+| 18A.1    | GPU timing (CudaTiming.{h,cpp} cudaEvent_t wrappers; rr::gpu::GpuTimer move-only RAII + format_gpu_timing_line; gpu_time_ms added to CudaRenderer/OptixRenderer/PathTracer Results; events bracket every kernel-launch region; main.cpp log_gpu_timing helper emits "[GPU] <action>: render time = X.XXX ms; primary rays = N (WxH); rays/sec = Y.YY M" per render dispatch) | ✅ |
 
 ## Stage 12A.2.1 — OptiX raygen program design
 
@@ -11113,6 +11114,276 @@ CUDA renderer is unaffected.**
   The same outputs would be produced by
   the CUDA path if it traced the same
   triangle with the same observer.
+
+## Stage 18A.1 — GPU timing
+
+**Scope of this slice (Stage 18A.1; master order
+#18 / observability slice): instrument every GPU-
+side render path with CUDA event timing and emit
+a single per-render console line containing the
+elapsed kernel time and a primary-rays/sec
+estimate. Pure instrumentation - no per-pixel
+output changes, no logic changes; the renderer's
+pixel results are byte-for-byte identical to the
+Stage 17A.5 outputs. The only added GPU-side
+work is two `cudaEventRecord` calls per render
+launch (one before, one after), which on the
+default stream are async marker writes; the
+`cudaEventElapsedTime` read happens on the host
+after the existing `cudaDeviceSynchronize()` /
+implicit download sync, so it does not block any
+new GPU work.**
+
+### What ships
+
+- `src/cuda/CudaTiming.{h,cpp}` (NEW): host-side
+  wrappers around the `cudaEvent_t` lifecycle.
+  Public surface is four pure host C++ functions
+  (`cuda_event_create`, `cuda_event_destroy`,
+  `cuda_event_record`, `cuda_event_elapsed_ms`)
+  taking and returning `void*` so the header is
+  free of `<cuda_runtime.h>`. The `.cpp` includes
+  the runtime header and reinterpret-casts the
+  void pointers back to `cudaEvent_t`. Mirrors
+  the `cuda_alloc` / `cuda_free` / `cuda_copy_*`
+  shape from `cuda/CudaBuffer.h`. Failure is
+  signalled via null returns / 0 elapsed time;
+  sticky last-error flags are cleared so a later
+  CUDA call does not see a stale timer error.
+- `src/gpu/GpuTiming.{h,cpp}` (NEW): the host-
+  facing surface used by the renderers and the
+  CLI handlers.
+  - `class GpuTimer`: move-only RAII owner of a
+    `cudaEvent_t` pair. `start()` / `stop()`
+    enqueue the events on the default stream
+    (cheap - just marker writes). `elapsed_ms()`
+    synchronises on the stop event and returns
+    the elapsed milliseconds. Without CUDA
+    support every method is a no-op and
+    `elapsed_ms()` returns 0.
+  - `format_gpu_timing_line(label, w, h, ms)`:
+    pure host C++ formatter. Returns
+    `"[GPU] <label>: render time = X.XXX ms;
+     primary rays = N (WxH); rays/sec = Y.YY M"`
+    or an empty string when `ms <= 0` (so callers
+    can silently skip the log line on no-CUDA
+    builds / early exits).
+  Wired into `rr_gpu` as a regular host source
+  (no `RR_HAS_CUDA` gate at the public API
+  level). The CUDA-side bridge in
+  `GpuTiming.cpp` calls into `cuda/CudaTiming.h`
+  under `#ifdef RR_HAS_CUDA`; otherwise the
+  fallback definitions are no-ops.
+- `src/cuda/CudaRenderer.{h,cu}`:
+  - `Result::gpu_time_ms` field added (default
+    `0.0f`).
+  - `run_kernel_render` (the central scaffold
+    every CUDA action goes through) brackets the
+    `launch_kernel(...)` call in a
+    `rr::gpu::GpuTimer`. After the existing
+    `cudaDeviceSynchronize()` it reads
+    `timer.elapsed_ms()` into
+    `result.gpu_time_ms`. Net cost: two async
+    event-record markers per launch + one
+    in-cache `cudaEventSynchronize` +
+    `cudaEventElapsedTime` after the host has
+    already synchronised.
+- `src/optix/OptixRenderer.{h,cpp}`:
+  - `Result::gpu_time_ms` field added.
+  - All three SDK-found render functions
+    (`render_test`, `render_triangle`,
+    `render_relativistic`) bracket their
+    `optixLaunch` call with a `GpuTimer` and
+    populate `gpu_time_ms` after the existing
+    `cudaDeviceSynchronize()`.
+  - rr_optix gains a PRIVATE link to rr_gpu so
+    the GpuTimer / format helper symbols
+    resolve. The audit-host fallback path is
+    unchanged - it never reaches the timer
+    code.
+- `src/pathtracer/PathTracer.{h,cpp}`:
+  - `PathTraceResult::gpu_time_ms` field added.
+  - A single `GpuTimer` brackets the entire spp
+    loop (per-sample path-trace kernel +
+    accumulate kernel). `resolve_to_image`
+    already performs the device-to-host
+    download that implicitly synchronises the
+    stream, so by the time `elapsed_ms()` runs
+    the stop-event timestamp is ready.
+- `src/main.cpp`:
+  - New include: `"gpu/GpuTiming.h"`.
+  - New `inline void log_gpu_timing(label, w, h,
+    ms)` helper (defined outside the
+    `#ifdef RR_HAS_CUDA` block so OptiX-only
+    handlers can call it on hosts without CUDA).
+  - One `log_gpu_timing(...)` call inserted
+    after each render dispatch's `r.ok` check,
+    across every CUDA / OptiX / path-tracer
+    handler:
+      `--render-from-scene`,
+      `--render-full-scene`,
+      `--render-rng-test`,
+      `--render-optix-triangle`,
+      `--render-optix-relativity`,
+      `--render-optix-test`,
+      `--render-texture-sample-test`,
+      `--render-pathtrace` (per spp run),
+      `--render-gradient`,
+      `--render-rays`,
+      `--render-sphere`,
+      `--render-relativistic` (per beta run),
+      `--render-scene`,
+      `--render-triangle`,
+      `--render-mesh-scene`,
+      `--render-material-scene`,
+      `--render-textured-material`,
+      `--render-direct-lighting`,
+      `--render-aovs`.
+- `CMakeLists.txt`:
+  - `rr_gpu` PUBLIC sources gain
+    `src/gpu/GpuTiming.cpp`.
+  - rr_gpu's CUDA-only PRIVATE sources gain
+    `src/cuda/CudaTiming.cpp`.
+  - `rr_optix` PRIVATE-links `rr_gpu` so the
+    OptiX timer instrumentation resolves.
+  - Stage label bumped to "Stage 18A.1: GPU
+    timing" in both the `project(...)`
+    description and the project-banner status
+    message.
+- `docs/BUILD_PLAN.md`: this entry +
+  status-table row for 18A.1.
+
+### Architectural decisions worth highlighting
+
+- **Renderer populates `gpu_time_ms`; main.cpp
+  logs.** The renderer modules (rr_gpu,
+  rr_renderer, rr_optix) do not link the Logger
+  source today (it lives inside the
+  RelativityRender executable's source list),
+  so logging from inside the renderer would
+  require either re-linking or a callback hook.
+  Both are bigger surgery than the slice
+  warrants. Instead, the renderers populate the
+  timing field and the CLI handlers call the
+  `log_gpu_timing` helper. Future slices that
+  promote Logger to its own static lib can
+  collapse the call site to a single inside-
+  renderer log without changing the public API.
+- **GpuTimer bridge mirrors `GpuBuffer`.** The
+  rr_gpu / rr_cuda split for the timer follows
+  the existing `gpu_alloc` / `cuda_alloc`
+  pattern: a host-only header in `src/gpu/`
+  with `void*`-based bridging, plus a CUDA-only
+  implementation in `src/cuda/`. Without CUDA
+  the timer's methods are inline no-ops and
+  `elapsed_ms()` returns 0; the format helper
+  guards on that and emits no log line.
+- **One timer pair per render launch, on the
+  default stream.** No per-pixel
+  instrumentation; no kernel-side timing; no
+  per-bounce timing. Stage 18A.1 measures
+  end-to-end kernel time and reports it once
+  per `optixLaunch` / `run_kernel_render`
+  invocation. Finer-grained breakdowns are a
+  future slice.
+- **Read elapsed time after the existing
+  device sync.** The renderers already call
+  `cudaDeviceSynchronize()` before downloading
+  the framebuffer. Reading
+  `cudaEventElapsedTime` after the sync turns
+  what would otherwise be a real wait into a
+  fast in-cache check, satisfying the "must
+  not slow renderer" rule.
+- **No per-pixel output changes.** The events
+  are GPU-side markers - they do not perturb
+  kernel scheduling, register usage, or memory
+  ordering. Pixel output is byte-for-byte
+  identical to the Stage 17A.5 baseline.
+- **`format_gpu_timing_line` returns empty
+  on `gpu_time_ms <= 0`.** This silently skips
+  the log line on no-CUDA builds, on early-
+  exit failure paths (the timer's stop never
+  recorded), and on the audit-host OptiX
+  fallback. No spurious zero-time lines reach
+  the console.
+- **Field added at the END of every Result
+  struct.** Existing call sites that
+  brace-init the struct positionally (none in
+  this codebase, but defensively) still
+  compile; the field's default value is 0.
+
+### Hard-rule audit
+
+- CUDA event timing - **yes**, `cudaEvent_t`
+  pair created via `cudaEventCreate`, recorded
+  via `cudaEventRecord` around every kernel
+  launch, read via `cudaEventElapsedTime`,
+  destroyed via `cudaEventDestroy`. Wrapped in
+  the `rr::gpu::GpuTimer` move-only RAII owner.
+- Render time logging - **yes**, one console
+  line per dispatch via `Logger::info`:
+  `"[GPU] <action>: render time = X.XXX ms;
+   primary rays = N (WxH); rays/sec = Y.YY M"`.
+- Rays/sec estimation - **yes**,
+  `pixels / (gpu_time_ms / 1000)` divided by
+  1.0e6 to report megarays/sec. Primary-ray
+  count is `width * height` for the single-
+  pass dispatches and is reported per spp run
+  for the path-tracer (where the kernel
+  shoots one primary ray per spp per pixel).
+- No logic changes - **yes**, no kernel was
+  modified; no math changed; no per-pixel
+  output changed. The CudaRenderer scaffold's
+  shape is unchanged apart from the two
+  GpuTimer markers + the read.
+- Must not slow renderer - **yes**, the only
+  added GPU-side work is two async event-
+  record markers per launch (negligible cost,
+  measured in microseconds at most). The host-
+  side cost is the GpuTimer constructor /
+  destructor (`cudaEventCreate` /
+  `cudaEventDestroy`) plus
+  `cudaEventElapsedTime` after the existing
+  sync - all O(1) operations. No new
+  synchronisation point is introduced.
+- Update docs/BUILD_PLAN.md - **yes**, this
+  entry + status-table row.
+
+### Verified at the build
+
+- `cmake -DRR_ENABLE_CUDA=OFF
+   -DRELATIVITYRENDER_ENABLE_OPTIX=OFF` (Linux
+  build): rr_gpu builds with `GpuTiming.cpp`
+  (no-op fallback path); rr_optix not
+  compiled; banner shows "Stage 18A.1: GPU
+  timing"; ctest 4/4 green. Running
+  `--render-gradient` returns the existing
+  "requires CUDA" error (no spurious timing
+  log line because `gpu_time_ms == 0`).
+- `cmake -DRELATIVITYRENDER_ENABLE_OPTIX=ON`
+  (Linux clean reconfigure on audit host
+  without CUDA / OptiX SDK): rr_gpu builds
+  with the no-op fallback; rr_optix compiles
+  via its existing fallback branch + PRIVATE-
+  links rr_gpu; ctest 4/4 green. Running
+  `--render-optix-relativity` returns the
+  documented "requires OptiX SDK" error +
+  exit 0 (no spurious timing line).
+- `--help` output is unchanged.
+- A future CUDA host run produces the new
+  console line for every render dispatch -
+  e.g. for `--render-scene` at 1280x720:
+  `[GPU] render-scene: render time = 4.567 ms;
+   primary rays = 921600 (1280x720); rays/sec
+   = 201.8 M`. The path-tracer
+  (`--render-pathtrace`) emits one line per
+  spp run, with rays/sec computed per spp
+  pass; the spp = 16 line will report a
+  proportionally larger time and the same
+  primary-rays count (one primary ray per
+  pixel per spp accumulated over the loop).
+  Visual outputs match the Stage 17A.5
+  baseline byte-for-byte.
 
 ## Next stage
 

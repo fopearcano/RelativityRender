@@ -27,6 +27,12 @@ public:
         bool             ok = false;
         std::string      message;
         rr::image::Image image;  // populated on success
+        // Stage 18A.1 GPU timing. Elapsed time in milliseconds
+        // measured via a `cudaEvent_t` pair around `optixLaunch`.
+        // 0 means timing was not captured (audit-host fallback,
+        // allocation failure, or early exit). Same format helper
+        // as the CUDA path: `rr::gpu::format_gpu_timing_line`.
+        float            gpu_time_ms = 0.0f;
     };
 
     // Stage 12B.2 placeholder; kept for backwards-compat with
