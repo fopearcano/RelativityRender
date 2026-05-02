@@ -35,6 +35,7 @@ OptixPipeline::OptixPipeline(OptixPipeline&& other) noexcept
     : module_(other.module_),
       prog_raygen_(other.prog_raygen_),
       prog_miss_(other.prog_miss_),
+      prog_hitgroup_(other.prog_hitgroup_),
       pipeline_(other.pipeline_),
       sbt_record_buf_(other.sbt_record_buf_),
       sbt_descriptor_(other.sbt_descriptor_),
@@ -43,6 +44,7 @@ OptixPipeline::OptixPipeline(OptixPipeline&& other) noexcept
     other.module_         = nullptr;
     other.prog_raygen_    = nullptr;
     other.prog_miss_      = nullptr;
+    other.prog_hitgroup_  = nullptr;
     other.pipeline_       = nullptr;
     other.sbt_record_buf_ = nullptr;
     other.sbt_descriptor_ = nullptr;
@@ -56,6 +58,7 @@ OptixPipeline& OptixPipeline::operator=(OptixPipeline&& other) noexcept {
         module_         = other.module_;
         prog_raygen_    = other.prog_raygen_;
         prog_miss_      = other.prog_miss_;
+        prog_hitgroup_  = other.prog_hitgroup_;
         pipeline_       = other.pipeline_;
         sbt_record_buf_ = other.sbt_record_buf_;
         sbt_descriptor_ = other.sbt_descriptor_;
@@ -64,6 +67,7 @@ OptixPipeline& OptixPipeline::operator=(OptixPipeline&& other) noexcept {
         other.module_         = nullptr;
         other.prog_raygen_    = nullptr;
         other.prog_miss_      = nullptr;
+        other.prog_hitgroup_  = nullptr;
         other.pipeline_       = nullptr;
         other.sbt_record_buf_ = nullptr;
         other.sbt_descriptor_ = nullptr;
@@ -131,7 +135,9 @@ OptixPipelineResult OptixPipeline::create(OptixBackend& backend) {
     pipeline_opts.usesMotionBlur                   = 0;
     pipeline_opts.traversableGraphFlags            =
         OPTIX_TRAVERSABLE_GRAPH_FLAG_ALLOW_SINGLE_GAS;
-    pipeline_opts.numPayloadValues                 = 0;
+    // Stage 17A.4: 3 payload registers carry the closest-hit /
+    // miss RGB result back to the raygen.
+    pipeline_opts.numPayloadValues                 = 3;
     pipeline_opts.numAttributeValues               = 2;
     pipeline_opts.exceptionFlags                   = OPTIX_EXCEPTION_FLAG_NONE;
     pipeline_opts.pipelineLaunchParamsVariableName = "optixLaunchParams";
@@ -196,13 +202,39 @@ OptixPipelineResult OptixPipeline::create(OptixBackend& backend) {
         }
     }
 
-    // 3. Link pipeline.
+    // Stage 17A.4: hit-group program group (closest-hit only).
+    ::OptixProgramGroupDesc hitgroup_desc{};
+    hitgroup_desc.kind = OPTIX_PROGRAM_GROUP_KIND_HITGROUP;
+    hitgroup_desc.hitgroup.moduleCH            = module;
+    hitgroup_desc.hitgroup.entryFunctionNameCH = "__closesthit__radiance";
+    // No any-hit (moduleAH / entryFunctionNameAH stay null).
+    // No intersection (moduleIS / entryFunctionNameIS stay null;
+    // built-in triangle intersection is used).
+
+    ::OptixProgramGroup hitgroup_pg = nullptr;
+    {
+        char log[2048]; std::size_t log_size = sizeof(log);
+        const ::OptixResult res = ::optixProgramGroupCreate(
+            ctx, &hitgroup_desc, /*num_program_groups=*/1, &pg_opts,
+            log, &log_size, &hitgroup_pg);
+        if (res != OPTIX_SUCCESS) {
+            ::optixProgramGroupDestroy(miss_pg);
+            ::optixProgramGroupDestroy(raygen_pg);
+            ::optixModuleDestroy(module);
+            r.error_message = std::string("optixProgramGroupCreate(hitgroup) failed: ")
+                            + ::optixGetErrorName(res)
+                            + " | " + std::string(log, log_size);
+            return r;
+        }
+    }
+
+    // 3. Link pipeline (now with 3 program groups).
     ::OptixPipeline pipeline = nullptr;
     {
-        ::OptixProgramGroup pgs[] = { raygen_pg, miss_pg };
+        ::OptixProgramGroup pgs[] = { raygen_pg, miss_pg, hitgroup_pg };
         ::OptixPipelineLinkOptions link_opts{};
-        link_opts.maxTraceDepth = 1;  // Stage 17A.3: no trace, but
-                                      // OptiX requires >= 1.
+        link_opts.maxTraceDepth = 1;  // Stage 17A.4 traces a single
+                                      // primary ray; no recursion.
 
         char log[2048]; std::size_t log_size = sizeof(log);
         const ::OptixResult res = ::optixPipelineCreate(
@@ -210,6 +242,7 @@ OptixPipelineResult OptixPipeline::create(OptixBackend& backend) {
             pgs, sizeof(pgs) / sizeof(pgs[0]),
             log, &log_size, &pipeline);
         if (res != OPTIX_SUCCESS) {
+            ::optixProgramGroupDestroy(hitgroup_pg);
             ::optixProgramGroupDestroy(miss_pg);
             ::optixProgramGroupDestroy(raygen_pg);
             ::optixModuleDestroy(module);
@@ -239,6 +272,7 @@ OptixPipelineResult OptixPipeline::create(OptixBackend& backend) {
         const ::OptixResult res = ::optixSbtRecordPackHeader(miss_pg, &miss_record);
         if (res != OPTIX_SUCCESS) {
             ::optixPipelineDestroy(pipeline);
+            ::optixProgramGroupDestroy(hitgroup_pg);
             ::optixProgramGroupDestroy(miss_pg);
             ::optixProgramGroupDestroy(raygen_pg);
             ::optixModuleDestroy(module);
@@ -247,18 +281,36 @@ OptixPipelineResult OptixPipeline::create(OptixBackend& backend) {
             return r;
         }
     }
+    HitGroupSbtRecord hitgroup_record{};
+    {
+        const ::OptixResult res = ::optixSbtRecordPackHeader(hitgroup_pg, &hitgroup_record);
+        if (res != OPTIX_SUCCESS) {
+            ::optixPipelineDestroy(pipeline);
+            ::optixProgramGroupDestroy(hitgroup_pg);
+            ::optixProgramGroupDestroy(miss_pg);
+            ::optixProgramGroupDestroy(raygen_pg);
+            ::optixModuleDestroy(module);
+            r.error_message = std::string("optixSbtRecordPackHeader(hitgroup) failed: ")
+                            + ::optixGetErrorName(res);
+            return r;
+        }
+    }
 
     // Upload records to a single device buffer:
-    // [raygen_record][miss_record]. Strides are fixed at the
-    // record sizes; the SBT descriptor points at the
-    // appropriate offsets.
-    constexpr std::size_t kRaygenSize = sizeof(RaygenSbtRecord);
-    constexpr std::size_t kMissSize   = sizeof(MissSbtRecord);
+    // [raygen_record][miss_record][hitgroup_record]. Strides
+    // are fixed at the record sizes; the SBT descriptor points
+    // at the appropriate offsets.
+    constexpr std::size_t kRaygenSize   = sizeof(RaygenSbtRecord);
+    constexpr std::size_t kMissSize     = sizeof(MissSbtRecord);
+    constexpr std::size_t kHitGroupSize = sizeof(HitGroupSbtRecord);
+    constexpr std::size_t kTotalSize    = kRaygenSize + kMissSize + kHitGroupSize;
+
     void* d_records = nullptr;
     {
-        const ::cudaError_t e = ::cudaMalloc(&d_records, kRaygenSize + kMissSize);
+        const ::cudaError_t e = ::cudaMalloc(&d_records, kTotalSize);
         if (e != cudaSuccess) {
             ::optixPipelineDestroy(pipeline);
+            ::optixProgramGroupDestroy(hitgroup_pg);
             ::optixProgramGroupDestroy(miss_pg);
             ::optixProgramGroupDestroy(raygen_pg);
             ::optixModuleDestroy(module);
@@ -273,6 +325,7 @@ OptixPipelineResult OptixPipeline::create(OptixBackend& backend) {
         if (e != cudaSuccess) {
             ::cudaFree(d_records);
             ::optixPipelineDestroy(pipeline);
+            ::optixProgramGroupDestroy(hitgroup_pg);
             ::optixProgramGroupDestroy(miss_pg);
             ::optixProgramGroupDestroy(raygen_pg);
             ::optixModuleDestroy(module);
@@ -288,10 +341,27 @@ OptixPipelineResult OptixPipeline::create(OptixBackend& backend) {
         if (e != cudaSuccess) {
             ::cudaFree(d_records);
             ::optixPipelineDestroy(pipeline);
+            ::optixProgramGroupDestroy(hitgroup_pg);
             ::optixProgramGroupDestroy(miss_pg);
             ::optixProgramGroupDestroy(raygen_pg);
             ::optixModuleDestroy(module);
             r.error_message = std::string("cudaMemcpy(miss record) failed: ")
+                            + ::cudaGetErrorString(e);
+            return r;
+        }
+    }
+    {
+        const ::cudaError_t e = ::cudaMemcpy(
+            static_cast<char*>(d_records) + kRaygenSize + kMissSize,
+            &hitgroup_record, kHitGroupSize, cudaMemcpyHostToDevice);
+        if (e != cudaSuccess) {
+            ::cudaFree(d_records);
+            ::optixPipelineDestroy(pipeline);
+            ::optixProgramGroupDestroy(hitgroup_pg);
+            ::optixProgramGroupDestroy(miss_pg);
+            ::optixProgramGroupDestroy(raygen_pg);
+            ::optixModuleDestroy(module);
+            r.error_message = std::string("cudaMemcpy(hitgroup record) failed: ")
                             + ::cudaGetErrorString(e);
             return r;
         }
@@ -304,7 +374,10 @@ OptixPipelineResult OptixPipeline::create(OptixBackend& backend) {
         static_cast<char*>(d_records) + kRaygenSize);
     sbt->missRecordStrideInBytes      = static_cast<unsigned>(kMissSize);
     sbt->missRecordCount              = 1;
-    // No hit / callable / exception groups in Stage 17A.3.
+    sbt->hitgroupRecordBase           = reinterpret_cast<::CUdeviceptr>(
+        static_cast<char*>(d_records) + kRaygenSize + kMissSize);
+    sbt->hitgroupRecordStrideInBytes  = static_cast<unsigned>(kHitGroupSize);
+    sbt->hitgroupRecordCount          = 1;
 
     // 5. Launch-params buffer.
     void* d_launch_params = nullptr;
@@ -315,6 +388,7 @@ OptixPipelineResult OptixPipeline::create(OptixBackend& backend) {
             delete sbt;
             ::cudaFree(d_records);
             ::optixPipelineDestroy(pipeline);
+            ::optixProgramGroupDestroy(hitgroup_pg);
             ::optixProgramGroupDestroy(miss_pg);
             ::optixProgramGroupDestroy(raygen_pg);
             ::optixModuleDestroy(module);
@@ -328,6 +402,7 @@ OptixPipelineResult OptixPipeline::create(OptixBackend& backend) {
     module_             = module;
     prog_raygen_        = raygen_pg;
     prog_miss_          = miss_pg;
+    prog_hitgroup_      = hitgroup_pg;
     pipeline_           = pipeline;
     sbt_record_buf_     = d_records;
     sbt_descriptor_     = sbt;
@@ -335,10 +410,10 @@ OptixPipelineResult OptixPipeline::create(OptixBackend& backend) {
     launch_params_size_ = sizeof(OptixLaunchParams);
 
     std::fprintf(stderr,
-                 "[OptiX:INFO] Pipeline built: 1 module, 2 program "
-                 "groups (raygen + miss), %zu-byte SBT, %zu-byte "
-                 "launch-params buffer.\n",
-                 kRaygenSize + kMissSize, sizeof(OptixLaunchParams));
+                 "[OptiX:INFO] Pipeline built: 1 module, 3 program "
+                 "groups (raygen + miss + hitgroup), %zu-byte SBT, "
+                 "%zu-byte launch-params buffer.\n",
+                 kTotalSize, sizeof(OptixLaunchParams));
     r.ok = true;
     return r;
 }
@@ -359,6 +434,10 @@ void OptixPipeline::reset() noexcept {
     if (pipeline_ != nullptr) {
         ::optixPipelineDestroy(static_cast<::OptixPipeline>(pipeline_));
         pipeline_ = nullptr;
+    }
+    if (prog_hitgroup_ != nullptr) {
+        ::optixProgramGroupDestroy(static_cast<::OptixProgramGroup>(prog_hitgroup_));
+        prog_hitgroup_ = nullptr;
     }
     if (prog_miss_ != nullptr) {
         ::optixProgramGroupDestroy(static_cast<::OptixProgramGroup>(prog_miss_));
@@ -393,6 +472,7 @@ void OptixPipeline::reset() noexcept {
     module_             = nullptr;
     prog_raygen_        = nullptr;
     prog_miss_          = nullptr;
+    prog_hitgroup_      = nullptr;
     pipeline_           = nullptr;
     sbt_record_buf_     = nullptr;
     sbt_descriptor_     = nullptr;

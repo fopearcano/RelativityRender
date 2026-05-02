@@ -56,7 +56,8 @@ bool set_action(CommandLine::Action& current, CommandLine::Action target,
                 "--render-material-scene / --render-direct-lighting / "
                 "--render-texture-sample-test / "
                 "--render-textured-material / --render-aovs / "
-                "--server / --render-optix-test)";
+                "--server / --render-optix-test / "
+                "--render-optix-triangle)";
         return false;
     }
     current = target;
@@ -246,6 +247,12 @@ CommandLine::ParseResult CommandLine::parse(int argc, char** argv) {
                 r.action = Action::Error;
                 return r;
             }
+        } else if (a == "--render-optix-triangle") {
+            if (!set_action(r.action, Action::RenderOptixTriangle,
+                            r.error_message)) {
+                r.action = Action::Error;
+                return r;
+            }
         } else if (a == "--output") {
             if (!take_value(argc, argv, i, a, value, r.error_message)) {
                 r.action = Action::Error;
@@ -305,7 +312,8 @@ CommandLine::ParseResult CommandLine::parse(int argc, char** argv) {
      || r.action == Action::RenderTextureSampleTest
      || r.action == Action::RenderTexturedMaterial
      || r.action == Action::RenderAOVs
-     || r.action == Action::RenderOptixTest) {
+     || r.action == Action::RenderOptixTest
+     || r.action == Action::RenderOptixTriangle) {
         if (auto err = r.config.validate(); !err.empty()) {
             r.action        = Action::Error;
             r.error_message = std::move(err);
@@ -471,6 +479,15 @@ std::string CommandLine::usage(std::string_view argv0) {
        << "                        output/optix_test.ppm. Requires\n"
        << "                        -DRELATIVITYRENDER_ENABLE_OPTIX=ON "
                                   "+ CUDA Toolkit + OptiX SDK.\n"
+       << "  --render-optix-triangle\n"
+       << "                        Stage 17A.4 OptiX triangle render: "
+                                  "single triangle GAS + closest-hit\n"
+       << "                        normal-as-colour shading + miss "
+                                  "sky gradient. Visually matches the\n"
+       << "                        CUDA --render-triangle output. "
+                                  "Default output\n"
+       << "                        output/optix_triangle.ppm. Same "
+                                  "OptiX requirements as above.\n"
        << "  --output <path>       Write the rendered image to <path>.\n"
        << "                        Default for --render-gradient is "
                                   "output/gpu_gradient.ppm;\n"

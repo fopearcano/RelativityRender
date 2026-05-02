@@ -3730,6 +3730,7 @@ sub-stages, appended to the same file.** No code is touched.
 | 17A.1    | OptiX context init (real OptixDeviceContext via OptixBackend::initialize/shutdown; CUDA<->OptiX interop via cudaFree(0) + optixDeviceContextCreate(0,...); SDK-gated with audit-host fallback) | ✅ |
 | 17A.2    | OptiX triangle GAS (OptixAccel.h: OptixGas owner + MeshGasInput + build_mesh_gas; static / triangles only; SDK-gated with audit-host fallback) | ✅ |
 | 17A.3    | OptiX pipeline skeleton (OptixPrograms.cu raygen+miss; OptixSBT/OptixLaunchParams headers; OptixPipeline lifecycle; OptixRenderer::render_test; --render-optix-test → output/optix_test.ppm; build-time PTX embed via cmake/EmbedPtxAsHeader.cmake) | ✅ |
+| 17A.4    | OptiX triangle render (closest-hit normal-as-colour + miss sky gradient; raygen `optixTrace`; HitGroupSbtRecord; launch params gain camera + scene_handle; OptixRenderer::render_triangle; --render-optix-triangle → output/optix_triangle.ppm; visually matches CUDA --render-triangle) | ✅ |
 
 ## Stage 12A.2.1 — OptiX raygen program design
 
@@ -10552,6 +10553,278 @@ The CUDA renderer is unaffected.**
   `wrote OptiX test:
   <abs-path>/output/optix_test.ppm
   (W x H, RGBA32F)` log line.
+
+## Stage 17A.4 — OptiX triangle render
+
+**Scope of this slice (Stage 17A.4; master order
+#17 OptiX upgrade path): extend the Stage 17A.3
+pipeline with a closest-hit program + a
+ray-firing raygen so OptiX renders an actual
+triangle. Stages 17A.1 / 17A.2 / 17A.3 shipped
+the device-context lifecycle, the GAS builder,
+and the raygen+miss pipeline that wrote a flat
+colour. This slice closes the "OptiX can
+actually render geometry" loop on a single
+hardcoded triangle that visually matches the
+CUDA `--render-triangle` output (same vertex
+positions, same normal-as-colour shading, same
+miss sky gradient).
+
+NO path tracing, NO materials, NO any-hit, NO
+intersection program (built-in triangle
+intersection is used). The CUDA renderer is
+unaffected.**
+
+### What ships
+
+- `src/optix/OptixLaunchParams.h` (extended):
+  the POD grows with `rr::camera::GpuCamera
+  camera` (the same RR_HD-friendly POD the CUDA
+  path's `generate_camera_ray` consumes) and
+  `std::uint64_t scene_handle` (the GAS
+  traversable handle, exposed via `uint64_t`
+  to keep the header `<optix.h>`-free). Existing
+  `framebuffer` / `width` / `height` /
+  `flat_color_*` fields stay; the Stage 17A.3
+  `render_test` (flat-colour write) keeps
+  working because the raygen branches on
+  `scene_handle == 0`.
+- `src/optix/OptixSBT.h` (extended):
+  `HitGroupSbtRecord` joins `RaygenSbtRecord` /
+  `MissSbtRecord`. Empty header-only struct;
+  future sub-stages add per-record material /
+  geometry payload.
+- `src/optix/OptixPrograms.cu` (extended):
+  `__raygen__pinhole` now branches on
+  `scene_handle`. When non-zero it generates a
+  primary ray via the existing
+  `rr::camera::generate_camera_ray` (same
+  inline used by the CUDA path), calls
+  `optixTrace` with 3 payload registers, and
+  writes the returned RGB into the framebuffer.
+  `__miss__radiance` writes a vertical sky
+  gradient (`t = 0.5*(dir.y + 1)`; lerp
+  white -> light blue) into the 3 payload
+  registers, byte-identical to the CUDA path's
+  miss shade. New `__closesthit__radiance`
+  recovers the triangle's three world-space
+  vertices via `optixGetTriangleVertexData`,
+  computes the geometric normal
+  (`normalize(cross(v1 - v0, v2 - v0))`),
+  encodes as `0.5 * n + 0.5`, writes RGB to
+  the payload. All per-pixel work runs on the
+  GPU.
+- `src/optix/OptixPipeline.{h,cpp}` (extended):
+  - New `prog_hitgroup_` member.
+  - `pipeline_opts.numPayloadValues` bumped
+    from 0 to 3 to match the 3 RGB-carrying
+    `optixSetPayload_N` slots.
+  - New hit-group program-group creation with
+    `entryFunctionNameCH = "__closesthit__
+    radiance"` and no any-hit / intersection
+    (built-in triangle intersection).
+  - Pipeline link list grows from 2 to 3
+    program groups.
+  - SBT record buffer grows from
+    `[raygen][miss]` to
+    `[raygen][miss][hitgroup]`; the SBT
+    descriptor populates `hitgroupRecordBase
+    / hitgroupRecordStrideInBytes /
+    hitgroupRecordCount`.
+  - `reset()` and the audit-host fallback
+    `reset()` both nullify `prog_hitgroup_`
+    alongside the other PGs.
+  - Every per-step error path frees every
+    already-allocated resource (PG / module /
+    SBT buffer) before returning - no leaks
+    on partial failure.
+- `src/optix/OptixRenderer.{h,cpp}`
+  (extended):
+  - `Result render_triangle(int width, int
+    height) noexcept` static. Initialises
+    backend, builds pipeline, allocates +
+    uploads the 3-vertex / 1-index triangle
+    buffers via `cudaMalloc` /
+    `cudaMemcpy`, builds the GAS via the
+    Stage 17A.2 `build_mesh_gas` helper,
+    constructs an `rr::camera::Camera` with
+    the right aspect, populates launch
+    params (camera + scene_handle =
+    `gas.handle()`), launches, syncs,
+    downloads to an `Image(Rgba32F)`,
+    returns. All temporary CUDA allocations
+    (vertices / indices / framebuffer) are
+    freed before return; the GAS device
+    buffer + handle are owned by the
+    `OptixGas` member of the local
+    `BuildGasResult` and freed by its
+    destructor.
+  - Triangle vertices match the CUDA path's
+    `build_demo_triangle_mesh` byte-for-byte:
+    `( 0.0,  1.0, -3.0)`, `(-0.866, -0.5,
+    -3.0)`, `( 0.866, -0.5, -3.0)`. CCW
+    winding from the camera; geometric
+    normal points toward +Z; closest-hit
+    encoding `0.5 * n + 0.5` produces the
+    light-blue `(0.5, 0.5, 1.0)` shade
+    over the visible triangle, identical
+    to the CUDA path's normal-as-colour
+    output.
+- `src/main.cpp`: new
+  `run_render_optix_triangle(cfg)` handler.
+  Default output `output/optix_triangle.ppm`;
+  `--output` overrides. Same audit-host
+  fallback shape as the Stage 17A.3
+  handler. Wired into the action dispatch.
+- `src/core/CommandLine.{h,cpp}`: new
+  `Action::RenderOptixTriangle`, parser
+  entry recognising `--render-optix-
+  triangle`, mutual-exclusion list update,
+  `Config::validate()` inclusion, usage
+  text + header doc-comment.
+- `CMakeLists.txt`: stage label bumped to
+  "Stage 17A.4: OptiX triangle render"
+  in both the `project(...)` description
+  and the project-banner status message.
+  No new source files; `OptixPipeline
+  .cpp` / `OptixRenderer.cpp` /
+  `OptixPrograms.cu` were already in the
+  rr_optix source list / PTX-compile
+  pipeline from 17A.3.
+- `docs/BUILD_PLAN.md`: this entry +
+  status-table row for 17A.4.
+
+### Architectural decisions worth highlighting
+
+- **Single raygen, branch on
+  `scene_handle`.** Keeping one raygen
+  entry point (rather than adding a
+  second `__raygen__triangle`) avoids
+  pipeline-shape churn and keeps both
+  `render_test` (flat-colour) and
+  `render_triangle` (traced) live with
+  the same pipeline + SBT. The launch
+  params struct is the only place that
+  has to grow.
+- **Reuse `generate_camera_ray`** from
+  the host-side CUDA path. The RR_HD
+  inline is callable from the .cu file
+  (nvcc translates it as
+  `__host__ __device__`); both backends
+  produce the same primary ray for the
+  same `(x, y, width, height, camera)`,
+  so the two outputs are visually
+  consistent by construction.
+- **`numPayloadValues = 3`** matches the
+  3 `optixSetPayload_N` slots used to
+  carry RGB back from closest-hit /
+  miss to raygen. Bit-cast via
+  `__float_as_uint` /
+  `__uint_as_float` so the registers
+  carry the exact float bits.
+- **Geometric normal in closest-hit, not
+  per-vertex normal.** `optixGet
+  TriangleVertexData(...)` returns the
+  three vertex positions; cross(e1, e2)
+  gives the geometric normal. This
+  matches the CUDA path's behaviour for
+  `build_demo_triangle_mesh` (where
+  per-vertex normals are all `(0, 0, 1)`
+  and the kernel uses the geometric
+  normal anyway).
+- **Hardcoded triangle in `render
+  _triangle`.** The CUDA path uses
+  `build_demo_triangle_mesh` for the
+  same visual; mirroring its three
+  vertices verbatim guarantees the
+  visual match. Future sub-stages that
+  drive OptiX from a `Scene` populate
+  the GAS from authored meshes.
+- **No path tracing, no materials.**
+  Per the prompt's hard rules. The
+  closest-hit shading is `0.5 * n +
+  0.5` only; no BSDF, no light loop,
+  no bounce.
+- **Audit-host fallback preserved.** The
+  pipeline + renderer + CLI handler all
+  degrade gracefully when SDK isn't
+  located: each returns the documented
+  "requires OptiX SDK" error; no
+  `<optix.h>` references reach the
+  compiler in the fallback build.
+
+### Hard-rule audit
+
+- No path tracing yet - **yes**, no
+  bounce loop, no RNG, no accumulation;
+  one primary ray per pixel.
+- No materials yet - **yes**,
+  `MaterialParams` not consumed by any
+  OptiX code path; closest-hit reads
+  only geometric normal.
+- Must match CUDA triangle visually -
+  **yes**, by construction:
+  - Same vertex positions (matches
+    `build_demo_triangle_mesh` byte-for-
+    byte).
+  - Same primary-ray generator
+    (`rr::camera::generate_camera_ray`
+    via the same `GpuCamera`).
+  - Same closest-hit shading rule
+    (`0.5 * n + 0.5`).
+  - Same miss shading rule (vertical
+    sky gradient, `t = 0.5*(dir.y + 1)`,
+    lerp white -> light blue).
+  Visual confirmation requires a CUDA +
+  OptiX-SDK host (audit host falls back
+  to the documented "requires OptiX"
+  error + exit 1).
+- Update docs/BUILD_PLAN.md - **yes**,
+  this entry + status-table row.
+
+### Verified at the build
+
+- `cmake -DRELATIVITYRENDER_ENABLE_OPTIX=
+  OFF ..` (Linux clean reconfigure):
+  rr_optix not compiled (per the 12B.3
+  gating); banner shows "Stage 17A.4:
+  OptiX triangle render"; ctest 4/4;
+  `--render-optix-triangle` returns
+  "requires OptiX. Rebuild ..." +
+  exit 1.
+- `cmake -DRELATIVITYRENDER_ENABLE_OPTIX=
+  ON ..` (Linux clean reconfigure on
+  audit host without CUDA / OptiX SDK):
+  rr_optix compiles in fallback mode
+  (PTX-embedding pipeline gated on
+  SDK-found block, also skipped);
+  expected 12B.4 SDK-not-found warning
+  fires; ctest 4/4. `librr_optix.a`
+  contains the new
+  `OptixRenderer::render_triangle`
+  symbol (verified via `nm`).
+  `--render-optix-triangle` returns
+  the audit-host fallback's
+  "requires OptiX SDK" error.
+- `--help` lists the new action; the
+  mutual-exclusion error message
+  includes `--render-optix-triangle`.
+- A future CUDA + OptiX-SDK host run
+  exercises the populated branch end-
+  to-end: backend init -> pipeline
+  build (3 PGs / 3-record SBT) ->
+  upload triangle vertices + indices
+  -> `build_mesh_gas` -> populate
+  launch params (camera + scene
+  handle) -> `optixLaunch` ->
+  `cudaDeviceSynchronize` ->
+  download -> `Image::save_ppm`
+  ("output/optix_triangle.ppm",
+  W x H, RGBA32F). The result
+  visually matches
+  `output/gpu_triangle.ppm` from the
+  existing CUDA `--render-triangle`
+  handler.
 
 ## Next stage
 

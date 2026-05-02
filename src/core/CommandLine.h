@@ -208,6 +208,19 @@ namespace rr::core {
 //                           OptiX SDK installed; the audit-host
 //                           fallback returns a clear "requires
 //                           OptiX" error.
+//   --render-optix-triangle Stage 17A.4 OptiX triangle render.
+//                           Builds the closest-hit-augmented
+//                           pipeline, uploads a single front-
+//                           facing equilateral triangle (matches
+//                           the CUDA `--render-triangle` fixture
+//                           byte-for-byte), builds a single
+//                           triangle GAS, traces one primary ray
+//                           per pixel; closest-hit shades the
+//                           hit as `0.5 * normal + 0.5`, miss
+//                           emits the same vertical sky gradient
+//                           the CUDA path uses. Default output
+//                           "output/optix_triangle.ppm". Same
+//                           requirements as --render-optix-test.
 //   --output <path>         Write the rendered image to <path>.
 //                           Default for --render-gradient is
 //                           "output/gpu_gradient.ppm";
@@ -238,9 +251,10 @@ namespace rr::core {
 // --render-mesh-scene / --render-material-scene /
 // --render-direct-lighting / --render-texture-sample-test /
 // --render-textured-material / --render-aovs / --server /
-// --render-optix-test) are mutually exclusive; combining them
-// is a parse error. The remaining flags configure `Config` and
-// are accepted regardless of action.
+// --render-optix-test / --render-optix-triangle) are mutually
+// exclusive; combining them is a parse error. The remaining
+// flags configure `Config` and are accepted regardless of
+// action.
 
 class CommandLine {
 public:
@@ -271,6 +285,7 @@ public:
         RenderAOVs,
         Server,
         RenderOptixTest,
+        RenderOptixTriangle,
         Error,          // parse failure; see `error_message`
     };
 

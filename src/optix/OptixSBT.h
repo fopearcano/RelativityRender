@@ -38,6 +38,15 @@ struct __align__(OPTIX_SBT_RECORD_ALIGNMENT) MissSbtRecord {
     char header[OPTIX_SBT_RECORD_HEADER_SIZE];
 };
 
+// Stage 17A.4: hit-group record for the triangle closest-hit
+// program. No per-record data yet (the closest-hit reads
+// vertex positions via `optixGetTriangleVertexData(...)` on
+// the GAS handle); future sub-stages add material indices /
+// SBT-data payloads.
+struct __align__(OPTIX_SBT_RECORD_ALIGNMENT) HitGroupSbtRecord {
+    char header[OPTIX_SBT_RECORD_HEADER_SIZE];
+};
+
 }  // namespace rr::optix
 
 #endif  // RELATIVITYRENDER_OPTIX_SDK_FOUND

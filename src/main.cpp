@@ -960,6 +960,56 @@ int run_render_rng_test(const rr::core::Config& cfg) {
 #endif
 }
 
+// `--render-optix-triangle` dispatch (Stage 17A.4). Builds the
+// closest-hit-augmented pipeline, uploads a single triangle that
+// matches the CUDA `--render-triangle` fixture byte-for-byte,
+// builds a single triangle GAS, optixLaunch'es the raygen which
+// fires one primary ray per pixel; the closest-hit returns
+// `0.5 * normal + 0.5` (normal-as-colour) and the miss program
+// returns the same vertical sky gradient the CUDA path emits.
+// Default output: `output/optix_triangle.ppm`.
+int run_render_optix_triangle(const rr::core::Config& cfg) {
+    using rr::core::Logger;
+
+    const std::string out_path = cfg.output_path.empty()
+        ? std::string("output/optix_triangle.ppm")
+        : cfg.output_path;
+
+#ifndef RELATIVITYRENDER_ENABLE_OPTIX
+    (void)cfg;
+    Logger::error("--render-optix-triangle requires OptiX. Rebuild "
+                  "with -DRELATIVITYRENDER_ENABLE_OPTIX=ON on a "
+                  "host with the CUDA Toolkit + OptiX SDK installed "
+                  "(also pass -DOPTIX_ROOT=/path/to/optix-sdk).");
+    return 1;
+#else
+    auto r = rr::optix::OptixRenderer::render_triangle(cfg.width, cfg.height);
+    if (!r.ok) {
+        Logger::error("optix triangle render failed: " + r.message);
+        return 1;
+    }
+
+    namespace fs = std::filesystem;
+    const fs::path out_fs = out_path;
+    if (out_fs.has_parent_path()) {
+        std::error_code ec;
+        fs::create_directories(out_fs.parent_path(), ec);
+    }
+    if (!r.image.save_ppm(out_fs)) {
+        Logger::error("could not write PPM: " + out_path);
+        return 1;
+    }
+
+    std::error_code ec;
+    const fs::path  abs = fs::absolute(out_fs, ec);
+    Logger::info(std::string("wrote OptiX triangle: ")
+               + (ec ? out_path : abs.string())
+               + " (" + std::to_string(cfg.width) + "x"
+               + std::to_string(cfg.height) + ", RGBA32F)");
+    return 0;
+#endif
+}
+
 // `--render-optix-test` dispatch (Stage 17A.3). Drives the
 // minimum-viable OptiX pipeline: initialise OptixBackend, build
 // pipeline (raygen + miss; no closest-hit, no path tracer),
@@ -2452,6 +2502,9 @@ int main(int argc, char** argv) {
 
         case CommandLine::Action::RenderOptixTest:
             return run_render_optix_test(result.config);
+
+        case CommandLine::Action::RenderOptixTriangle:
+            return run_render_optix_triangle(result.config);
 
         case CommandLine::Action::Error:
             Logger::error(result.error_message);

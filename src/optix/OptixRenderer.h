@@ -45,6 +45,23 @@ public:
     // function never dispatches to the CUDA renderer; the
     // OptiX path is genuinely independent.
     [[nodiscard]] static Result render_test(int width, int height) noexcept;
+
+    // Stage 17A.4 triangle render. Initialises the backend,
+    // builds the same pipeline (now with a closest-hit program
+    // group), uploads a single front-facing equilateral
+    // triangle (matching the CUDA `--render-triangle` fixture
+    // byte-for-byte), builds a single triangle GAS, populates
+    // launch params with the camera + scene handle, launches
+    // the raygen which fires one primary ray per pixel, and
+    // returns the framebuffer.
+    //
+    // Closest-hit shading: `0.5 * normal + 0.5` (normal-as-
+    // colour), matching the CUDA path. Miss shading: vertical
+    // sky gradient, also matching the CUDA path. No path
+    // tracing, no materials, no relativity.
+    //
+    // Same audit-host fallback semantics as render_test.
+    [[nodiscard]] static Result render_triangle(int width, int height) noexcept;
 };
 
 }  // namespace rr::optix

@@ -112,9 +112,13 @@ private:
     void*       module_         = nullptr;  // OptixModule
     void*       prog_raygen_    = nullptr;  // OptixProgramGroup
     void*       prog_miss_      = nullptr;  // OptixProgramGroup
+    // Stage 17A.4: hit-group program group (closest-hit only;
+    // any-hit + intersection programs are not used).
+    void*       prog_hitgroup_  = nullptr;  // OptixProgramGroup
     void*       pipeline_       = nullptr;  // OptixPipeline_t*
-    void*       sbt_record_buf_ = nullptr;  // device buffer (raygen + miss records)
-    void*       sbt_descriptor_ = nullptr;  // host-side struct
+    // Device buffer holding [raygen][miss][hitgroup] records.
+    void*       sbt_record_buf_ = nullptr;
+    void*       sbt_descriptor_ = nullptr;  // host-side OptixShaderBindingTable
     void*       launch_params_  = nullptr;  // device buffer for OptixLaunchParams
     std::size_t launch_params_size_ = 0;
 };
