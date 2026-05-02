@@ -1,55 +1,88 @@
 #pragma once
 
-// Stage 12B.2 placeholder for the OptiX device-context lifecycle owner.
+#include <string>
+
+// Stage 17A.1 owner of the real OptiX device context. Per
+// `docs/OPTIX_BACKEND_PLAN.md` §18, this is the analogue of
+// `cuda/CudaContext.{h,cpp}` for the OptiX backend.
 //
-// Per OPTIX_BACKEND_PLAN.md §18, this is the analogue of
-// `cuda/CudaContext.{h,cpp}` for the OptiX backend - the eventual
-// owner of `OptixDeviceContext` creation + destruction, log-callback
-// registration, and the runtime availability query that the
-// higher-level OptiX renderer uses to gate its dispatch.
+// Stages 12B.1-12B.5 shipped a file skeleton with only the static
+// `isCompiled()` / `isSdkFound()` queries; Stage 17A.1 adds the
+// non-static lifecycle (`initialize`, `shutdown`, accessors) so a
+// caller can actually create + destroy an `OptixDeviceContext`.
 //
-// Stage 12B.2's role is the *file skeleton only*: this header
-// declares the class and a single static `isCompiled()` query.
-// `isCompiled()` reports whether the project was built with
-// `-DRELATIVITYRENDER_ENABLE_OPTIX=ON` (Stage 12B.1's option flag,
-// threaded through as a compile definition by `CMakeLists.txt`).
+// The header deliberately does NOT include `<optix.h>`. The handle
+// is exposed as a `void*` (real type: `OptixDeviceContext`) so
+// downstream consumers that don't need to call OptiX-typed APIs
+// directly can include this header cleanly. The .cpp reinterprets
+// the pointer back to the typed handle; pipeline / SBT / AS code
+// that actually consumes the context will include `<optix.h>` and
+// reinterpret on the consumer side.
 //
-// What this header is NOT yet:
-// - Does not include `<optix.h>` or any other OptiX SDK header.
-// - Does not declare `initialize` / `shutdown` / `device_context()`
-//   accessors (those land alongside the actual OptixDeviceContext
-//   wiring in a subsequent 12B sub-stage).
-// - Reporting `isCompiled() == true` does not imply the OptiX SDK
-//   is available, the runtime can initialise, or any device is
-//   visible. Today the macro means only "the project was built
-//   with the OptiX flag toggled on"; until subsequent slices wire
-//   the SDK detection, that is the strongest claim that can be
-//   made honestly.
+// Stage 17A.1 scope: context init + interop only. NO pipelines,
+// NO modules, NO SBTs, NO renders. Subsequent 17A+ sub-stages
+// build the launch lifecycle on top.
+//
+// Two layers of compile-time gating:
+// - `RELATIVITYRENDER_ENABLE_OPTIX` - the user toggled the OptiX
+//   backend on at CMake time. When this is undefined, rr_optix is
+//   not compiled at all.
+// - `RELATIVITYRENDER_OPTIX_SDK_FOUND` - the SDK headers were
+//   located during configure. When this is defined the .cpp
+//   includes `<optix.h>` and calls real OptiX APIs; when it is
+//   not defined the .cpp compiles a stub that returns failure
+//   from `initialize()` with a clear `last_error()` message. This
+//   keeps the audit-host build (`-DRELATIVITYRENDER_ENABLE_OPTIX=
+//   ON` without an SDK install) compiling.
 
 namespace rr::optix {
 
 class OptixBackend {
 public:
-    // Returns true iff the project was compiled with the
-    // `RELATIVITYRENDER_ENABLE_OPTIX` macro defined (i.e., the
-    // operator passed `-DRELATIVITYRENDER_ENABLE_OPTIX=ON` to
-    // `cmake`). Returns false otherwise. Pure preprocessor query;
-    // no OptiX runtime calls, no device probing.
+    // ---- compile-time queries (always available) -------------------
+
+    // True iff the project was compiled with
+    // `RELATIVITYRENDER_ENABLE_OPTIX` defined.
     [[nodiscard]] static bool isCompiled() noexcept;
 
-    // Stage 12B.5: returns true iff the CMake configure stage
-    // located an OptiX SDK install (i.e., the Stage 12B.4
-    // detection block found `include/optix.h` under one of
-    // OPTIX_ROOT / OPTIX_SDK_DIR / $ENV{OPTIX_ROOT} and
-    // PUBLIC-defined `RELATIVITYRENDER_OPTIX_SDK_FOUND` on
-    // rr_optix). Returns false otherwise - including the
-    // RELATIVITYRENDER_ENABLE_OPTIX=ON-but-no-SDK state.
-    // Pure preprocessor query; no OptiX runtime calls, no SDK
-    // header include, no `find_package` invocation. Used today
-    // only by `--device-info` diagnostics; future sub-stages
-    // gate real SDK consumption (`<optix.h>` include,
-    // `optixInit`, etc.) on this same signal.
+    // True iff the CMake configure stage located an OptiX SDK
+    // install (Stage 12B.4 detection). When false,
+    // `initialize()` returns false with a "SDK not found" error.
     [[nodiscard]] static bool isSdkFound() noexcept;
+
+    // ---- lifecycle (Stage 17A.1) ----------------------------------
+
+    OptixBackend() noexcept;
+    ~OptixBackend();
+
+    OptixBackend(const OptixBackend&)            = delete;
+    OptixBackend& operator=(const OptixBackend&) = delete;
+    OptixBackend(OptixBackend&&) noexcept;
+    OptixBackend& operator=(OptixBackend&&) noexcept;
+
+    // Initialise the OptiX runtime + create an `OptixDeviceContext`
+    // bound to the current CUDA primary context. CUDA <-> OptiX
+    // interop is wired here: `cudaFree(0)` primes the CUDA primary
+    // context on the current device, then
+    // `optixDeviceContextCreate(0, ...)` inherits it (the standard
+    // OptiX 7+ pattern). Returns true on success; on failure
+    // populates `last_error()` and leaves the backend in its
+    // pre-init state. Idempotent: calling on an already-initialised
+    // backend is a no-op success.
+    [[nodiscard]] bool initialize() noexcept;
+
+    // Destroy the `OptixDeviceContext` (if any) and reset internal
+    // state. Idempotent. The destructor invokes this automatically.
+    void shutdown() noexcept;
+
+    [[nodiscard]] bool               isInitialized() const noexcept;
+    [[nodiscard]] void*              device_context() const noexcept;
+    [[nodiscard]] const std::string& last_error()    const noexcept;
+
+private:
+    void*       context_     = nullptr;  // real type: OptixDeviceContext
+    bool        initialized_ = false;
+    std::string last_error_;
 };
 
 }  // namespace rr::optix

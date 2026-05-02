@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.20)
 
 project(RelativityRender
     VERSION     0.1.0
-    DESCRIPTION "RelativityRender - GPU renderer platform (Stage 15 server render command: render wire dispatch wired to GPU pipeline)"
+    DESCRIPTION "RelativityRender - GPU renderer platform (Stage 17A.1: OptiX context init)"
     LANGUAGES   CXX
 )
 
@@ -33,7 +33,7 @@ option(RELATIVITYRENDER_ENABLE_OPTIX
 
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
-message(STATUS "RelativityRender ${PROJECT_VERSION} (Stage 15 server render command: render wire dispatch wired to GPU pipeline)")
+message(STATUS "RelativityRender ${PROJECT_VERSION} (Stage 17A.1: OptiX context init)")
 
 message(STATUS "  Build type   : ${CMAKE_BUILD_TYPE}")
 message(STATUS "  C++ standard : ${CMAKE_CXX_STANDARD}")
@@ -372,6 +372,20 @@ if(RELATIVITYRENDER_ENABLE_OPTIX)
 
     unset(_optix_candidates)
 
+    # Stage 17A.1: when the SDK was located, the OptiX context-init
+    # path in `src/optix/OptixBackend.cpp` includes `<optix.h>`,
+    # `<optix_function_table_definition.h>`, `<optix_stubs.h>`, and
+    # `<cuda_runtime.h>`. Both the SDK include directory and the
+    # CUDA Toolkit (for `cudaFree` / `cudaGetErrorString` and the
+    # `CUDA::cudart` import library) need to be available.
+    # `find_package(CUDAToolkit)` may already have run inside the
+    # `RR_ENABLE_CUDA` branch above; if not, run it here.
+    if(RELATIVITYRENDER_OPTIX_SDK_FOUND)
+        if(NOT CUDAToolkit_FOUND)
+            find_package(CUDAToolkit REQUIRED)
+        endif()
+    endif()
+
     add_library(rr_optix STATIC
         src/optix/OptixBackend.cpp
         src/optix/OptixRenderer.cpp
@@ -388,11 +402,17 @@ if(RELATIVITYRENDER_ENABLE_OPTIX)
     # `OptixBackend::isSdkFound()` (and any future SDK-gated
     # call site) can answer at runtime. The macro is defined
     # only when `include/optix.h` was located; otherwise it is
-    # undefined and `isSdkFound()` returns false. No SDK include
-    # path is propagated yet (per Stage 12B.4); this is purely a
-    # boolean signal for diagnostics.
+    # undefined and `isSdkFound()` returns false.
     if(RELATIVITYRENDER_OPTIX_SDK_FOUND)
         target_compile_definitions(rr_optix PUBLIC RELATIVITYRENDER_OPTIX_SDK_FOUND)
+        # Stage 17A.1: propagate the SDK include dir as PRIVATE
+        # (only OptixBackend.cpp consumes `<optix.h>`; the public
+        # rr_optix header surface stays free of SDK includes) and
+        # link CUDA::cudart so the runtime symbols
+        # `cudaFree` / `cudaGetErrorString` resolve.
+        target_include_directories(rr_optix PRIVATE
+            ${RELATIVITYRENDER_OPTIX_SDK_INCLUDE_DIR})
+        target_link_libraries(rr_optix PRIVATE CUDA::cudart)
     endif()
 endif()
 

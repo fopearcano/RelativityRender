@@ -3727,6 +3727,7 @@ sub-stages, appended to the same file.** No code is touched.
 | cuda-fix | Windows CUDA build repair (rr_apply_warnings wraps each warning flag in $<$<COMPILE_LANGUAGE:CXX>:...> so nvcc no longer receives /W4 /permissive- as inputs) | ✅ |
 | 15-fix2  | Stage 15 server lifetime repair (RenderServer::start's already-listening check changed from `listen_fd_ >= 0` to `!= kInvalidSocket`; on Windows the old check was always true on UINT_PTR `SOCKET` and short-circuited start into a no-op) | ✅ |
 | 15-render | Stage 15 server render command (render wire verb wired to GpuScene + CudaRenderer::render_scene; saves output/server_render.ppm; "error: no scene loaded" when no load_scene; "error: render requires CUDA" on no-CUDA builds) | ✅ |
+| 17A.1    | OptiX context init (real OptixDeviceContext via OptixBackend::initialize/shutdown; CUDA<->OptiX interop via cudaFree(0) + optixDeviceContextCreate(0,...); SDK-gated with audit-host fallback) | ✅ |
 
 ## Stage 12A.2.1 — OptiX raygen program design
 
@@ -9818,6 +9819,239 @@ dispatch.**
   - Server's per-request log shows all
     five wire interactions; total
     request count `5 requests served`.
+
+## Stage 17A.1 — OptiX context init
+
+**Scope of this slice (Stage 17A.1; master order
+#17 OptiX upgrade path): initialise a real
+`OptixDeviceContext` via the OptiX 7+ SDK and
+wire CUDA <-> OptiX interop. Stages 12B.1-12B.5
+shipped a file skeleton with only the static
+`isCompiled()` / `isSdkFound()` queries and a
+documentation-only `OptixRenderer` placeholder;
+this slice extends `OptixBackend` with the
+non-static lifecycle (`initialize` / `shutdown`
+/ accessors) so a caller can actually create
+and destroy an `OptixDeviceContext`.
+
+No pipelines, no modules, no SBTs, no
+acceleration structures, no renders. Subsequent
+17A+ sub-stages build the launch path on top of
+this scaffold. The CUDA renderer is unaffected.**
+
+### What ships
+
+- `src/optix/OptixBackend.h`:
+  - New non-static lifecycle on the
+    `OptixBackend` class: ctor / dtor / move
+    / `initialize() noexcept` / `shutdown()
+    noexcept` / `isInitialized()` /
+    `device_context()` (returns `void*`) /
+    `last_error()`.
+  - The static `isCompiled()` / `isSdkFound()`
+    queries from Stages 12B.2 / 12B.5 stay.
+  - The header deliberately avoids
+    `<optix.h>`. `device_context()` returns
+    `void*` (real type:
+    `OptixDeviceContext`); downstream
+    consumers that need the typed handle
+    reinterpret in their own .cpp.
+- `src/optix/OptixBackend.cpp`:
+  - Includes `<cuda_runtime.h>`, `<optix.h>`,
+    `<optix_function_table_definition.h>`
+    (the global symbol that backs every
+    OptiX runtime call), and `<optix_stubs.h>`
+    (`optixInit()` body), all gated on
+    `RELATIVITYRENDER_OPTIX_SDK_FOUND`. The
+    function-table definition lives here so
+    every program ends up with exactly one
+    copy.
+  - `initialize()` (SDK-found branch):
+    - `cudaFree(0)` to prime the CUDA
+      primary context on the current device.
+    - `optixInit()` to load the OptiX
+      function table.
+    - `optixDeviceContextCreate(0, &opts,
+      &ctx)` with `0` for `cuContext` so
+      OptiX inherits the just-primed CUDA
+      primary context (the canonical CUDA
+      <-> OptiX interop pattern).
+    - On any failure, populates
+      `last_error_` with a clear message
+      built from `cudaGetErrorString` /
+      `optixGetErrorName` and emits
+      `[OptiX:ERROR] init failed: <msg>`
+      to stderr.
+    - On success, emits
+      `[OptiX:INFO] OptixDeviceContext
+      created.` to stderr and returns
+      true. Idempotent: a second
+      `initialize()` on an already-
+      initialised backend is a no-op
+      success.
+  - `shutdown()` (SDK-found branch):
+    `optixDeviceContextDestroy` if non-null,
+    log the destruction, reset state.
+    Idempotent.
+  - Log callback (SDK-found branch):
+    forwards OptiX runtime diagnostics
+    (FATAL / ERROR / WARNING / PRINT) to
+    stderr with a `[OptiX:LEVEL][TAG]
+    message` prefix. `logCallbackLevel = 4`
+    selects the most detailed stream.
+  - `initialize()` / `shutdown()`
+    (audit-host fallback when
+    `RELATIVITYRENDER_OPTIX_SDK_FOUND` is
+    undefined): `initialize()` returns
+    false with a clear "OptiX SDK not found
+    at build time" message + remediation
+    guidance; `shutdown()` is a no-op state
+    reset. The class still compiles and
+    links.
+- `CMakeLists.txt`:
+  - When `RELATIVITYRENDER_OPTIX_SDK_FOUND`
+    is true, the OptiX block now also runs
+    `find_package(CUDAToolkit REQUIRED)` if
+    it hasn't already (the existing
+    `RR_ENABLE_CUDA` branch may run it
+    independently), then propagates
+    `RELATIVITYRENDER_OPTIX_SDK_INCLUDE_DIR`
+    to rr_optix as a PRIVATE include
+    directory and links `CUDA::cudart`
+    PRIVATE. The OptiX include path is
+    PRIVATE because only OptixBackend.cpp
+    consumes `<optix.h>`; the rr_optix
+    public header surface stays SDK-free.
+  - Stage label bumped to "Stage 17A.1:
+    OptiX context init" in both the
+    `project(...)` description and the
+    project-banner status message.
+- `docs/BUILD_PLAN.md`: this entry +
+  status-table row for 17A.1.
+
+### Architectural decisions worth highlighting
+
+- **Two-layer macro gating.** Stage 12B.5
+  established the
+  `RELATIVITYRENDER_ENABLE_OPTIX` (opt-in) +
+  `RELATIVITYRENDER_OPTIX_SDK_FOUND`
+  (SDK-headers-located) split. 17A.1
+  consumes both: real OptiX code lives in
+  the SDK-found branch; the audit-host
+  fallback lives in the no-SDK branch. The
+  audit host (Linux + GCC + no CUDA + no
+  OptiX SDK) builds the fallback cleanly,
+  so every existing test still passes
+  end-to-end.
+- **`void*` handle in the public surface.**
+  `device_context()` returns `void*` so
+  rr_optix's public header stays free of
+  `<optix.h>`. Consumers that need the
+  typed `OptixDeviceContext` reinterpret
+  inside their own .cpp where `<optix.h>`
+  is already included. This keeps the SDK
+  include strictly internal to rr_optix.
+- **CUDA <-> OptiX interop = `cudaFree(0)
+  + optixDeviceContextCreate(0, ...)`.**
+  The canonical OptiX 7+ pattern from the
+  SDK samples. `cudaFree(0)` ensures the
+  CUDA primary context exists on the
+  current device; passing `0` for
+  `cuContext` to `optixDeviceContextCreate`
+  inherits that context. No driver-API
+  state, no manual `cuCtxCreate`.
+- **Function-table symbol defined in this
+  TU.** `<optix_function_table_definition
+  .h>` defines the global
+  `g_optixFunctionTable` symbol that every
+  OptiX call dispatches through; it must
+  appear in exactly one TU. OptixBackend
+  .cpp is the one place rr_optix calls
+  OptiX runtime APIs, so this is the
+  natural home.
+- **Logger-free; stderr only.**
+  rr_optix doesn't link the executable's
+  Logger; on success / failure paths the
+  backend writes structured `[OptiX:LEVEL]`
+  lines to stderr, mirroring the OptiX
+  log callback's own format. The CLI
+  layer can read `last_error()` and
+  re-log via Logger if it wants.
+- **Move-only RAII.** `OptixBackend` owns
+  an `OptixDeviceContext`; copying the
+  handle would make double-destroy
+  trivially possible. Same pattern as
+  `RenderServer` / `GpuTexture` / etc.
+- **No `OptixRenderer` changes.** The
+  prompt scopes this slice to
+  `OptixBackend.cpp`. The
+  `OptixRenderer.{h,cpp}` placeholder
+  from Stage 12B.2 stays the way it was;
+  the real renderer entry point joins in
+  the next 17A sub-stage that actually
+  builds a pipeline.
+
+### Hard-rule audit
+
+- Do not build pipelines yet - **yes**, no
+  `optixModuleCreate`, no
+  `optixProgramGroupCreate`, no
+  `optixPipelineCreate`. Only
+  `optixDeviceContextCreate`.
+- Do not render yet - **yes**, no
+  `optixLaunch`. The CUDA path is
+  unaffected.
+- Must compile with OptiX ON - **yes**,
+  the audit host (CUDA-less, SDK-less)
+  builds rr_optix's stub branch cleanly
+  under `-DRELATIVITYRENDER_ENABLE_OPTIX=
+  ON`. ctest 4/4 passes. On a real host
+  with CUDA Toolkit + OptiX SDK installed,
+  the SDK-found branch compiles + links
+  by inspection (the new include path /
+  link line is what every OptiX 7+
+  starter sample uses).
+- Must not break CUDA path - **yes**,
+  zero `.cu` / `.cuh` / `cuda/*` /
+  `gpu/*` / `renderer/*` files are
+  touched. The CUDA renderer's libraries
+  + symbols are unchanged.
+- Update docs/BUILD_PLAN.md - **yes**,
+  this entry + status-table row.
+
+### Verified at the build
+
+- `cmake -DRELATIVITYRENDER_ENABLE_OPTIX=
+  OFF ..` (Linux clean reconfigure):
+  rr_optix is not compiled (per the
+  pre-existing 12B.3 gating); banner
+  shows "Stage 17A.1: OptiX context
+  init"; ctest 4/4 passes.
+- `cmake -DRELATIVITYRENDER_ENABLE_OPTIX=
+  ON ..` (Linux clean reconfigure on
+  audit host without CUDA / OptiX
+  SDK): rr_optix compiles in fallback
+  mode; expected 12B.4 SDK-not-found
+  warning fires; ctest 4/4 passes.
+  `librr_optix.a` is produced and
+  contains the `OptixBackend::initialize
+  / shutdown / isInitialized /
+  device_context / last_error / ctors /
+  static queries` symbols.
+- A future CUDA + OptiX-SDK host run
+  (Stage 12B.5 visual confirmation
+  precedent applies; not exercised here)
+  exercises the populated branch:
+  `cudaFree(0)` -> `optixInit()` ->
+  `optixDeviceContextCreate(0, &opts,
+  &ctx)` -> `[OptiX:INFO]
+  OptixDeviceContext created.`. The
+  destructor (or explicit shutdown())
+  emits `[OptiX:INFO]
+  OptixDeviceContext destroyed.`. Any
+  failure emits a `[OptiX:ERROR] init
+  failed: <reason>` line and is
+  retrievable via `last_error()`.
 
 ## Next stage
 
