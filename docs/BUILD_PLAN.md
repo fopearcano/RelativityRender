@@ -15157,6 +15157,230 @@ specific gap that prevents landing:
   `docs/MODULE_MAP.md` rows for
   M11 / M12 / M16.
 
+## Stage 19E.1 — relativity tests
+
+**Scope of this slice (Stage 19E.1; master
+order #14, "Relativistic Camera Model"):
+add unit-test coverage for the relativity
+math leaf (`src/relativity/RelativityMath.h`).
+Until this slice the leaf had **zero direct
+test coverage** despite being a load-
+bearing dependency of every CUDA + OptiX
+raygen / closest-hit / miss program in the
+tree. The goal is to make the relativistic
+model scientifically testable, not just
+visually plausible — every formula is now
+checked against its closed-form analytic
+value (longitudinal Doppler factor,
+aberration cos(theta'), gamma identities)
+or against a stable physical invariant
+(unit-length output, finite + positive D
+for |beta| < 1, gamma * lorentzContraction
+== 1).**
+
+### What ships
+
+- `tests/relativity_tests.cpp` (NEW, 1
+  test target, 7 named test functions,
+  **800 hand-rolled `RR_CHECK`
+  assertions**). The seven test functions
+  match the prompt's seven required
+  cases:
+    1. `test_identity_at_zero_beta` —
+       `aberrateDirection({0,0,0}, d) == d`
+       and `dopplerFactor({0,0,0}, d) == 1`
+       across 8 directions (basis +
+       generic unit vectors); also
+       checks `gamma(0) == 1`,
+       `lorentzContraction(0) == 1`,
+       `searchlightFactor(1) == 1`, and
+       the Stage 18A.3
+       `precompute_relativity` overload's
+       degenerate identity at zero beta.
+    2. `test_forward_blueshift` —
+       direction parallel to `beta_vec`
+       gives D = sqrt((1+b)/(1-b))
+       analytically, across five betas
+       {0.10, 0.25, 0.50, 0.75, 0.90}
+       and three boost axes. Asserts
+       both D > 1 (qualitative blueshift)
+       and the analytic equality.
+    3. `test_backward_redshift` —
+       direction antiparallel to
+       `beta_vec` gives D = sqrt((1-b)/
+       (1+b)). Five betas, three axes.
+       Cross-check: D_forward *
+       D_backward == 1 (longitudinal
+       Doppler is its own inverse under
+       beta -> -beta).
+    4. `test_aberration_matches_analytic`
+       — for boost along z and direction
+       at angle theta from +z in the
+       xz-plane, asserts d'.z ==
+       (cos(theta) - beta)/(1 - beta *
+       cos(theta)) within float32
+       tolerance, plus d'.y == 0 (the
+       boost rotation stays in the
+       xz-plane), plus |d'| == 1. Sweeps
+       five betas × eleven angles.
+       Spot-checks the perpendicular-
+       incidence closed form (d' =
+       (1/gamma, 0, -beta)) explicitly.
+    5. `test_doppler_finite_positive_for_
+       subluminal_beta` — D is finite
+       (not NaN, not inf) and strictly
+       positive across 11 betas (0,
+       0.01, 0.10, ..., 0.999, 0.999999),
+       3 boost axes, and 13 unit
+       directions covering each octant.
+    6. `test_clamp_beta_existing_design`
+       — documents the existing API
+       contract: `clampBeta` clamps
+       (does not reject) out-of-range
+       magnitudes, folds negatives to
+       absolute value, defends against
+       a malformed `RelativityParams`
+       with `max_beta >= 1` by capping
+       internally at 0.999999, and
+       returns a value strictly below 1
+       for any input. Verifies the
+       default `RelativityParams::
+       max_beta` matches the internal
+       cap.
+    7. `test_stability_near_high_beta`
+       — at |beta| = 0.99 (gamma ~ 7),
+       checks gamma * lorentzContraction
+       == 1, longitudinal D matches the
+       closed form within relative
+       float32 tolerance (kEpsLoose),
+       searchlightFactor(D) = D^4 stays
+       finite, perpendicular aberration
+       d' = (1/gamma, 0, -beta) holds
+       to within kEpsLoose, an 11-angle
+       sweep keeps |d'| == 1, and the
+       Stage 18A.3 precomputed-launch
+       overload stays in lockstep with
+       the direct call (i.e. the perf
+       path does not drift in the high-
+       beta regime).
+- `CMakeLists.txt`:
+    - New `add_executable(relativity_tests
+      tests/relativity_tests.cpp)` +
+      `target_link_libraries(...
+      rr_relativity)` + `add_test(NAME
+      relativity_tests COMMAND
+      relativity_tests)`. Mirrors the
+      existing per-test pattern; goes
+      through the same `rr_apply_warnings`
+      helper.
+    - Banner / DESCRIPTION bumped from
+      "RR_ENABLE_OPTIX flag rename" to
+      "Stage 19E.1: relativity tests".
+- `README.md`: ctest count updated
+  `4/4 (math / image / gpu /
+  pathtracer)` -> `5/5 (math / image
+  / gpu / pathtracer / relativity)`.
+- `docs/MODULE_MAP.md`: module #13
+  (Relativistic Camera Model) row
+  expanded with the per-test summary
+  + the assertion count. Status
+  unchanged ("production ready" —
+  the math leaf was already verified
+  via integration paths; this slice
+  pins the analytic formulas so any
+  future micro-optimisation slip
+  fails loudly in ctest).
+- `docs/BUILD_PLAN.md`: this entry +
+  no change to the module / milestone
+  status tables (the math leaf was
+  already "production ready" at the
+  module level; M9 stays "partial
+  implementation" because its visual
+  exit criterion remains gated on a
+  CUDA + OptiX-SDK host run — the
+  math-leaf side of M9 is now
+  analytically pinned but the GPU-
+  side visual cannot be verified on
+  the audit host).
+
+### Documented conventions
+
+The test file's preamble records the
+conventions the leaf actually uses (so
+the formulas are not ambiguous to a
+future maintainer):
+
+- Natural units (c = 1); `beta_vec`
+  components are dimensionless in
+  (-1, +1).
+- `dopplerFactor(beta_vec, direction)`
+  returns D = 1 / [gamma * (1 - beta
+  · direction)]. Forward (parallel)
+  -> blueshift D > 1; backward
+  (antiparallel) -> redshift D < 1.
+- `aberrateDirection`'s output, when
+  decomposed against the boost axis,
+  satisfies the textbook
+  cos(theta') = (cos(theta) - beta)
+  / (1 - beta * cos(theta)) and the
+  transverse component scales as
+  1/gamma.
+- Invalid |beta| >= 1 is **clamped**
+  by `clampBeta` (default cap
+  0.999999), not rejected.
+
+### Hard-rule audit
+
+- Use existing math conventions and
+  namespaces - **yes**. Tests live
+  in the unnamed namespace; type
+  refs use `rr::math::` and
+  `rr::relativity::` like the leaf.
+  No new public API; no header
+  changes; no CMake target shape
+  change beyond adding the test
+  executable.
+- Do not change public API unless
+  necessary - **yes**. Zero
+  public-API edits. The test only
+  exercises symbols already
+  exported by `rr::relativity`.
+- If formulas are ambiguous,
+  document the convention used -
+  **yes**. The test file's preamble
+  records the four convention
+  decisions (natural units; D >
+  1 = blueshift; aberration
+  decomposition against the boost
+  axis; clamp-not-reject for |beta|
+  >= 1).
+- Keep tests deterministic - **yes**.
+  No RNG; no clock-derived seeds;
+  no host-specific paths. Every
+  assertion is a closed-form
+  comparison.
+- Update BUILD_PLAN.md after
+  landing - **yes**, this entry.
+
+### Verified at the build
+
+- `cmake -S . -B build` (audit host,
+  no CUDA, no OptiX SDK): banner
+  shows "Stage 19E.1: relativity
+  tests"; clean build; ctest 5/5
+  green (was 4/4).
+- `build/bin/relativity_tests` run
+  directly prints
+  `relativity_tests: 800 / 800
+  passed`.
+- The new test executable links
+  only against `rr_relativity`
+  (which is INTERFACE -> rr_math),
+  matching the existing
+  per-target dependency
+  discipline. No CUDA / OptiX /
+  rr_gpu link edges added.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:

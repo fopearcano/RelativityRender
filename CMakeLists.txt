@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.20)
 
 project(RelativityRender
     VERSION     0.1.0
-    DESCRIPTION "RelativityRender - GPU renderer platform (RR_ENABLE_OPTIX flag rename)"
+    DESCRIPTION "RelativityRender - GPU renderer platform (Stage 19E.1: relativity tests)"
     LANGUAGES   CXX
 )
 
@@ -59,7 +59,7 @@ endif()
 
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
-message(STATUS "RelativityRender ${PROJECT_VERSION} (RR_ENABLE_OPTIX flag rename)")
+message(STATUS "RelativityRender ${PROJECT_VERSION} (Stage 19E.1: relativity tests)")
 
 message(STATUS "  Build type   : ${CMAKE_BUILD_TYPE}")
 message(STATUS "  C++ standard : ${CMAKE_CXX_STANDARD}")
@@ -661,4 +661,20 @@ if(RR_BUILD_TESTS)
     target_link_libraries(pathtracer_tests PRIVATE rr_pathtracer)
     rr_apply_warnings(pathtracer_tests)
     add_test(NAME pathtracer_tests COMMAND pathtracer_tests)
+
+    # relativity_tests (Stage 19E.1) covers the relativity math
+    # leaf in `src/relativity/RelativityMath.h`: identity at
+    # |beta| = 0; forward (parallel-to-beta) blueshift /
+    # backward redshift against the closed-form longitudinal
+    # Doppler factor; aberration angle against the analytic
+    # cos(theta') = (cos(theta) - beta) / (1 - beta cos(theta))
+    # relation; D finite + positive across |beta| < 1; clampBeta
+    # behaviour; numerical stability at |beta| = 0.99 (incl. the
+    # Stage 18A.3 precomputed-launch overload). RR_HD inlines
+    # compile against the host compiler so the leaf is fully
+    # exercisable on the audit host.
+    add_executable(relativity_tests tests/relativity_tests.cpp)
+    target_link_libraries(relativity_tests PRIVATE rr_relativity)
+    rr_apply_warnings(relativity_tests)
+    add_test(NAME relativity_tests COMMAND relativity_tests)
 endif()
