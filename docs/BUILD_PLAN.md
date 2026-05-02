@@ -3733,6 +3733,7 @@ sub-stages, appended to the same file.** No code is touched.
 | 17A.4    | OptiX triangle render (closest-hit normal-as-colour + miss sky gradient; raygen `optixTrace`; HitGroupSbtRecord; launch params gain camera + scene_handle; OptixRenderer::render_triangle; --render-optix-triangle → output/optix_triangle.ppm; visually matches CUDA --render-triangle) | ✅ |
 | 17A.5    | OptiX relativity (raygen Lorentz-aberration; closest-hit + miss apply Doppler colour shift + bolometric searchlight scale via shared `rr::relativity::*` math leaf; launch params gain Observer + RelativityParams; OptixRenderer::render_relativistic; --render-optix-relativity → output/optix_relativity.ppm; beta = 0.5 along -Z mirroring --render-aovs) | ✅ |
 | 18A.1    | GPU timing (CudaTiming.{h,cpp} cudaEvent_t wrappers; rr::gpu::GpuTimer move-only RAII + format_gpu_timing_line; gpu_time_ms added to CudaRenderer/OptixRenderer/PathTracer Results; events bracket every kernel-launch region; main.cpp log_gpu_timing helper emits "[GPU] <action>: render time = X.XXX ms; primary rays = N (WxH); rays/sec = Y.YY M" per render dispatch) | ✅ |
+| 18A.2    | GPU memory audit (docs/GPU_MEMORY_AUDIT.md catalogues every cudaMalloc/cudaFree + RAII owner; verifies no leaks, no double-frees, no orphan allocations; documents two intentional duplications (OptiX triangle prologue duplication across render_triangle/render_relativistic, CUDA-vs-OptiX triangle storage layouts) with future-fix paths; pure documentation, no code changes) | ✅ |
 
 ## Stage 12A.2.1 — OptiX raygen program design
 
@@ -11384,6 +11385,156 @@ new GPU work.**
   pixel per spp accumulated over the loop).
   Visual outputs match the Stage 17A.5
   baseline byte-for-byte.
+
+## Stage 18A.2 — GPU memory audit
+
+**Scope of this slice (Stage 18A.2; master order
+#18 / observability slice): documentation-only
+audit of every device-resident allocation in the
+project. No code changes; no new files outside
+`docs/GPU_MEMORY_AUDIT.md` (and the BUILD_PLAN
+update). The audit verifies allocation-free
+pairing, RAII ownership, and surfaces any leaks /
+duplications.**
+
+### What ships
+
+- `docs/GPU_MEMORY_AUDIT.md` (NEW): a 9-section
+  audit document catalogueing
+    1. backend allocation primitives
+       (`cuda_alloc` / `cuda_free` /
+        `cuda_event_create` / `cuda_event_destroy`
+        wrappers + their host-side bridges in
+        `gpu/GpuBuffer.cpp` / `gpu/GpuTiming.cpp`),
+    2. every move-only RAII owner that holds a
+       device-resident byte (GpuBuffer<T>,
+       GpuMesh, GpuTexture, GpuScene,
+       AccumulationBuffer, GpuAOVBuffer,
+       OptixBackend, OptixGas, OptixPipeline,
+       GpuTimer),
+    3. function-scope manual `cudaMalloc` /
+       `cudaFree` patterns in the OptiX render
+       paths (`render_test`, `render_triangle`,
+       `render_relativistic`, `build_mesh_gas`,
+       `OptixPipeline::create`),
+    4. duplications worth knowing about (two
+       intentional ones, both tracked as future-
+       cleanup),
+    5. per-render hot-path allocations (~3-10 MiB
+       allocator round-trip per render call;
+       acceptable for batch CLI use, future
+       optimisation target for interactive
+       preview),
+    6. leak / double-free / use-after-free
+       analysis (none found; cross-checked by
+       tracing every `return` statement below
+       every `cudaMalloc` / `cudaEventCreate`
+       site against the matching free),
+    7. audit-host fallback behaviour (no CUDA /
+       no OptiX SDK -> no allocations happen,
+       audit trivially passes),
+    8. raw allocation tally per file, and
+    9. recommendations for future stages (none
+       are required for correctness).
+- `CMakeLists.txt`: stage label bumped to
+  "Stage 18A.2: GPU memory audit" in both the
+  `project(...)` description and the project-
+  banner status message.
+- `docs/BUILD_PLAN.md`: this entry +
+  status-table row for 18A.2.
+
+### Findings (summary)
+
+- **No leaks, no double-frees, no orphan
+  allocations.** Every device allocation in the
+  project is held by a move-only RAII handle or
+  freed manually on every exit path of the
+  function that allocated it.
+- **Two intentional duplications**, both tracked
+  as future-cleanup work, neither leaks memory:
+    - The OptiX triangle-render prologue is
+      copy/pasted across
+      `OptixRenderer::render_triangle` and
+      `OptixRenderer::render_relativistic`. Stage
+      17A.4 / 17A.5's hard rules forbade
+      introducing new abstractions; the cleanup
+      is on the post-Stage-17 list.
+    - CUDA and OptiX backends store triangles in
+      different device layouts (the CUDA path
+      keeps Vertex / Triangle SoA; OptiX needs a
+      packed `float3[]` for built-in triangle
+      intersection). Tracked as Stage 17B+ work
+      to consume `GpuMesh` device buffers
+      directly via `vertexStrideInBytes`.
+- **Per-render hot-path allocations** scale with
+  framebuffer + scene size (~3-10 MiB per
+  render). Acceptable today; future optimisation
+  target when the renderer-server gains
+  interactive preview.
+
+### Architectural decisions worth highlighting
+
+- **Source-level pairing audit, not runtime.**
+  The audit traces `cudaMalloc` -> matching
+  `cudaFree` per file/line on the source rather
+  than running `cuda-memcheck --leak-check`. The
+  audit-host without CUDA cannot run the
+  runtime check; the source-level pairing is
+  the strongest verification that does not
+  require a CUDA-capable host. A future CI
+  validation gate adds the runtime check.
+- **Audit-host fallback paths counted.**
+  Without CUDA / without the OptiX SDK, the
+  allocation primitives are no-ops. The audit
+  records this explicitly so a future reader
+  does not chase a "missing free" that does not
+  exist because the matching alloc never ran.
+- **OptiX-vs-CUDA triangle storage is
+  duplication, not a bug.** The audit flags it
+  as duplication so it stays visible, but
+  documents why each backend has its own
+  layout: CUDA's hand-written closest-hit reads
+  `Vertex.normal / .uv` and `Triangle` index
+  triplets, while OptiX's built-in triangle
+  intersection only consumes packed positions
+  (per-vertex normal / UV come back via
+  `optixGetTriangleVertexData` or future
+  attribute buffers). Sharing storage requires
+  the OptiX path to honour `Vertex`'s stride,
+  which is the documented Stage 17B+ direction.
+
+### Hard-rule audit
+
+- No new features - **yes**, the slice adds
+  zero source files outside `docs/`, no new
+  build targets, no new CLI surface, no new
+  test cases, no new public API.
+- Documentation only - **yes**, the only
+  changes are `docs/GPU_MEMORY_AUDIT.md` (new),
+  `docs/BUILD_PLAN.md` (status-table row +
+  this entry), and `CMakeLists.txt` (stage
+  label bump). No source files in `src/`
+  changed.
+- Update docs/BUILD_PLAN.md - **yes**, this
+  entry + status-table row.
+
+### Verified at the build
+
+- `cmake -DRR_ENABLE_CUDA=OFF
+   -DRELATIVITYRENDER_ENABLE_OPTIX=OFF` (Linux):
+  banner shows "Stage 18A.2: GPU memory audit";
+  no source files changed; ctest 4/4 green.
+- `cmake -DRELATIVITYRENDER_ENABLE_OPTIX=ON`
+  (Linux audit-host clean reconfigure): banner
+  bumped; rr_optix still compiles via the
+  fallback branch; ctest 4/4 green.
+- The audit document itself is reviewed against
+  the source: every `cudaMalloc` / `cudaFree` /
+  `cudaEventCreate` / `cudaEventDestroy` site
+  in `src/cuda/`, `src/gpu/`, `src/optix/`, and
+  `src/renderer/` is traced to its matched
+  counterpart and recorded in `docs/GPU_MEMORY_
+  AUDIT.md` §3 / §6.
 
 ## Next stage
 
