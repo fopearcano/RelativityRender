@@ -200,12 +200,21 @@ __global__ void k_sphere_relativistic(float* pixels, int width, int height,
 
     using rr::math::Vec3;
 
+    // Stage 18A.3: precompute the launch-invariant relativity
+    // scalars once per thread. `aberrateDirection` and
+    // `dopplerFactor` both consume `length(beta_vec)` and
+    // `gamma(beta_mag)`; without this snapshot both functions
+    // would recompute them, paying four `sqrt`s per pixel for
+    // values that depend only on the per-launch observer
+    // velocity.
+    const auto rel = rr::relativity::precompute_relativity(observer.velocity);
+
     // 1. Camera ray.
     auto ray = rr::camera::generate_camera_ray(cam, x, y, width, height);
 
     // 2. Aberration.
     if (params.enable_aberration) {
-        ray.direction = rr::relativity::aberrateDirection(observer.velocity,
+        ray.direction = rr::relativity::aberrateDirection(rel,
                                                           ray.direction);
     }
 
@@ -229,8 +238,7 @@ __global__ void k_sphere_relativistic(float* pixels, int width, int height,
 
     // 5. Doppler factor for the (possibly aberrated) photon
     //    direction in the scene frame. Computed once and reused.
-    const float D = rr::relativity::dopplerFactor(observer.velocity,
-                                                  ray.direction);
+    const float D = rr::relativity::dopplerFactor(rel, ray.direction);
 
     // 6. Doppler colour shift (artistic approximation).
     if (params.enable_doppler) {
@@ -289,6 +297,15 @@ __global__ void k_render_scene(float* pixels, int width, int height,
 
     using rr::math::Vec3;
 
+    // Stage 18A.3: snapshot the per-launch relativity invariants
+    // (|beta|, gamma) once per thread. The aberration step (§2)
+    // and the Doppler-factor step (§5) both used to recompute
+    // these via internal `length` + `gamma` calls; the precompute
+    // halves the per-pixel `sqrt` count through the relativity
+    // stack and shortens the dependent chain through the kernel.
+    const auto rel = rr::relativity::precompute_relativity(
+        scene.observer.velocity);
+
     // 1. Camera ray.
     auto ray = rr::camera::generate_camera_ray(scene.camera,
                                                x, y, width, height);
@@ -296,7 +313,7 @@ __global__ void k_render_scene(float* pixels, int width, int height,
     // 2. Aberration in the observer's frame.
     if (scene.params.enable_aberration) {
         ray.direction = rr::relativity::aberrateDirection(
-            scene.observer.velocity, ray.direction);
+            rel, ray.direction);
     }
 
     // 3. Closest-hit loop. `t_max` tightens as candidates are
@@ -470,8 +487,9 @@ __global__ void k_render_scene(float* pixels, int width, int height,
     }
 
     // 5. Doppler factor for the (possibly aberrated) ray direction.
-    const float D = rr::relativity::dopplerFactor(scene.observer.velocity,
-                                                  ray.direction);
+    //    Uses the Stage 18A.3 precomputed snapshot so the per-pixel
+    //    cost is a `dot` + a few flops, not another `sqrt` pair.
+    const float D = rr::relativity::dopplerFactor(rel, ray.direction);
 
     // 6. Doppler colour shift.
     if (scene.params.enable_doppler) {

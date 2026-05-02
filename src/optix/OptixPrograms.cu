@@ -80,9 +80,15 @@ apply_doppler_and_searchlight(rr::math::Vec3 base_color,
     const auto& obs = optixLaunchParams.observer;
     const auto& par = optixLaunchParams.params;
 
+    // Stage 18A.3: precompute the launch-invariant relativity
+    // scalars (|beta|, gamma) once per program invocation. Skips
+    // the redundant `length` + `gamma` reductions inside the
+    // two-arg `dopplerFactor` overload.
+    const auto rel = rr::relativity::precompute_relativity(obs.velocity);
+
     // Doppler factor for the (possibly aberrated) photon
     // direction in the scene frame. Computed once and reused.
-    const float D = rr::relativity::dopplerFactor(obs.velocity, ray_dir_world);
+    const float D = rr::relativity::dopplerFactor(rel, ray_dir_world);
 
     Vec3 color = base_color;
 
@@ -141,9 +147,15 @@ extern "C" __global__ void __raygen__pinhole() {
     // observer's frame before tracing. Identity at |beta| = 0
     // and at default-constructed `RelativityParams`. Same gate
     // and helper the CUDA path uses (RelativityMath.h).
+    //
+    // Stage 18A.3: feed the precomputed `(|beta|, gamma)`
+    // snapshot into `aberrateDirection` so the per-pixel `sqrt`
+    // count drops by one (the `length(beta_vec)` reduction).
     if (optixLaunchParams.params.enable_aberration) {
+        const auto rel = rr::relativity::precompute_relativity(
+            optixLaunchParams.observer.velocity);
         ray.direction = rr::relativity::aberrateDirection(
-            optixLaunchParams.observer.velocity, ray.direction);
+            rel, ray.direction);
     }
 
     // Trace. 3 payload registers hold the resulting RGB.

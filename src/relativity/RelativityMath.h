@@ -128,6 +128,79 @@ RR_HD inline rr::math::Vec3 aberrateDirection(rr::math::Vec3 beta_vec,
     return normalize(num * (1.0f / denom));
 }
 
+// ---- Stage 18A.3: precomputed launch invariants -----------------
+//
+// `aberrateDirection(beta_vec, dir)` and `dopplerFactor(beta_vec,
+// dir)` both internally compute `length(beta_vec)` and
+// `gamma(beta_mag)`. With the relativity stack on (the default)
+// every pixel pays four `sqrt`s for two scalar values that depend
+// only on the per-launch observer velocity, not on the per-pixel
+// ray direction.
+//
+// `PrecomputedRelativity` snapshots the invariants once. Kernels
+// that call both helpers per-pixel build it once at thread entry
+// (or once per launch via constant memory in a future slice) and
+// pass the snapshot to the precomputed-input overloads below,
+// halving the per-pixel `sqrt` count and trimming dependent-chain
+// length through the relativity stack.
+//
+// At |beta| = 0 the gamma value is 1 and the precomputed-input
+// helpers degenerate to identity, matching the existing
+// two-argument variants byte-for-byte.
+struct PrecomputedRelativity {
+    rr::math::Vec3 beta_vec = {0.0f, 0.0f, 0.0f};
+    float          beta_mag = 0.0f;  // length(beta_vec)
+    float          gamma    = 1.0f;  // 1 / sqrt(1 - beta^2)
+};
+
+// PHYSICAL.
+// Build the per-launch precomputed invariants. Pure host/device
+// helper; runs once per kernel launch (or per thread, if the
+// launch parameters are read from constant memory).
+RR_HD inline PrecomputedRelativity precompute_relativity(
+        rr::math::Vec3 beta_vec) {
+    PrecomputedRelativity p;
+    p.beta_vec = beta_vec;
+    p.beta_mag = rr::math::length(beta_vec);
+    p.gamma    = gamma(p.beta_mag);
+    return p;
+}
+
+// PHYSICAL.
+// Doppler factor with the per-launch invariants supplied. Equivalent
+// to `dopplerFactor(p.beta_vec, direction)` but skips the redundant
+// `length` + `gamma` reductions (saves two `sqrt`s per call).
+RR_HD inline float dopplerFactor(const PrecomputedRelativity& p,
+                                 rr::math::Vec3 direction) {
+    const float bdotd = rr::math::dot(p.beta_vec, direction);
+    const float denom = p.gamma * (1.0f - bdotd);
+    if (denom <= 1.0e-12f) return 1.0f;
+    return 1.0f / denom;
+}
+
+// PHYSICAL.
+// Aberration with the per-launch invariants supplied. Equivalent
+// to `aberrateDirection(p.beta_vec, direction)` but skips the
+// redundant `length` + `gamma` reductions (saves two `sqrt`s per
+// call). Returns the input direction unchanged at |beta| = 0.
+RR_HD inline rr::math::Vec3 aberrateDirection(
+        const PrecomputedRelativity& p,
+        rr::math::Vec3               direction) {
+    using rr::math::Vec3;
+    using rr::math::dot;
+    using rr::math::normalize;
+
+    if (p.beta_mag <= 1.0e-12f) return direction;
+
+    const float bdotd = dot(p.beta_vec, direction);
+    const float coef  = (p.gamma * bdotd) / (p.gamma + 1.0f) - 1.0f;
+    const Vec3  num   = direction * (1.0f / p.gamma) + p.beta_vec * coef;
+    const float denom = 1.0f - bdotd;
+    if (denom * denom <= 1.0e-24f) return direction;
+
+    return normalize(num * (1.0f / denom));
+}
+
 // ARTISTIC APPROXIMATION.
 // A physically correct Doppler colour shift requires a spectral
 // representation: each spectral band is shifted by D in frequency

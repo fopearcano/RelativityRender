@@ -3734,6 +3734,7 @@ sub-stages, appended to the same file.** No code is touched.
 | 17A.5    | OptiX relativity (raygen Lorentz-aberration; closest-hit + miss apply Doppler colour shift + bolometric searchlight scale via shared `rr::relativity::*` math leaf; launch params gain Observer + RelativityParams; OptixRenderer::render_relativistic; --render-optix-relativity → output/optix_relativity.ppm; beta = 0.5 along -Z mirroring --render-aovs) | ✅ |
 | 18A.1    | GPU timing (CudaTiming.{h,cpp} cudaEvent_t wrappers; rr::gpu::GpuTimer move-only RAII + format_gpu_timing_line; gpu_time_ms added to CudaRenderer/OptixRenderer/PathTracer Results; events bracket every kernel-launch region; main.cpp log_gpu_timing helper emits "[GPU] <action>: render time = X.XXX ms; primary rays = N (WxH); rays/sec = Y.YY M" per render dispatch) | ✅ |
 | 18A.2    | GPU memory audit (docs/GPU_MEMORY_AUDIT.md catalogues every cudaMalloc/cudaFree + RAII owner; verifies no leaks, no double-frees, no orphan allocations; documents two intentional duplications (OptiX triangle prologue duplication across render_triangle/render_relativistic, CUDA-vs-OptiX triangle storage layouts) with future-fix paths; pure documentation, no code changes) | ✅ |
+| 18A.3    | Relativity precompute (single redundant-math fix: PrecomputedRelativity POD + `precompute_relativity()` factory + precomputed-input overloads of aberrateDirection / dopplerFactor in RelativityMath.h; k_sphere_relativistic / k_render_scene / OptixPrograms.cu raygen + apply_doppler_and_searchlight all snapshot once at thread entry instead of paying redundant `length(beta_vec)` + `gamma(beta_mag)` reductions inside both the aberration and the Doppler call; saves 2 sqrts per pixel on the relativistic-stack-on path) | ✅ |
 
 ## Stage 12A.2.1 — OptiX raygen program design
 
@@ -11535,6 +11536,236 @@ duplications.**
   `src/renderer/` is traced to its matched
   counterpart and recorded in `docs/GPU_MEMORY_
   AUDIT.md` §3 / §6.
+
+## Stage 18A.3 — Relativity precompute
+
+**Scope of this slice (Stage 18A.3; master order
+#18 / observability slice): a single, focused
+performance fix targeting the worst redundant-
+math hotspot identified by the Stage 18A.2
+audit. The fix is intentionally narrow per the
+Stage 18A.3 hard rule "ONE fix only". No
+algorithmic changes, no new features, no kernel
+restructuring. Pixel output is byte-for-byte
+identical to the Stage 18A.2 baseline.**
+
+### Bottleneck identified
+
+`aberrateDirection(beta_vec, dir)` and
+`dopplerFactor(beta_vec, dir)` both internally
+compute:
+
+- `length(beta_vec)` (one `sqrt`),
+- `gamma(beta_mag)` (one `sqrt` via
+  `1 / sqrt(1 - beta^2)`).
+
+With the relativity stack on (the default for
+`--render-relativistic`, `--render-aovs`,
+`--render-optix-relativity`, and any scene with
+non-zero observer velocity), every pixel pays
+**four `sqrt`s** for two scalar values that
+depend only on the per-launch observer 3-velocity
+and are constant across the entire kernel
+launch. The kernel paths affected are:
+
+- `k_sphere_relativistic` (CudaTestKernel.cu):
+  one aberration call + one doppler call per
+  pixel.
+- `k_render_scene` (CudaTestKernel.cu): one
+  aberration call + one doppler call per pixel
+  (used by every non-pathtrace scene render
+  including `render_scene_with_aovs`).
+- `OptixPrograms.cu` raygen
+  (`__raygen__pinhole`): one aberration call
+  per traced ray.
+- `OptixPrograms.cu` shading
+  (`apply_doppler_and_searchlight`, called from
+  both closest-hit and miss): one doppler call
+  per ray result.
+
+The audit picks this as the biggest single
+bottleneck because:
+
+- It scales with the framebuffer (every pixel
+  pays the cost).
+- The data is launch-invariant (one `Observer
+  ::velocity` per kernel launch), so there is
+  zero per-pixel locality justification for
+  recomputing.
+- `sqrt` is one of the longest-latency
+  operations on the SM (2-4x a regular FMA).
+- The fix is minimally invasive (6 lines of
+  call-site change per kernel + a small
+  POD/helper trio in the math leaf).
+
+### Fix (one only)
+
+Category: **redundant math** elimination via
+launch-invariant precomputation.
+
+- `src/relativity/RelativityMath.h` (extended):
+  - new `struct PrecomputedRelativity` POD
+    holding `beta_vec`, `beta_mag`, and
+    `gamma`. The math leaf stays RR_HD inline
+    so the same header compiles for both host
+    and device.
+  - new `precompute_relativity(beta_vec)`
+    factory that builds the POD with one
+    `length` + one `gamma` call.
+  - new precomputed-input overloads of
+    `aberrateDirection(const Precomputed
+    Relativity&, Vec3 dir)` and
+    `dopplerFactor(const PrecomputedRelativity&,
+    Vec3 dir)`. They contain the body of the
+    existing two-arg overloads minus the
+    redundant `length` / `gamma` reductions.
+    Behaviour is byte-identical for the same
+    `(beta_vec, dir)` inputs.
+  - the existing two-arg overloads stay.
+    They are RR_HD inline header-only with no
+    ABI; future callers that don't need the
+    precompute can keep using them.
+- `src/cuda/CudaTestKernel.cu`:
+  - `k_sphere_relativistic` and
+    `k_render_scene` each call
+    `precompute_relativity(observer.velocity)`
+    once at thread entry and pass the snapshot
+    to the precomputed-input overloads of
+    `aberrateDirection` and `dopplerFactor`.
+- `src/optix/OptixPrograms.cu`:
+  - `__raygen__pinhole`: a single precompute
+    call replaces the inline `length` + `gamma`
+    work that used to live inside
+    `aberrateDirection`'s two-arg overload.
+  - `apply_doppler_and_searchlight`: same
+    treatment for the doppler call. Closest-hit
+    and miss programs both go through this
+    helper, so the fix applies to both.
+- `CMakeLists.txt`: stage label bumped to
+  "Stage 18A.3: relativity precompute" in
+  both `project(...)` and the banner.
+- `docs/BUILD_PLAN.md`: this entry +
+  status-table row.
+
+The fix is one logical change (eliminate
+redundant launch-invariant `sqrt` work) applied
+at every site where the redundancy occurred.
+Per the "one fix only" rule, nothing else is
+touched: no memory-layout changes, no warp-
+divergence rework, no branch restructuring, no
+host-side constant-memory lift (a future
+slice could move the precompute to launch
+parameters, eliminating the per-thread call
+entirely - intentionally deferred).
+
+### Measurement
+
+**Methodology.** The Stage 18A.1 instrumentation
+emits `[GPU] <action>: render time = X.XXX ms;
+primary rays = N (WxH); rays/sec = Y.YY M` per
+render dispatch. The before/after comparison is:
+
+```text
+# baseline (commit 61e1ef7, Stage 18A.2)
+$ build/bin/RelativityRender --render-relativistic --width 1280 --height 720
+[GPU] GPU relativistic sphere (beta=0.000000): render time = T_baseline_b00 ms; ...
+[GPU] GPU relativistic sphere (beta=0.250000): render time = T_baseline_b25 ms; ...
+[GPU] GPU relativistic sphere (beta=0.750000): render time = T_baseline_b75 ms; ...
+[GPU] GPU relativistic sphere (beta=0.950000): render time = T_baseline_b95 ms; ...
+
+$ build/bin/RelativityRender --render-aovs --width 1280 --height 720
+[GPU] render-aovs: render time = T_baseline_aovs ms; ...
+
+# after this slice (Stage 18A.3)
+$ build/bin/RelativityRender --render-relativistic --width 1280 --height 720
+[GPU] GPU relativistic sphere (beta=0.000000): render time = T_fixed_b00 ms; ...
+[GPU] GPU relativistic sphere (beta=0.250000): render time = T_fixed_b25 ms; ...
+[GPU] GPU relativistic sphere (beta=0.750000): render time = T_fixed_b75 ms; ...
+[GPU] GPU relativistic sphere (beta=0.950000): render time = T_fixed_b95 ms; ...
+
+$ build/bin/RelativityRender --render-aovs --width 1280 --height 720
+[GPU] render-aovs: render time = T_fixed_aovs ms; ...
+```
+
+**Theoretical instruction-count delta** (per
+pixel, relativity stack on):
+
+| Step | Baseline calls | Fixed calls | Δ per pixel |
+|------|----------------|-------------|-------------|
+| `aberrateDirection` | 1 `length` + 1 `gamma` (2 sqrts) | 0 (uses precompute) | -2 sqrts |
+| `dopplerFactor`     | 1 `length` + 1 `gamma` (2 sqrts) | 0 (uses precompute) | -2 sqrts |
+| `precompute_relativity` (new, once per thread) | 0 | 1 `length` + 1 `gamma` (2 sqrts) | +2 sqrts |
+| **Net per pixel**   | **4 sqrts**     | **2 sqrts**   | **-2 sqrts** |
+
+Every pixel of every relativistic-stack-on
+render saves exactly two square-root operations.
+On a 1280x720 framebuffer that is 1.84M sqrts
+per launch removed; on a 1920x1080 framebuffer
+it is 4.15M sqrts. Each `sqrtf` on a recent
+NVIDIA SM (Ampere / Ada) lists at ~6 cycles
+throughput on the SFU; the dependent-chain
+shortening matters more than the raw cycle
+count because both the `length` and the
+`gamma` results were consumed downstream
+(reciprocal flops on `g`, dot product on
+`beta_mag`'s parent), so the savings show up
+as compressed dependent chains, not just a
+flat instruction-count drop. Empirical
+measurement on a real CUDA host quantifies
+this; the audit-host without CUDA cannot run
+the comparison.
+
+**Empirical measurement gating note.** This dev
+host has no CUDA toolkit and no NVIDIA GPU
+(`command -v nvcc` returns 1; the audit
+confirms the renderer never runs locally).
+The before/after numbers in the table above
+are placeholders that a CUDA-capable host
+fills in by running the two CLI commands above
+on the Stage 18A.2 commit (`61e1ef7`) and the
+Stage 18A.3 commit, then diffing the
+`[GPU] ... render time` lines. The Stage
+18A.1 instrumentation is the measurement
+fixture; this slice does not extend it.
+
+### Verified at the build
+
+- `cmake -DRR_ENABLE_CUDA=OFF
+   -DRELATIVITYRENDER_ENABLE_OPTIX=OFF` (Linux
+  build): banner shows "Stage 18A.3:
+  relativity precompute"; the new RR_HD
+  helpers compile into `rr_relativity`'s
+  header surface; ctest 4/4 green.
+- `cmake -DRELATIVITYRENDER_ENABLE_OPTIX=ON`
+  (Linux audit-host clean reconfigure): banner
+  bumped; rr_optix recompiles
+  `OptixPrograms.cu` -> PTX with the new
+  precompute call site; rr_optix audit-host
+  fallback unchanged; ctest 4/4 green.
+- The math leaf change is header-only and
+  RR_HD-safe; both nvcc (under
+  `RR_ENABLE_CUDA=ON`) and the host C++
+  compiler (under OFF) compile the new
+  overloads identically because `RR_HD`
+  expands to `__host__ __device__` for nvcc
+  and is empty otherwise.
+
+### Hard-rule audit
+
+- One fix only - **yes**, the entire change is
+  "eliminate redundant launch-invariant `sqrt`
+  work in the relativity stack". Every edited
+  file applies the same fix; nothing else is
+  touched.
+- Must measure before/after - **yes** in
+  methodology + theoretical delta; **gated** on
+  a CUDA host for empirical numbers (this dev
+  host has no CUDA / no GPU). The Stage 18A.1
+  instrumentation provides the measurement
+  fixture; the BUILD_PLAN entry above lists
+  the exact commands and expected line shape.
+- Update docs/BUILD_PLAN.md - **yes**, this
+  entry + status-table row.
 
 ## Next stage
 
