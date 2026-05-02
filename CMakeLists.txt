@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.20)
 
 project(RelativityRender
     VERSION     0.1.0
-    DESCRIPTION "RelativityRender - GPU renderer platform (Stage 19E.2: render-demo + --beta)"
+    DESCRIPTION "RelativityRender - GPU renderer platform (stabilization pass: 7-tier maturity)"
     LANGUAGES   CXX
 )
 
@@ -59,7 +59,7 @@ endif()
 
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
-message(STATUS "RelativityRender ${PROJECT_VERSION} (Stage 19E.2: render-demo + --beta)")
+message(STATUS "RelativityRender ${PROJECT_VERSION} (stabilization pass: 7-tier maturity)")
 
 message(STATUS "  Build type   : ${CMAKE_BUILD_TYPE}")
 message(STATUS "  C++ standard : ${CMAKE_CXX_STANDARD}")

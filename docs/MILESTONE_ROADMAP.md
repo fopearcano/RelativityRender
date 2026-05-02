@@ -24,13 +24,16 @@ gate on any standalone slice.
 
 ## Maturity semantics
 
-Per-milestone status uses the following five tiers (weakest →
-strongest). They are stricter than `docs/MODULE_MAP.md`'s
-six-tier module legend because milestones are scored against
-their stated **exit criteria**, not against whether some code
-under the relevant `src/` directory compiles. A milestone is
-not "landed" unless its exit criteria are *truly* satisfied.
+Per-milestone status uses the following seven tiers (weakest →
+strongest). The legend is shared with `docs/MODULE_MAP.md` so
+the same vocabulary scores both architectural modules and
+milestones. Milestones are scored against their stated **exit
+criteria**, not against whether some code under the relevant
+`src/` directory compiles. A milestone is not "landed" unless
+its exit criteria are *truly* satisfied.
 
+- **not started** — no work begun (no source files, no
+  design doc).
 - **spec only** — design or planning documents exist, but no
   code yet (or only an inert placeholder file).
 - **foundation landed** — host-side data PODs / scaffold
@@ -47,24 +50,33 @@ not "landed" unless its exit criteria are *truly* satisfied.
   the GPU / SDK path that the milestone depends on is
   unverified on real hardware. The exit criteria's *visual*
   or *runtime* clauses are not pinned.
+- **in progress** — most of the milestone's declared
+  features are coded, but cross-cutting work (validation,
+  error handling, integration smoke tests, regression
+  baselines) is not done. The promotion line out of "partial
+  implementation" is that no major *feature* is still
+  missing — what remains is hardening / coverage.
 - **landed** — the milestone's exit criteria are satisfied
   end-to-end on the supported test matrix; the scope the
   milestone defined ships and works. The system has not yet
   been hardened with cross-cutting validation, regression
   baselines, or stress coverage.
 - **production ready** — same as landed, plus regression
-  baselines pinned, edge cases covered, and no documented
+  baselines pinned, edge cases covered, and **no documented
   "deferred" gate exists for the milestone's core runtime
-  behaviour.
+  behaviour.**
 
 The line between **foundation landed** and **partial
 implementation** is whether *any* runtime feature works; the
-line between **partial implementation** and **landed** is
-whether the *exit criteria* are satisfied. Milestones whose
-exit criteria phrase a *visual* result ("output image clearly
-shows...", "scene rendered at relativistic speeds shows...")
-cannot graduate past "partial implementation" until a CUDA +
-OptiX-SDK host run pins the visual baseline.
+line between **partial implementation** and **in progress**
+is whether *most features are in place*; the line between
+**in progress** and **landed** is whether the *exit criteria*
+are satisfied. Milestones whose exit criteria phrase a
+*visual* result ("output image clearly shows...", "scene
+rendered at relativistic speeds shows...") cannot graduate
+past "partial implementation" until a CUDA + OptiX-SDK host
+run pins the visual baseline (regardless of how complete the
+code looks).
 
 ### Project-wide validation gate
 

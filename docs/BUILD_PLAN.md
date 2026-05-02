@@ -16195,6 +16195,238 @@ handles).
   return zero matches on the
   current tree.
 
+## Stabilization pass — repo-truth + 7-tier maturity
+
+**Scope of this slice (cross-cutting;
+no master-order #): documentation-
+only stabilization pass against the
+ten-task review prompt
+(README accuracy, CMake-flag
+naming, doc directory paths,
+MODULE_MAP / BUILD_PLAN status
+tables, maturity-semantics legend,
+identity preservation, boundary
+preservation, build-and-test
+verification). Most of the ten
+tasks were already addressed by
+prior commits on this branch
+(`eb8ca19` README rewrite,
+`27c11cb` RR_ENABLE_OPTIX rename,
+`c6e15de` doc-path normalization,
+`71b13a3` MODULE_MAP creation,
+`48e6ab4` milestone-status pass +
+maturity semantics, `6367b30` C4D
+coupling audit, `361230a`
+dependency audit). This slice
+closes the one remaining genuine
+gap — the maturity-semantics
+legends in MODULE_MAP and
+MILESTONE_ROADMAP did not share
+the same tier set — and bumps the
+CMake banner to mark the
+stabilization checkpoint.**
+
+### Ten-task audit results
+
+| # | Task                                                                                          | State (entering this slice) | Action                |
+|---|-----------------------------------------------------------------------------------------------|-----------------------------|-----------------------|
+| 1 | Audit docs vs actual code                                                                     | Already covered              | Re-verified            |
+| 2 | Update README to reflect real pre-alpha state                                                 | Done in `eb8ca19`            | Re-verified            |
+| 3 | Normalize CMake option naming to `RR_ENABLE_OPTIX`                                            | Done in `27c11cb` (+ alias)  | Re-verified            |
+| 4 | Align doc directory paths with real repo structure                                            | Done in `c6e15de`            | Re-verified            |
+| 5 | Update MODULE_MAP statuses with precise maturity terms                                        | Done in `71b13a3`            | Legend harmonized (this slice) |
+| 6 | Update BUILD_PLAN module + milestone status tables                                            | Done in `71b13a3` / `48e6ab4`| Re-verified            |
+| 7 | Add maturity-semantics section explaining 6 tiers                                             | Partial: MODULE_MAP had 6, MILESTONE_ROADMAP had 5; tier sets disagreed | **Harmonized to shared 7-tier legend in this slice** |
+| 8 | No doc claims "no renderer code exists" unless locally true                                   | OK: only legend + historical context lines mention "no source"; none claim repo state | Re-verified            |
+| 9 | Preserve core identity (CUDA / OptiX-first GPU renderer + relativistic camera / perception)   | Preserved in README (line 1)| Re-verified            |
+| 10| Preserve architectural boundaries (renderer core unaware of C4D / UI)                         | Verified in `6367b30` + `361230a` | Re-verified            |
+
+### What ships
+
+- `docs/MODULE_MAP.md` "Status
+  legend": expanded from 6 tiers
+  to **7** by adding the
+  **landed** tier between "in
+  progress" and "production
+  ready." The five tier
+  definitions that already
+  existed are byte-identical
+  pre-/post-slice; only the new
+  tier + the cross-reference
+  preamble is new. Status
+  verdicts in the 22-row module
+  table are unchanged (no
+  module's status ticked up or
+  down).
+- `docs/MILESTONE_ROADMAP.md`
+  "Maturity semantics": expanded
+  from 5 tiers to **7** by
+  adding the **not started**
+  tier at the top and the **in
+  progress** tier between
+  "partial implementation" and
+  "landed." The "promotion-line"
+  paragraph at the bottom of the
+  legend was updated to walk
+  through all four
+  foundation→partial→in-progress→
+  landed promotion criteria. The
+  24-row milestone snapshot
+  table is byte-identical
+  pre-/post-slice (no milestone's
+  status ticked up or down — no
+  milestone currently sits at
+  "in progress" or "spec only";
+  the existing
+  not-started / foundation-
+  landed / partial-implementation
+  / landed mix is honest).
+- `CMakeLists.txt`: banner /
+  DESCRIPTION bumped from
+  "Stage 19E.2: render-demo +
+  --beta" to "stabilization
+  pass: 7-tier maturity." This
+  is the conventional cross-
+  slice marker; no other CMake
+  changes.
+- `docs/BUILD_PLAN.md`: this
+  slice-closing entry. **No
+  module-status row, milestone-
+  status row, dependency
+  graph, or canonical
+  historical entry was
+  modified.**
+
+### Shared 7-tier legend (now in both MODULE_MAP + MILESTONE_ROADMAP)
+
+| #     | Tier                       | Promotion criterion (out of)                                |
+|:-----:|----------------------------|-------------------------------------------------------------|
+| 0     | not started                | (none — zero work begun)                                    |
+| 1     | spec only                  | source code begins to exist                                 |
+| 2     | foundation landed          | at least one runtime feature wires end-to-end               |
+| 3     | partial implementation     | most planned features are coded                             |
+| 4     | in progress                | exit criteria are met / declared scope ships                |
+| 5     | landed                     | regression baselines pinned + no open deferred gate         |
+| 6     | production ready           | (terminal)                                                  |
+
+The line between **foundation
+landed** and **partial
+implementation** is whether
+*any* runtime feature works;
+the line between **partial
+implementation** and **in
+progress** is whether *most
+features are in place*; the
+line between **in progress**
+and **landed** is whether the
+*exit criteria* are satisfied;
+the line between **landed**
+and **production ready** is
+whether *regression baselines
+are pinned* (and whether any
+documented deferred gate
+remains open).
+
+### Honest status snapshot (post-stabilization)
+
+| Tier                  | Modules                                              | Milestones                                                              |
+|-----------------------|------------------------------------------------------|-------------------------------------------------------------------------|
+| not started           | #20 / #21 / #22 + master-order #22                   | M19 / M20 / M21 / M23                                                   |
+| spec only             | (none)                                               | (none)                                                                  |
+| foundation landed     | #3 / #7 / #8 / #9 / #10 / #11 / #12                  | M11 / M12 / M16                                                         |
+| partial implementation| #4 / #5 / #6 / #14 / #15 / #16 / #17 / #18 / #19     | M2 / M4 / M6 / M7 / M8 / M9 / M10 / M13 / M14 / M15 / M17 / M18 / M22   |
+| in progress           | (none)                                               | (none)                                                                  |
+| landed                | (none)                                               | M0 / M1 / M3 / M5                                                       |
+| production ready      | #1 / #2 / #13                                        | (none)                                                                  |
+
+The "in progress" and "spec
+only" tiers are documented but
+unused today; they are present
+in the legend so future slices
+that hit those states have
+canonical wording to land on.
+
+### Hard-rule audit
+
+- Do not implement new renderer
+  features - **yes**. `git diff
+  --stat src/ tests/` is empty.
+- Do not jump ahead - **yes**.
+  No master-order # consumed by
+  this slice.
+- Do not touch Cinema 4D / node
+  editor / denoiser / native
+  plugin - **yes**. None of the
+  files touched relate to those
+  subsystems.
+- Stabilization /
+  documentation / build-
+  consistency only - **yes**.
+  The only non-doc edit is the
+  CMakeLists banner bump (no
+  source / link / target /
+  flag change).
+- Preserve core identity -
+  **yes**. README line 1-9
+  unchanged ("CUDA / OptiX-
+  first GPU renderer platform
+  with an integrated
+  relativistic camera /
+  perception model... the
+  differentiator").
+- Preserve architectural
+  boundaries - **yes**. The
+  prior dependency-boundary
+  audit (`361230a`) found zero
+  violations; this slice does
+  not touch any source / link
+  edge.
+- No documentation claims "no
+  renderer code exists" -
+  **yes**. The three matches
+  for "no source code" /
+  "skeleton" / "empty source
+  tree" are all locally
+  appropriate: MODULE_MAP §
+  legend ("spec only" tier
+  definition: "design doc(s)
+  exist but no source code
+  yet"); MILESTONE_ROADMAP M1
+  goal ("Create the empty
+  source tree" — the M1
+  *milestone* is itself
+  about creating the
+  skeleton; the milestone is
+  long landed, the wording
+  is historical); BUILD_PLAN
+  Stage 12B.2 entry ("No
+  kernel code, no renderer
+  code, no AOV" — the slice's
+  deliberate scope; historical
+  per-stage prose, locally
+  true at the time it was
+  written).
+
+### Verified at the build
+
+- `cmake -S . -B build` (audit
+  host, no CUDA, no OptiX SDK):
+  banner shows "stabilization
+  pass: 7-tier maturity"; clean
+  build (`[100%] Built target
+  RelativityRender`); ctest 6/6
+  green.
+- `git diff --stat src/`,
+  `git diff --stat tests/` both
+  empty.
+- `git diff --stat docs/` shows
+  only `MODULE_MAP.md`,
+  `MILESTONE_ROADMAP.md`, and
+  `BUILD_PLAN.md` modified.
+- `git diff --stat CMakeLists.txt`
+  shows the two-line banner
+  bump.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:

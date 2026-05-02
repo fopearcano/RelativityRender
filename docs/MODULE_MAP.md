@@ -15,11 +15,13 @@ audit + RR_ENABLE_OPTIX flag rename).
 
 ## Status legend
 
-The status of each module is one of the following six tiers,
-listed weakest → strongest. The line between **foundation
-landed** and **production ready** is the most important — it
-prevents the docs from claiming a system works when only its
-data PODs compile.
+The status of each module is one of the following seven tiers,
+listed weakest → strongest. This legend is shared with
+`docs/MILESTONE_ROADMAP.md` "Maturity semantics" so the same
+vocabulary scores both architectural modules and milestones.
+The line between **foundation landed** and **production
+ready** is the most important — it prevents the docs from
+claiming a system works when only its data PODs compile.
 
 - **not started** — no source files in the module's directory,
   no design doc.
@@ -41,14 +43,19 @@ data PODs compile.
   roulette; the OptiX backend's pipeline + GAS + closest-hit
   programs link cleanly but no frame has been rendered on a
   real OptiX-SDK host.
-- **in progress** — code exists for most features, but
-  cross-cutting work (validation, error handling, integration
-  smoke tests) is not done.
-- **production ready** — the module's user-facing behaviour
-  is verified end-to-end on real hardware (or, for host-only
-  modules, on the supported test matrix), with regression
-  coverage. **No documented "deferred" gate exists for the
-  module's core runtime behaviour.**
+- **in progress** — most of the module's planned features are
+  coded, but cross-cutting work (validation, error handling,
+  integration smoke tests) is not done. The promotion line
+  out of "partial implementation" is that no major *feature*
+  is missing — what remains is hardening / coverage.
+- **landed** — the module ships its declared scope end-to-end
+  on the supported test matrix; user-facing behaviour works.
+  The system has not yet been hardened with regression
+  baselines, edge-case coverage, or stress tests.
+- **production ready** — same as landed, plus regression
+  baselines pinned, edge cases covered, and **no documented
+  "deferred" gate exists for the module's core runtime
+  behaviour.**
 
 A module sitting at "foundation landed" is the most easily
 overstated status: the data types compile, the unit tests pass,
