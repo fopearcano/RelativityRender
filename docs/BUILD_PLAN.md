@@ -3728,6 +3728,7 @@ sub-stages, appended to the same file.** No code is touched.
 | 15-fix2  | Stage 15 server lifetime repair (RenderServer::start's already-listening check changed from `listen_fd_ >= 0` to `!= kInvalidSocket`; on Windows the old check was always true on UINT_PTR `SOCKET` and short-circuited start into a no-op) | ✅ |
 | 15-render | Stage 15 server render command (render wire verb wired to GpuScene + CudaRenderer::render_scene; saves output/server_render.ppm; "error: no scene loaded" when no load_scene; "error: render requires CUDA" on no-CUDA builds) | ✅ |
 | 17A.1    | OptiX context init (real OptixDeviceContext via OptixBackend::initialize/shutdown; CUDA<->OptiX interop via cudaFree(0) + optixDeviceContextCreate(0,...); SDK-gated with audit-host fallback) | ✅ |
+| 17A.2    | OptiX triangle GAS (OptixAccel.h: OptixGas owner + MeshGasInput + build_mesh_gas; static / triangles only; SDK-gated with audit-host fallback) | ✅ |
 
 ## Stage 12A.2.1 — OptiX raygen program design
 
@@ -10052,6 +10053,215 @@ this scaffold. The CUDA renderer is unaffected.**
   failure emits a `[OptiX:ERROR] init
   failed: <reason>` line and is
   retrievable via `last_error()`.
+
+## Stage 17A.2 — OptiX triangle GAS
+
+**Scope of this slice (Stage 17A.2; master order
+#17 OptiX upgrade path): build a Geometry
+Acceleration Structure (GAS) from already-
+uploaded vertex / index buffers, per
+`docs/OPTIX_BACKEND_PLAN.md` §22. Stage 17A.1
+shipped the device-context lifecycle; this slice
+adds the GAS build helper that consumes a
+single triangle mesh and produces an
+`OptixTraversableHandle` plus the device-side
+acceleration-structure storage.
+
+Triangle geometry only. Static scene only - no
+update path, no compaction. NO IAS, NO SBT, NO
+pipelines, NO `optixLaunch`. Subsequent 17A+
+sub-stages build the launch pipeline on top.
+The CUDA renderer is unaffected.**
+
+### What ships
+
+- `src/optix/OptixAccel.h` (new):
+  - `MeshGasInput` POD: `device_vertices`
+    pointer (float3 stride), `vertex_count`,
+    `device_indices` pointer (uint3 stride),
+    `triangle_count`. The caller owns the
+    underlying memory; the build only reads.
+  - `class OptixGas` — move-only owner of
+    the device-resident acceleration-
+    structure buffer + the
+    `OptixTraversableHandle` (exposed as
+    `std::uint64_t` in the header). API:
+    `empty()`, `handle()`, `device_buffer()`,
+    `output_size_bytes()`, `reset()`,
+    `assign(...)`. The destructor frees the
+    device buffer; `reset()` is the explicit
+    form. Move-only with the standard
+    swap-and-null pattern.
+  - `BuildGasResult` POD: `ok`, `gas`,
+    `error_message`. Failure leaves `gas`
+    empty + populates `error_message`.
+  - Free function
+    `build_mesh_gas(OptixBackend& backend,
+    const MeshGasInput& input)` returns a
+    `BuildGasResult`.
+  - Header avoids `<optix.h>`; downstream
+    consumers reinterpret `handle()` as
+    `OptixTraversableHandle` in their own
+    `.cpp` after including the SDK header.
+- `src/optix/OptixAccel.cpp` (new):
+  - SDK-found body uses the canonical OptiX
+    7+ build pipeline:
+    1. Validate inputs (`backend.is
+       Initialized()`, non-zero counts,
+       non-null device pointers,
+       non-null `OptixDeviceContext`).
+    2. Configure
+       `OptixBuildInputTriangleArray`:
+       `vertexFormat = FLOAT3`,
+       `indexFormat = UNSIGNED_INT3`,
+       static `numSbtRecords = 1`, no
+       motion (`motionOptions.numKeys = 1`),
+       `OPTIX_GEOMETRY_FLAG_NONE`.
+    3. `optixAccelComputeMemoryUsage` to
+       size the temp + output buffers.
+    4. `cudaMalloc` temp + output.
+    5. `optixAccelBuild` on stream 0 with
+       `OPTIX_BUILD_OPERATION_BUILD`. No
+       compaction (Stage 17A.2 "static
+       only" rule).
+    6. `cudaFree` temp; `OptixGas::assign`
+       takes ownership of output + handle.
+    Each step's failure path frees any
+    already-allocated CUDA memory before
+    returning - no leaks on partial
+    failure. Logs a single
+    `[OptiX:INFO] GAS built: ...` line on
+    success.
+  - Audit-host fallback (no SDK):
+    `build_mesh_gas` returns `ok = false`
+    with the documented "OptiX SDK not
+    found at build time" remediation
+    message; the class still compiles + links.
+  - `OptixGas::reset()` calls `cudaFree`
+    only inside the SDK-gated branch (the
+    audit-host fallback never produces a
+    populated `OptixGas`, so the
+    no-cudaFree path is unreachable but
+    correct).
+- `CMakeLists.txt`: rr_optix gains
+  `src/optix/OptixAccel.cpp` in its source
+  list. No new external dependency - the
+  17A.1 link of `CUDA::cudart` already
+  provides the runtime symbols
+  (`cudaMalloc`, `cudaFree`,
+  `cudaGetErrorString`); the SDK include
+  path the 17A.1 slice propagated PRIVATELY
+  is exactly the path `<optix.h>` /
+  `<optix_stubs.h>` resolve through. Stage
+  label bumped to "Stage 17A.2: OptiX
+  triangle GAS".
+- `docs/BUILD_PLAN.md`: this entry +
+  status-table row for 17A.2.
+
+### Architectural decisions worth highlighting
+
+- **Caller-owned input buffers, build-owned
+  output buffer.** `MeshGasInput` is read-
+  only pointers; `build_mesh_gas` does not
+  touch the lifetime of vertices / indices.
+  The output buffer (the AS storage) is
+  freshly allocated and handed to
+  `OptixGas` for ownership. This matches
+  how `GpuMesh` already exposes
+  `device_vertices()` / `device_triangles()`
+  + the standard OptiX SDK sample shape.
+- **No compaction.** The Stage 17A.2 spec
+  is "static scene only". Compaction is an
+  optimisation that requires a second
+  build pass + emitted property; deferring
+  it keeps the diff small. A future sub-
+  stage can add it via
+  `OPTIX_BUILD_FLAG_ALLOW_COMPACTION` +
+  emitted `OPTIX_PROPERTY_TYPE_COMPACTED_
+  SIZE` + a follow-up `optixAccelCompact`
+  call.
+- **`uint64_t` traversable handle in the
+  public surface.** Same pattern as Stage
+  17A.1's `void* device_context()`: keeps
+  the public header free of `<optix.h>`.
+  `OptixTraversableHandle` is a
+  `unsigned long long` typedef, so the
+  reinterpret on the consumer side is
+  trivial.
+- **Move-only `OptixGas` owner.** Same
+  pattern as `RenderServer`,
+  `OptixBackend`, `GpuTexture`, etc.
+  Copying the handle would make double-
+  free trivially possible.
+- **Static `s_triangle_flags` array.** The
+  OptiX `flags` field stores a pointer
+  that the API consumes during both
+  `optixAccelComputeMemoryUsage` and
+  `optixAccelBuild`. A function-static
+  array keeps the pointer valid across
+  both calls without dynamic allocation.
+- **Stream 0 build.** Synchronous build on
+  the default stream is the simplest
+  correct path. A future sub-stage can
+  parallelise builds across streams when
+  multi-mesh scenes land.
+- **No backend-link change.** rr_optix's
+  17A.1 `CUDA::cudart` link is the only
+  external dependency the new
+  `cudaMalloc` / `cudaFree` calls need.
+
+### Hard-rule audit
+
+- No IAS yet - **yes**, no
+  `OptixBuildInputInstanceArray`, no
+  `optixAccelBuild` over instances.
+- No shading yet - **yes**, no SBT, no
+  hit programs, no payload management.
+- No rendering yet - **yes**, no
+  `optixLaunch`, no pipeline. The
+  returned handle is owned by `OptixGas`
+  and otherwise unused at this stage.
+- Must compile - **yes**, OFF + ON
+  reconfigures both build clean (no
+  warnings, no errors); ctest 4/4 passes
+  both ways.
+- Update docs/BUILD_PLAN.md - **yes**,
+  this entry + status-table row.
+
+### Verified at the build
+
+- `cmake -DRELATIVITYRENDER_ENABLE_OPTIX=
+  OFF ..` (Linux clean reconfigure):
+  rr_optix is not compiled (per the
+  pre-existing 12B.3 gating); banner
+  shows "Stage 17A.2: OptiX triangle
+  GAS"; ctest 4/4 passes.
+- `cmake -DRELATIVITYRENDER_ENABLE_OPTIX=
+  ON ..` (Linux clean reconfigure on
+  audit host without CUDA / OptiX SDK):
+  rr_optix compiles in fallback mode;
+  expected 12B.4 SDK-not-found warning
+  fires; ctest 4/4 passes.
+  `librr_optix.a` contains the new
+  `OptixGas` member symbols (`reset`,
+  `assign`, `empty`, `handle`,
+  `device_buffer`, `output_size_bytes`,
+  ctor / dtor / move) plus the free
+  function `rr::optix::build_mesh_gas`
+  (verified via `nm`).
+- A future CUDA + OptiX-SDK host run
+  exercises the populated branch: a
+  caller initialises `OptixBackend`,
+  uploads vertex / index buffers via
+  the existing `GpuBuffer` /
+  `GpuMesh` infrastructure, calls
+  `build_mesh_gas(backend, input)`,
+  receives `BuildGasResult{ok=true}`,
+  observes the `[OptiX:INFO] GAS built:
+  N vertices, M triangles, B bytes.`
+  log line, and holds the resulting
+  `OptixGas` for the IAS / pipeline
+  sub-stages that follow.
 
 ## Next stage
 
