@@ -284,48 +284,75 @@ direction, retarded time) for analysis and shading.
 
 ---
 
-## 8. Build / Repository Shape (Planned)
+## 8. Build / Repository Shape
 
-The repo will eventually contain (kept minimal until each layer lands):
+The repo currently contains the directories below. Names match the
+actual tree (last verified post-Stage 19D); the architectural
+modules from §5 are realised by the `src/*` directories listed
+here. Sibling directories that exist only as future plans (the
+Cinema 4D bridge, the node-editor / preview-UI tools) are noted
+as "not yet present" — they will be added by the milestones that
+introduce them, not pre-allocated as empty scaffolding.
 
 ```
 RelativityRender/
   docs/                       # this directory
-  cmake/                      # CMake helpers (when build system is introduced)
-  third_party/                # vendored or fetched deps
+  cmake/                      # CMake helpers (PTX-embed helper today)
+  scenes/                     # .rrscene fixtures
   src/
-    core/                     # Core Engine
-    math/                     # Math Library
-    image/                    # Image / Framebuffer
-    gpu/                      # GPU Device Layer
-    cuda_backend/             # CUDA Backend
-    optix_backend/            # OptiX Backend
-    scene/                    # Scene Graph
-    geometry/                 # Geometry System
-    material/                 # Material / Shading
-    texture/                  # Texture System
-    lighting/                 # Lighting System
-    camera/                   # Camera System
-    relativistic/             # Relativistic Camera Model
-    pathtracer/               # Path Tracer
-    progressive/              # Progressive Renderer
-    denoise/                  # Denoiser Integration
-    aov/                      # Render Passes / AOVs
-    scene_format/             # Scene File Format
-    server/                   # Renderer Server
-    cli/                      # Standalone CLI renderer
-  bridges/
-    c4d_bridge/               # Cinema 4D Bridge plugin
-    c4d_native/               # Future Native Cinema 4D Renderer
-  tools/
-    node_editor/              # UI: Node Editor / Material Graph
-    preview_ui/               # UI: Preview client
-  tests/                      # Unit + integration tests
+    core/                     # Core Engine (Logger, Config, CommandLine, Version)
+    math/                     # Math Library (Vec / Mat / Transform / sampling)
+    image/                    # Image / Framebuffer (host PPM IO)
+    gpu/                      # GPU Device Layer (GpuBuffer, GpuDevice, GpuMesh,
+                              # GpuScene, GpuTexture, GpuTiming)
+    cuda/                     # CUDA Backend (kernels + launchers)
+    optix/                    # OptiX Backend + denoiser
+    scene/                    # Scene Graph (Scene aggregate)
+    io/                       # Scene File Format (SceneLoader / SceneWriter,
+                              # .rrscene v1)
+    geometry/                 # Geometry System (Sphere, Triangle, Mesh, Vertex)
+    material/                 # Material / Shading (Material + MaterialParams)
+    texture/                  # Texture System (ImageTexture + format enum)
+    lighting/                 # Lighting System (Light POD union)
+    camera/                   # Camera System (Camera + GpuCamera POD + ray gen)
+    relativity/               # Relativistic Camera Model (RelativityMath leaf,
+                              # host + device callable)
+    pathtracer/               # Path Tracer (host orchestration + RNG)
+    renderer/                 # Render Passes / AOVs + AccumulationBuffer +
+                              # GpuAOVBuffer (progressive renderer integration)
+    server/                   # Renderer Server (rr_server, TCP)
+    main.cpp                  # Standalone CLI dispatch
+  tests/                      # Unit tests (ctest: math / image / gpu / pathtracer)
+
+  # Not yet present (introduced by their respective milestones):
+  #   bridges/c4d_bridge/     # Cinema 4D Bridge plugin (M19, master order #21)
+  #   bridges/c4d_native/     # Native Cinema 4D Renderer (M23, master order #25)
+  #   tools/node_editor/      # Material node graph (M21, master order #23)
+  #   tools/preview_ui/       # Preview client (M20, master order #22)
+  #   third_party/            # added if/when a vendored dependency lands
 ```
 
-This layout is enforced by the dependency rules above. Top-level directories
-exist primarily to make forbidden dependencies easy to spot in `#include` paths
-and CMake link lists.
+Naming notes:
+
+- The architectural modules from §5 use the descriptive names
+  ("CUDA Backend", "OptiX Backend", "Relativistic Camera Model",
+  "Scene File Format"). The `src/` tree uses shorter directory
+  spellings (`cuda/`, `optix/`, `relativity/`, `io/`). The two
+  layers refer to the same modules; this section maps the
+  architectural names to the actual directory names.
+- The historical "planned" tree in earlier revisions of this
+  document used `cuda_backend/`, `optix_backend/`, `relativistic/`,
+  and `scene_format/`. Those names were never adopted by the
+  source tree; this section now documents the names that landed.
+- `bridges/` and `tools/` will be created at the repository root
+  when the first milestone in each group ships. Until then, those
+  paths are deliberately absent rather than empty placeholders
+  (per the master rule: "no empty scaffold dirs that pretend a
+  system exists").
+
+This layout is enforced by the dependency rules above. Top-level
+directories exist primarily to make forbidden dependencies easy
+to spot in `#include` paths and CMake link lists.
 
 ---
 

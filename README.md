@@ -181,10 +181,11 @@ RelativityRender/
   tests/                                  # ctest 4/4 (math / image / gpu / pathtracer)
 ```
 
-`docs/MASTER_ARCHITECTURE.md` §8 "Build / Repository Shape
-(Planned)" predates the current layout — its
-`cuda_backend/` / `optix_backend/` / `relativistic/` /
-`scene_format/` directory names do not match the actual
-tree. The actual-vs-planned naming reconciliation is in
-`docs/ROADMAP_AUDIT.md` §4. Per-slice implementation status
-remains the responsibility of `docs/BUILD_PLAN.md`.
+`docs/MASTER_ARCHITECTURE.md` §8 "Build / Repository Shape"
+documents the same tree using the architectural-module names
+from §5 (e.g. "CUDA Backend" → `src/cuda/`, "OptiX Backend"
+→ `src/optix/`, "Relativistic Camera Model" →
+`src/relativity/`, "Scene File Format" → `src/io/`). The
+actual-vs-architectural mapping is in MASTER_ARCHITECTURE.md
+§8's naming notes. Per-slice implementation status remains the
+responsibility of `docs/BUILD_PLAN.md`.

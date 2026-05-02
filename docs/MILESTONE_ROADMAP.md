@@ -34,8 +34,16 @@ M16) are complete, per the master instructions.
   produces a no-op CLI binary linking against an empty Core Engine.
 - **Deliverables:**
   - Top-level CMake project (or chosen build system).
-  - `src/`, `bridges/`, `tools/`, `tests/`, `third_party/`, `cmake/` directories.
-  - Empty module subdirectories per `MODULE_MAP.md`.
+  - `src/`, `tests/`, `cmake/` directories present from the
+    start. `bridges/`, `tools/`, and `third_party/` are added
+    by the milestones that introduce their first contents
+    (M19 / M20 / vendored dep) rather than pre-allocated as
+    empty scaffolding — see `docs/MASTER_ARCHITECTURE.md` §8.
+  - Module subdirectories under `src/` per
+    `docs/MASTER_ARCHITECTURE.md` §8 (the architectural modules
+    map to the actual directory names listed there:
+    `src/cuda/`, `src/optix/`, `src/relativity/`, `src/io/`,
+    etc.).
   - CI-friendly host-only build target.
 - **Exit criteria:** Clean build on Linux. CLI runs and prints a banner. No
   GPU code yet.
