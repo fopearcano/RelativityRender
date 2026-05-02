@@ -1017,7 +1017,7 @@ int run_render_optix_triangle(const rr::core::Config& cfg) {
 #ifndef RELATIVITYRENDER_ENABLE_OPTIX
     (void)cfg;
     Logger::error("--render-optix-triangle requires OptiX. Rebuild "
-                  "with -DRELATIVITYRENDER_ENABLE_OPTIX=ON on a "
+                  "with -DRR_ENABLE_OPTIX=ON on a "
                   "host with the CUDA Toolkit + OptiX SDK installed "
                   "(also pass -DOPTIX_ROOT=/path/to/optix-sdk).");
     return 1;
@@ -1061,7 +1061,7 @@ int run_render_optix_triangle(const rr::core::Config& cfg) {
 // pixel-for-pixel for matched inputs.
 //
 // Default output: `output/optix_relativity.ppm`. `--output`
-// overrides. Requires `-DRELATIVITYRENDER_ENABLE_OPTIX=ON` plus
+// overrides. Requires `-DRR_ENABLE_OPTIX=ON` plus
 // a host with the CUDA Toolkit + OptiX SDK installed; the
 // audit-host fallback returns a clear "requires OptiX" error.
 int run_render_optix_relativity(const rr::core::Config& cfg) {
@@ -1074,7 +1074,7 @@ int run_render_optix_relativity(const rr::core::Config& cfg) {
 #ifndef RELATIVITYRENDER_ENABLE_OPTIX
     (void)cfg;
     Logger::error("--render-optix-relativity requires OptiX. "
-                  "Rebuild with -DRELATIVITYRENDER_ENABLE_OPTIX="
+                  "Rebuild with -DRR_ENABLE_OPTIX="
                   "ON on a host with the CUDA Toolkit + OptiX "
                   "SDK installed (also pass -DOPTIX_ROOT=/path/"
                   "to/optix-sdk).");
@@ -1115,7 +1115,7 @@ int run_render_optix_relativity(const rr::core::Config& cfg) {
 // flat colour, download, save PPM. CUDA path is unaffected.
 //
 // Default output: `output/optix_test.ppm`. `--output` overrides.
-// Requires both `-DRELATIVITYRENDER_ENABLE_OPTIX=ON` and a host
+// Requires both `-DRR_ENABLE_OPTIX=ON` and a host
 // with the CUDA Toolkit + OptiX SDK installed; the audit-host
 // fallback returns a clear "requires OptiX" error.
 int run_render_optix_test(const rr::core::Config& cfg) {
@@ -1128,7 +1128,7 @@ int run_render_optix_test(const rr::core::Config& cfg) {
 #ifndef RELATIVITYRENDER_ENABLE_OPTIX
     (void)cfg;
     Logger::error("--render-optix-test requires OptiX. Rebuild "
-                  "with -DRELATIVITYRENDER_ENABLE_OPTIX=ON on a "
+                  "with -DRR_ENABLE_OPTIX=ON on a "
                   "host with the CUDA Toolkit + OptiX SDK "
                   "installed (also pass -DOPTIX_ROOT=/path/to/"
                   "optix-sdk).");
@@ -2546,7 +2546,7 @@ int run_render_aovs(const rr::core::Config& cfg) {
 #else
         rr::core::Logger::error(
             "--denoise requires OptiX. Rebuild with "
-            "-DRELATIVITYRENDER_ENABLE_OPTIX=ON on a host "
+            "-DRR_ENABLE_OPTIX=ON on a host "
             "with the OptiX SDK installed.");
         all_ok = false;
 #endif
@@ -2779,7 +2779,7 @@ int run_render_denoise(const rr::core::Config& cfg) {
     (void)cfg; (void)out_path;
     Logger::error("--render-denoise requires both CUDA and OptiX. "
                   "Rebuild with -DRR_ENABLE_CUDA=ON "
-                  "-DRELATIVITYRENDER_ENABLE_OPTIX=ON on a host with "
+                  "-DRR_ENABLE_OPTIX=ON on a host with "
                   "the CUDA Toolkit + OptiX SDK installed (also pass "
                   "-DOPTIX_ROOT=/path/to/optix-sdk).");
     return 1;

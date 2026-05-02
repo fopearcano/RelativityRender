@@ -13,7 +13,7 @@
 // miss; no closest-hit, no materials, no path tracing) and
 // returns a host-side `Image` containing the framebuffer the
 // raygen wrote. The CUDA path is unaffected; OptiX remains an
-// opt-in alternative gated on `-DRELATIVITYRENDER_ENABLE_OPTIX=
+// opt-in alternative gated on `-DRR_ENABLE_OPTIX=
 // ON` + a located OptiX SDK.
 
 namespace rr::optix {

@@ -203,7 +203,7 @@ namespace rr::core {
 //                           the framebuffer, and saves it as a
 //                           PPM. Default output
 //                           "output/optix_test.ppm". Requires
-//                           `-DRELATIVITYRENDER_ENABLE_OPTIX=ON`
+//                           `-DRR_ENABLE_OPTIX=ON`
 //                           plus a host with the CUDA Toolkit +
 //                           OptiX SDK installed; the audit-host
 //                           fallback returns a clear "requires

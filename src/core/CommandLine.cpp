@@ -501,7 +501,7 @@ std::string CommandLine::usage(std::string_view argv0) {
        << "                        colour to the framebuffer, save "
                                   "PPM. Default output\n"
        << "                        output/optix_test.ppm. Requires\n"
-       << "                        -DRELATIVITYRENDER_ENABLE_OPTIX=ON "
+       << "                        -DRR_ENABLE_OPTIX=ON "
                                   "+ CUDA Toolkit + OptiX SDK.\n"
        << "  --render-optix-triangle\n"
        << "                        Stage 17A.4 OptiX triangle render: "

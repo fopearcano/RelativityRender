@@ -253,7 +253,7 @@ BuildGasResult build_mesh_gas(OptixBackend&       /*backend*/,
     BuildGasResult r;
     r.error_message =
         "build_mesh_gas requires the OptiX SDK; rebuild with "
-        "-DRELATIVITYRENDER_ENABLE_OPTIX=ON and pass "
+        "-DRR_ENABLE_OPTIX=ON and pass "
         "-DOPTIX_ROOT=/path/to/optix-sdk so <optix.h> is "
         "available. The CUDA path is unaffected.";
     return r;

@@ -521,8 +521,8 @@ This is the planning-only slice. The criteria are:
   in both the `project(...)` description and the
   configure-time status message.
 - Both Linux build configurations (`RR_ENABLE_CUDA=OFF
-  /-DRELATIVITYRENDER_ENABLE_OPTIX=OFF` and the audit-host
-  `-DRELATIVITYRENDER_ENABLE_OPTIX=ON`) compile cleanly,
+  /-DRR_ENABLE_OPTIX=OFF` and the audit-host
+  `-DRR_ENABLE_OPTIX=ON`) compile cleanly,
   with `ctest` 4/4 green. (No source changes; the
   verification confirms the doc-only edits do not
   accidentally break anything.)

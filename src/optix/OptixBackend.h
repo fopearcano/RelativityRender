@@ -32,7 +32,7 @@
 //   includes `<optix.h>` and calls real OptiX APIs; when it is
 //   not defined the .cpp compiles a stub that returns failure
 //   from `initialize()` with a clear `last_error()` message. This
-//   keeps the audit-host build (`-DRELATIVITYRENDER_ENABLE_OPTIX=
+//   keeps the audit-host build (`-DRR_ENABLE_OPTIX=
 //   ON` without an SDK install) compiling.
 
 namespace rr::optix {

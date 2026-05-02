@@ -36,7 +36,7 @@ OptixRenderer::Result OptixRenderer::render() noexcept {
 #else
     r.message =
         "OptiX backend not compiled in (rebuild with "
-        "-DRELATIVITYRENDER_ENABLE_OPTIX=ON to opt into the OptiX "
+        "-DRR_ENABLE_OPTIX=ON to opt into the OptiX "
         "path - SDK + CUDA Toolkit also required for runtime use).";
 #endif
     return r;
@@ -548,7 +548,7 @@ OptixRenderer::render_test(int /*width*/, int /*height*/) noexcept {
     r.ok = false;
     r.message =
         "OptixRenderer::render_test requires the OptiX SDK; rebuild "
-        "with -DRELATIVITYRENDER_ENABLE_OPTIX=ON and pass "
+        "with -DRR_ENABLE_OPTIX=ON and pass "
         "-DOPTIX_ROOT=/path/to/optix-sdk so <optix.h> is "
         "available. The CUDA path is unaffected.";
     return r;
@@ -560,7 +560,7 @@ OptixRenderer::render_triangle(int /*width*/, int /*height*/) noexcept {
     r.ok = false;
     r.message =
         "OptixRenderer::render_triangle requires the OptiX SDK; "
-        "rebuild with -DRELATIVITYRENDER_ENABLE_OPTIX=ON and pass "
+        "rebuild with -DRR_ENABLE_OPTIX=ON and pass "
         "-DOPTIX_ROOT=/path/to/optix-sdk so <optix.h> is "
         "available. The CUDA path is unaffected.";
     return r;
@@ -572,7 +572,7 @@ OptixRenderer::render_relativistic(int /*width*/, int /*height*/) noexcept {
     r.ok = false;
     r.message =
         "OptixRenderer::render_relativistic requires the OptiX "
-        "SDK; rebuild with -DRELATIVITYRENDER_ENABLE_OPTIX=ON "
+        "SDK; rebuild with -DRR_ENABLE_OPTIX=ON "
         "and pass -DOPTIX_ROOT=/path/to/optix-sdk so <optix.h> "
         "is available. The CUDA path is unaffected.";
     return r;

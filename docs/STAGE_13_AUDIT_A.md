@@ -83,7 +83,7 @@ The build host is **CUDA-less** (`which nvcc` returns nothing,
 `nvidia-smi` is not installed, `/usr/local/cuda` does not exist),
 so the OFF configuration is the one the audit can exercise. A
 prior interactive verification at the end of Stage 13B.3
-re-configured cleanly with `-DRELATIVITYRENDER_ENABLE_OPTIX=ON`
+re-configured cleanly with `-DRR_ENABLE_OPTIX=ON`
 and observed the same clean build + `100% tests passed` result;
 that branch is reproducible by reconfiguring but is not the
 default state of the audited tree. Stage 13's source additions

@@ -32,7 +32,7 @@ OptiX SDK" errors on the gated CLI actions.
 Pure host-side or compile-time-verified modules. `ctest`
 reports `100% tests passed, 0 tests failed out of 4` on
 both the OFF build (no CUDA, no OptiX) and the audit-host
-ON build (`-DRELATIVITYRENDER_ENABLE_OPTIX=ON` without an
+ON build (`-DRR_ENABLE_OPTIX=ON` without an
 SDK).
 
 - Math leaf (`Vec` / `Mat` / `Transform` / sampling), Image
@@ -55,7 +55,7 @@ SDK).
 ### Partial / GPU-side systems (compiled + audit-host fallback verified; runtime GPU validation deferred)
 
 These have shipped source and either compile cleanly under
-`-DRR_ENABLE_CUDA=ON` / `-DRELATIVITYRENDER_ENABLE_OPTIX=ON`
+`-DRR_ENABLE_CUDA=ON` / `-DRR_ENABLE_OPTIX=ON`
 or fall back to a documented "requires CUDA / OptiX SDK"
 error on the audit host. **End-to-end pixel output has not
 been visually validated on a CUDA + OptiX-SDK host in this
@@ -113,21 +113,28 @@ no OptiX SDK). Optional flags:
   Requires the CUDA Toolkit at build time and a
   CUDA-capable GPU at runtime; CUDA-required CLI actions
   exit with the documented error otherwise.
-- `-DRELATIVITYRENDER_ENABLE_OPTIX=ON` — compile the OptiX
-  backend + denoiser. The CMake option uses the full
-  project prefix (matching `CMakeLists.txt` line 30).
-  Without `-DOPTIX_ROOT=/path/to/optix-sdk` the build still
-  succeeds via the audit-host fallback (which returns the
-  documented "requires OptiX SDK" error from the OptiX-gated
-  CLI actions); a real OptiX runtime requires the SDK
-  install plus a CUDA-capable GPU.
+- `-DRR_ENABLE_OPTIX=ON` — compile the OptiX backend +
+  denoiser. Without `-DOPTIX_ROOT=/path/to/optix-sdk` the
+  build still succeeds via the audit-host fallback (which
+  returns the documented "requires OptiX SDK" error from
+  the OptiX-gated CLI actions); a real OptiX runtime
+  requires the SDK install plus a CUDA-capable GPU. The
+  pre-rename spelling `-DRELATIVITYRENDER_ENABLE_OPTIX=ON`
+  is accepted as a deprecated alias and forwarded to
+  `RR_ENABLE_OPTIX` with a one-line configure-time warning;
+  new docs / CI / commit messages should adopt the
+  canonical `RR_ENABLE_OPTIX` name.
 - `-DRR_BUILD_TESTS=OFF` — skip the four `ctest` targets.
 
-The CMake flag prefix is split between `RR_*`
-(project-internal shorthand) and `RELATIVITYRENDER_*` (full
-project name). This is a known cosmetic inconsistency
-tracked by the roadmap audit; it does not affect build
-correctness.
+All user-facing CMake options now share the `RR_*` prefix
+(`RR_BUILD_TESTS`, `RR_ENABLE_CUDA`, `RR_ENABLE_OPTIX`).
+The C++ compile-time macros that gate `src/optix/`'s
+`#ifdef`s still use the `RELATIVITYRENDER_*` spelling
+(`RELATIVITYRENDER_ENABLE_OPTIX`,
+`RELATIVITYRENDER_OPTIX_SDK_FOUND`); the CMake options
+control whether those macros are defined. The two
+spellings serve different layers and need not match
+character-for-character.
 
 ## Documentation
 

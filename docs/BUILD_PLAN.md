@@ -14418,6 +14418,216 @@ for traceability.**
   master # reference maps to a real
   master-order entry).
 
+## RR_ENABLE_OPTIX flag rename
+
+**Scope of this slice (cross-cutting;
+no master-order #): build-system
+hygiene. The previously-shipped CMake
+options had inconsistent prefixes —
+`RR_ENABLE_CUDA` / `RR_BUILD_TESTS`
+used the canonical `RR_*` prefix, but
+`RELATIVITYRENDER_ENABLE_OPTIX` did
+not. This slice unifies the user-facing
+flag namespace by renaming the option
+to `RR_ENABLE_OPTIX` while accepting
+the old spelling as a deprecated alias.
+The C++ compile-time macro that gates
+`src/optix/`'s `#ifdef`s
+(`RELATIVITYRENDER_ENABLE_OPTIX`) is
+preserved unchanged: the option layer
+controls whether the macro is defined,
+but the macro name itself is internal
+build logic that the prompt explicitly
+asked not to churn.**
+
+### What ships
+
+- `CMakeLists.txt`:
+    - The `option(...)` is renamed
+      `RELATIVITYRENDER_ENABLE_OPTIX`
+      → `RR_ENABLE_OPTIX`. Every
+      `if(RELATIVITYRENDER_ENABLE_OPTIX)`
+      gate in the file is updated to
+      the new name. The
+      `target_compile_definitions(
+      rr_optix PUBLIC
+      RELATIVITYRENDER_ENABLE_OPTIX)`
+      line is **kept verbatim** so the
+      C++ macro stays the same name
+      (no `#ifdef` churn in 8 source
+      files).
+    - A deprecated-alias forwarding
+      block fires when only the old
+      name is set:
+      `if(DEFINED
+      RELATIVITYRENDER_ENABLE_OPTIX
+      AND
+      RELATIVITYRENDER_ENABLE_OPTIX
+      AND NOT RR_ENABLE_OPTIX)
+      message(WARNING ...) ;
+      set(RR_ENABLE_OPTIX ON CACHE
+      BOOL "" FORCE) endif()`. The
+      `NOT RR_ENABLE_OPTIX` guard
+      ensures the new option always
+      wins when both are passed.
+    - The "OptiX SDK could not be
+      located" warning is rewritten
+      to start with
+      `"RR_ENABLE_OPTIX=ON but no
+      OptiX SDK could be located.
+      ..."`, matching the new flag
+      name.
+    - Banner + project description
+      bumped to "RR_ENABLE_OPTIX flag
+      rename".
+- Source files (8 files updated, doc
+  comments only — no behaviour change):
+  `src/main.cpp`, `src/core/CommandLine.{h,cpp}`,
+  `src/optix/OptixBackend.{h,cpp}`,
+  `src/optix/OptixAccel.cpp`,
+  `src/optix/OptixPipeline.cpp`,
+  `src/optix/OptixRenderer.{h,cpp}`,
+  `src/optix/OptixDenoiser.cpp`. Every
+  doc-comment / log-message reference
+  to `-DRELATIVITYRENDER_ENABLE_OPTIX
+  =ON` is replaced with
+  `-DRR_ENABLE_OPTIX=ON`. Preprocessor
+  directives (`#ifdef
+  RELATIVITYRENDER_ENABLE_OPTIX`,
+  `#ifndef
+  RELATIVITYRENDER_ENABLE_OPTIX`,
+  `#endif //
+  RELATIVITYRENDER_ENABLE_OPTIX`)
+  are **untouched**: those reference
+  the C++ macro, which keeps its
+  original name on purpose.
+- `README.md`: every CLI / CMake
+  reference to the flag is updated to
+  `-DRR_ENABLE_OPTIX=ON`. A new
+  paragraph documents the option /
+  macro split: "All user-facing CMake
+  options now share the `RR_*` prefix
+  (`RR_BUILD_TESTS`, `RR_ENABLE_CUDA`,
+  `RR_ENABLE_OPTIX`). The C++
+  compile-time macros that gate
+  `src/optix/`'s `#ifdef`s still use
+  the `RELATIVITYRENDER_*` spelling
+  ...". The deprecated-alias
+  forwarding behaviour is documented
+  on the `-DRR_ENABLE_OPTIX=ON`
+  bullet so users who land on the
+  README can find it.
+- Doc-only updates to mention the new
+  flag name in CMake-flag advice
+  passages: `docs/DENOISER_PLAN.md`
+  §13 build-step hint, the
+  CMakeCache snippet in
+  `docs/STAGE_19_DENOISER_AUDIT.md`,
+  the build-step hint in
+  `docs/GPU_MEMORY_AUDIT.md`, and the
+  build-step hint in
+  `docs/STAGE_13_AUDIT_A.md`.
+  References that describe the C++
+  preprocessor macro (e.g.
+  `RR_HAS_CUDA &&
+  RELATIVITYRENDER_ENABLE_OPTIX` in
+  the audit doc, the
+  "`RELATIVITYRENDER_ENABLE_OPTIX`
+  undefined" line in DENOISER_PLAN
+  §6.1) are preserved verbatim — they
+  are talking about the macro, which
+  did not get renamed.
+- `docs/BUILD_PLAN.md`: this entry.
+  No canonical historical row is
+  modified.
+
+### Hard-rule audit
+
+- Single user-facing flag prefix -
+  **yes**. Post-slice, every
+  user-facing CMake option in the
+  project shares the `RR_*` prefix
+  (`RR_BUILD_TESTS`,
+  `RR_ENABLE_CUDA`,
+  `RR_ENABLE_OPTIX`). The README
+  documents this explicitly.
+- Backward-compatible alias - **yes**.
+  Existing CI / scripts / muscle
+  memory that pass
+  `-DRELATIVITYRENDER_ENABLE_OPTIX=ON`
+  still build successfully; the
+  warning tells the operator to
+  migrate but does not break the
+  build.
+- "Do not change unrelated build
+  logic" - **yes**. The C++ macro
+  name is preserved, so the 8
+  `#ifdef RELATIVITYRENDER_ENABLE_
+  OPTIX` directives across `src/optix/`
+  are byte-identical pre-/post-slice.
+  No CUDA kernel, OptiX program, or
+  AOV-pipeline behaviour is changed.
+  Source-file edits are doc-comment
+  + log-string text replacements
+  only.
+- Update docs/BUILD_PLAN.md - **yes**,
+  this entry. No canonical historical
+  row is modified.
+
+### Verified at the build
+
+- `cmake -S . -B build` (defaults,
+  no flags): banner shows
+  "RR_ENABLE_OPTIX flag rename";
+  ctest 4/4 green; rr_optix not
+  built (option default off).
+- `cmake -S . -B build -DRR_ENABLE_CUDA=ON
+  -DRR_ENABLE_OPTIX=ON` (audit-host;
+  no SDK): canonical name path.
+  Banner reports `OptiX backend:
+  requested (-DRR_ENABLE_OPTIX=ON;
+  ...)`; the SDK-not-found warning
+  reads `RR_ENABLE_OPTIX=ON but no
+  OptiX SDK could be located. ...`;
+  rr_optix built via the two-layer
+  audit-host fallback; ctest 4/4
+  green.
+- `cmake -S . -B build
+  -DRELATIVITYRENDER_ENABLE_OPTIX=ON`
+  (audit-host; deprecated-alias
+  path): emits the deprecation
+  warning
+  ("RELATIVITYRENDER_ENABLE_OPTIX is
+  deprecated; use RR_ENABLE_OPTIX
+  instead. Forwarding ... for
+  backwards compatibility. ..."),
+  forwards to `RR_ENABLE_OPTIX=ON`,
+  build + ctest 4/4 identical to
+  the canonical path.
+- `git grep -F
+  '-DRELATIVITYRENDER_ENABLE_OPTIX'`
+  on the post-slice tree returns,
+  outside of `docs/BUILD_PLAN.md`'s
+  canonical historical entries
+  (every prior slice's "Verified at
+  the build" bullet referenced the
+  pre-rename name; per the standing
+  "do not modify BUILD_PLAN.md
+  canonical content" rule, those
+  rows are preserved verbatim),
+  only the intentionally-preserved
+  occurrences: the deprecated-alias
+  forwarding block in
+  `CMakeLists.txt` and the
+  "pre-rename spelling" reference
+  in `README.md`'s deprecated-alias
+  bullet. Every source-file CLI-
+  advice string + every doc-file
+  CMake-flag-advice paragraph
+  outside of canonical BUILD_PLAN
+  history is now spelled
+  `-DRR_ENABLE_OPTIX=ON`.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:

@@ -201,7 +201,7 @@ void OptixBackend::shutdown() noexcept {
 bool OptixBackend::initialize() noexcept {
     last_error_ =
         "OptiX SDK not found at build time; rebuild with "
-        "-DRELATIVITYRENDER_ENABLE_OPTIX=ON and pass "
+        "-DRR_ENABLE_OPTIX=ON and pass "
         "-DOPTIX_ROOT=/path/to/optix-sdk so the OptiX context can "
         "be created. The CUDA path is unaffected.";
     std::fprintf(stderr,

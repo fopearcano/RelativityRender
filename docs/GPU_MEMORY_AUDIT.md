@@ -439,7 +439,7 @@ of every owner and tracing every move-from path.
 ### 6.2 Cross-check against build artefacts
 
 A full Linux build (`-DRR_ENABLE_CUDA=ON
--DRELATIVITYRENDER_ENABLE_OPTIX=ON`, real CUDA + OptiX SDK)
+-DRR_ENABLE_OPTIX=ON`, real CUDA + OptiX SDK)
 running every render-* CLI action under `cuda-memcheck
 --leak-check full` is the eventual confirmation step.
 Documented as a follow-up validation gate; the audit-host

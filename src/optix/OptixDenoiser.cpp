@@ -545,7 +545,7 @@ void OptixDenoiser::shutdown() noexcept {
 bool OptixDenoiser::initialize(OptixBackend& /*backend*/) noexcept {
     last_error_ =
         "OptixDenoiser::initialize requires the OptiX SDK; "
-        "rebuild with -DRELATIVITYRENDER_ENABLE_OPTIX=ON and "
+        "rebuild with -DRR_ENABLE_OPTIX=ON and "
         "pass -DOPTIX_ROOT=/path/to/optix-sdk so <optix.h> is "
         "available. The CUDA path is unaffected.";
     return false;
@@ -558,7 +558,7 @@ bool OptixDenoiser::set_inputs(const Inputs& /*inputs*/) noexcept {
     // the SDK. Document the failure and leave inputs unset.
     last_error_ =
         "OptixDenoiser::set_inputs requires the OptiX SDK; "
-        "rebuild with -DRELATIVITYRENDER_ENABLE_OPTIX=ON and "
+        "rebuild with -DRR_ENABLE_OPTIX=ON and "
         "pass -DOPTIX_ROOT=/path/to/optix-sdk so <optix.h> is "
         "available. The CUDA path is unaffected.";
     return false;
@@ -572,7 +572,7 @@ bool OptixDenoiser::invoke(const Output& /*output*/) noexcept {
     // failure; no GPU work is launched.
     last_error_ =
         "OptixDenoiser::invoke requires the OptiX SDK; "
-        "rebuild with -DRELATIVITYRENDER_ENABLE_OPTIX=ON and "
+        "rebuild with -DRR_ENABLE_OPTIX=ON and "
         "pass -DOPTIX_ROOT=/path/to/optix-sdk so <optix.h> is "
         "available. The CUDA path is unaffected.";
     return false;

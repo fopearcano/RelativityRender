@@ -32,13 +32,13 @@ What the audit host can and did verify:
 
 - `--render-aovs --denoise` and `--render-denoise`, run on
   the OFF build (`RR_ENABLE_CUDA=OFF`,
-  `RELATIVITYRENDER_ENABLE_OPTIX=OFF`), return the documented
+  `RR_ENABLE_OPTIX=OFF`), return the documented
   "requires CUDA + OptiX" error and exit non-zero. No PPM is
   written. This is intentional: the AOV pipeline that produces
   the denoiser's input AOVs requires CUDA, so without it
   there is nothing to denoise.
 - The audit-host ON build
-  (`RELATIVITYRENDER_ENABLE_OPTIX=ON`, no SDK located) hits
+  (`RR_ENABLE_OPTIX=ON`, no SDK located) hits
   the same CUDA gate before reaching the denoiser; same exit
   shape.
 - The fallback contract added in Stage 19C.3 — write the
@@ -135,7 +135,7 @@ What the audit host can and did verify:
   `if (cfg.denoise_enabled)` branch is the only place the
   bit is read).
 - The OFF build (`RR_ENABLE_CUDA=OFF`,
-  `RELATIVITYRENDER_ENABLE_OPTIX=OFF`) compiles cleanly with
+  `RR_ENABLE_OPTIX=OFF`) compiles cleanly with
   ctest 4/4 green. None of the new Stage 19 source files
   (`OptixDenoiser.{h,cpp}`, `denoise_aov_buffers_to_ppm`,
   `format_denoiser_timing_line`, the `--denoise` flag
@@ -143,7 +143,7 @@ What the audit host can and did verify:
   not built and the helper is gated on
   `RR_HAS_CUDA && RELATIVITYRENDER_ENABLE_OPTIX`.
 - The audit-host ON build
-  (`RELATIVITYRENDER_ENABLE_OPTIX=ON`, no SDK) compiles via
+  (`RR_ENABLE_OPTIX=ON`, no SDK) compiles via
   the existing two-layer fallback pattern (Stage 17A.1 /
   every rr_optix subsystem); ctest 4/4 green. Smoke-tested:
   `--render-aovs` (without `--denoise`) returns the

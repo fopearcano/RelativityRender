@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.20)
 
 project(RelativityRender
     VERSION     0.1.0
-    DESCRIPTION "RelativityRender - GPU renderer platform (roadmap consistency audit)"
+    DESCRIPTION "RelativityRender - GPU renderer platform (RR_ENABLE_OPTIX flag rename)"
     LANGUAGES   CXX
 )
 
@@ -27,13 +27,39 @@ option(RR_ENABLE_CUDA "Enable CUDA backend (requires CUDA Toolkit)"   OFF)
 # wiring land in subsequent Stage 12B sub-stages - this slice
 # deliberately does nothing else so the build stays clean on hosts
 # without the OptiX SDK.
-option(RELATIVITYRENDER_ENABLE_OPTIX
+#
+# Naming: the canonical user-facing flag is `RR_ENABLE_OPTIX`,
+# matching the `RR_*` prefix every other project option uses
+# (RR_BUILD_TESTS, RR_ENABLE_CUDA). The previous flag name
+# `RELATIVITYRENDER_ENABLE_OPTIX` is kept as a deprecated alias
+# (see the forwarding block below) so existing CI scripts /
+# docstring instructions / commit messages do not silently
+# stop opting in to the OptiX backend.
+option(RR_ENABLE_OPTIX
        "Request OptiX backend (Stage 12B.1: flag-only; no sources / headers wired yet)"
        OFF)
 
+# Deprecated alias: forward `-DRELATIVITYRENDER_ENABLE_OPTIX=ON`
+# (the pre-Stage-19 flag spelling) to the canonical
+# `RR_ENABLE_OPTIX` and emit a one-line deprecation warning at
+# configure time. The forward only fires when the user explicitly
+# set the deprecated alias and did NOT set the canonical option,
+# so the new spelling always wins when both are passed.
+if(DEFINED RELATIVITYRENDER_ENABLE_OPTIX AND RELATIVITYRENDER_ENABLE_OPTIX
+   AND NOT RR_ENABLE_OPTIX)
+    message(WARNING
+        "RELATIVITYRENDER_ENABLE_OPTIX is deprecated; use RR_ENABLE_OPTIX "
+        "instead. Forwarding -DRELATIVITYRENDER_ENABLE_OPTIX=ON to "
+        "-DRR_ENABLE_OPTIX=ON for backwards compatibility. The "
+        "deprecated alias will continue to work but new docs / CI / "
+        "commit messages should adopt the canonical RR_ENABLE_OPTIX "
+        "name.")
+    set(RR_ENABLE_OPTIX ON CACHE BOOL "" FORCE)
+endif()
+
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
-message(STATUS "RelativityRender ${PROJECT_VERSION} (roadmap consistency audit)")
+message(STATUS "RelativityRender ${PROJECT_VERSION} (RR_ENABLE_OPTIX flag rename)")
 
 message(STATUS "  Build type   : ${CMAKE_BUILD_TYPE}")
 message(STATUS "  C++ standard : ${CMAKE_CXX_STANDARD}")
@@ -45,9 +71,9 @@ message(STATUS "  CUDA backend : ${RR_ENABLE_CUDA}")
 # OptiX sources, find_package(OptiX), or any include paths - those
 # land in subsequent 12B.x slices. The flag's only effect today is
 # this message.
-if(RELATIVITYRENDER_ENABLE_OPTIX)
+if(RR_ENABLE_OPTIX)
     message(STATUS "  OptiX backend: requested "
-                   "(-DRELATIVITYRENDER_ENABLE_OPTIX=ON; Stage 12B.2 file "
+                   "(-DRR_ENABLE_OPTIX=ON; Stage 12B.2 file "
                    "skeleton compiles, SDK / programs / SBT / AS wiring "
                    "lands in subsequent 12B sub-stages)")
 endif()
@@ -305,13 +331,22 @@ endif()
 rr_apply_warnings(rr_server)
 
 # rr_optix: OptiX backend file skeleton. Stage 12B.3 makes the
-# entire library conditional on RELATIVITYRENDER_ENABLE_OPTIX so
-# the OFF build never compiles any `src/optix/` source - byte-
-# identical to the pre-12B state. When ON, the library aggregates
-# the placeholder Stage 12B.2 sources (OptixBackend.cpp +
-# OptixRenderer.cpp) and exports the RELATIVITYRENDER_ENABLE_OPTIX
-# compile definition PUBLICly so consumers reading
-# `OptixBackend::isCompiled()` see the right answer.
+# entire library conditional on RR_ENABLE_OPTIX so the OFF build
+# never compiles any `src/optix/` source - byte-identical to the
+# pre-12B state. When ON, the library aggregates the placeholder
+# Stage 12B.2 sources (OptixBackend.cpp + OptixRenderer.cpp) and
+# exports the `RELATIVITYRENDER_ENABLE_OPTIX` compile definition
+# PUBLICly so consumers reading `OptixBackend::isCompiled()` see
+# the right answer.
+#
+# Naming: the canonical CMake option is `RR_ENABLE_OPTIX`; the
+# C++ compile-time macro is intentionally still spelled
+# `RELATIVITYRENDER_ENABLE_OPTIX` for source-code stability
+# (every `#ifdef RELATIVITYRENDER_ENABLE_OPTIX` in `src/optix/`,
+# `src/main.cpp`, etc. is unaffected by the rename). The CMake
+# option controls whether the C++ macro is defined; the two
+# spellings serve different layers and need not match
+# character-for-character.
 #
 # No OptiX SDK dependency, no `<optix.h>` include, no
 # `find_package(OptiX)` - the placeholder sources contain only
@@ -319,7 +354,7 @@ rr_apply_warnings(rr_server)
 # remaining `src/optix/` files (OptixPrograms.cu / OptixSBT.h /
 # OptixAccel.h / OptixLaunchParams.h per OPTIX_BACKEND_PLAN.md
 # §20-§23) and the real OptiX SDK wiring.
-if(RELATIVITYRENDER_ENABLE_OPTIX)
+if(RR_ENABLE_OPTIX)
     # Stage 12B.4: detect OptiX SDK path. The user passes
     # `-DOPTIX_ROOT=/path/to/optix-sdk` or
     # `-DOPTIX_SDK_DIR=/path/to/optix-sdk` at configure time; we
@@ -358,8 +393,8 @@ if(RELATIVITYRENDER_ENABLE_OPTIX)
 
     if(NOT RELATIVITYRENDER_OPTIX_SDK_FOUND)
         message(WARNING
-            "RELATIVITYRENDER_ENABLE_OPTIX=ON but no OptiX SDK could "
-            "be located. Pass -DOPTIX_ROOT=/path/to/optix-sdk or "
+            "RR_ENABLE_OPTIX=ON but no OptiX SDK could be located. "
+            "Pass -DOPTIX_ROOT=/path/to/optix-sdk or "
             "-DOPTIX_SDK_DIR=/path/to/optix-sdk (or set the "
             "OPTIX_ROOT environment variable) so cmake can find "
             "'include/optix.h' under the SDK install. The current "
@@ -579,7 +614,7 @@ target_link_libraries(RelativityRender PRIVATE
 # requested (see the rr_optix block above), so the link must be
 # conditional too. When OFF, the executable's link line is
 # byte-identical to pre-12B builds.
-if(RELATIVITYRENDER_ENABLE_OPTIX)
+if(RR_ENABLE_OPTIX)
     target_link_libraries(RelativityRender PRIVATE rr_optix)
 endif()
 rr_apply_warnings(RelativityRender)

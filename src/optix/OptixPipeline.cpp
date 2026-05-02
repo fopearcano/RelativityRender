@@ -460,7 +460,7 @@ OptixPipelineResult OptixPipeline::create(OptixBackend& /*backend*/) {
     OptixPipelineResult r;
     r.error_message =
         "OptixPipeline::create requires the OptiX SDK; rebuild "
-        "with -DRELATIVITYRENDER_ENABLE_OPTIX=ON and pass "
+        "with -DRR_ENABLE_OPTIX=ON and pass "
         "-DOPTIX_ROOT=/path/to/optix-sdk so <optix.h> is "
         "available. The CUDA path is unaffected.";
     return r;
