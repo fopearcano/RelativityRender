@@ -3747,6 +3747,7 @@ sub-stages, appended to the same file.** No code is touched.
 | 19C.2.1  | Denoiser allocation scan (docs/DENOISER_MEMORY_AUDIT_A.md: list-only enumeration of GPU memory allocations on the denoiser path — 2 direct cudaMallocs in OptixDenoiser::invoke, 5 indirect cudaMallocs via GpuBuffer<T>::allocate / GpuAOVBuffer::resize across denoise_aov_buffers_to_ppm / run_render_denoise / run_render_aovs, 1 OptiX object allocation via optixDenoiserCreate; no analysis, no leak / pairing / scratch-sizing commentary; analysis lives in subsequent 19C.2.x sub-stages; no code changes outside the CMakeLists stage label bump) | ✅ |
 | 19C.2.2  | Denoiser free scan (docs/DENOISER_MEMORY_AUDIT_B.md: list-only enumeration of GPU memory frees on the denoiser path — 9 direct cudaFree calls in OptixDenoiser::invoke (4 d_scratch + 5 d_state across the success and four failure paths), 5 indirect cudaFree-via-RAII through GpuBuffer<T>/GpuAOVBuffer destructors, 1 OptiX object free via optixDenoiserDestroy; no analysis, no pairing verification; pairing audit lives in a subsequent 19C.2.x sub-stage; no code changes outside the CMakeLists stage label bump) | ✅ |
 | 19C.2.3  | Denoiser mismatch check (docs/DENOISER_MEMORY_AUDIT_C.md: two yes/no answers pairing Part A and Part B — "any allocation without obvious free? No"; "any duplicate allocation? No"; three supporting one-line bullets mapping A.1–A.2 to B.1–B.9, A.3–A.7 to B.10–B.14, A.8 to B.15; max 5 bullets, no deep reasoning; no code changes outside the CMakeLists stage label bump) | ✅ |
+| 19C.3    | Denoiser fallback (denoise_aov_buffers_to_ppm gains a save_noisy_fallback lambda that downloads the noisy Beauty AOV directly, widens FLOAT3 → RGBA32F (alpha=1), and saves it at the requested out_path with a Logger::warning; every denoiser-side failure path (OptixBackend init, OptixDenoiser init, set_inputs, output buffer alloc, invoke, denoised download) now returns through the fallback instead of returning false; the user always gets a saved image at the requested path; renderer never crashes due to denoiser failure; the only false-return path is when even the noisy-fallback download/save itself fails (genuine catastrophe); denoise:invoke / denoise:total timing lines skipped on the fallback path because no successful denoiser pass ran to time) | ✅ |
 
 ## Stage 12A.2.1 — OptiX raygen program design
 
@@ -13995,6 +13996,195 @@ three pairing-bullet lines.**
   =ON` (Linux audit-host): banner
   bumped; rr_optix unchanged; ctest
   4/4 green.
+
+## Stage 19C.3 — Denoiser fallback
+
+**Scope of this slice (Stage 19C.3; master order
+#24): make every denoiser-side failure path
+non-fatal to the renderer. The user always gets
+a saved image at the requested output path;
+when the denoiser fails the image is the
+original noisy Beauty AOV plus a
+`Logger::warning` line documenting the cause.
+Per the master "renderer must never crash due
+to denoiser" rule. No new files, no API
+surface change.**
+
+### What ships
+
+- `src/main.cpp::denoise_aov_buffers_to_ppm`
+  (extended): new `save_noisy_fallback`
+  lambda + every denoiser-side failure
+  return rewired through it.
+    - The lambda takes a `reason` string,
+      logs it via `Logger::warning`, downloads
+      the noisy Beauty `GpuAOVBuffer`
+      (FLOAT3) directly, widens to RGBA32F
+      (alpha = 1) using the same loop the
+      success path uses, and saves through
+      `save_image_or_error` with the label
+      `"denoised (noisy fallback)"`. Returns
+      `true` on a successful fallback save.
+      Returns `false` only when even the
+      fallback download / save fails
+      (genuine catastrophe).
+    - Six failure call sites converted from
+      `Logger::error(...) + return false;`
+      to `return save_noisy_fallback(...)`:
+        - `OptixBackend::initialize` failure
+        - `OptixDenoiser::initialize` failure
+        - `set_inputs` failure
+        - `denoised_dev.allocate` failure
+        - `denoiser.invoke` failure
+        - `denoised_dev.download` failure
+    - The trailing `save_image_or_error`
+      for the denoised image stays as-is;
+      a PPM-write failure on the success
+      path is image-IO failure (disk full,
+      permission denied, ...) and the
+      noisy fallback would fail for the
+      same reason - logging + returning
+      `false` is the right behaviour
+      there.
+    - The Stage 19C.1 `denoise:invoke` /
+      `denoise:total` timing lines are
+      intentionally skipped on the fallback
+      path because no successful denoiser
+      pass ran to time. The success path
+      still emits both lines unchanged.
+
+- `CMakeLists.txt`: stage label bumped to
+  "Stage 19C.3: denoiser fallback".
+
+- `docs/BUILD_PLAN.md`: this entry +
+  status-table row.
+
+`docs/DENOISER_PLAN.md` is intentionally not
+edited - the existing §9.3 covers the
+SDK-not-found compile-time fallback (which
+returns the documented "requires OptiX SDK"
+error and produces no PPM); the new runtime-
+fallback behaviour is implementation detail
+of the helper and lives entirely in the
+BUILD_PLAN entry. A future doc-sync slice
+may inline a §9.3.x for completeness.
+
+### Architectural decisions worth highlighting
+
+- **Fallback writes the same out_path the
+  user asked for.** This preserves the CLI
+  contract: `--render-aovs --denoise`
+  produces `output/denoised.ppm` whether
+  or not the denoiser ran successfully.
+  The label in the log distinguishes
+  ("wrote denoised: ..." vs "wrote
+  denoised (noisy fallback): ...").
+- **Logger::warning, not Logger::error,
+  on the fallback path.** The denoiser
+  failure is degraded behaviour, not a
+  hard failure - the user gets an image,
+  just not a denoised one. `error` is
+  reserved for the genuine catastrophe
+  case (even the noisy save fails).
+- **Reason string concatenated with the
+  underlying `last_error()` where
+  available.** The warning records both
+  the high-level pass that failed
+  (`OptixDenoiser init failed`,
+  `invoke failed`, ...) and the SDK's
+  raw error string from `last_error()`,
+  so the operator can diagnose without
+  re-running.
+- **Skip timing lines on fallback.** The
+  `denoise:invoke` / `denoise:total`
+  ms/frame logs (Stage 19C.1) only fire
+  on the success path. Logging
+  fabricated zero-time lines on the
+  fallback would mislead an operator
+  into thinking the denoiser ran.
+- **Trailing PPM-save failure is NOT
+  fallbacked.** A successful denoiser
+  pass that fails to write its PPM
+  (disk full, permission denied) is
+  an image-IO failure; the fallback
+  would write to the same path and
+  fail the same way. Logging + return
+  false is the correct behaviour
+  there - exactly as today.
+- **API shape unchanged.** The helper
+  still returns `bool`; the caller
+  (`run_render_aovs --denoise`,
+  `run_render_denoise`) sees `true` for
+  any successful save (denoised OR
+  noisy fallback), `false` only on a
+  genuine catastrophe. Existing callers
+  need no changes.
+
+### Hard-rule audit
+
+- Renderer must never crash due to
+  denoiser - **yes**. C++ has no
+  exceptions on the denoiser path
+  (every method is `noexcept`). All
+  six failure paths now produce a
+  warning + a saved noisy image
+  rather than a hard exit. Even a
+  catastrophe (fallback download
+  fails) returns `false` to the
+  caller for graceful handling, not
+  an abort.
+- If denoiser fails: log warning -
+  **yes**, every fallback call site
+  emits one `Logger::warning` line
+  with the failure reason (and the
+  SDK's raw error string when
+  available) before saving the noisy
+  image.
+- If denoiser fails: output original
+  noisy image - **yes**, the
+  fallback downloads the Beauty AOV
+  (which is the noisy radiance
+  estimate, per DENOISER_PLAN
+  §8.1.1) directly and saves it at
+  the user's requested out_path.
+- Update docs/BUILD_PLAN.md - **yes**,
+  this entry + status-table row.
+
+### Verified at the build
+
+- `cmake -DRR_ENABLE_CUDA=OFF
+   -DRELATIVITYRENDER_ENABLE_OPTIX=OFF`
+  (Linux): banner shows "Stage 19C.3:
+  denoiser fallback"; main.cpp
+  recompiles with the new
+  `save_noisy_fallback` lambda inside
+  `denoise_aov_buffers_to_ppm` (gated
+  on RR_HAS_CUDA + ENABLE_OPTIX);
+  ctest 4/4 green.
+- `cmake -DRELATIVITYRENDER_ENABLE_OPTIX
+  =ON` (Linux audit-host): banner
+  bumped; main.cpp recompiles with
+  the lambda's six call sites
+  threading through every failure
+  path; the audit-host's
+  `OptixBackend::initialize` /
+  `OptixDenoiser::initialize`
+  fallbacks naturally trip the new
+  fallback path (returning the
+  documented "requires OptiX SDK"
+  error string in `last_error()`,
+  threaded into the warning); ctest
+  4/4 green.
+- A future CUDA + OptiX-SDK host run
+  exercises the success path
+  unchanged. To test the runtime
+  fallback path, an operator can
+  introduce a deliberate failure
+  (e.g. set `inputs.beauty_device =
+  nullptr`) - the new behaviour
+  produces a `[WARN]` line and saves
+  the noisy Beauty at
+  `output/denoised.ppm`.
 
 ## Next stage
 

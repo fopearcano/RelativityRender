@@ -2608,17 +2608,67 @@ bool denoise_aov_buffers_to_ppm(
     rr::gpu::GpuTimer total_timer;
     total_timer.start();
 
+    // Stage 19C.3 noisy-fallback helper. Per the master
+    // "renderer must never crash due to denoiser" rule:
+    // when any denoiser-side step fails, log a Logger
+    // ::warning, download the noisy Beauty AOV directly
+    // (FLOAT3 -> RGBA32F widen), and save it to the
+    // requested `out_path`. The user always gets a saved
+    // image; the only difference is the absence of
+    // denoising. This wrapper returns true on a successful
+    // fallback save and false only when even the noisy
+    // download / save fails (genuine catastrophe).
+    //
+    // The denoiser-pass GPU timing lines (denoise:invoke /
+    // denoise:total from Stage 19C.1) are intentionally
+    // skipped on the fallback path because the denoiser
+    // did not actually run a successful pass to time.
+    const auto save_noisy_fallback =
+        [&](const std::string& reason) -> bool {
+        Logger::warning("denoise: " + reason
+                      + "; falling back to noisy Beauty AOV "
+                        "(no denoising applied)");
+
+        std::vector<float> host_rgb;
+        if (!beauty_buf.download(host_rgb)) {
+            Logger::error("denoise: noisy-fallback download "
+                          "failed; no image saved");
+            return false;
+        }
+        const std::size_t expected_floats =
+            static_cast<std::size_t>(width)
+          * static_cast<std::size_t>(height) * 3u;
+        if (host_rgb.size() != expected_floats) {
+            Logger::error("denoise: noisy-fallback download "
+                          "size mismatch; no image saved");
+            return false;
+        }
+
+        rr::image::Image img(width, height,
+                             rr::image::PixelFormat::Rgba32F);
+        const std::size_t pixel_count =
+            static_cast<std::size_t>(width) * height;
+        float* dst = img.data();
+        for (std::size_t i = 0; i < pixel_count; ++i) {
+            dst[i * 4 + 0] = host_rgb[i * 3 + 0];
+            dst[i * 4 + 1] = host_rgb[i * 3 + 1];
+            dst[i * 4 + 2] = host_rgb[i * 3 + 2];
+            dst[i * 4 + 3] = 1.0f;
+        }
+        return save_image_or_error(img, out_path,
+                                   "denoised (noisy fallback)",
+                                   width, height);
+    };
+
     rr::optix::OptixBackend backend;
     if (!backend.initialize()) {
-        Logger::error("denoise: OptixBackend init failed: "
-                    + backend.last_error());
-        return false;
+        return save_noisy_fallback("OptixBackend init failed: "
+                                 + backend.last_error());
     }
     rr::optix::OptixDenoiser denoiser;
     if (!denoiser.initialize(backend)) {
-        Logger::error("denoise: OptixDenoiser init failed: "
-                    + denoiser.last_error());
-        return false;
+        return save_noisy_fallback("OptixDenoiser init failed: "
+                                 + denoiser.last_error());
     }
 
     rr::optix::OptixDenoiser::Inputs inputs;
@@ -2629,8 +2679,8 @@ bool denoise_aov_buffers_to_ppm(
     inputs.width             = width;
     inputs.height            = height;
     if (!denoiser.set_inputs(inputs)) {
-        Logger::error("denoise: set_inputs failed: " + denoiser.last_error());
-        return false;
+        return save_noisy_fallback("set_inputs failed: "
+                                 + denoiser.last_error());
     }
 
     // Allocate the denoised-output device buffer (FLOAT3 to
@@ -2640,8 +2690,8 @@ bool denoise_aov_buffers_to_ppm(
         static_cast<std::size_t>(width) * height * 3u;
     rr::gpu::GpuBuffer<float> denoised_dev;
     if (!denoised_dev.allocate(out_float_count)) {
-        Logger::error("denoise: GpuBuffer<float> allocate failed");
-        return false;
+        return save_noisy_fallback(
+            "denoised output buffer allocate failed");
     }
 
     rr::optix::OptixDenoiser::Output output;
@@ -2659,8 +2709,8 @@ bool denoise_aov_buffers_to_ppm(
     const bool invoke_ok = denoiser.invoke(output);
     invoke_timer.stop();
     if (!invoke_ok) {
-        Logger::error("denoise: invoke failed: " + denoiser.last_error());
-        return false;
+        return save_noisy_fallback("invoke failed: "
+                                 + denoiser.last_error());
     }
     log_denoiser_timing("denoise:invoke", width, height,
                         invoke_timer.elapsed_ms());
@@ -2673,8 +2723,8 @@ bool denoise_aov_buffers_to_ppm(
     // pixel CPU work" rule.
     std::vector<float> host_rgb(out_float_count);
     if (!denoised_dev.download(host_rgb.data(), out_float_count)) {
-        Logger::error("denoise: download failed");
-        return false;
+        return save_noisy_fallback(
+            "denoised output download failed");
     }
     rr::image::Image img(width, height, rr::image::PixelFormat::Rgba32F);
     {
