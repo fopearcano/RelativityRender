@@ -15913,6 +15913,288 @@ accuracy:
   — every such row is "not
   started".
 
+## Dependency-boundary audit
+
+**Scope of this slice (cross-cutting;
+no master-order #): documentation-
+only audit cross-checking the
+project's actual `target_link_libraries`
++ `#include` patterns against the
+seven dependency rules in the audit
+prompt + `docs/DEVELOPMENT_RULES.md`
+§3 / `docs/MASTER_ARCHITECTURE.md` §6.
+The slice changes no source / build /
+test files; it records findings (zero
+violations + three technical-debt
+observations worth visibility).**
+
+### CMake dependency graph (current state)
+
+```
+rr_math (INTERFACE) — leaf, no project-specific deps
+   |
+   ├── rr_image       (PUBLIC: rr_math)
+   ├── rr_camera      (PUBLIC: rr_math)
+   ├── rr_geometry    (PUBLIC: rr_math)
+   ├── rr_material    (PUBLIC: rr_math)
+   ├── rr_lighting    (PUBLIC: rr_math)
+   ├── rr_texture     (PUBLIC: rr_math)
+   ├── rr_relativity  (INTERFACE: rr_math)
+   ├── rr_pathtracer  (INTERFACE: rr_math)
+   |
+   ├── rr_scene       (PUBLIC: rr_math, rr_camera, rr_geometry,
+   |                            rr_relativity, rr_material, rr_lighting)
+   |     └── rr_io    (PUBLIC: rr_scene)
+   |
+   └── rr_gpu         (PUBLIC: rr_camera, rr_relativity, rr_geometry,
+                                rr_material, rr_lighting, rr_texture
+                       [+ when RR_ENABLE_CUDA: rr_image, rr_pathtracer]
+                       PRIVATE: CUDA::cudart)
+         |
+         ├── rr_renderer (PUBLIC: rr_image, rr_gpu, rr_pathtracer)
+         ├── rr_server   (PUBLIC: rr_io, rr_gpu, rr_image)
+         └── rr_optix    (PRIVATE: rr_gpu, [+ CUDA::cudart])
+```
+
+Top-level `RelativityRender`
+executable PRIVATE-links every
+library above; `rr_optix` is
+conditionally linked when
+`RR_ENABLE_OPTIX=ON`.
+
+### Findings: 7 rules, 0 violations
+
+| Rule (audit-prompt order)                                       | Verdict | Evidence                                                                                                                                                           |
+|-----------------------------------------------------------------|:-------:|--------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| 1. Math depends on nothing project-specific                     | PASS    | `rr_math INTERFACE` with no `target_link_libraries`. `grep '^#include' src/math/` returns no project-specific includes.                                            |
+| 2. Image does not depend on GPU                                 | PASS    | `rr_image PUBLIC: rr_math`. `grep '^#include' src/image/` returns no `gpu/` / `cuda/` / `optix/` / `renderer/` includes.                                          |
+| 3. Scene does not depend on GPU backends                        | PASS    | `rr_scene PUBLIC: rr_math + leaf modules` (no `rr_gpu` link). `grep '^#include' src/scene/` returns no GPU / backend includes.                                    |
+| 4. CUDA does not depend on OptiX                                | PASS    | CUDA sources live inside `rr_gpu`; `rr_gpu` does not link `rr_optix`. `grep '^#include' src/cuda/ src/gpu/` returns no `optix/` or `<optix*>` matches.            |
+| 5. Renderer / server do not depend on Cinema 4D or UI           | PASS    | `rr_renderer` + `rr_server` link only renderer-family targets. Source-tree grep across both modules for `c4d` / `cinema 4d` / `node_editor` / `preview_ui` returns zero matches (already audited in the C4D / UI coupling slice). |
+| 6. C4D / integrations do not link renderer internals directly   | TRIVIAL | No C4D / integrations targets exist (rule #20 / #21 / master-order #22 status: `not started`).                                                                    |
+| 7. Node editor does not leak into renderer core                 | TRIVIAL | No node-editor target exists (rule #22 status: `not started`).                                                                                                     |
+
+### Technical-debt observations
+
+These are not boundary violations —
+the dependency arrows all point the
+correct way and no rule from
+DEVELOPMENT_RULES §3 is broken.
+They are architectural shapes
+worth visibility so a future slice
+can decide whether to refactor.
+**No fix is applied in this slice
+per the audit prompt's "Do not
+refactor large modules" rule.**
+
+#### TD-1: `rr_gpu` collapses two architectural modules
+
+`docs/MASTER_ARCHITECTURE.md` §4
+distinguishes module #4 (GPU
+Device Layer — backend-agnostic)
+from module #5 (CUDA Backend —
+concrete CUDA implementation).
+The build collapses both into a
+single CMake target `rr_gpu`:
+
+- `src/gpu/Gpu*.cpp` (module #4
+  files) compile into `rr_gpu`
+  unconditionally.
+- `src/cuda/Cuda*.cpp` +
+  `src/cuda/*.cu` (module #5
+  files) compile into the same
+  `rr_gpu` target when
+  `RR_ENABLE_CUDA=ON` (CMake
+  lines 568–597 use
+  `target_sources(rr_gpu PRIVATE
+  ...)` rather than a separate
+  `add_library(rr_cuda ...)`).
+
+Consequence: a downstream
+consumer linking `rr_gpu`
+automatically pulls in the CUDA
+backend; there is no abstract-
+GPU-only target. The `RR_HAS_CUDA`
+PUBLIC compile definition is the
+seam consumers gate on, not a
+target boundary. The dependency
+direction is still correct
+(rr_gpu has zero deps on the
+backend it would conceptually
+sit above), so this is a target-
+naming / split debt, not a layer
+violation.
+
+**Refactor path** (NOT applied
+in this slice): split into
+`rr_gpu` (abstract device layer
+only) + a new `rr_cuda` STATIC
+target that conditionally
+compiles the `src/cuda/*` sources
+and PUBLIC-links `rr_gpu`. Risk:
+dozens of CMake link edges have
+to be rewritten.
+
+#### TD-2: `src/pathtracer/PathTracer.cpp` is compiled into `rr_renderer`
+
+`rr_pathtracer` is declared
+INTERFACE-only (RR_HD inline
+RNG + Sampling primitives so
+the same code compiles host +
+device). Adding the host-side
+orchestrator `PathTracer.cpp`
+to `rr_pathtracer` would
+require promoting it from
+INTERFACE to STATIC and pulling
+in `rr_gpu` / `rr_image` /
+`rr_renderer` — which would
+break `rr_pathtracer`'s
+"RR_HD-callable everywhere"
+property and create a
+dependency cycle between
+`rr_pathtracer` and
+`rr_renderer`.
+
+The build's workaround (CMake
+lines 282–287 / 286 specifically):
+include `src/pathtracer/PathTracer.cpp`
+in `rr_renderer`'s `add_library`
+call. The file *lives* in
+`src/pathtracer/` (a module #14
+directory) but the *target*
+that compiles it is `rr_renderer`
+(module #15 / #17 territory).
+
+Consequence: the source-tree
+directory shape and the CMake
+target shape disagree about
+where module #14's host
+orchestrator sits. The
+disagreement is documented in a
+CMake comment ("Each .cpp ends
+up here ... so the static-lib
+dependency direction stays one-
+way: rr_renderer → rr_gpu,
+rr_pathtracer, rr_image, with
+no cycle"), so future
+maintainers shouldn't be
+surprised, but the layout
+remains a known quirk.
+
+**Refactor path** (NOT applied):
+either (a) introduce a separate
+`rr_pathtracer_host` STATIC
+target compiling only
+`PathTracer.cpp`, leaving
+`rr_pathtracer` INTERFACE for
+the RR_HD inlines — at the cost
+of a third target in the path-
+tracer family; or (b) move
+`src/pathtracer/PathTracer.cpp`
+to `src/renderer/` so source-
+tree shape matches target
+shape — at the cost of a path
+that doesn't match the
+architectural-module name.
+
+#### TD-3: `src/server/RenderServer.cpp` reaches into `rr::cuda::CudaRenderer` directly
+
+`rr_server` PUBLIC-links
+`rr_gpu`, which is correct: the
+server's render verb dispatches
+to GPU rendering. But the
+implementation file (under the
+`#ifdef RR_HAS_CUDA` branch at
+RenderServer.cpp lines 20–23
+and the call site at line 414)
+calls `rr::cuda::CudaRenderer::
+render_scene(...)` directly,
+not through an abstract
+`Renderer` / `Backend`
+interface owned by the GPU
+device layer.
+
+Consequence: the server's
+`#ifdef RR_HAS_CUDA` branch is
+hard-coded to the CUDA
+backend; an OptiX-backed
+server path would need a
+parallel `#ifdef
+RELATIVITYRENDER_ENABLE_OPTIX`
+branch alongside (or instead
+of) the CUDA one, doubling
+the cross-cutting include /
+namespace touch points.
+
+**Refactor path** (NOT applied):
+introduce an abstract
+`rr::gpu::Renderer`
+interface (or a free function
+`rr::gpu::render_scene(scene,
+...)`) that the CUDA backend
+implements, and have the
+server consume the abstract
+surface. The OptiX backend
+later implements the same
+interface. Risk: requires
+designing the interface
+carefully to avoid
+backend-specific leakage
+(stream / event / context
+handles).
+
+### Hard-rule audit (this slice)
+
+- Inspect `target_link_libraries`
+  - **yes**, every library /
+  executable target audited
+  (10 `add_library` + 1
+  `add_executable` + 6 test
+  binaries; CMake lines 134–693).
+- Inspect `#include` patterns -
+  **yes**, every renderer-core
+  module (math / image / camera /
+  geometry / material / lighting /
+  texture / relativity / scene /
+  pathtracer / renderer / io /
+  gpu / server) cross-checked
+  against forbidden-include
+  patterns. The audit doc
+  records the actual `grep`
+  invocations.
+- Report violations - **yes**,
+  zero.
+- Fix only simple obvious
+  violations - **N/A** (zero
+  to fix).
+- Document non-trivial issues as
+  technical debt - **yes**, three
+  observations recorded above
+  (TD-1 / TD-2 / TD-3) with
+  explicit "refactor path NOT
+  applied" notes.
+- Do not refactor large modules -
+  **yes**. `git diff --stat src/
+  tests/ CMakeLists.txt` returns
+  empty.
+
+### Verified at the build
+
+- `cmake -S . -B build` (audit
+  host, no CUDA): banner unchanged
+  ("Stage 19E.2: render-demo +
+  --beta" — no CMakeLists edit
+  this slice); ctest 6/6 green.
+- `git diff --stat src/`,
+  `git diff --stat tests/`,
+  `git diff --stat CMakeLists.txt`
+  all return empty: the slice is
+  documentation-only.
+- All grep patterns recorded in
+  the findings table above
+  return zero matches on the
+  current tree.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
