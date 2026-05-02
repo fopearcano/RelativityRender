@@ -128,6 +128,21 @@ inline void log_gpu_timing(const char* label,
     }
 }
 
+// Stage 19C.1: denoiser-friendly timing log. Same shape as
+// `log_gpu_timing` but uses the `ms/frame` + `frames/sec`
+// metric framing instead of `rays/sec` (the denoiser does
+// not trace primary rays). Same gating-friendly posture:
+// silently skip the log line when `gpu_time_ms <= 0`.
+inline void log_denoiser_timing(const char* label,
+                                int width, int height,
+                                float gpu_time_ms) {
+    auto line = rr::gpu::format_denoiser_timing_line(label, width, height,
+                                                     gpu_time_ms);
+    if (!line.empty()) {
+        rr::core::Logger::info(line);
+    }
+}
+
 #ifdef RR_HAS_CUDA
 // Forward declarations for two save helpers used by the GPU render
 // dispatches. Both are gated on `RR_HAS_CUDA` because that's the
@@ -2580,6 +2595,19 @@ bool denoise_aov_buffers_to_ppm(
         return false;
     }
 
+    // Stage 19C.1: bracket the entire denoiser pass with a
+    // GpuTimer so the caller gets one "ms/frame" line for
+    // the full pass (init + set_inputs + invoke + sync +
+    // download). Pure CPU sections (set_inputs descriptor
+    // build, host-side widen) contribute ~0 to the GPU
+    // timer's elapsed time because no GPU work runs during
+    // them; that's the correct measurement for "GPU-side
+    // denoiser cost". The fine-grained `denoise:invoke`
+    // line below isolates the optixDenoiserInvoke cost
+    // alone.
+    rr::gpu::GpuTimer total_timer;
+    total_timer.start();
+
     rr::optix::OptixBackend backend;
     if (!backend.initialize()) {
         Logger::error("denoise: OptixBackend init failed: "
@@ -2621,15 +2649,21 @@ bool denoise_aov_buffers_to_ppm(
     output.width  = width;
     output.height = height;
 
-    rr::gpu::GpuTimer timer;
-    timer.start();
+    // Stage 19C.1: fine-grained timer bracketing just the
+    // optixDenoiserInvoke (+ its internal cudaDeviceSynchronize)
+    // so the user can separate the actual denoise compute cost
+    // from the surrounding setup / download overhead measured
+    // by `total_timer`.
+    rr::gpu::GpuTimer invoke_timer;
+    invoke_timer.start();
     const bool invoke_ok = denoiser.invoke(output);
-    timer.stop();
+    invoke_timer.stop();
     if (!invoke_ok) {
         Logger::error("denoise: invoke failed: " + denoiser.last_error());
         return false;
     }
-    log_gpu_timing("denoise:invoke", width, height, timer.elapsed_ms());
+    log_denoiser_timing("denoise:invoke", width, height,
+                        invoke_timer.elapsed_ms());
 
     // Download FLOAT3 device output -> host vector, then
     // widen to RGBA32F (alpha = 1) for save_ppm. Per
@@ -2654,6 +2688,14 @@ bool denoise_aov_buffers_to_ppm(
             dst[i * 4 + 3] = 1.0f;
         }
     }
+
+    // Stage 19C.1: stop the total-pass timer before the
+    // host-side PPM save (which is image-IO cost, not
+    // denoiser cost) so the `ms/frame` figure isolates the
+    // GPU-touched portion of the pass.
+    total_timer.stop();
+    log_denoiser_timing("denoise:total", width, height,
+                        total_timer.elapsed_ms());
 
     return save_image_or_error(img, out_path, "denoised", width, height);
 }

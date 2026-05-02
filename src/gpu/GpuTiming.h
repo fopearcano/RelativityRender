@@ -73,4 +73,19 @@ private:
                                                  int width, int height,
                                                  float gpu_time_ms);
 
+// Stage 19C.1 denoiser-friendly timing line. Same shape as
+// `format_gpu_timing_line` but with a denoiser-appropriate
+// metric framing: "[GPU] <label>: ms/frame = X.XXX;
+// frames/sec = Y.YY; frame size = WxH". The denoiser does
+// not trace primary rays so a "rays/sec" suffix is wrong;
+// "ms/frame" + "frames/sec" is what an artist running the
+// denoiser interactively actually cares about.
+//
+// Returns an empty string when `gpu_time_ms <= 0`, matching
+// `format_gpu_timing_line`'s convention so callers can
+// silently skip the log line on no-CUDA / early-exit paths.
+[[nodiscard]] std::string format_denoiser_timing_line(const char* label,
+                                                      int width, int height,
+                                                      float gpu_time_ms);
+
 }  // namespace rr::gpu

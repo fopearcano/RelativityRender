@@ -103,4 +103,28 @@ std::string format_gpu_timing_line(const char* label,
     return std::string(buf);
 }
 
+std::string format_denoiser_timing_line(const char* label,
+                                        int width, int height,
+                                        float gpu_time_ms) {
+    if (gpu_time_ms <= 0.0f) return {};
+
+    // ms/frame is the elapsed GPU time as-is (one denoiser
+    // pass = one frame). frames/sec is its reciprocal,
+    // converted from ms.
+    const double seconds_per_frame =
+        static_cast<double>(gpu_time_ms) * 1.0e-3;
+    const double frames_per_sec =
+        (seconds_per_frame > 0.0) ? 1.0 / seconds_per_frame : 0.0;
+
+    char buf[256];
+    std::snprintf(buf, sizeof(buf),
+                  "[GPU] %s: ms/frame = %.3f; frames/sec = %.2f; "
+                  "frame size = %dx%d",
+                  label ? label : "denoiser",
+                  static_cast<double>(gpu_time_ms),
+                  frames_per_sec,
+                  width, height);
+    return std::string(buf);
+}
+
 }  // namespace rr::gpu

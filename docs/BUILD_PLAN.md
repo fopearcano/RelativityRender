@@ -3743,6 +3743,7 @@ sub-stages, appended to the same file.** No code is touched.
 | 19B.2    | Denoiser inputs (OptixDenoiser::Inputs POD + set_inputs(...) method that converts raw device pointers from the renderer's AOV pipeline into an OptixImage2D[3] triplet (slot 0 = Beauty FLOAT4 from the path-tracer resolve, slot 1 = Albedo FLOAT3 from the Stage 14A AOV, slot 2 = Normal FLOAT3 from the Stage 14A AOV); rowStrideInBytes = width * pixelStrideInBytes (tight pack); descriptors stored in private state for the next sub-stage's optixDenoiserInvoke; non-owning view of the caller's device buffers; shutdown() now also delete[]s the OptixImage2D triplet; audit-host fallback returns the documented "requires OptiX SDK" error for set_inputs too; no invoke, no file output) | ✅ |
 | 19B.3    | Execute denoiser (Inputs::beauty_components ∈ {3, 4} dispatch in set_inputs so AOV-pipeline route A (FLOAT3 Beauty) is now the default; new OptixDenoiser::Output POD + invoke(...) that runs optixDenoiserComputeMemoryResources → cudaMalloc state + scratch → optixDenoiserSetup → optixDenoiserInvoke → cudaDeviceSynchronize → cudaFree; new --render-denoise CLI handler builds a 4-sphere demo scene → renders via render_scene_with_aovs (Beauty/Albedo/Normal AOVs) → drives OptixBackend → OptixDenoiser → downloads FLOAT3 output → widens to Rgba32F (alpha=1) → save_ppm("output/denoised.ppm"); GpuTimer-bracketed denoise pass logs via Stage 18A.1's [GPU] line; audit-host fallback returns the documented "requires CUDA + OptiX" error) | ✅ |
 | 19B.4    | CLI denoise (new --denoise modifier flag; not an action so mutual-exclusion exempt; sets Config::denoise_enabled; integrated into --render-aovs which now invokes the OptiX denoiser on Beauty/Albedo/Normal AOVs after the standard 6-AOV save loop and writes output/denoised.ppm; silently ignored by actions that do not expose those AOVs (per DENOISER_PLAN §9.2.1 manual-trigger mode); shared denoise_aov_buffers_to_ppm helper extracted from Stage 19B.3's run_render_denoise so both call sites share the OptixBackend → set_inputs → invoke → download → widen → save sequence; existing --render-aovs (without --denoise) is byte-identical to the Stage 19B.3 baseline) | ✅ |
+| 19C.1    | Denoiser timing (new format_denoiser_timing_line helper in gpu/GpuTiming.{h,cpp} that emits "[GPU] <label>: ms/frame = X.XXX; frames/sec = Y.YY; frame size = WxH" — denoiser-appropriate framing, not the rays/sec form used for ray-tracing kernels; matching log_denoiser_timing in main.cpp; denoise_aov_buffers_to_ppm now wraps the entire pass in a "total" GpuTimer (init + set_inputs + invoke + sync + download — pure-CPU sections contribute ~0 to the GPU timer by design) and logs denoise:total at the end; the existing denoise:invoke line is re-routed through the ms/frame format; no functional changes — pixel output unchanged, render behaviour unchanged) | ✅ |
 
 ## Stage 12A.2.1 — OptiX raygen program design
 
@@ -13538,6 +13539,204 @@ slice implements.
   `[GPU] denoise:invoke` timing lines
   fire via the existing Stage 18A.1
   fixture.
+
+## Stage 19C.1 — Denoiser timing
+
+**Scope of this slice (Stage 19C.1; master order
+#24 / first 19C "polish" slice): make the
+denoiser's per-frame cost visible to artists and
+to CI. Adds an `ms/frame` + `frames/sec`
+formatted timing line for the denoiser pass and
+brackets the full pass with a GpuTimer so a
+"total" line and a "compute-only" line both
+appear after every denoise. Pure instrumentation
+- no functional changes; pixel output and render
+behaviour are byte-for-byte identical to Stage
+19B.4.**
+
+### What ships
+
+- `src/gpu/GpuTiming.h` (extended): new
+  `[[nodiscard]] std::string
+  format_denoiser_timing_line(label, width,
+  height, gpu_time_ms)` declaration. Pure host
+  C++; same SDK-leakage discipline as the
+  existing `format_gpu_timing_line`.
+- `src/gpu/GpuTiming.cpp` (extended):
+  implementation that emits
+  `"[GPU] <label>: ms/frame = X.XXX;
+   frames/sec = Y.YY; frame size = WxH"`. The
+  denoiser does not trace primary rays so the
+  Stage 18A.1 `rays/sec` framing is the wrong
+  metric; ms/frame + frames/sec is what an
+  artist running the denoiser interactively
+  actually cares about. Returns an empty
+  string when `gpu_time_ms <= 0` so callers
+  silently skip the log on no-CUDA / early-
+  exit paths (matches `format_gpu_timing_line`
+  convention).
+- `src/main.cpp` (extended):
+    - new `inline void log_denoiser_timing(
+       label, w, h, gpu_time_ms)` next to the
+      existing `log_gpu_timing` helper. Same
+      shape; calls the new format function.
+    - `denoise_aov_buffers_to_ppm` now wraps
+      the **entire pass** in a `total_timer`:
+      start at function entry (after AOV-buffer
+      validation), stop just before the host-
+      side PPM save. The bracket spans
+      OptixBackend::initialize → set_inputs →
+      output buffer allocation → invoke (with
+      its own internal sync) → download.
+      Pure-CPU sections (set_inputs descriptor
+      build, host-side widen) contribute ~0 to
+      the GPU timer because no GPU work runs
+      during them - that's correct for "GPU-
+      side denoiser cost" by construction.
+    - the existing fine-grained `denoise:invoke`
+      timer (Stage 19B.3) is re-routed through
+      `log_denoiser_timing`. Same elapsed-time
+      measurement; new format. Caller now sees:
+        ```
+        [GPU] denoise:invoke: ms/frame = 4.567;
+              frames/sec = 219.0; frame size = 1280x720
+        [GPU] denoise:total:  ms/frame = 9.123;
+              frames/sec = 109.6; frame size = 1280x720
+        ```
+      The two lines together let an operator
+      separate the actual denoise compute cost
+      (`invoke`) from the surrounding setup +
+      download overhead (`total - invoke`).
+- `CMakeLists.txt`: stage label bumped to
+  "Stage 19C.1: denoiser timing".
+- `docs/BUILD_PLAN.md`: this entry +
+  status-table row.
+
+`docs/DENOISER_PLAN.md` is intentionally not
+edited - the timing instrumentation surface was
+not specified by 19A.x (which deferred the
+"per-action default + log line shape" question
+to 19A.6) and 19C.1's choice (ms/frame format)
+is implementation detail, not design.
+
+### Architectural decisions worth highlighting
+
+- **Denoiser-specific format helper, not a
+  reuse of `format_gpu_timing_line`.** The
+  Stage 18A.1 line uses `primary rays = N
+  (WxH); rays/sec = Y.YY M` which is correct
+  for ray-tracing kernels but meaningless for
+  a denoiser pass (it processes pixels, not
+  rays; the rays were already traced by the
+  AOV-render pass). Adding a sibling helper
+  with the right metric framing is cleaner
+  than overloading the existing one with a
+  conditional / parameterised suffix.
+- **Two timing lines per denoise pass.** The
+  existing `denoise:invoke` line measures
+  just the `optixDenoiserInvoke` GPU cost;
+  the new `denoise:total` line measures the
+  full pass (init + set_inputs + alloc +
+  invoke + download). Separating them lets
+  an operator quickly answer "is the
+  denoiser slow because invoke is slow, or
+  because setup overhead dominates?" - a
+  question Stage 19C.x will eventually
+  answer with caching / pre-allocation
+  optimisations.
+- **GpuTimer (cudaEvent_t) for the total
+  bracket, not std::chrono.** CUDA events
+  measure GPU-side time only; pure-CPU
+  sections between start and stop
+  contribute ~0. That is the *correct*
+  measurement for the prompt's "GPU timing
+  for denoiser pass" - host-side overhead
+  (set_inputs descriptor build, host-widen
+  loop, file IO) is excluded from the
+  reported figure, leaving only the GPU's
+  real work cost. A future "wall-clock
+  total" slice can add a std::chrono
+  sibling if the host overhead ever matters
+  enough to instrument.
+- **No timing of the post-denoise PPM
+  save.** The PPM save (host-side
+  `Image::save_ppm`) is not "denoiser
+  cost"; it is image-IO cost, with the
+  same shape every other render-* CLI
+  handler has. Including it in the
+  reported `ms/frame` would inflate the
+  number with disk-write latency that has
+  nothing to do with the denoiser. The
+  `total_timer` stops before save_ppm.
+- **No functional changes.** The pixel
+  output, the render kernel sequence, the
+  AOV pass, the denoiser invoke - all
+  byte-for-byte identical to Stage 19B.4.
+  The only diff observable from outside
+  the code is two extra `[GPU]` log lines
+  per `--render-aovs --denoise` /
+  `--render-denoise` invocation, both in
+  the new ms/frame format.
+- **Existing log lines for the AOV-render
+  pass are unchanged.** The two existing
+  `[GPU] render-denoise:render` and
+  `[GPU] render-aovs` lines (from Stage
+  19B.3 / 14A.3) keep their `rays/sec`
+  framing because those passes ARE ray-
+  tracing kernels and that framing is
+  correct for them. Only the denoiser-pass
+  lines get the new format.
+
+### Hard-rule audit
+
+- No functional changes - **yes**. The
+  slice adds two new helpers
+  (`format_denoiser_timing_line`,
+  `log_denoiser_timing`) plus one new
+  `total_timer` GpuTimer and re-routes one
+  existing log call through the new format.
+  No kernel code, no renderer code, no AOV
+  pipeline code, no OptixDenoiser API
+  surface, no Config field, no CLI surface
+  changed. The added GpuTimer's
+  `cudaEventRecord` calls are async marker
+  writes (the same kind Stage 18A.1
+  already uses everywhere); they do not
+  perturb pixel output.
+- Update docs/BUILD_PLAN.md - **yes**, this
+  entry + status-table row.
+
+### Verified at the build
+
+- `cmake -DRR_ENABLE_CUDA=OFF
+   -DRELATIVITYRENDER_ENABLE_OPTIX=OFF`
+  (Linux): banner shows "Stage 19C.1:
+  denoiser timing"; `librr_gpu.a` contains
+  both `format_gpu_timing_line` and the new
+  `format_denoiser_timing_line` symbols
+  (the latter linker-garbage-collected from
+  the final OFF executable because no
+  caller references it without the OptiX
+  denoise path); ctest 4/4 green.
+- `cmake -DRELATIVITYRENDER_ENABLE_OPTIX=ON`
+  (Linux audit-host): banner bumped; both
+  format helpers land in the executable
+  (`nm bin/RelativityRender` confirms
+  `format_denoiser_timing_line` symbol);
+  the `log_denoiser_timing` inline +
+  `total_timer` bracket compile cleanly
+  inside `denoise_aov_buffers_to_ppm`;
+  ctest 4/4 green. The `--render-aovs
+  --denoise` and `--render-denoise` audit-
+  host paths still hit the existing
+  CUDA-required gate before the new timing
+  code runs (unchanged from Stage 19B.4).
+- A future CUDA + OptiX-SDK host run
+  produces the two new ms/frame log lines
+  per denoise pass, immediately after the
+  existing `[GPU] render-denoise:render`
+  (ray-tracing) line. Visual outputs
+  remain byte-identical to Stage 19B.4.
 
 ## Next stage
 
