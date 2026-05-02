@@ -3746,6 +3746,7 @@ sub-stages, appended to the same file.** No code is touched.
 | 19C.1    | Denoiser timing (new format_denoiser_timing_line helper in gpu/GpuTiming.{h,cpp} that emits "[GPU] <label>: ms/frame = X.XXX; frames/sec = Y.YY; frame size = WxH" — denoiser-appropriate framing, not the rays/sec form used for ray-tracing kernels; matching log_denoiser_timing in main.cpp; denoise_aov_buffers_to_ppm now wraps the entire pass in a "total" GpuTimer (init + set_inputs + invoke + sync + download — pure-CPU sections contribute ~0 to the GPU timer by design) and logs denoise:total at the end; the existing denoise:invoke line is re-routed through the ms/frame format; no functional changes — pixel output unchanged, render behaviour unchanged) | ✅ |
 | 19C.2.1  | Denoiser allocation scan (docs/DENOISER_MEMORY_AUDIT_A.md: list-only enumeration of GPU memory allocations on the denoiser path — 2 direct cudaMallocs in OptixDenoiser::invoke, 5 indirect cudaMallocs via GpuBuffer<T>::allocate / GpuAOVBuffer::resize across denoise_aov_buffers_to_ppm / run_render_denoise / run_render_aovs, 1 OptiX object allocation via optixDenoiserCreate; no analysis, no leak / pairing / scratch-sizing commentary; analysis lives in subsequent 19C.2.x sub-stages; no code changes outside the CMakeLists stage label bump) | ✅ |
 | 19C.2.2  | Denoiser free scan (docs/DENOISER_MEMORY_AUDIT_B.md: list-only enumeration of GPU memory frees on the denoiser path — 9 direct cudaFree calls in OptixDenoiser::invoke (4 d_scratch + 5 d_state across the success and four failure paths), 5 indirect cudaFree-via-RAII through GpuBuffer<T>/GpuAOVBuffer destructors, 1 OptiX object free via optixDenoiserDestroy; no analysis, no pairing verification; pairing audit lives in a subsequent 19C.2.x sub-stage; no code changes outside the CMakeLists stage label bump) | ✅ |
+| 19C.2.3  | Denoiser mismatch check (docs/DENOISER_MEMORY_AUDIT_C.md: two yes/no answers pairing Part A and Part B — "any allocation without obvious free? No"; "any duplicate allocation? No"; three supporting one-line bullets mapping A.1–A.2 to B.1–B.9, A.3–A.7 to B.10–B.14, A.8 to B.15; max 5 bullets, no deep reasoning; no code changes outside the CMakeLists stage label bump) | ✅ |
 
 ## Stage 12A.2.1 — OptiX raygen program design
 
@@ -13937,6 +13938,63 @@ commentary, no leak / double-free verification.**
   `normal_buf` / `albedo_buf` /
   `aov_set` declarations Part A's §2
   table indexes.
+
+## Stage 19C.2.3 — Denoiser mismatch check
+
+**Scope of this slice (Stage 19C.2.3; master
+order #24): pair Part A (Stage 19C.2.1
+allocation scan) with Part B (Stage 19C.2.2
+free scan) and answer two yes/no questions.
+Per the prompt's "Max 5 bullet points. No
+deep reasoning." rules, the doc is a tight
+5-bullet summary - two yes/no answers and
+three pairing-bullet lines.**
+
+### What ships
+
+- `docs/DENOISER_MEMORY_AUDIT_C.md` (NEW):
+  5 bullets total.
+    - Bullet 1: any allocation without
+      obvious free? **No.**
+    - Bullet 2: any duplicate allocation?
+      **No.**
+    - Bullets 3-5: pair Part A entries
+      with Part B entries (A.1-A.2 ->
+      B.1-B.9; A.3-A.7 -> B.10-B.14;
+      A.8 -> B.15).
+- `CMakeLists.txt`: stage label bumped
+  to "Stage 19C.2.3: denoiser mismatch
+  check".
+- `docs/BUILD_PLAN.md`: this entry +
+  status-table row.
+
+### Hard-rule audit
+
+- Check only allocation-without-free +
+  duplicate-allocation - **yes**, the
+  doc answers exactly those two
+  questions.
+- Max 5 bullet points - **yes**,
+  exactly 5.
+- No deep reasoning - **yes**, no
+  ownership commentary, no leak audit,
+  no buffer-lifetime narrative; the
+  pairing bullets are flat A.x -> B.y
+  references.
+- Update docs/BUILD_PLAN.md - **yes**,
+  this entry + status-table row.
+
+### Verified at the build
+
+- `cmake -DRR_ENABLE_CUDA=OFF
+   -DRELATIVITYRENDER_ENABLE_OPTIX=OFF`
+  (Linux): banner shows "Stage 19C.2.3:
+  denoiser mismatch check"; no source
+  files changed; ctest 4/4 green.
+- `cmake -DRELATIVITYRENDER_ENABLE_OPTIX
+  =ON` (Linux audit-host): banner
+  bumped; rr_optix unchanged; ctest
+  4/4 green.
 
 ## Next stage
 
