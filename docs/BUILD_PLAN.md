@@ -3745,6 +3745,7 @@ sub-stages, appended to the same file.** No code is touched.
 | 19B.4    | CLI denoise (new --denoise modifier flag; not an action so mutual-exclusion exempt; sets Config::denoise_enabled; integrated into --render-aovs which now invokes the OptiX denoiser on Beauty/Albedo/Normal AOVs after the standard 6-AOV save loop and writes output/denoised.ppm; silently ignored by actions that do not expose those AOVs (per DENOISER_PLAN §9.2.1 manual-trigger mode); shared denoise_aov_buffers_to_ppm helper extracted from Stage 19B.3's run_render_denoise so both call sites share the OptixBackend → set_inputs → invoke → download → widen → save sequence; existing --render-aovs (without --denoise) is byte-identical to the Stage 19B.3 baseline) | ✅ |
 | 19C.1    | Denoiser timing (new format_denoiser_timing_line helper in gpu/GpuTiming.{h,cpp} that emits "[GPU] <label>: ms/frame = X.XXX; frames/sec = Y.YY; frame size = WxH" — denoiser-appropriate framing, not the rays/sec form used for ray-tracing kernels; matching log_denoiser_timing in main.cpp; denoise_aov_buffers_to_ppm now wraps the entire pass in a "total" GpuTimer (init + set_inputs + invoke + sync + download — pure-CPU sections contribute ~0 to the GPU timer by design) and logs denoise:total at the end; the existing denoise:invoke line is re-routed through the ms/frame format; no functional changes — pixel output unchanged, render behaviour unchanged) | ✅ |
 | 19C.2.1  | Denoiser allocation scan (docs/DENOISER_MEMORY_AUDIT_A.md: list-only enumeration of GPU memory allocations on the denoiser path — 2 direct cudaMallocs in OptixDenoiser::invoke, 5 indirect cudaMallocs via GpuBuffer<T>::allocate / GpuAOVBuffer::resize across denoise_aov_buffers_to_ppm / run_render_denoise / run_render_aovs, 1 OptiX object allocation via optixDenoiserCreate; no analysis, no leak / pairing / scratch-sizing commentary; analysis lives in subsequent 19C.2.x sub-stages; no code changes outside the CMakeLists stage label bump) | ✅ |
+| 19C.2.2  | Denoiser free scan (docs/DENOISER_MEMORY_AUDIT_B.md: list-only enumeration of GPU memory frees on the denoiser path — 9 direct cudaFree calls in OptixDenoiser::invoke (4 d_scratch + 5 d_state across the success and four failure paths), 5 indirect cudaFree-via-RAII through GpuBuffer<T>/GpuAOVBuffer destructors, 1 OptiX object free via optixDenoiserDestroy; no analysis, no pairing verification; pairing audit lives in a subsequent 19C.2.x sub-stage; no code changes outside the CMakeLists stage label bump) | ✅ |
 
 ## Stage 12A.2.1 — OptiX raygen program design
 
@@ -13841,6 +13842,101 @@ sizing commentary. Those are subsequent
   `src/main.cpp::run_render_denoise`
   (lines 2805-2806) +
   `run_render_aovs` (line 2478).
+
+## Stage 19C.2.2 — Denoiser free scan
+
+**Scope of this slice (Stage 19C.2.2; master
+order #24): list-only enumeration of GPU memory
+frees on the denoiser execution path. Mirrors
+the structure of Stage 19C.2.1's
+`DENOISER_MEMORY_AUDIT_A.md` (allocation scan)
+so a follow-up 19C.2.x sub-stage can pair the
+two flat tables to verify alloc/free coverage.
+Per the prompt's "No analysis." rule the
+output is a tight 4-section table — no pairing
+commentary, no leak / double-free verification.**
+
+### What ships
+
+- `docs/DENOISER_MEMORY_AUDIT_B.md` (NEW):
+    - **§1 Direct cudaFree**: 9 entries in
+      `OptixDenoiser::invoke` (5 `d_state`
+      frees + 4 `d_scratch` frees, covering
+      the success path and the four failure
+      paths between cudaMalloc(d_scratch)
+      and cudaDeviceSynchronize). No
+      `cudaFreeAsync` calls.
+    - **§2 Indirect cudaFree** (via
+      `GpuBuffer<T>::reset` /
+      `~GpuBuffer<T>` ->
+      `rr::gpu::detail::gpu_free` ->
+      `rr::cuda::cuda_free` -> `cudaFree`):
+      5 entries — `denoised_dev` destructor
+      in `denoise_aov_buffers_to_ppm`; three
+      `GpuAOVBuffer` destructors in
+      `run_render_denoise` (Beauty / Normal
+      / Albedo); one `std::vector
+      <GpuAOVBuffer>` destructor in
+      `run_render_aovs` (six entries).
+    - **§3 OptiX buffer / object frees**:
+      1 entry — `optixDenoiserDestroy` in
+      `OptixDenoiser::shutdown` (called by
+      the destructor, by explicit
+      `shutdown()`, and by move-assignment).
+    - **§4 Out of scope** (mirrors Part A's
+      §4): host-side `OptixImage2D[3]`
+      `delete[]`, `cudaEventDestroy` calls
+      in `~GpuTimer`, host
+      `std::vector<float>` destructor,
+      and `optixDeviceContextDestroy`.
+- `CMakeLists.txt`: stage label bumped to
+  "Stage 19C.2.2: denoiser free scan".
+- `docs/BUILD_PLAN.md`: this entry +
+  status-table row.
+
+### Hard-rule audit
+
+- List GPU memory frees only - **yes**,
+  every entry in §1-§3 is a `cudaFree` /
+  `cudaFreeAsync` (none of the latter on
+  the denoiser path) or an OptiX
+  buffer-shaped free. Host-side
+  `delete[]`, events, vectors, and the
+  device-context destroy are listed under
+  §4 explicitly as out-of-scope.
+- For each: file + function - **yes**,
+  every entry is keyed by file + function
+  + a one-line free label.
+- No analysis - **yes**, no pairing
+  commentary, no leak audit, no
+  double-free verification, no buffer-
+  lifetime discussion. Flat table
+  matching Part A's structure.
+- Update docs/BUILD_PLAN.md - **yes**,
+  this entry + status-table row.
+
+### Verified at the build
+
+- `cmake -DRR_ENABLE_CUDA=OFF
+   -DRELATIVITYRENDER_ENABLE_OPTIX=OFF`
+  (Linux): banner shows "Stage 19C.2.2:
+  denoiser free scan"; no source files
+  changed; ctest 4/4 green.
+- `cmake -DRELATIVITYRENDER_ENABLE_OPTIX=ON`
+  (Linux audit-host): banner bumped;
+  rr_optix unchanged; ctest 4/4 green.
+- `docs/DENOISER_MEMORY_AUDIT_B.md`
+  cross-checked against
+  `src/optix/OptixDenoiser.cpp`'s
+  cudaFree sites (lines 395 / 414 / 415
+  / 480 / 481 / 493 / 494 / 502 / 503)
+  and `optixDenoiserDestroy` site
+  (line 530). Indirect-RAII frees in
+  `src/main.cpp` are scope-exit on the
+  same `denoised_dev` / `beauty_buf` /
+  `normal_buf` / `albedo_buf` /
+  `aov_set` declarations Part A's §2
+  table indexes.
 
 ## Next stage
 
