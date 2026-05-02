@@ -51,6 +51,67 @@ actions are live: `--render-gradient`, `--render-rays`,
 `--render` placeholder. No shadows, no textures, no path tracer,
 no server, no integrations.
 
+### Module status (rollup; canonical detail in `docs/MODULE_MAP.md`)
+
+The "Current state" prose above is the slice-by-slice
+historical record (additive; never edited in place). The
+rollup below is the per-module *honest* status at the most
+recent audit point. The full per-module table — with source
+locations + per-row justification — lives in
+`docs/MODULE_MAP.md`. **Status definitions come from
+`docs/MODULE_MAP.md` ("Status legend"); the most important
+distinction is between "foundation landed" (data PODs / scaffold
+types compile but the system has no real runtime function) and
+"production ready" (verified end-to-end on real hardware with
+no documented deferred gate).** A module sitting at "foundation
+landed" is the most easily overstated tier — the module's *code*
+ships, but the *behaviour* the architectural module name implies
+does not yet run on the device.
+
+A project-wide visual-validation gate caps every GPU / OptiX /
+denoiser module at "partial implementation" until a CUDA +
+OptiX-SDK host run pins regression baselines (per
+`README.md` and `docs/STAGE_19_DENOISER_AUDIT.md` Q1 / Q2).
+
+| #  | Module                              | Source                                               | Status                  |
+|----|-------------------------------------|------------------------------------------------------|-------------------------|
+| 1  | Core Engine                         | `src/core/`                                          | production ready        |
+| 2  | Math Library                        | `src/math/`                                          | production ready        |
+| 3  | Image / Framebuffer System          | `src/image/`                                         | foundation landed       |
+| 4  | GPU Device Layer                    | `src/gpu/`                                           | partial implementation  |
+| 5  | CUDA Backend                        | `src/cuda/`                                          | partial implementation  |
+| 6  | OptiX Backend                       | `src/optix/`                                         | partial implementation  |
+| 7  | Scene Graph                         | `src/scene/`                                         | foundation landed       |
+| 8  | Geometry System                     | `src/geometry/`                                      | foundation landed       |
+| 9  | Material / Shading System           | `src/material/`                                      | foundation landed       |
+| 10 | Texture System                      | `src/texture/`                                       | foundation landed       |
+| 11 | Lighting System                     | `src/lighting/`                                      | foundation landed       |
+| 12 | Camera System                       | `src/camera/`                                        | foundation landed       |
+| 13 | Relativistic Camera Model           | `src/relativity/`                                    | production ready        |
+| 14 | Path Tracer                         | `src/pathtracer/` + `src/cuda/CudaPathTracer.cu`     | partial implementation  |
+| 15 | Progressive Renderer                | `src/renderer/Accumulation*` + `src/cuda/CudaAccumulation.cu` | partial implementation  |
+| 16 | Denoiser Integration                | `src/optix/OptixDenoiser.{h,cpp}`                     | partial implementation  |
+| 17 | Render Passes / AOVs                | `src/renderer/AOV*` + AOV writes in `src/cuda/CudaRenderer.cu` | partial implementation  |
+| 18 | Scene File Format                   | `src/io/`                                            | partial implementation  |
+| 19 | Renderer Server                     | `src/server/`                                        | partial implementation  |
+| 20 | Cinema 4D Bridge                    | (planned `bridges/c4d_bridge/`)                       | not started             |
+| 21 | Future Native Cinema 4D Renderer    | (planned `bridges/c4d_native/`)                       | not started             |
+| 22 | Node Editor / Material Graph        | (planned `tools/node_editor/`)                        | not started             |
+
+Cross-cutting items the master order tracks that are not
+standalone architectural modules:
+
+| Master order # | Item        | Source / planned                | Status                  |
+|:--------------:|-------------|---------------------------------|-------------------------|
+| #22            | Preview UI  | (planned `tools/preview_ui/`)    | not started             |
+| #24            | Denoising   | `src/optix/OptixDenoiser.{h,cpp}` (= module #16 above) | partial implementation  |
+
+Rollup: 3 production-ready, 9 partial-implementation, 6
+foundation-landed, 4 not-started, 0 spec-only. The
+project-wide gate (no end-to-end visual validation on a real
+CUDA + OptiX-SDK host in this branch) is the dominant cap on
+every GPU-side module; it is not a per-module bug.
+
 ### Files in scope
 
 | File                       | Role                                                |
@@ -14627,6 +14688,183 @@ asked not to churn.**
   outside of canonical BUILD_PLAN
   history is now spelled
   `-DRR_ENABLE_OPTIX=ON`.
+
+## Module status normalization
+
+**Scope of this slice (cross-cutting;
+no master-order #): documentation-only
+honest-status pass for every
+architectural module. The trigger was
+that `docs/MODULE_MAP.md` was
+referenced as authoritative by five
+other docs (MASTER_ARCHITECTURE.md
+§4 / §5 / §10, MILESTONE_ROADMAP.md
+M0, DEVELOPMENT_RULES.md §8 / §B.1
+/ §C.5) but did not actually exist.
+This slice creates that file, fills it
+with an honest per-module status
+verdict, and adds a compact rollup
+table near the top of BUILD_PLAN.md so
+the per-module status is visible from
+the project's source-of-truth doc.**
+
+### What ships
+
+- `docs/MODULE_MAP.md` (NEW): the
+  per-module ownership + status table
+  the project's other docs already
+  cite as authoritative. Contents:
+    - Status legend (six tiers: not
+      started / spec only / foundation
+      landed / partial implementation /
+      in progress / production ready)
+      with explicit prose on the
+      "foundation landed" vs
+      "production ready" distinction
+      (data PODs compile vs end-to-end
+      verified on real hardware with no
+      open deferred gate).
+    - Project-wide gate paragraph: any
+      GPU / OptiX / denoiser module is
+      capped at "partial implementation"
+      until a CUDA + OptiX-SDK host
+      run pins regression baselines.
+    - 22-row module table (#1-#22)
+      with source location, status,
+      and a one-sentence justification
+      per row.
+    - Cross-cutting rows for the
+      master-order items that aren't
+      standalone architectural modules
+      (#22 Preview UI, #24 Denoising).
+    - Status rollup (3 production-
+      ready, 9 partial-implementation,
+      6 foundation-landed, 4 not-
+      started, 0 spec-only).
+    - "How to update" footer that
+      restates the no-overstating
+      rule.
+- `docs/BUILD_PLAN.md`: a "Module
+  status (rollup)" subsection added
+  immediately under "Current state"
+  prose, with the same 22-row table +
+  the cross-cutting rows + a one-
+  paragraph "foundation landed" vs
+  "production ready" reminder. The
+  table cites MODULE_MAP.md as the
+  canonical-detail source. **No
+  canonical historical row was
+  modified**; the new subsection +
+  this slice-closing entry are
+  additive housekeeping per the
+  standard pattern.
+
+### Honest verdicts (the ones the
+  prompt asked us not to overstate)
+
+The following modules were
+specifically called out as "must not
+be overstated"; all of them sit at
+"partial implementation" or
+"foundation landed", not "production
+ready":
+
+- **#9 Material / Shading System**:
+  foundation landed. `MaterialParams`
+  POD + presets compile, but the
+  device path uses a facing-ratio
+  fallback (per Stage 9B). No BSDF
+  eval / sample / pdf.
+- **#10 Texture System**: foundation
+  landed. `ImageTexture` POD +
+  nearest-neighbour sampler only.
+  No MIP / UDIM / HDR decode / wrap
+  modes.
+- **#11 Lighting System**: foundation
+  landed. Point + Directional are
+  real; Area + Environment are
+  flagged PLACEHOLDER in source. No
+  shadow rays, no NEE.
+- **#14 Path Tracer**: partial
+  implementation. Diffuse Lambert
+  kernel + multi-bounce-via-spp host
+  loop. No NEE / MIS / Russian
+  roulette / non-diffuse BSDFs.
+- **#6 OptiX Backend**: partial
+  implementation. Pipeline + GAS +
+  raygen / miss / closest-hit
+  programs link cleanly via the
+  audit-host fallback; **never
+  executed on a real OptiX-SDK host
+  in this branch**.
+- **#19 Renderer Server**: partial
+  implementation. Verbs are wired,
+  but per
+  `docs/STAGE_15_SERVER_DEFERRED.md`
+  the runtime test is deferred to a
+  CUDA host.
+- **#20 Cinema 4D Bridge**: not
+  started. Directory does not
+  exist.
+- **#22 Node Editor / Material
+  Graph**: not started. Directory
+  does not exist.
+
+### Hard-rule audit
+
+- Documentation only - **yes**. No
+  source files modified. No build
+  targets, no CLI surface, no public
+  API, no test coverage. The slice
+  adds one new doc file
+  (`MODULE_MAP.md`) and an additive
+  subsection inside `BUILD_PLAN.md`.
+- "Do not change source code" - **yes**.
+  `git diff --stat src/` is empty.
+- No overstating - **yes**. Every
+  GPU-side module is capped at
+  "partial implementation" by the
+  project-wide visual-validation
+  gate (per README + Stage 19D
+  audit). Modules at "foundation
+  landed" are honestly described
+  as PODs-only with the expected
+  rendering-time behaviour
+  deferred. The three "production
+  ready" verdicts (Core / Math /
+  Relativity) are scoped to
+  systems whose core behaviour is
+  CPU-side or already runs as the
+  project's verified differentiator.
+- BUILD_PLAN.md canonical content
+  unchanged - **yes**. The new
+  rollup subsection is additive
+  documentation under "Current
+  state"; no prior slice's row /
+  prose / verification-bullet was
+  modified.
+- Update docs/BUILD_PLAN.md - **yes**,
+  this entry + the rollup
+  subsection.
+
+### Verified at the build
+
+- `cmake -S . -B build` (defaults,
+  audit host): banner shows
+  "RR_ENABLE_OPTIX flag rename"
+  (unchanged from prior slice — no
+  CMakeLists edit this slice);
+  ctest 4/4 green.
+- `git diff --stat src/` returns
+  empty: zero source files touched.
+- Cross-checked MODULE_MAP.md row
+  count (22 + 2 cross-cutting = 24)
+  against `MASTER_ARCHITECTURE.md`
+  §4 (22 modules) + the master
+  order's #22 Preview UI + #24
+  Denoising entries; rollup math
+  (3 + 9 + 6 + 4 + 0 = 22) matches
+  the 22-module count exactly.
 
 ## Next stage
 
