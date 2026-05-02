@@ -58,8 +58,67 @@ class OptixBackend;
 // Temporal models require motion vectors (DENOISER_PLAN
 // §8.2.2) which the renderer does not produce yet; AOV mode
 // is a future slice's call.
+//
+// Stage 19B.2 extends the class with the input-binding
+// surface: an `Inputs` POD + `set_inputs(...)` that converts
+// raw device pointers from the renderer's AOV pipeline into
+// the OptiX-required `OptixImage2D` descriptors. No invoke,
+// no working-buffer allocation, no file output - the descriptors
+// are stored in private state for the next 19B sub-stage's
+// `optixDenoiserInvoke`. Per DENOISER_PLAN §8.4 the descriptors
+// are non-owning views: the renderer keeps the underlying
+// `GpuAOVBuffer` / display buffer alive across the denoiser
+// call.
 class OptixDenoiser {
 public:
+    // Stage 19B.2 input binding. The three required device
+    // pointers per DENOISER_PLAN §8.1 (Beauty / Albedo /
+    // Normal) plus the framebuffer dimensions. All three
+    // pointers must be device-resident; the caller owns the
+    // underlying memory (typically a path-tracer resolve
+    // buffer + two `GpuAOVBuffer`s). Beauty is FLOAT4
+    // (Rgba32F, 4 floats / pixel - the path tracer's
+    // resolve output per DENOISER_PLAN §8.3.1 route B);
+    // Albedo and Normal are FLOAT3 (RGB / XYZ, 3 floats /
+    // pixel - the Stage 14A AOV layout).
+    //
+    // The optional Depth + Motion inputs declared in
+    // DENOISER_PLAN §8.2 are intentionally absent here:
+    // Depth is not consumed by the OptiX denoiser today;
+    // Motion requires a future `AOVType::Motion` AOV the
+    // renderer does not produce yet. Adding them is a
+    // future slice's responsibility.
+    struct Inputs {
+        // Beauty (noisy radiance), Rgba32F device buffer.
+        // Layout: `width * height * 4` floats, channel-
+        // interleaved, top-left origin. Mapped to
+        // `OPTIX_PIXEL_FORMAT_FLOAT4` so the alpha channel
+        // (always 1 in this project) passes through under
+        // `OPTIX_DENOISER_ALPHA_MODE_COPY`.
+        const float* beauty_device = nullptr;
+
+        // Albedo (linear-space RGB, base colour at hit before
+        // lighting), 3 floats / pixel device buffer. Mapped
+        // to `OPTIX_PIXEL_FORMAT_FLOAT3`. Source: the Stage
+        // 14A `GpuAOVBuffer` for `AOVType::Albedo`, populated
+        // by `CudaRenderer::render_scene_with_aovs` via its
+        // `AOVTargets::albedo` field.
+        const float* albedo_device = nullptr;
+
+        // Normal (world-space XYZ, components in [-1, 1]),
+        // 3 floats / pixel device buffer. Mapped to
+        // `OPTIX_PIXEL_FORMAT_FLOAT3`. Source: the Stage 14A
+        // `GpuAOVBuffer` for `AOVType::Normal`, populated by
+        // `render_scene_with_aovs::AOVTargets::normal`.
+        const float* normal_device = nullptr;
+
+        // Framebuffer dimensions. Same value across all three
+        // input buffers; the OptiX denoiser requires uniform
+        // dims across Beauty + guide layers.
+        int          width  = 0;
+        int          height = 0;
+    };
+
     OptixDenoiser() noexcept = default;
     ~OptixDenoiser();
 
@@ -80,12 +139,51 @@ public:
     // SDK" error and leaves the denoiser uninitialised.
     [[nodiscard]] bool initialize(OptixBackend& backend) noexcept;
 
+    // Stage 19B.2: bind the renderer's AOV buffers to the
+    // denoiser's input slots. Builds three internal
+    // `OptixImage2D` descriptors (Beauty -> FLOAT4, Albedo
+    // -> FLOAT3, Normal -> FLOAT3) from the raw device
+    // pointers + dimensions. The descriptors are stored in
+    // private state for the next sub-stage's
+    // `optixDenoiserInvoke`; this slice does NOT launch any
+    // CUDA / OptiX work.
+    //
+    // Validation:
+    // - All three device pointers must be non-null.
+    // - `width > 0` and `height > 0`.
+    // - The denoiser does NOT need to be initialised first
+    //   - the input-binding step is decoupled from
+    //   `initialize()` so a caller can stage the inputs
+    //   before / after creating the underlying handle.
+    //
+    // The denoiser does NOT take ownership of the device
+    // buffers. The caller (renderer host orchestration)
+    // must keep them alive through the eventual
+    // `optixDenoiserInvoke`. Re-calling `set_inputs(...)`
+    // overwrites the previous descriptors.
+    //
+    // On the audit-host fallback this always returns `false`
+    // with the documented "requires OptiX SDK" error.
+    [[nodiscard]] bool set_inputs(const Inputs& inputs) noexcept;
+
     // Destroy the underlying `OptixDenoiser` (if any) and
-    // reset internal state. Idempotent. The destructor calls
-    // this automatically.
+    // reset internal state, including any `set_inputs`
+    // descriptors. Idempotent. The destructor calls this
+    // automatically.
     void shutdown() noexcept;
 
     [[nodiscard]] bool               is_initialized() const noexcept;
+
+    // True iff the most recent `set_inputs(...)` call
+    // succeeded and the descriptors have not been cleared
+    // (e.g. by a subsequent `shutdown()`).
+    [[nodiscard]] bool               inputs_set()     const noexcept;
+
+    // Width / height of the framebuffer described by the
+    // last successful `set_inputs(...)` call. Zero when
+    // `inputs_set()` is false.
+    [[nodiscard]] int                input_width()    const noexcept;
+    [[nodiscard]] int                input_height()   const noexcept;
 
     // The OptiX denoiser handle (real type: `OptixDenoiser`,
     // a typedef for `OptixDenoiser_t*` in the SDK). Returned
@@ -103,6 +201,22 @@ private:
     // returns false.
     void*       denoiser_    = nullptr;  // OptixDenoiser handle
     bool        initialized_ = false;
+
+    // Stage 19B.2 input descriptors. Real type:
+    // `::OptixImage2D[3]` (slot 0 = Beauty FLOAT4, slot 1 =
+    // Albedo FLOAT3, slot 2 = Normal FLOAT3). Stored as
+    // `void*` to keep the header SDK-free; the .cpp casts
+    // back to the typed array. Owned by this object - the
+    // .cpp `new[]`s the array on `set_inputs` success and
+    // `delete[]`s it on `shutdown`. The DEVICE pointers
+    // referenced inside the descriptors are NOT owned here;
+    // the caller's `GpuAOVBuffer` / resolve buffer is the
+    // owner.
+    void*       input_images_ = nullptr;
+    bool        inputs_set_   = false;
+    int         input_width_  = 0;
+    int         input_height_ = 0;
+
     std::string last_error_;
 };
 

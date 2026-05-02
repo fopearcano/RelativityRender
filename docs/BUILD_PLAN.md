@@ -3740,6 +3740,7 @@ sub-stages, appended to the same file.** No code is touched.
 | 19A.2    | Denoiser inputs (docs/DENOISER_PLAN.md §8: required inputs = Beauty (noisy) / Albedo / Normal, all 3 floats per pixel, world-space normals, all already produced by Stage 14A render_scene_with_aovs; optional inputs = Depth (future, not consumed by OptiX denoiser today) + Motion (future, requires new AOVType::Motion); concrete one-to-one mapping to make_default_aov_set() entries + targets.* fields; FLOAT3-vs-FLOAT4 Beauty format ambiguity documented with route (B) recommended to preserve §4.2 "no renderer changes"; planning-only, no code) | ✅ |
 | 19A.3    | Denoiser pipeline (docs/DENOISER_PLAN.md §9: pipeline = GPU render → AOV buffers → denoiser → final image; denoiser is the last device-side stage before host download + PPM save; trigger modes = manual (--denoise flag) + automatic (action-default for path-traced / preview render paths); precedence = explicit flag > action-default > project-wide default; output = output/denoised.ppm by default, --output overrides with _denoised-suffixed stem; existing un-denoised paths unchanged when denoising is off; planning-only, no code) | ✅ |
 | 19B.1    | OptiX denoiser context (src/optix/OptixDenoiser.{h,cpp}: move-only RAII owner of an OptixDenoiser handle; reuses the Stage 17A.1 OptixDeviceContext via OptixBackend::device_context(); options pinned to guideAlbedo=1 + guideNormal=1 + denoiseAlpha=COPY per the Stage 19A.2 input contract; model = OPTIX_DENOISER_MODEL_KIND_HDR; two-layer compile-time gating + audit-host fallback identical to OptixBackend / OptixPipeline; lifecycle only — no memory queries / setup / invoke yet) | ✅ |
+| 19B.2    | Denoiser inputs (OptixDenoiser::Inputs POD + set_inputs(...) method that converts raw device pointers from the renderer's AOV pipeline into an OptixImage2D[3] triplet (slot 0 = Beauty FLOAT4 from the path-tracer resolve, slot 1 = Albedo FLOAT3 from the Stage 14A AOV, slot 2 = Normal FLOAT3 from the Stage 14A AOV); rowStrideInBytes = width * pixelStrideInBytes (tight pack); descriptors stored in private state for the next sub-stage's optixDenoiserInvoke; non-owning view of the caller's device buffers; shutdown() now also delete[]s the OptixImage2D triplet; audit-host fallback returns the documented "requires OptiX SDK" error for set_inputs too; no invoke, no file output) | ✅ |
 
 ## Stage 12A.2.1 — OptiX raygen program design
 
@@ -12775,6 +12776,227 @@ will surface in §9.5 or §10).
   (`optixDenoiserDestroy`). Both INFO log
   lines fire. The 19B.2 sub-stage will
   exercise this in a CLI fixture.
+
+## Stage 19B.2 — Denoiser inputs
+
+**Scope of this slice (Stage 19B.2; master order
+#24 / second 19B implementation slice): connect
+the renderer's AOV buffers to the
+`OptixDenoiser` instance landed in 19B.1. New
+`Inputs` POD on `OptixDenoiser` plus a
+`set_inputs(...)` method that converts the three
+required device pointers (Beauty / Albedo /
+Normal) into the `OptixImage2D[3]` triplet OptiX
+expects. The descriptors are stored in private
+state for the next sub-stage's
+`optixDenoiserInvoke`; this slice does NOT
+launch any CUDA / OptiX work. No
+`optixDenoiserSetup`, no `optixDenoiserInvoke`,
+no host-side image manipulation, no file
+output.**
+
+### What ships
+
+- `src/optix/OptixDenoiser.h` (extended): new
+  nested `OptixDenoiser::Inputs` POD with five
+  fields:
+    - `const float* beauty_device` (Rgba32F,
+      4 floats / pixel; the path-tracer resolve
+      buffer per DENOISER_PLAN §8.3.1 route B).
+    - `const float* albedo_device` (linear-
+      space RGB, 3 floats / pixel; the Stage
+      14A `AOVType::Albedo` buffer).
+    - `const float* normal_device` (world-
+      space XYZ, 3 floats / pixel; the Stage
+      14A `AOVType::Normal` buffer).
+    - `int width / int height` (uniform across
+      the three buffers).
+  Plus four new public methods:
+  `set_inputs(const Inputs&) noexcept`,
+  `inputs_set() const noexcept`,
+  `input_width() const noexcept`,
+  `input_height() const noexcept`. The
+  `<optix.h>` SDK leakage discipline is
+  preserved - the Inputs POD only carries
+  host-friendly types.
+
+- `src/optix/OptixDenoiser.cpp` (extended):
+    - **SDK-found branch**: `set_inputs(...)`
+      validates non-null device pointers + dims,
+      drops any prior descriptor allocation,
+      `new[]`s a `::OptixImage2D[3]` array on
+      the host, populates each slot:
+        - Slot 0 (Beauty): FLOAT4,
+          `rowStrideInBytes = width *
+          (4 * sizeof(float))`,
+          `pixelStrideInBytes = 16`.
+        - Slot 1 (Albedo): FLOAT3,
+          `rowStrideInBytes = width *
+          (3 * sizeof(float))`,
+          `pixelStrideInBytes = 12`.
+        - Slot 2 (Normal): FLOAT3, same layout
+          as Albedo.
+      Sets the `inputs_set_` flag and stores
+      `input_width_` / `input_height_`. Logs
+      an `[OptiX:INFO]` line on success.
+      `shutdown()` now also `delete[]`s the
+      OptixImage2D triplet (host-side
+      allocation; the device pointers it
+      referenced are the caller's).
+    - **Audit-host fallback branch**:
+      `set_inputs(...)` returns `false` with
+      the documented "requires OptiX SDK"
+      error string mirroring `initialize()`'s
+      fallback shape. `shutdown()` zeros the
+      input fields too.
+
+- `src/optix/OptixDenoiser.cpp` includes
+  (extended): `<new>` for `std::nothrow`,
+  used to make the `OptixImage2D[3]` host-
+  allocation a fail-with-error path rather
+  than a `noexcept` throw.
+
+- Move ctor / move= updated to ferry the four
+  new private fields (`input_images_`,
+  `inputs_set_`, `input_width_`,
+  `input_height_`) and null them on the
+  source.
+
+- `CMakeLists.txt`: stage label bumped to
+  "Stage 19B.2: denoiser inputs" in both
+  `project(...)` and the configure-time
+  banner. No new source files; the existing
+  `OptixDenoiser.cpp` was already on rr_optix's
+  source list since 19B.1.
+
+- `docs/BUILD_PLAN.md`: this entry +
+  status-table row.
+
+`docs/DENOISER_PLAN.md` is intentionally not
+edited - the Stage 19A.2 plan (§8) already
+specified the input contract this slice
+implements; the §8.3 mapping table is the
+authority on which AOV feeds which slot.
+
+### Architectural decisions worth highlighting
+
+- **Non-owning view of the caller's buffers.**
+  The OptixImage2D triplet stores raw device
+  pointers; `OptixDenoiser` does not free
+  them on shutdown. The caller (renderer
+  host orchestration; the renderer-server's
+  `render` verb in 19A.6) keeps the
+  underlying `GpuAOVBuffer` / resolve buffer
+  alive across the eventual
+  `optixDenoiserInvoke`. This matches the
+  `CudaRenderer::AOVTargets` ownership
+  shape (raw `float*`, host owns; same rule
+  the AOV pipeline already follows).
+- **Slot order = [Beauty, Albedo, Normal].**
+  Documented in the .cpp; the next sub-stage
+  wires slot 0 -> `OptixDenoiserLayer.input`
+  and slots 1 / 2 ->
+  `OptixDenoiserGuideLayer.albedo` /
+  `.normal`.
+- **Beauty FLOAT4, not FLOAT3.** Per
+  DENOISER_PLAN §8.3.1 route B, the path-
+  tracer's `resolve_to_image()` produces a
+  FLOAT4 (Rgba32F) buffer; reading it
+  directly avoids the renderer-side change
+  route A would require. The OptiX denoiser
+  accepts FLOAT4 and treats the alpha
+  channel per `denoiseAlpha`
+  (COPY in 19B.1's options means alpha
+  passes through unchanged, which is the
+  project's existing always-1.0
+  convention).
+- **`set_inputs` is decoupled from
+  `initialize`.** A caller can stage the
+  inputs before / after creating the
+  underlying handle. `set_inputs` does not
+  read the OptixDenoiser handle; it just
+  builds host-side descriptors. The next
+  sub-stage's `invoke()` is the gate that
+  requires both `is_initialized() == true`
+  and `inputs_set() == true`.
+- **Tightly-packed buffers assumed.** The
+  Stage 14A AOV pipeline allocates
+  `width * height * components` floats with
+  no padding; the path tracer's resolve
+  buffer is similarly tight. The descriptor
+  builder hard-codes
+  `rowStrideInBytes = width *
+  pixelStrideInBytes`; future slices that
+  need padded buffers (e.g. a
+  cudaMallocPitch path) extend the `Inputs`
+  POD with explicit stride fields.
+- **`std::nothrow` allocation.** The host-
+  side `new[]` for the OptixImage2D triplet
+  uses `std::nothrow` so allocation
+  failure becomes a `set_inputs(...)`
+  return-false rather than a `terminate`
+  (the method is `noexcept`). Mirrors the
+  defensive posture of the existing
+  rr_optix code.
+
+### Hard-rule audit
+
+- No denoise execution yet - **yes**, the
+  slice ships zero new OptiX runtime calls.
+  No `optixDenoiserSetup`, no
+  `optixDenoiserComputeMemoryResources`, no
+  `optixDenoiserInvoke`, no kernel launches.
+  The descriptor build is a pure host-side
+  pointer + metadata pack.
+- No file output yet - **yes**, the slice
+  does not write any files. No PPM, no log
+  artefact beyond the existing `[OptiX:INFO]`
+  stderr line.
+- Must compile with OptiX ON - **yes**, the
+  audit-host ON build compiles the new
+  `set_inputs` body via the fallback branch
+  and links into `librr_optix.a`. `nm`
+  confirms the four new public symbols
+  (`set_inputs`, `inputs_set`, `input_width`,
+  `input_height`) are present.
+- Must not break CUDA-only builds - **yes**,
+  the OFF build does not build `rr_optix` at
+  all, so the new code is never compiled.
+  CUDA-only baseline byte-identical to the
+  Stage 19B.1 build.
+- Update docs/BUILD_PLAN.md - **yes**, this
+  entry + status-table row.
+
+### Verified at the build
+
+- `cmake -DRR_ENABLE_CUDA=OFF
+   -DRELATIVITYRENDER_ENABLE_OPTIX=OFF`
+  (Linux): banner shows "Stage 19B.2:
+  denoiser inputs"; `rr_optix` not built;
+  the new code is never compiled; ctest
+  4/4 green.
+- `cmake -DRELATIVITYRENDER_ENABLE_OPTIX=ON`
+  (Linux audit-host): banner bumped;
+  `rr_optix` recompiles `OptixDenoiser.cpp`
+  with the audit-host fallback bodies for
+  `set_inputs` + the no-op `shutdown` zeroing
+  of the new fields; ctest 4/4 green. `nm
+  librr_optix.a` confirms
+  `_ZN2rr5optix13OptixDenoiser10set_inputs
+  ERKNS1_6InputsE` and the three accessor
+  symbols all present.
+- A future CUDA + OptiX-SDK host run
+  exercises the populated branch: caller
+  builds `OptixDenoiser::Inputs` from the
+  path-tracer's resolve output + the
+  `GpuAOVBuffer` device pointers ->
+  `denoiser.set_inputs(inputs)` ->
+  `[OptiX:INFO] OptixDenoiser inputs bound:
+  Beauty WxH FLOAT4, Albedo WxH FLOAT3,
+  Normal WxH FLOAT3.` log line ->
+  `denoiser.inputs_set() == true`. The 19B.3
+  sub-stage uses the stored descriptors as
+  the input layer for `optixDenoiserInvoke`.
 
 ## Next stage
 
