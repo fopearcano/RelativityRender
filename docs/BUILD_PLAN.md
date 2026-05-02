@@ -3748,6 +3748,7 @@ sub-stages, appended to the same file.** No code is touched.
 | 19C.2.2  | Denoiser free scan (docs/DENOISER_MEMORY_AUDIT_B.md: list-only enumeration of GPU memory frees on the denoiser path — 9 direct cudaFree calls in OptixDenoiser::invoke (4 d_scratch + 5 d_state across the success and four failure paths), 5 indirect cudaFree-via-RAII through GpuBuffer<T>/GpuAOVBuffer destructors, 1 OptiX object free via optixDenoiserDestroy; no analysis, no pairing verification; pairing audit lives in a subsequent 19C.2.x sub-stage; no code changes outside the CMakeLists stage label bump) | ✅ |
 | 19C.2.3  | Denoiser mismatch check (docs/DENOISER_MEMORY_AUDIT_C.md: two yes/no answers pairing Part A and Part B — "any allocation without obvious free? No"; "any duplicate allocation? No"; three supporting one-line bullets mapping A.1–A.2 to B.1–B.9, A.3–A.7 to B.10–B.14, A.8 to B.15; max 5 bullets, no deep reasoning; no code changes outside the CMakeLists stage label bump) | ✅ |
 | 19C.3    | Denoiser fallback (denoise_aov_buffers_to_ppm gains a save_noisy_fallback lambda that downloads the noisy Beauty AOV directly, widens FLOAT3 → RGBA32F (alpha=1), and saves it at the requested out_path with a Logger::warning; every denoiser-side failure path (OptixBackend init, OptixDenoiser init, set_inputs, output buffer alloc, invoke, denoised download) now returns through the fallback instead of returning false; the user always gets a saved image at the requested path; renderer never crashes due to denoiser failure; the only false-return path is when even the noisy-fallback download/save itself fails (genuine catastrophe); denoise:invoke / denoise:total timing lines skipped on the fallback path because no successful denoiser pass ran to time) | ✅ |
+| 19D      | Denoiser validation (docs/STAGE_19_DENOISER_AUDIT.md: four-question audit — Q1 file existence: PARTIAL (failure path verified on audit-host; success path deferred to CUDA + OptiX-SDK host); Q2 visual smoothness: DEFERRED (configuration verified correct, visual diff gated on CUDA + OptiX-SDK host); Q3 renderer still works without denoiser: PASS (--denoise defaults off; existing CLI surface byte-identical to Stage 19A.3 baseline); Q4 GPU/CPU violations: PASS with one documented exception (host-side constant-alpha widen loop justified under "save image files" rule and called out in-source); documentation only; no code changes outside the CMakeLists stage label bump) | ✅ |
 
 ## Stage 12A.2.1 — OptiX raygen program design
 
@@ -14185,6 +14186,119 @@ may inline a §9.3.x for completeness.
   produces a `[WARN]` line and saves
   the noisy Beauty at
   `output/denoised.ppm`.
+
+## Stage 19D — Denoiser validation
+
+**Scope of this slice (Stage 19D; master order
+#24): documentation-only audit answering the
+four prompt questions about the denoiser slice
+landed in 19A-19C. No code changes; no runtime
+behaviour changes. Honest about which questions
+the audit host (no CUDA, no OptiX SDK) can
+verify directly versus which are deferred to a
+CUDA + OptiX-SDK host run.**
+
+### What ships
+
+- `docs/STAGE_19_DENOISER_AUDIT.md` (NEW):
+  4-question audit in the same shape as the
+  existing `STAGE_11_AUDIT.md` /
+  `STAGE_14_AOV_AUDIT.md` documents.
+    - **Q1 — Does `output/denoised.ppm`
+      exist?** PARTIAL. Failure-path
+      verified on the audit host
+      (returns the documented "requires
+      CUDA + OptiX" error and writes no
+      PPM); success-path file write
+      deferred to a CUDA + OptiX-SDK host.
+      The Stage 19C.3 fallback contract
+      (write the noisy Beauty when any
+      denoiser-side step fails) is
+      reviewed in source.
+    - **Q2 — Is `denoised.ppm` visually
+      smoother than the input?**
+      DEFERRED. Configuration verified
+      correct (HDR model, guideAlbedo=1,
+      guideNormal=1, AOV pipeline
+      untouched); empirical visual diff
+      requires a CUDA + OptiX-SDK host
+      run. Documented procedure included
+      so a future operator can run the
+      diff without rediscovering the
+      shape.
+    - **Q3 — Does the renderer still work
+      without the denoiser?** PASS.
+      `--denoise` defaults off;
+      every existing CLI action runs
+      byte-for-byte identically to the
+      Stage 19A.3 baseline. Verified by
+      build + smoke runs on both OFF and
+      audit-host ON builds; no kernel
+      modified, no AOV pipeline modified,
+      no OptiX program modified.
+    - **Q4 — Any GPU/CPU violations?**
+      PASS with one documented exception.
+      Every per-pixel SHADING operation
+      runs on GPU. The one host-side
+      per-pixel operation (FLOAT3 ->
+      RGBA32F constant-alpha widen loop
+      in `denoise_aov_buffers_to_ppm`'s
+      success + fallback paths) is
+      justified under the master rule's
+      "save image files" / "manage IO"
+      allowance and is called out
+      in-source.
+    - Closing summary table maps each
+      question to its verdict, plus a
+      pointer that completes Q1+Q2 via a
+      future CUDA + OptiX-SDK host run.
+
+- `CMakeLists.txt`: stage label bumped to
+  "Stage 19D: denoiser validation".
+
+- `docs/BUILD_PLAN.md`: this entry +
+  status-table row.
+
+### Hard-rule audit
+
+- Documentation only - **yes**. The slice
+  adds zero source files, no build
+  targets, no CLI surface, no public API,
+  no test coverage. The only non-doc
+  change is the `CMakeLists.txt` stage-
+  label bump.
+- Audit covers the four prompt questions -
+  **yes**. Each question has its own
+  section with verdict + evidence + (where
+  applicable) deferred-verification gate.
+- Honest about audit-host limits - **yes**.
+  Q1 / Q2 are explicitly marked
+  PARTIAL / DEFERRED rather than claimed
+  PASS without empirical evidence; the
+  CUDA + OptiX-SDK host run that would
+  complete them is documented step-by-
+  step.
+- Update docs/BUILD_PLAN.md - **yes**, this
+  entry + status-table row.
+
+### Verified at the build
+
+- `cmake -DRR_ENABLE_CUDA=OFF
+   -DRELATIVITYRENDER_ENABLE_OPTIX=OFF`
+  (Linux): banner shows "Stage 19D:
+  denoiser validation"; no source files
+  changed; ctest 4/4 green.
+- `cmake -DRELATIVITYRENDER_ENABLE_OPTIX=ON`
+  (Linux audit-host): banner bumped;
+  rr_optix unchanged; ctest 4/4 green.
+- The audit document was cross-checked
+  against the Stage 19 codebase (Stage
+  19B.1's `OptixDenoiser::initialize`
+  options, Stage 19B.3's invoke flow,
+  Stage 19C.3's fallback lambda) so each
+  factual claim in the verdicts can be
+  walked back to a specific source-line
+  citation in the audited tree.
 
 ## Next stage
 
