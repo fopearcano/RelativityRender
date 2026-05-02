@@ -26,10 +26,31 @@ namespace rr::cuda {
 [[nodiscard]] bool launch_accum_clear(float* device_acc,
                                       std::size_t float_count);
 
+// Stage 18A.4: first-sample fast path. Equivalent to
+// `launch_accum_clear` followed by `launch_accum_add`, but skips
+// the `cudaMemset` + the read-of-zeros the add kernel would do
+// on the freshly cleared accumulator. Forwards to
+// `cudaMemcpy(device_acc, device_sample, ..., D2D)` which uses
+// the memory controller's bulk-copy fast path - no SM
+// occupancy. Output is bit-identical to the scalar add path
+// when the accumulator is in its zero state (acc + sample ==
+// sample). The host-side `AccumulationBuffer::accumulate_sample`
+// routes `samples_count() == 0` through this entry point.
+[[nodiscard]] bool launch_accum_first_sample(float* device_acc,
+                                             const float* device_sample,
+                                             std::size_t float_count);
+
 // Element-wise device-side add: `device_acc[i] += device_sample[i]`
 // for `i` in `[0, float_count)`. Both pointers must reference
 // device memory. The kernel is a single 1D grid sized by the
 // caller; the host never iterates pixels here.
+//
+// Stage 18A.4: when `float_count` is a multiple of 4 (the
+// Rgba32F invariant every documented caller honours) the
+// launcher dispatches to a `float4`-vectorised kernel that does
+// 1/4 the memory transactions and 1/4 the threads. Falls back
+// to the scalar kernel otherwise. Behaviour is bit-identical
+// across both paths (single-precision add is deterministic).
 [[nodiscard]] bool launch_accum_add(float* device_acc,
                                     const float* device_sample,
                                     std::size_t float_count);
@@ -40,6 +61,9 @@ namespace rr::cuda {
 // normalised buffer the host then downloads. `inv_samples` is
 // `1.0f / samples_count` (computed once on the host so the
 // kernel does no division).
+//
+// Stage 18A.4: same `float4` fast path / scalar fallback split
+// as `launch_accum_add`.
 [[nodiscard]] bool launch_accum_resolve(const float* device_acc,
                                         float* device_display,
                                         std::size_t float_count,

@@ -72,11 +72,22 @@ bool AccumulationBuffer::reset() {
 bool AccumulationBuffer::accumulate_sample(const float* device_sample) {
     if (!valid() || device_sample == nullptr) return false;
 #ifdef RR_HAS_CUDA
-    if (!rr::cuda::launch_accum_add(device_.device_ptr(),
-                                    device_sample,
-                                    device_.size())) {
-        return false;
-    }
+    // Stage 18A.4: when the accumulator is fresh (samples_ == 0)
+    // the freshly-cleared buffer holds zeros, and `acc + sample`
+    // would just produce `sample`. Routing the first sample
+    // through `cudaMemcpy(D2D)` skips the wasted read-of-zeros
+    // and the add-kernel launch entirely; the memory controller's
+    // bulk-copy path is much cheaper than an element-wise kernel.
+    // Subsequent samples (samples_ > 0) keep using the
+    // float4-vectorised add kernel.
+    const bool ok = (samples_ == 0)
+        ? rr::cuda::launch_accum_first_sample(device_.device_ptr(),
+                                              device_sample,
+                                              device_.size())
+        : rr::cuda::launch_accum_add(device_.device_ptr(),
+                                     device_sample,
+                                     device_.size());
+    if (!ok) return false;
     ++samples_;
     return true;
 #else

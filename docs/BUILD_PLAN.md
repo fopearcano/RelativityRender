@@ -3735,6 +3735,7 @@ sub-stages, appended to the same file.** No code is touched.
 | 18A.1    | GPU timing (CudaTiming.{h,cpp} cudaEvent_t wrappers; rr::gpu::GpuTimer move-only RAII + format_gpu_timing_line; gpu_time_ms added to CudaRenderer/OptixRenderer/PathTracer Results; events bracket every kernel-launch region; main.cpp log_gpu_timing helper emits "[GPU] <action>: render time = X.XXX ms; primary rays = N (WxH); rays/sec = Y.YY M" per render dispatch) | ✅ |
 | 18A.2    | GPU memory audit (docs/GPU_MEMORY_AUDIT.md catalogues every cudaMalloc/cudaFree + RAII owner; verifies no leaks, no double-frees, no orphan allocations; documents two intentional duplications (OptiX triangle prologue duplication across render_triangle/render_relativistic, CUDA-vs-OptiX triangle storage layouts) with future-fix paths; pure documentation, no code changes) | ✅ |
 | 18A.3    | Relativity precompute (single redundant-math fix: PrecomputedRelativity POD + `precompute_relativity()` factory + precomputed-input overloads of aberrateDirection / dopplerFactor in RelativityMath.h; k_sphere_relativistic / k_render_scene / OptixPrograms.cu raygen + apply_doppler_and_searchlight all snapshot once at thread entry instead of paying redundant `length(beta_vec)` + `gamma(beta_mag)` reductions inside both the aberration and the Doppler call; saves 2 sqrts per pixel on the relativistic-stack-on path) | ✅ |
+| 18A.4    | Progressive optimization (float4-vectorised k_accum_add + k_accum_resolve fast paths on Rgba32F-aligned buffers — 1/4 the threads, 1/4 the memory transactions, 16-byte coalesced ld/st; new launch_accum_first_sample (cudaMemcpy D2D) routes samples_==0 through the memory-controller bulk-copy path and skips the read-of-zeros + add-kernel launch; AccumulationBuffer::accumulate_sample dispatches first-sample vs add; bit-identical pixel output) | ✅ |
 
 ## Stage 12A.2.1 — OptiX raygen program design
 
@@ -11766,6 +11767,275 @@ fixture; this slice does not extend it.
   the exact commands and expected line shape.
 - Update docs/BUILD_PLAN.md - **yes**, this
   entry + status-table row.
+
+## Stage 18A.4 — Progressive optimization
+
+**Scope of this slice (Stage 18A.4; master order
+#18 / observability slice): pure performance
+work on the progressive-accumulation pipeline.
+The accumulation hotpath (`k_accum_add` /
+`k_accum_resolve` / the host-side reset/clear
+flow) is the path tracer's biggest per-frame
+memory-bandwidth consumer - `PathTracer::render`
+runs `samples_per_pixel` add passes plus one
+resolve over a full Rgba32F framebuffer per
+render. This slice ships two coordinated wins,
+both bit-identical to the Stage 18A.3 baseline.
+No visual changes; only performance.**
+
+### What ships
+
+- `src/cuda/CudaAccumulation.cu` (extended):
+  - new `k_accum_add_float4` and
+    `k_accum_resolve_float4` kernels. One thread
+    services one Rgba32F pixel (one float4
+    element) instead of one float channel. The
+    compiler emits `ld.global.v4.f32` /
+    `st.global.v4.f32` for the load + store, so
+    each per-pixel pair is one 16-byte coalesced
+    transaction instead of four 4-byte ones.
+  - new `launch_accum_first_sample(acc, sample,
+    float_count)` host-callable launcher that
+    forwards to `cudaMemcpy(acc, sample, ...,
+    cudaMemcpyDeviceToDevice)`. No SM
+    occupancy; uses the memory controller's
+    bulk-copy fast path.
+  - `launch_accum_add` / `launch_accum_resolve`
+    now check `(float_count & 0x3u) == 0` and
+    dispatch to the float4 kernel when the
+    Rgba32F invariant holds. The scalar kernels
+    stay as a fallback for non-aligned counts
+    (no documented caller today; safety net).
+- `src/cuda/CudaAccumulation.cuh` (extended):
+  - new `launch_accum_first_sample` declaration
+    next to the existing `launch_accum_clear`.
+  - doc comment updates on
+    `launch_accum_add` / `launch_accum_resolve`
+    spelling out the float4 dispatch and the
+    bit-identical-output contract.
+- `src/renderer/AccumulationBuffer.cpp`
+  (extended):
+  - `accumulate_sample` now branches on
+    `samples_ == 0`. The first sample after a
+    fresh `resize` (or after any explicit
+    `reset()`) goes through
+    `launch_accum_first_sample`; subsequent
+    samples keep using the float4-vectorised
+    `launch_accum_add`. The sample counter
+    increments unchanged.
+- `CMakeLists.txt`: stage label bumped to
+  "Stage 18A.4: progressive optimization" in
+  both `project(...)` and the banner.
+- `docs/BUILD_PLAN.md`: this entry +
+  status-table row.
+
+`AccumulationBuffer::resize` and
+`AccumulationBuffer::reset` are unchanged on
+the host. They keep the `cudaMemset`-backed
+clear so the documented "device_ptr() reads
+zeros after reset" contract holds for any
+caller that inspects the buffer between
+operations. The first-sample fast path makes
+that pre-zero strictly redundant for the
+common spp-loop case (because the next
+operation overwrites the entire buffer
+anyway), but breaking the contract is a
+behaviour change the slice deliberately does
+not take.
+
+### Bottlenecks identified (matched to the fixes)
+
+The Stage 18A.2 audit (§5) flagged the per-
+render allocator round-trip + accumulation /
+sample buffers as a hot path. Stage 18A.4
+zooms one level finer:
+
+1. **Sample blending memory bandwidth.** The
+   add and resolve kernels are pure element-
+   wise; they spend their cycles on global
+   memory transactions. With one thread per
+   float, a 1280x720 framebuffer produces
+   ~3.7M loads + ~3.7M stores per add pass,
+   times spp passes per render. Each
+   transaction is 4 bytes - well under the
+   GPU's 16-byte transaction granularity, so
+   ~75% of memory throughput is wasted on
+   sub-transaction overhead.
+2. **Wasted "read-of-zeros" on the first
+   sample.** Every render starts with a
+   `cudaMemset(acc, 0, ...)` followed by an
+   `acc[i] += sample[i]` add kernel. The add
+   kernel reads the zeros, adds the sample,
+   and writes the result. Both passes (the
+   memset and the read-of-zeros) are
+   unnecessary - a direct `cudaMemcpy(acc,
+   sample, ..., D2D)` produces the same bits
+   without either round-trip.
+3. **Accumulation buffer storage layout.**
+   Already optimal (Rgba32F, 16-byte aligned,
+   contiguous). Nothing to change here; the
+   layout is what makes the float4
+   vectorisation safe.
+
+### Theoretical impact
+
+Per-element add / resolve cost (1280x720,
+spp=16):
+
+| Path | Threads / pass | Memory transactions / pass | Bytes / pass | Notes |
+|------|----------------|----------------------------|--------------|-------|
+| Baseline `k_accum_add` (scalar) | 3,686,400 | 3.69M ld + 3.69M st = 7.37M  | 14.7 MiB ld + 14.7 MiB st | Each thread handles 1 float; 4-byte transactions |
+| Stage 18A.4 `k_accum_add_float4` | 921,600   | 0.92M ld + 0.92M st = 1.84M  | 14.7 MiB ld + 14.7 MiB st | Each thread handles 1 float4; 16-byte transactions |
+| **Δ** | **-75%** threads | **-75%** transactions | same bytes | LSU pressure halved; fewer dependent issues per warp |
+
+Same bytes move across the bus; the win is in
+**transaction count + ALU ops + LSU cycles**.
+On Ampere / Ada SMs the LSU is the binding
+resource for pure element-wise kernels, so
+dropping transactions by 4x maps to a
+proportional kernel-time reduction (subject to
+DRAM throughput as the eventual ceiling).
+
+First-sample fast path savings:
+
+| Path | First-sample work | Subsequent samples |
+|------|-------------------|--------------------|
+| Baseline | `cudaMemset(0)` + `k_accum_add` (read zeros + add) | `k_accum_add` per spp |
+| Stage 18A.4 | `cudaMemcpy(D2D)` | float4 `k_accum_add` per spp |
+
+For `--render-pathtrace` (default spp=16) the
+first sample is 1/16 of the work; saving the
+read-of-zeros pass on it is a ~3% accumulator-
+side win for that render. For spp=1 (the
+preview pass) it eliminates the entire
+`cudaMemset` + add-kernel pair, replacing it
+with a single bulk D2D copy - a much larger
+proportional saving. The `--render-
+accumulation-test` validation path (default 64
+samples) sees the win on its first frame too.
+
+### Measurement
+
+**Methodology.** The Stage 18A.1 instrumentation
+emits `[GPU] <action>: render time = X.XXX ms`
+per render dispatch. The before/after
+comparison is two CLI runs:
+
+```text
+# baseline (commit 6d4213d, Stage 18A.3)
+$ build/bin/RelativityRender --render-pathtrace scenes/sample.rrscene
+[GPU] pathtrace spp=1:  render time = T_baseline_pt1  ms; ...
+[GPU] pathtrace spp=16: render time = T_baseline_pt16 ms; ...
+$ build/bin/RelativityRender --render-accumulation-test
+[GPU] render-accumulation-test: render time = T_baseline_acc ms; ...
+
+# after this slice (Stage 18A.4)
+$ build/bin/RelativityRender --render-pathtrace scenes/sample.rrscene
+[GPU] pathtrace spp=1:  render time = T_fixed_pt1  ms; ...
+[GPU] pathtrace spp=16: render time = T_fixed_pt16 ms; ...
+$ build/bin/RelativityRender --render-accumulation-test
+[GPU] render-accumulation-test: render time = T_fixed_acc ms; ...
+```
+
+Diffing the `render time` lines isolates the
+accumulation-pipeline impact (the per-sample
+path-trace kernel is unchanged in this slice).
+
+**Empirical numbers gating note.** This dev
+host has no CUDA toolkit and no NVIDIA GPU
+(`command -v nvcc` returns 1; same gating as
+Stage 18A.3). Empirical numbers slot in when a
+CUDA-capable host runs the comparison; the
+theoretical analysis above bounds the expected
+delta.
+
+### Architectural decisions worth highlighting
+
+- **float4 vectorisation, not float2/float8.**
+  Rgba32F is naturally 16-byte aligned (4
+  floats / pixel), so float4 maps to one
+  pixel and is a single instruction on every
+  CUDA-capable GPU since Compute 1.0. float2
+  would only halve transactions; float8 would
+  need two separate ld.v4 instructions and is
+  not a native vector type.
+- **Scalar fallback retained.** The launchers
+  dispatch on `(float_count & 0x3u) == 0`, so
+  any future caller passing a non-Rgba32F
+  count still works. The Stage 18A.2 audit
+  documented Rgba32F as the invariant; this
+  slice does not narrow the API to require
+  it.
+- **First-sample = `cudaMemcpy(D2D)`, not a
+  copy kernel.** D2D copies on the same
+  device use the memory controller's bulk-
+  copy fast path - no SM occupancy, no kernel
+  launch overhead, faster than an element-
+  wise copy kernel even when the kernel uses
+  float4. A future "fused first-sample" that
+  goes through cuStreamMemcpy on a non-
+  default stream would let it overlap with
+  the next per-sample kernel; deferred.
+- **`resize` / `reset` keep their
+  `cudaMemset`.** The documented contract is
+  "after reset(), device_ptr() reads zeros".
+  Skipping the memset would silently break
+  any caller that inspects the buffer
+  between operations (none today, but the
+  guarantee has been around since Stage
+  11B). The first-sample fast path makes
+  the memset strictly redundant for the
+  common spp-loop case; the redundancy is
+  the price of preserving the contract.
+- **Bit-identical output guaranteed.** Single-
+  precision float adds are deterministic; the
+  float4 kernel does the same per-channel
+  adds in the same order as the scalar
+  kernel. `cudaMemcpy(D2D)` of the sample
+  produces `acc == sample`, which is exactly
+  what `acc(=0) + sample` produces. No
+  floating-point rounding difference exists
+  between the baseline and the optimised
+  path.
+
+### Hard-rule audit
+
+- No visual changes - **yes**, both new fast
+  paths produce bit-identical pixel output to
+  the scalar baseline. The float4 kernel
+  performs the same per-channel float adds
+  in the same order as the scalar kernel
+  (single-precision is deterministic). The
+  D2D-copy first-sample path produces
+  `acc == sample`, which is exactly what
+  the baseline's `acc(=0) + sample` produces.
+- Only performance improvement - **yes**, no
+  algorithmic changes; no bug fixes; no
+  protocol / API contract changes (the
+  launcher signatures are unchanged; the new
+  `launch_accum_first_sample` is purely
+  additive).
+- Update docs/BUILD_PLAN.md - **yes**, this
+  entry + status-table row.
+
+### Verified at the build
+
+- `cmake -DRR_ENABLE_CUDA=OFF
+   -DRELATIVITYRENDER_ENABLE_OPTIX=OFF` (Linux):
+  banner shows "Stage 18A.4: progressive
+  optimization"; AccumulationBuffer.cpp
+  recompiles with the first-sample dispatch;
+  rr_renderer relinks; ctest 4/4 green.
+- `cmake -DRELATIVITYRENDER_ENABLE_OPTIX=ON`
+  (Linux audit-host): banner bumped; rr_optix
+  unchanged; rr_renderer recompiles with the
+  same first-sample dispatch; ctest 4/4 green.
+- A future CUDA host run produces the new
+  timing-line numbers via the Stage 18A.1
+  `[GPU]` log lines; the
+  `--render-accumulation-test` and
+  `--render-pathtrace` paths exercise both
+  fast paths end-to-end.
 
 ## Next stage
 
