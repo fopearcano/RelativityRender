@@ -39,3 +39,11 @@
 - The denoiser reads the existing AOV device pointers in place; no extra copy or upload between render and denoise.
 - Core renderer logic is not modified: no kernel changes, no SBT changes, no path-tracer changes — the denoiser is a separate pipeline stage layered on top.
 - The denoiser's output is the final image written to disk; the pre-denoise Beauty AOV remains available as a fallback / debug artifact.
+
+## Output
+
+- Default output path: `output/denoised.ppm`.
+- Written separately from raw render outputs (`output/render.ppm`, `output/aov_*.ppm`, `output/optix_*.ppm`); the denoiser never overwrites a raw render artifact.
+- Linear-space float radiance in, linear-space float radiance out, then float-to-uint8 clamped on save (same `Image::save_ppm` path the raw renders use).
+- The raw `output/aov_beauty.ppm` (pre-denoise Beauty) coexists alongside `output/denoised.ppm` so before/after comparison is always possible.
+- On any denoiser-side failure the dispatcher writes the noisy Beauty AOV to `output/denoised.ppm` as a fallback so the file always exists when the renderer succeeded.
