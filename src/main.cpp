@@ -1108,6 +1108,63 @@ int run_render_optix_relativity(const rr::core::Config& cfg) {
 #endif
 }
 
+// `--render-optix-raygen` dispatch (Stage 20C). Drives the
+// raygen + miss + minimal-SBT + pipeline-creation surface
+// without any visible geometry: builds a tiny triangle GAS
+// placed BEHIND the camera (z = +5; default camera looks at
+// -Z) so every primary ray misses and the miss program runs
+// per pixel, producing the project's vertical sky-gradient
+// environment colour. Closest-hit is in the SBT (since Stage
+// 17A.4) but never fires for this scene shape.
+//
+// Default output: `output/optix_raygen.ppm`. `--output`
+// overrides. Requires both `-DRR_ENABLE_OPTIX=ON` and a host
+// with the CUDA Toolkit + OptiX SDK installed; the audit-
+// host fallback returns a clear "requires OptiX" error.
+int run_render_optix_raygen(const rr::core::Config& cfg) {
+    using rr::core::Logger;
+
+    const std::string out_path = cfg.output_path.empty()
+        ? std::string("output/optix_raygen.ppm")
+        : cfg.output_path;
+
+#ifndef RELATIVITYRENDER_ENABLE_OPTIX
+    (void)cfg;
+    Logger::error("--render-optix-raygen requires OptiX. "
+                  "Rebuild with -DRR_ENABLE_OPTIX="
+                  "ON on a host with the CUDA Toolkit + OptiX "
+                  "SDK installed (also pass -DOPTIX_ROOT=/path/"
+                  "to/optix-sdk).");
+    return 1;
+#else
+    auto r = rr::optix::OptixRenderer::render_raygen(cfg.width, cfg.height);
+    if (!r.ok) {
+        Logger::error("optix raygen render failed: " + r.message);
+        return 1;
+    }
+    log_gpu_timing("render-optix-raygen", cfg.width, cfg.height, r.gpu_time_ms);
+
+    namespace fs = std::filesystem;
+    const fs::path out_fs = out_path;
+    if (out_fs.has_parent_path()) {
+        std::error_code ec;
+        fs::create_directories(out_fs.parent_path(), ec);
+    }
+    if (!r.image.save_ppm(out_fs)) {
+        Logger::error("could not write PPM: " + out_path);
+        return 1;
+    }
+
+    std::error_code ec;
+    const fs::path  abs = fs::absolute(out_fs, ec);
+    Logger::info(std::string("wrote OptiX raygen: ")
+               + (ec ? out_path : abs.string())
+               + " (" + std::to_string(cfg.width) + "x"
+               + std::to_string(cfg.height) + ", RGBA32F)");
+    return 0;
+#endif
+}
+
 // `--render-optix-test` dispatch (Stage 17A.3). Drives the
 // minimum-viable OptiX pipeline: initialise OptixBackend, build
 // pipeline (raygen + miss; no closest-hit, no path tracer),
@@ -3144,6 +3201,9 @@ int main(int argc, char** argv) {
 
         case CommandLine::Action::RenderOptixRelativity:
             return run_render_optix_relativity(result.config);
+
+        case CommandLine::Action::RenderOptixRaygen:
+            return run_render_optix_raygen(result.config);
 
         case CommandLine::Action::RenderDenoise:
             return run_render_denoise(result.config);

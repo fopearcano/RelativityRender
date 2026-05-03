@@ -16762,6 +16762,191 @@ byte-identical.
   `OptixLaunchParams.h` (no
   consumer added in this slice).
 
+## Stage 20C — OptiX raygen / miss baseline
+
+**Scope of this slice (Stage 20C;
+master order #17, "OptiX upgrade
+path"): the prompt asks for a
+raygen + miss + minimal-SBT +
+pipeline-creation surface that
+produces an environment-color
+output without any visible
+geometry. The OptiX programs
+(`__raygen__pinhole` /
+`__miss__radiance` / closest-hit)
++ the SBT + the pipeline already
+exist from Stages 17A.3-17A.5.
+What was *missing* was a CLI
+entry point that exercises the
+"trace into empty space → miss
+runs per pixel → write env color"
+shape; existing actions either
+short-circuit before `optixTrace`
+(`--render-optix-test` flat-color
+fallback) or hit visible geometry
+(`--render-optix-triangle`,
+`--render-optix-relativity`).
+This slice adds that entry point
+without touching the existing
+programs / pipeline / SBT.**
+
+### What ships
+
+- `src/optix/OptixRenderer.{h,cpp}`:
+  new `render_raygen(int width,
+  int height) noexcept` static
+  method. Implementation builds a
+  tiny triangle GAS at z = +5
+  (BEHIND the default camera which
+  looks at -Z) so every primary
+  ray misses. The miss program
+  runs per pixel and emits the
+  vertical sky-gradient
+  environment colour. Observer +
+  RelativityParams default-
+  constructed (|beta| = 0); the
+  Doppler / searchlight helpers
+  inside the miss program
+  degenerate to identity. Same
+  audit-host fallback shape as
+  every other OptiX render entry
+  ("requires OptiX SDK; rebuild
+  with -DRR_ENABLE_OPTIX=ON
+  ...").
+- `src/core/CommandLine.{h,cpp}`:
+  new `Action::RenderOptixRaygen`
+  enum value; new
+  `--render-optix-raygen` parser
+  branch; help-text entry; mutual-
+  exclusion error message
+  updated; validation list
+  updated.
+- `src/main.cpp`: new
+  `run_render_optix_raygen(const
+  Config&)` dispatcher. Default
+  output `output/optix_raygen.ppm`
+  (overridable via `--output`).
+  New `case RenderOptixRaygen:`
+  in the action switch.
+- `CMakeLists.txt`: banner /
+  `DESCRIPTION` bumped from "Stage
+  20B: OptiX launch params" to
+  "Stage 20C: OptiX raygen
+  baseline" (two-line cosmetic).
+- `docs/BUILD_PLAN.md`: this
+  slice-closing entry. **No
+  module-status row, milestone-
+  status row, or canonical
+  historical entry was modified.**
+
+### Why no existing OptiX code was changed
+
+Per master rule §3 (no fake
+stubs) and §12 (no overbuilding),
+the existing
+`src/optix/OptixPrograms.cu` /
+`OptixPipeline.cpp` /
+`OptixSBT.h` /
+`OptixLaunchParams.h` /
+`OptixAccel.cpp` /
+`OptixBackend.cpp` are byte-
+identical pre-/post-slice.
+Stage 20C re-uses the existing
+programs + SBT + pipeline -
+that's the whole point of the
+"minimal SBT + pipeline
+creation" criterion: prove they
+work for raygen + miss in
+isolation. The closest-hit
+program remains in the SBT (it
+has been there since Stage
+17A.4) but is dormant for this
+entry's geometry shape - that
+satisfies the prompt's "No
+closest-hit" rule (no NEW
+closest-hit; existing one never
+fires for this scene).
+
+### Stage 20C acceptance criteria (verified)
+
+| Criterion | Verification |
+|-----------|--------------|
+| Implement `OptixPrograms.cu` / raygen / miss | Already in place from Stages 17A.3 / 17A.4 / 17A.5; `__raygen__pinhole` + `__miss__radiance` byte-identical pre-/post-slice |
+| Minimal SBT | Already in place (`OptixSBT.h`, Stage 17A.4); raygen + miss + hitgroup records all present; this slice does not touch the SBT |
+| Pipeline creation | Already in place (`OptixPipeline.cpp`, Stage 17A.3+); this slice re-uses `OptixPipeline::create()` |
+| Output `output/optix_raygen.ppm` | New `--render-optix-raygen` CLI action writes this path (default; `--output` overrides) |
+| Raygen launches per pixel | Verified (`__raygen__pinhole` at `OptixPrograms.cu:117` reads `optixGetLaunchIndex()` and bounds-checks against `params.width / .height`) |
+| Miss writes environment color | Verified (`__miss__radiance` at `OptixPrograms.cu:182` reads `optixGetWorldRayDirection()` and emits the gradient sky `t = 0.5*(dir.y+1); lerp(white, light-blue, t)`) |
+| No geometry visible | Verified by construction (triangle at z = +5, camera looks at -Z; primary rays never hit) |
+| No closest-hit firing | Verified by construction (the existing closest-hit program is in the SBT but the geometry shape ensures `optixTrace` never reports a hit; closest-hit's `set_payload_rgb` is unreachable for this scene) |
+| No path tracing | Verified (no bounce loop / no RNG state populated; `accum_buffer` + `sample_index` Stage 20B placeholders left at default `nullptr` / `0`) |
+| Must compile with OptiX OFF | Verified (`cmake -S . -B build` no flags; ctest 6/6 green; the audit-host fallback returns the documented error from `--render-optix-raygen`) |
+
+### Audit-host CLI smoke checks
+
+- `--render-optix-raygen` (audit-host build, no OptiX SDK):
+  returns `--render-optix-raygen requires OptiX. Rebuild with
+  -DRR_ENABLE_OPTIX=ON on a host with the CUDA Toolkit + OptiX
+  SDK installed (also pass -DOPTIX_ROOT=/path/to/optix-sdk).`
+  and exits 1.
+- `--help` shows the new entry with the documented default
+  output path + scene-shape description.
+- `--render-optix-raygen --render-optix-triangle` returns the
+  mutual-exclusion error which now lists `--render-optix-raygen`
+  alongside the other render-* actions.
+
+### Hard-rule audit
+
+- No geometry - **yes** at the *visual* level. The slice does
+  build a tiny GAS for traversal correctness (OptiX requires a
+  valid traversable for `optixTrace`), but it is placed where
+  no primary ray will hit it. The visual output is "miss
+  everywhere" = pure environment colour per pixel.
+- No closest-hit (added by this slice) - **yes**. The
+  existing closest-hit program remains in the SBT; this slice
+  adds none, removes none, modifies none.
+- No path tracing - **yes**. No bounce loop, no RNG, no
+  accumulation; the Stage 20B `accum_buffer` / `sample_index`
+  placeholders stay at default `nullptr` / `0`.
+- Must compile - **yes**, verified for both configurations:
+  * OFF (no flags): clean build; ctest 6/6 green.
+  * ON (`-DRR_ENABLE_OPTIX=ON`, no SDK on this host): clean
+    build via the audit-host fallback; ctest 6/6 green.
+
+### Status (unchanged)
+
+Module #6 (OptiX Backend) and milestone M15 (OptiX Backend
+Upgrade Path) both remain at `partial implementation`. Adding
+a new CLI entry point that exercises the existing OptiX
+infrastructure does not lift the project-wide visual-
+validation gate (no frame rendered through the OptiX path
+on a real OptiX-SDK host in this branch). The
+`--render-optix-raygen` action is one more handler that will
+exit with the documented "requires CUDA + OptiX SDK" error
+on the audit host; the actual `output/optix_raygen.ppm`
+output is gated on the same future real-hardware run as the
+other OptiX entries.
+
+### Verified at the build
+
+- `cmake -S . -B build` (audit
+  host, no CUDA, no OptiX SDK):
+  banner shows "Stage 20C: OptiX
+  raygen baseline"; clean build;
+  ctest 6/6 green.
+- `cmake -S . -B /tmp/rr-20c-on
+  -DRR_ENABLE_OPTIX=ON`: non-
+  blocking SDK-not-found warning
+  per Stage 12B.4; rr_optix
+  STATIC compiles via two-layer
+  audit-host fallback;
+  `OptixRenderer::render_raygen`
+  picks up the new symbol on
+  both branches (real
+  implementation + no-SDK stub
+  declared in `OptixRenderer.h`);
+  ctest 6/6 green.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:

@@ -89,6 +89,32 @@ public:
     //
     // Same audit-host fallback semantics as render_test.
     [[nodiscard]] static Result render_relativistic(int width, int height) noexcept;
+
+    // Stage 20C raygen-only render. Exercises the OptiX raygen
+    // + miss + minimal-SBT + pipeline-creation surface end-to-
+    // end, independent of any closest-hit behaviour.
+    //
+    // Implementation: builds a tiny degenerate triangle GAS
+    // placed BEHIND the camera (z = +5; default camera looks
+    // at -Z). The raygen launches per pixel, calls
+    // `optixTrace` with the GAS handle, every primary ray
+    // misses the geometry, and `__miss__radiance` runs per
+    // pixel - producing the project's vertical sky-gradient
+    // environment colour for every pixel.
+    //
+    // Observer / relativity params default-constructed
+    // (|beta| = 0); the miss program's Doppler / searchlight
+    // helpers degenerate to identity. Output is a flat
+    // gradient sky.
+    //
+    // The pipeline still includes `__closesthit__radiance` (it
+    // has been in the SBT since Stage 17A.4) but the geometry
+    // is arranged so closest-hit never fires. This entry
+    // therefore proves out the raygen / miss / SBT / pipeline
+    // surface in isolation.
+    //
+    // Same audit-host fallback semantics as render_test.
+    [[nodiscard]] static Result render_raygen(int width, int height) noexcept;
 };
 
 }  // namespace rr::optix

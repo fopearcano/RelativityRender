@@ -341,6 +341,11 @@ public:
         RenderOptixTest,
         RenderOptixTriangle,
         RenderOptixRelativity,
+        // Stage 20C OptiX raygen-only smoke render. Builds a
+        // tiny GAS placed behind the camera so every primary
+        // ray misses; the miss program writes the env-color
+        // gradient per pixel. Output: output/optix_raygen.ppm.
+        RenderOptixRaygen,
         RenderDenoise,
         // Stage 19E.2: smallest-meaningful-relativistic-render demo.
         // Single sphere + one diffuse material + one environment

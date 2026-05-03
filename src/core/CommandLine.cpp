@@ -59,6 +59,7 @@ bool set_action(CommandLine::Action& current, CommandLine::Action target,
                 "--server / --render-optix-test / "
                 "--render-optix-triangle / "
                 "--render-optix-relativity / "
+                "--render-optix-raygen / "
                 "--render-denoise / "
                 "--render-demo)";
         return false;
@@ -271,6 +272,12 @@ CommandLine::ParseResult CommandLine::parse(int argc, char** argv) {
                 r.action = Action::Error;
                 return r;
             }
+        } else if (a == "--render-optix-raygen") {
+            if (!set_action(r.action, Action::RenderOptixRaygen,
+                            r.error_message)) {
+                r.action = Action::Error;
+                return r;
+            }
         } else if (a == "--render-denoise") {
             if (!set_action(r.action, Action::RenderDenoise,
                             r.error_message)) {
@@ -368,6 +375,7 @@ CommandLine::ParseResult CommandLine::parse(int argc, char** argv) {
      || r.action == Action::RenderOptixTest
      || r.action == Action::RenderOptixTriangle
      || r.action == Action::RenderOptixRelativity
+     || r.action == Action::RenderOptixRaygen
      || r.action == Action::RenderDenoise) {
         if (auto err = r.config.validate(); !err.empty()) {
             r.action        = Action::Error;
@@ -565,6 +573,17 @@ std::string CommandLine::usage(std::string_view argv0) {
                                   "Default output\n"
        << "                        output/optix_relativity.ppm. Same "
                                   "OptiX requirements as above.\n"
+       << "  --render-optix-raygen Stage 20C OptiX raygen / miss baseline. "
+                                  "Builds a tiny triangle GAS\n"
+       << "                        placed BEHIND the camera (z = +5), so "
+                                  "every primary ray misses\n"
+       << "                        the geometry and the miss program runs "
+                                  "per pixel - producing the\n"
+       << "                        sky-gradient environment colour. No "
+                                  "geometry visible, no\n"
+       << "                        closest-hit firing. Default output "
+                                  "output/optix_raygen.ppm.\n"
+       << "                        Same OptiX requirements as above.\n"
        << "  --render-denoise      Stage 19B.3 OptiX denoiser end-to-end "
                                   "fixture. Builds a small\n"
        << "                        4-sphere demo scene + renders it via "
