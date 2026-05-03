@@ -21767,6 +21767,152 @@ pattern.
   both inside the SDK_FOUND
   gate at file scope.
 
+## Stage 21B.4 — denoiser object (handle creation)
+
+**Scope of this slice (Stage 21B.4;
+master order #24, "Denoising"):
+implement OptiX denoiser handle
+creation in
+`OptixDenoiser::initialize` and
+the paired destruction in
+`shutdown`. Creates an
+`OptixDenoiser` handle via
+`optixDenoiserCreate`, configures
+the pinned options
+(`guideAlbedo=1`, `guideNormal=1`,
+`denoiseAlpha=COPY`, `model=HDR`)
+per the Stage 21A.2 / 21A.3
+contract, stores the handle in
+the class's `denoiser_` member.
+Per the user's rules: "no setup
+yet" (no
+`optixDenoiserComputeMemoryResources`,
+no `optixDenoiserSetup`), "no
+buffers yet" (no `cudaMalloc`),
+"must compile with OptiX ON"
+(audit-host ON build remains
+green via the SDK_FOUND
+fallback). Subsequent Stage 21B
+sub-stages add per-resolution
+setup, input binding, and
+`optixDenoiserInvoke`.**
+
+### What ships
+
+- `src/optix/OptixDenoiser.cpp`:
+    - `initialize(backend)`'s ON
+      branch (currently a flat
+      Stage 21B.1 stub) is
+      split on `RELATIVITYRENDER
+      _OPTIX_SDK_FOUND`:
+        - **SDK_FOUND**: real
+          implementation. Idempotent
+          early-out when
+          already-initialized.
+          Validates
+          `backend.isInitialized()`
+          and the device-context
+          accessor. Configures
+          `OptixDenoiserOptions`
+          (HDR model, guide
+          Albedo + Normal, alpha
+          mode COPY). Calls
+          `optixDenoiserCreate(ctx,
+          kModel, &opts, &denoiser)`.
+          On success: stores the
+          handle in `denoiser_`,
+          sets `initialized_ =
+          true`, clears
+          `last_error_`, returns
+          `true`. On failure:
+          populates `last_error_`
+          with the
+          `optixGetErrorName(res)`
+          message and returns
+          `false`.
+        - **SDK_FOUND undefined**:
+          existing audit-host
+          stub; reports the
+          documented "requires
+          SDK" error.
+    - `shutdown()` gets a new
+      `#ifdef
+      RELATIVITYRENDER_OPTIX_SDK_FOUND`
+      block at the top that
+      calls
+      `optixDenoiserDestroy`
+      on a non-null handle (no-
+      op when SDK is absent
+      since `denoiser_` stays
+      null in that mode).
+    - `set_inputs` and `invoke`
+      remain Stage 21B.1
+      "not implemented" stubs.
+- This `BUILD_PLAN.md`
+  slice-closing entry.
+
+### Backward compatibility
+
+- The class' public surface
+  (constructors, destructor,
+  move ops, `Inputs` /
+  `Output` structs, every
+  method declaration) is
+  byte-identical with Stage
+  21B.3.
+- The audit-host ON build
+  (no SDK on disk) still hits
+  the documented
+  "OptixDenoiser::initialize
+  requires the OptiX SDK"
+  error from
+  `last_error()`. Behaviour
+  for `denoise_aov_buffers_to_ppm`
+  is unchanged: `initialize()`
+  returns `false`, the consumer
+  takes the Stage 19C.3
+  noisy-Beauty fallback path.
+- The CUDA renderer is
+  byte-identical (the slice
+  touches only
+  `src/optix/OptixDenoiser.cpp`).
+
+### Behaviour matrix
+
+| Build mode               | `initialize(backend)` behaviour                                                |
+|--------------------------|--------------------------------------------------------------------------------|
+| OFF                      | `.cpp` not compiled                                                            |
+| ON, no SDK (audit host)  | Returns `false`; `last_error()` reports "requires OptiX SDK..."                |
+| ON, SDK found            | Creates an `OptixDenoiser` handle via `optixDenoiserCreate`; `denoiser_handle()` |
+|                          | returns the handle pointer; `is_initialized()` returns `true`. `set_inputs` /   |
+|                          | `invoke` still report "not implemented" until subsequent sub-stages.            |
+
+### Verified at the build
+
+- `cmake -S . -B build_off
+  -DRR_ENABLE_CUDA=OFF
+  -DRR_ENABLE_OPTIX=OFF`
+  (audit host): clean build;
+  ctest 6/6 green.
+- `cmake -S . -B build_on_audit
+  -DRR_ENABLE_CUDA=OFF
+  -DRR_ENABLE_OPTIX=ON`
+  (audit host, no SDK):
+  clean build; ctest 7/7
+  green. The audit-host
+  initialize stub is reached;
+  the real `optixDenoiserCreate`
+  branch is compiled out.
+- The SDK-found
+  `optixDenoiserCreate`
+  call path is structurally
+  in place but cannot be
+  empirically verified on
+  this audit host (no SDK).
+  Same deferral shape as
+  every prior rr_optix
+  sub-stage.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
