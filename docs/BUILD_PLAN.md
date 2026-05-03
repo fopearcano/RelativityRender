@@ -21614,6 +21614,159 @@ build time" error.
   `#include <optix.h>` line
   anywhere.
 
+## Stage 21B.3 — include OptiX headers (SDK-gated)
+
+**Scope of this slice (Stage 21B.3;
+master order #24, "Denoising"):
+add the OptiX SDK header
+includes (`<optix.h>`,
+`<optix_stubs.h>`) to
+`src/optix/OptixDenoiser.cpp`,
+gated by
+`RELATIVITYRENDER_OPTIX_SDK_FOUND`
+following the established Stage
+12B.4 / Stage 17A.1 two-layer
+audit-host fallback pattern
+already used by `OptixBackend.cpp`,
+`OptixPipeline.cpp`, and
+`OptixAccel.cpp`. NO SDK
+function calls; NO logic; NO
+behaviour change. The audit-
+host ON build (no SDK on disk)
+continues to compile cleanly
+because the SDK_FOUND gate
+short-circuits the include
+block.**
+
+### Why SDK_FOUND, not just ENABLE_OPTIX
+
+The user's task literally says
+"include OptiX headers only
+inside compile guard". The
+compile guard added in Stage
+21B.2 is
+`RELATIVITYRENDER_ENABLE_OPTIX`.
+But ENABLE_OPTIX is defined
+whenever the user passed
+`-DRR_ENABLE_OPTIX=ON`,
+regardless of whether CMake
+actually located `<optix.h>` at
+configure time. The audit host
+has the former without the
+latter (the configure step
+prints the documented Stage
+12B.4 "OptiX SDK not located"
+warning and continues), so a
+literal `#include <optix.h>`
+inside ENABLE_OPTIX would fail
+to find the header and break
+the audit-host ON build.
+
+The user's "Must compile" rule
+disambiguates the intent: SDK
+includes have to be gated by
+the macro that actually tracks
+SDK availability, which is
+`RELATIVITYRENDER_OPTIX_SDK_FOUND`.
+This is exactly the gate every
+other rr_optix `.cpp` file uses
+for the same purpose; Stage
+21B.3 adopts the established
+pattern.
+
+### What ships
+
+- `src/optix/OptixDenoiser.cpp`:
+  new top-level
+  `#ifdef RELATIVITYRENDER_OPTIX_SDK_FOUND`
+  block at file scope (before
+  `namespace rr::optix {`) with
+  two SDK header includes:
+    - `#include <optix.h>` —
+      core SDK types
+      (`OptixDenoiser`,
+      `OptixDenoiserOptions`,
+      `OptixImage2D`, etc.).
+    - `#include <optix_stubs.h>` —
+      function-pointer stubs
+      so the SDK function
+      symbols are visible to
+      subsequent sub-stages
+      without linking the SDK
+      shared library.
+  Updated doc-comment block at
+  the top of the file
+  describes the two-layer
+  macro contract explicitly
+  (ENABLE_OPTIX gates active-
+  vs-inactive method bodies;
+  SDK_FOUND gates the SDK
+  header includes).
+- This `BUILD_PLAN.md`
+  slice-closing entry.
+
+### Backward compatibility
+
+- The class' public surface
+  (constructors, destructor,
+  move ops, `Inputs` /
+  `Output` structs, every
+  method declaration + body)
+  is byte-identical with
+  Stage 21B.2.
+- `denoise_aov_buffers_to_ppm`
+  in `main.cpp` and the
+  `--render-denoise` /
+  `--render-aovs --denoise`
+  CLI surfaces are unchanged
+  and continue to take the
+  Stage 19C.3 noisy-Beauty
+  fallback path on
+  denoise failure.
+- The CUDA renderer is
+  byte-identical (the slice
+  touches only
+  `src/optix/OptixDenoiser.cpp`).
+
+### Build-state matrix
+
+| `RR_ENABLE_OPTIX` | `OPTIX_ROOT` set | `ENABLE_OPTIX` | `SDK_FOUND` | What happens                                                   |
+|-------------------|------------------|----------------|-------------|----------------------------------------------------------------|
+| OFF               | -                | undefined      | undefined   | rr_optix not built; the .cpp is not compiled                   |
+| ON                | not set / wrong  | defined        | undefined   | .cpp compiled; SDK include block skipped; "not implemented"     |
+| ON                | set + valid      | defined        | defined     | .cpp compiled; SDK includes pulled in; "not implemented" (no    |
+|                   |                  |                |             | logic yet — that's Stage 21B.x); subsequent sub-stages add the |
+|                   |                  |                |             | real SDK calls inline.                                          |
+
+### Verified at the build
+
+- `cmake -S . -B build_off
+  -DRR_ENABLE_CUDA=OFF
+  -DRR_ENABLE_OPTIX=OFF`
+  (audit host): clean build;
+  ctest 6/6 green. The .cpp
+  is not compiled in this
+  mode.
+- `cmake -S . -B build_on_audit
+  -DRR_ENABLE_CUDA=OFF
+  -DRR_ENABLE_OPTIX=ON`
+  (audit host, no SDK):
+  clean build; ctest 7/7
+  green. The .cpp compiles
+  with `RELATIVITYRENDER_ENABLE_OPTIX`
+  defined and
+  `RELATIVITYRENDER_OPTIX_SDK_FOUND`
+  undefined; the SDK include
+  block is skipped, no
+  `<optix.h>` is consulted.
+- `grep -nE "^[ \t]*#include.*<optix"
+  src/optix/OptixDenoiser.cpp`:
+  exactly two hits (lines
+  `#include <optix.h>` and
+  `#include <optix_stubs.h>`),
+  both inside the SDK_FOUND
+  gate at file scope.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:

@@ -3,27 +3,46 @@
 
 #include <utility>
 
-// Stage 21B.1 / 21B.2 - minimal class shell with explicit
-// `RELATIVITYRENDER_ENABLE_OPTIX` compile guards. No
-// `<optix.h>`, no SDK calls, no functionality. Every method
-// that will eventually wrap a real OptiX call gets two
-// branches:
+// Stage 21B.1 / 21B.2 / 21B.3 - minimal class shell with
+// explicit compile guards.
 //
-// - `#ifdef RELATIVITYRENDER_ENABLE_OPTIX` -> the method is
-//   "prepared for OptiX usage": Stage 21B.1 stub that
-//   reports "not implemented in Stage 21B.1" and returns
-//   `false`. Subsequent Stage 21B sub-stages replace each
-//   stub with the corresponding SDK call per the Stage 21A
-//   plan.
-// - `#else` -> the OFF branch: the method reports "OptiX
-//   disabled at build time" and returns `false`. Provided
-//   so the file is compilable in either mode (rr_optix is
-//   only built when ON, but the source is mode-agnostic per
-//   master rule 2).
+// Two-layer macro contract (established project-wide by
+// Stage 12B.4 + Stage 17A.1's rr_optix audit-host
+// fallback):
+//
+// - `RELATIVITYRENDER_ENABLE_OPTIX` is defined whenever
+//   `-DRR_ENABLE_OPTIX=ON` was passed at configure time;
+//   it gates the "class is active" vs "OptiX disabled at
+//   build time" method bodies (Stage 21B.2).
+// - `RELATIVITYRENDER_OPTIX_SDK_FOUND` is defined ONLY
+//   when CMake additionally located <optix.h> at configure
+//   time; it gates the actual SDK header includes
+//   (Stage 21B.3) and, in subsequent Stage 21B sub-stages,
+//   the real SDK function calls. The audit-host fallback
+//   (ENABLE on, SDK_FOUND off) compiles cleanly without
+//   <optix.h> and reports "not implemented" / "SDK not
+//   found" via `last_error()`.
+//
+// Stage 21B.3 only adds the SDK header includes inside the
+// SDK_FOUND gate; no SDK function is actually called yet.
+// Subsequent sub-stages add the real wiring per the Stage
+// 21A plan.
 //
 // Trivial members (constructor, destructor, move ops,
 // getters, `shutdown`) are unconditional - they do not
 // depend on OptiX in any way.
+
+#ifdef RELATIVITYRENDER_OPTIX_SDK_FOUND
+    // SDK headers pulled in only when CMake located
+    // <optix.h> at configure time. The OFF build never
+    // sees these (rr_optix is not built); the ON build
+    // sees them only when a real OptiX SDK is present.
+    // Stage 21B.3 imports them so subsequent sub-stages
+    // can call SDK functions without further include
+    // changes.
+    #include <optix.h>
+    #include <optix_stubs.h>
+#endif
 
 namespace rr::optix {
 
