@@ -20919,6 +20919,54 @@ new minimal plan.
   ctest 6/6 from the post-
   Stage-20 baseline.
 
+## Stage 21A.4 — denoiser optional inputs (planning)
+
+**Scope of this slice (Stage 21A.4;
+master order #24, "Denoising"):
+append a five-bullet "Optional
+inputs" section to
+`docs/DENOISER_PLAN.md`. Records
+Depth (already produced by Stage
+14 `AOVType::Depth`; reserved for
+a future depth-guided variant)
+and Motion vectors (no current
+producer; would require an
+`AOVType::Motion` AOV plus per-
+frame state for temporal
+denoising) as future inputs not
+required for v1.0. Pins
+temporal denoising as
+explicitly out of scope. NO
+implementation; NO source
+changes.**
+
+### What ships
+
+- `docs/DENOISER_PLAN.md` extended
+  with a single `## Optional
+  inputs` section (five bullets).
+- This `BUILD_PLAN.md`
+  slice-closing entry.
+
+### Backward compatibility
+
+Documentation-only slice. The
+existing denoiser implementation
+remains pinned to
+`OPTIX_DENOISER_MODEL_KIND_HDR`,
+which consumes only the three
+mandatory inputs from Stage
+21A.3; nothing in this slice
+changes its runtime behaviour.
+
+### Verified at the build
+
+- Documentation-only; no build
+  configuration touched. The
+  audit-host OFF build remains
+  ctest 6/6 from the post-
+  Stage-20 baseline.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
