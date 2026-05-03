@@ -71,3 +71,11 @@
 - No motion vectors: no `AOVType::Motion` AOV, no per-frame camera/scene delta tracking.
 - No interactive preview: no real-time / per-tile / progressive denoise; the denoiser runs once at the end of a completed render.
 - Anything beyond these four constraints is explicitly post-v1 and lands only when a downstream consumer (server / preview UI / DCC bridge) actually needs it.
+
+## Status
+
+- Denoiser plan complete: Purpose, Backend, Required inputs, Optional inputs, Pipeline, Output, Failure behavior, Modes, and v1 scope are all defined.
+- Ready for implementation in Stage 21B.
+- No further planning sub-stages are required before implementation begins.
+- Any subsequent change to scope, inputs, pipeline, or failure behaviour requires a new planning slice; this plan is the v1 contract.
+- Updates after Stage 21B will record actual implementation status, not redesign.
