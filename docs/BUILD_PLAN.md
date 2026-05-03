@@ -20529,6 +20529,217 @@ slice.
   comparison. No code change
   required.
 
+## Post-Stage-20 — full OptiX path-tracing audit (docs only)
+
+**Scope of this slice (post-Stage 20A..20O,
+master order #17 capstone): a
+documentation-only audit of the
+entire OptiX upgrade-path arc
+(Stages 20A..20O, commits
+`e1e69a9`..`f4da732`). Confirms
+the OptiX renderer is real
+(every SDK call wired in the
+`RELATIVITYRENDER_OPTIX_SDK_FOUND`
+branch), the CUDA path is
+byte-identical across the arc
+(zero changes to `src/cuda/`,
+`src/renderer/`, `src/pathtracer/`,
+or any data-layer module), and
+catalogues the remaining gaps
+before the OptiX denoiser
+handoff slice can land. NO
+source code is modified by this
+slice; the deliverable is the
+new audit document plus this
+BUILD_PLAN entry.**
+
+### What ships
+
+- `docs/STAGE_20_OPTIX_PATH_TRACING_AUDIT.md`:
+  688-line audit document with
+  one section per prompt-question
+  (eleven in total) and a
+  summary table. Verdicts split
+  into "empirical" (audit host
+  ran the command directly) and
+  "structural" (source / build
+  config inspected; runtime
+  verification deferred to a
+  CUDA + OptiX-SDK host).
+- This `BUILD_PLAN.md`
+  slice-closing entry.
+
+### Audit verdicts (one-line each)
+
+| # | Question                                          | Verdict             |
+|---|---------------------------------------------------|---------------------|
+| 1 | OptiX OFF build still works                       | YES (empirical)     |
+| 2 | OptiX ON build works                              | YES (structural)    |
+| 3 | CUDA renderer still works                         | YES (diff-stats)    |
+| 4 | OptiX raygen output exists                        | YES wired           |
+| 5 | OptiX triangle output exists                      | YES wired           |
+| 6 | OptiX mesh-scene output exists                    | YES wired x5        |
+| 7 | OptiX path-tracer outputs exist                   | YES wired x2 + prog |
+| 8 | Relativity in OptiX raygen / shading              | YES (full parity)   |
+| 9 | Materials / Lights / Textures / AOVs status       | All wired           |
+|10 | CPU rendering violations                          | ZERO                |
+|11 | Remaining gaps before denoising                   | A..F documented     |
+
+### Remaining gaps before OptiX denoiser handoff
+
+- **Gap A (BLOCKS):** Stage 20N's
+  `OptixRenderer::render_aovs`
+  frees its AOV device buffers
+  before returning. The denoiser
+  needs them alive across
+  `optixDenoiserInvoke`. Need a
+  sibling entry that retains
+  device-pointer ownership
+  across a denoiser invoke.
+- **Gap B (BLOCKS):** Need a
+  host-orchestration helper
+  analogous to
+  `denoise_aov_buffers_to_ppm`
+  (Stage 19B.4) that drives
+  `OptixDenoiser::initialize ->
+  set_inputs -> invoke -> sync ->
+  download` against the OptiX
+  AOV producer. Every denoiser
+  primitive already exists from
+  Stage 19B.1..19B.3.
+- **Gap C (REQUIRED):**
+  `--render-optix-denoise` CLI
+  surface (or
+  `--render-optix-aovs --denoise`
+  modifier) so artists can
+  trigger the new pipeline
+  end-to-end. Mirror the
+  `--render-denoise` /
+  `--render-aovs --denoise`
+  shape from Stage 19B.3 / 19B.4.
+- **Gap D (PARITY):** Spheres on
+  the OptiX path. Every existing
+  `--render-optix-*` entry walks
+  `scene.meshes` only; CUDA
+  supports both meshes and
+  spheres. Custom-IS sphere GAS
+  per `OPTIX_BACKEND_PLAN.md`
+  §10.2 is required for visual
+  parity against existing
+  sphere-heavy denoiser fixtures.
+- **Gap E (FUTURE):** Motion
+  vectors for temporal
+  denoising. Out of scope for
+  the HDR model the project
+  uses today
+  (`OptixDenoiser.h:55`); flagged
+  for completeness.
+- **Gap F (PROJECT-WIDE):** The
+  no-real-OptiX-host gate
+  remains in place. Visual
+  validation of any OptiX entry
+  on a real OptiX-SDK host is
+  still deferred (every Stage
+  20A..20O entry notes this).
+
+### Critical finding
+
+The OptiX path is feature-complete
+enough that the existing
+`OptixDenoiser` (Stage 19B.1..19B.3)
+can consume its AOV output
+verbatim. The remaining work for
+the denoiser-handoff slice is
+host-side orchestration (Gaps A,
+B, C); no new GPU kernels are
+required. Spheres-on-OptiX
+(Gap D) is the only outstanding
+production-blocker beyond the
+denoiser handoff itself.
+
+### Backward compatibility
+
+This slice is documentation-only
+(no source / CMake / CLI
+changes). Every Stage 20O
+behaviour is preserved
+byte-for-byte.
+
+### Status (unchanged)
+
+Module #6 (OptiX Backend) and
+Module #24 (Denoising) both
+remain at their existing
+maturity statuses. Cataloguing
+the OptiX path's feature-reach
+and the denoiser-handoff
+prerequisites does not lift
+the project-wide visual-
+validation gate, nor does it
+advance any milestone - the
+actual denoiser handoff lands
+in a subsequent slice.
+
+### Verified at the build
+
+- `cmake -S . -B build_off
+  -DRR_ENABLE_CUDA=OFF
+  -DRR_ENABLE_OPTIX=OFF`
+  (audit host): clean build;
+  ctest 6/6 green.
+- `cmake -S . -B build_on_audit
+  -DRR_ENABLE_CUDA=OFF
+  -DRR_ENABLE_OPTIX=ON`
+  (audit host, no SDK): clean
+  build with the documented
+  Stage 12B.4 SDK-not-found
+  warning; ctest 7/7 green
+  (the OFF six plus
+  `optix_tests`).
+- `./build_off/bin/RelativityRender
+  --render-optix-aovs`,
+  `--render-optix-test`,
+  `--render-optix-pathtrace`,
+  `--render-optix-triangle`,
+  `--render-optix-raygen`,
+  `--render-optix-mesh-scene`,
+  `--render-optix-material-scene`,
+  `--render-optix-direct-lighting`,
+  `--render-optix-shadow-test`,
+  `--render-optix-textured-material`,
+  `--render-optix-relativity`:
+  all exit 1 with the documented
+  "requires OptiX" error per the
+  Stage 12B.4 + Stage 17A.3
+  fallback contract; none crash
+  or produce malformed output.
+- `git diff e1e69a9~1..f4da732
+  --stat -- src/cuda/
+  src/renderer/ src/pathtracer/
+  src/scene/ src/io/ src/camera/
+  src/material/ src/lighting/
+  src/relativity/ src/geometry/`:
+  zero bytes changed across the
+  entire Stage 20 arc. The CUDA
+  renderer, AOV / accumulation
+  primitives, CPU-side pathtracer
+  fixtures, and every data-layer
+  module are byte-identical.
+- `grep -rEn "for\s*\(.*\b(x|y)
+  \s*=\s*0" src/optix/ src/main.cpp`:
+  zero pixel-space host loops
+  inside any OptiX dispatcher or
+  the `OptixRenderer`
+  implementation. The single
+  hit (`OptixRenderer.cpp:2655`,
+  `download_1_replicate`) is
+  display-format replication
+  on host download (matches
+  CUDA `save_aov_to_ppm`), not
+  per-pixel rendering. Master
+  rule "no CPU per-pixel work"
+  satisfied end-to-end.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
