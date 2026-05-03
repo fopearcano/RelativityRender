@@ -31,3 +31,11 @@
 - Neither is required for the v1.0 implementation; the OptiX HDR model used today (`OPTIX_DENOISER_MODEL_KIND_HDR`) consumes only the three mandatory inputs.
 - Adding either input is purely additive: new AOV slot, no changes to the Beauty / Albedo / Normal contract.
 - Temporal denoising (which would need motion vectors) is explicitly out of scope for v1.0.
+
+## Pipeline
+
+- Stage order: `render → AOV buffers → denoiser → final image`.
+- The denoiser runs strictly after GPU rendering: the renderer finishes its launch and `cudaDeviceSynchronize`s its AOV buffers before the denoiser is invoked.
+- The denoiser reads the existing AOV device pointers in place; no extra copy or upload between render and denoise.
+- Core renderer logic is not modified: no kernel changes, no SBT changes, no path-tracer changes — the denoiser is a separate pipeline stage layered on top.
+- The denoiser's output is the final image written to disk; the pre-denoise Beauty AOV remains available as a fallback / debug artifact.
