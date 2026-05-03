@@ -64,6 +64,7 @@ bool set_action(CommandLine::Action& current, CommandLine::Action target,
                 "--render-optix-material-scene / "
                 "--render-optix-pathtrace / "
                 "--render-optix-direct-lighting / "
+                "--render-optix-shadow-test / "
                 "--render-denoise / "
                 "--render-demo)";
         return false;
@@ -345,6 +346,22 @@ CommandLine::ParseResult CommandLine::parse(int argc, char** argv) {
                 return r;
             }
             r.config.scene_path.assign(value);
+        } else if (a == "--render-optix-shadow-test") {
+            // Stage 20L: OptiX direct-lighting render WITH
+            // shadow rays. Same <file> argument as
+            // --render-optix-direct-lighting; the closest-hit
+            // additionally traces a shadow ray per light to
+            // gate direct contributions on visibility.
+            if (!set_action(r.action, Action::RenderOptixShadowTest,
+                            r.error_message)) {
+                r.action = Action::Error;
+                return r;
+            }
+            if (!take_value(argc, argv, i, a, value, r.error_message)) {
+                r.action = Action::Error;
+                return r;
+            }
+            r.config.scene_path.assign(value);
         } else if (a == "--render-denoise") {
             if (!set_action(r.action, Action::RenderDenoise,
                             r.error_message)) {
@@ -447,6 +464,7 @@ CommandLine::ParseResult CommandLine::parse(int argc, char** argv) {
      || r.action == Action::RenderOptixMaterialScene
      || r.action == Action::RenderOptixPathtrace
      || r.action == Action::RenderOptixDirectLighting
+     || r.action == Action::RenderOptixShadowTest
      || r.action == Action::RenderDenoise) {
         if (auto err = r.config.validate(); !err.empty()) {
             r.action        = Action::Error;
@@ -712,6 +730,22 @@ std::string CommandLine::usage(std::string_view argv0) {
                                   "lighting precedent: shadows\n"
        << "                        deferred). Default output "
                                   "output/optix_direct_lighting.ppm.\n"
+       << "                        Same OptiX requirements as above.\n"
+       << "  --render-optix-shadow-test <file>\n"
+       << "                        Stage 20L OptiX direct-lighting "
+                                  "render WITH shadow rays. Same\n"
+       << "                        scene-load + GAS-build path as "
+                                  "--render-optix-direct-lighting,\n"
+       << "                        but the closest-hit additionally "
+                                  "traces a shadow ray per light\n"
+       << "                        before accumulating its "
+                                  "contribution. Single ray type;\n"
+       << "                        OPTIX_RAY_FLAG_DISABLE_CLOSESTHIT "
+                                  "| TERMINATE_ON_FIRST_HIT +\n"
+       << "                        missSbtIndex = 1 routes the shadow "
+                                  "trace through the dedicated\n"
+       << "                        __miss__shadow program. Default "
+                                  "output output/optix_shadow_test.ppm.\n"
        << "                        Same OptiX requirements as above.\n"
        << "  --render-denoise      Stage 19B.3 OptiX denoiser end-to-end "
                                   "fixture. Builds a small\n"

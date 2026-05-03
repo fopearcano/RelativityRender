@@ -285,16 +285,27 @@ public:
     // ambient), and runs a single launch (no spp loop, no
     // bounce loop). Output: `output/optix_direct_lighting.ppm`.
     //
+    // Stage 20L: optional `enable_shadows` argument toggles
+    // visibility testing per directional + point light. Default
+    // `false` preserves Stage 20K (no shadow rays). When
+    // `true`, the closest-hit traces a shadow ray per light
+    // before accumulating its contribution; rays use
+    // OPTIX_RAY_FLAG_DISABLE_CLOSESTHIT |
+    // OPTIX_RAY_FLAG_TERMINATE_ON_FIRST_HIT + missSbtIndex = 1
+    // so they terminate on first hit + dispatch the dedicated
+    // `__miss__shadow` program (which sets a single-register
+    // visibility flag).
+    //
     // Mirrors the CUDA `--render-direct-lighting` shape
-    // conceptually (Stage 9B). No shadow rays — matches the
-    // CUDA path's "shadows are deferred" precedent. The Stage
-    // 17A.5 / 20H Doppler + searchlight stack composes on top
-    // of the lit shade via the existing payload-D channel.
+    // conceptually (Stage 9B). The Stage 17A.5 / 20H Doppler +
+    // searchlight stack composes on top of the lit shade via
+    // the existing payload-D channel.
     //
     // Same audit-host fallback semantics as render_test.
     [[nodiscard]] static Result render_direct_lighting(
         const rr::scene::Scene& scene,
-        int width, int height) noexcept;
+        int width, int height,
+        bool enable_shadows = false) noexcept;
 };
 
 }  // namespace rr::optix

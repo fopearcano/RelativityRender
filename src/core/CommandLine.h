@@ -372,6 +372,12 @@ public:
         // environment ambient) using scene.lights. Output:
         // output/optix_direct_lighting.ppm.
         RenderOptixDirectLighting,
+        // Stage 20L OptiX shadow-test render. Same shape as
+        // RenderOptixDirectLighting, with enable_shadows = true:
+        // each light's contribution is gated on a shadow ray
+        // toward the light source. Output:
+        // output/optix_shadow_test.ppm.
+        RenderOptixShadowTest,
         RenderDenoise,
         // Stage 19E.2: smallest-meaningful-relativistic-render demo.
         // Single sphere + one diffuse material + one environment

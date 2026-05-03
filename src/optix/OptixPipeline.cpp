@@ -35,6 +35,7 @@ OptixPipeline::OptixPipeline(OptixPipeline&& other) noexcept
     : module_(other.module_),
       prog_raygen_(other.prog_raygen_),
       prog_miss_(other.prog_miss_),
+      prog_miss_shadow_(other.prog_miss_shadow_),
       prog_hitgroup_(other.prog_hitgroup_),
       pipeline_(other.pipeline_),
       sbt_record_buf_(other.sbt_record_buf_),
@@ -42,9 +43,10 @@ OptixPipeline::OptixPipeline(OptixPipeline&& other) noexcept
       launch_params_(other.launch_params_),
       launch_params_size_(other.launch_params_size_) {
     other.module_         = nullptr;
-    other.prog_raygen_    = nullptr;
-    other.prog_miss_      = nullptr;
-    other.prog_hitgroup_  = nullptr;
+    other.prog_raygen_      = nullptr;
+    other.prog_miss_        = nullptr;
+    other.prog_miss_shadow_ = nullptr;
+    other.prog_hitgroup_    = nullptr;
     other.pipeline_       = nullptr;
     other.sbt_record_buf_ = nullptr;
     other.sbt_descriptor_ = nullptr;
@@ -56,18 +58,20 @@ OptixPipeline& OptixPipeline::operator=(OptixPipeline&& other) noexcept {
     if (this != &other) {
         reset();
         module_         = other.module_;
-        prog_raygen_    = other.prog_raygen_;
-        prog_miss_      = other.prog_miss_;
-        prog_hitgroup_  = other.prog_hitgroup_;
+        prog_raygen_      = other.prog_raygen_;
+        prog_miss_        = other.prog_miss_;
+        prog_miss_shadow_ = other.prog_miss_shadow_;
+        prog_hitgroup_    = other.prog_hitgroup_;
         pipeline_       = other.pipeline_;
         sbt_record_buf_ = other.sbt_record_buf_;
         sbt_descriptor_ = other.sbt_descriptor_;
         launch_params_  = other.launch_params_;
         launch_params_size_ = other.launch_params_size_;
         other.module_         = nullptr;
-        other.prog_raygen_    = nullptr;
-        other.prog_miss_      = nullptr;
-        other.prog_hitgroup_  = nullptr;
+        other.prog_raygen_      = nullptr;
+        other.prog_miss_        = nullptr;
+        other.prog_miss_shadow_ = nullptr;
+        other.prog_hitgroup_    = nullptr;
         other.pipeline_       = nullptr;
         other.sbt_record_buf_ = nullptr;
         other.sbt_descriptor_ = nullptr;
@@ -231,6 +235,34 @@ OptixPipelineResult OptixPipeline::create(OptixBackend& backend,
         }
     }
 
+    // Stage 20L: second miss program group bound to
+    // __miss__shadow. Built unconditionally so consumers
+    // that opt into shadow rays (Stage 20L
+    // `enable_shadows`) reference missSbtIndex = 1; the
+    // existing radiance / path-tracer entries continue to
+    // use missSbtIndex = 0 unchanged.
+    ::OptixProgramGroupDesc miss_shadow_desc{};
+    miss_shadow_desc.kind = OPTIX_PROGRAM_GROUP_KIND_MISS;
+    miss_shadow_desc.miss.module            = module;
+    miss_shadow_desc.miss.entryFunctionName = "__miss__shadow";
+
+    ::OptixProgramGroup miss_shadow_pg = nullptr;
+    {
+        char log[2048]; std::size_t log_size = sizeof(log);
+        const ::OptixResult res = ::optixProgramGroupCreate(
+            ctx, &miss_shadow_desc, /*num_program_groups=*/1, &pg_opts,
+            log, &log_size, &miss_shadow_pg);
+        if (res != OPTIX_SUCCESS) {
+            ::optixProgramGroupDestroy(miss_pg);
+            ::optixProgramGroupDestroy(raygen_pg);
+            ::optixModuleDestroy(module);
+            r.error_message = std::string("optixProgramGroupCreate(miss_shadow) failed: ")
+                            + ::optixGetErrorName(res)
+                            + " | " + std::string(log, log_size);
+            return r;
+        }
+    }
+
     // Stage 17A.4: hit-group program group (closest-hit only).
     ::OptixProgramGroupDesc hitgroup_desc{};
     hitgroup_desc.kind = OPTIX_PROGRAM_GROUP_KIND_HITGROUP;
@@ -247,6 +279,7 @@ OptixPipelineResult OptixPipeline::create(OptixBackend& backend,
             ctx, &hitgroup_desc, /*num_program_groups=*/1, &pg_opts,
             log, &log_size, &hitgroup_pg);
         if (res != OPTIX_SUCCESS) {
+            ::optixProgramGroupDestroy(miss_shadow_pg);
             ::optixProgramGroupDestroy(miss_pg);
             ::optixProgramGroupDestroy(raygen_pg);
             ::optixModuleDestroy(module);
@@ -257,13 +290,19 @@ OptixPipelineResult OptixPipeline::create(OptixBackend& backend,
         }
     }
 
-    // 3. Link pipeline (now with 3 program groups).
+    // 3. Link pipeline (now with 4 program groups).
     ::OptixPipeline pipeline = nullptr;
     {
-        ::OptixProgramGroup pgs[] = { raygen_pg, miss_pg, hitgroup_pg };
+        ::OptixProgramGroup pgs[] = { raygen_pg, miss_pg,
+                                      miss_shadow_pg, hitgroup_pg };
         ::OptixPipelineLinkOptions link_opts{};
-        link_opts.maxTraceDepth = 1;  // Stage 17A.4 traces a single
-                                      // primary ray; no recursion.
+        // Stage 20L: bumped to 2 so the closest-hit can
+        // recursively call optixTrace for shadow rays.
+        // Existing entries that do not trace shadows are
+        // unaffected (the increase only changes pipeline
+        // state setup; per-trace cost on non-recursive paths
+        // is unchanged).
+        link_opts.maxTraceDepth = 2;
 
         char log[2048]; std::size_t log_size = sizeof(log);
         const ::OptixResult res = ::optixPipelineCreate(
@@ -272,6 +311,7 @@ OptixPipelineResult OptixPipeline::create(OptixBackend& backend,
             log, &log_size, &pipeline);
         if (res != OPTIX_SUCCESS) {
             ::optixProgramGroupDestroy(hitgroup_pg);
+            ::optixProgramGroupDestroy(miss_shadow_pg);
             ::optixProgramGroupDestroy(miss_pg);
             ::optixProgramGroupDestroy(raygen_pg);
             ::optixModuleDestroy(module);
@@ -302,11 +342,30 @@ OptixPipelineResult OptixPipeline::create(OptixBackend& backend,
         if (res != OPTIX_SUCCESS) {
             ::optixPipelineDestroy(pipeline);
             ::optixProgramGroupDestroy(hitgroup_pg);
+            ::optixProgramGroupDestroy(miss_shadow_pg);
             ::optixProgramGroupDestroy(miss_pg);
             ::optixProgramGroupDestroy(raygen_pg);
             ::optixModuleDestroy(module);
             r.error_message = std::string("optixSbtRecordPackHeader(miss) failed: ")
                             + ::optixGetErrorName(res);
+            return r;
+        }
+    }
+    // Stage 20L: second miss record bound to __miss__shadow.
+    MissSbtRecord miss_shadow_record{};
+    {
+        const ::OptixResult res = ::optixSbtRecordPackHeader(
+            miss_shadow_pg, &miss_shadow_record);
+        if (res != OPTIX_SUCCESS) {
+            ::optixPipelineDestroy(pipeline);
+            ::optixProgramGroupDestroy(hitgroup_pg);
+            ::optixProgramGroupDestroy(miss_shadow_pg);
+            ::optixProgramGroupDestroy(miss_pg);
+            ::optixProgramGroupDestroy(raygen_pg);
+            ::optixModuleDestroy(module);
+            r.error_message =
+                std::string("optixSbtRecordPackHeader(miss_shadow) failed: ")
+              + ::optixGetErrorName(res);
             return r;
         }
     }
@@ -316,6 +375,7 @@ OptixPipelineResult OptixPipeline::create(OptixBackend& backend,
         if (res != OPTIX_SUCCESS) {
             ::optixPipelineDestroy(pipeline);
             ::optixProgramGroupDestroy(hitgroup_pg);
+            ::optixProgramGroupDestroy(miss_shadow_pg);
             ::optixProgramGroupDestroy(miss_pg);
             ::optixProgramGroupDestroy(raygen_pg);
             ::optixModuleDestroy(module);
@@ -325,14 +385,19 @@ OptixPipelineResult OptixPipeline::create(OptixBackend& backend,
         }
     }
 
-    // Upload records to a single device buffer:
-    // [raygen_record][miss_record][hitgroup_record]. Strides
-    // are fixed at the record sizes; the SBT descriptor points
-    // at the appropriate offsets.
+    // Upload records to a single device buffer.
+    // Stage 17A.4 layout: [raygen][miss_radiance][hitgroup].
+    // Stage 20L extended layout:
+    //   [raygen][miss_radiance][miss_shadow][hitgroup].
+    // Strides are fixed at the record sizes; the SBT
+    // descriptor's missRecordCount becomes 2 so consumers
+    // can pass missSbtIndex = 0 (radiance) or 1 (shadow).
     constexpr std::size_t kRaygenSize   = sizeof(RaygenSbtRecord);
     constexpr std::size_t kMissSize     = sizeof(MissSbtRecord);
     constexpr std::size_t kHitGroupSize = sizeof(HitGroupSbtRecord);
-    constexpr std::size_t kTotalSize    = kRaygenSize + kMissSize + kHitGroupSize;
+    constexpr std::size_t kTotalSize    = kRaygenSize
+                                        + kMissSize * 2u
+                                        + kHitGroupSize;
 
     void* d_records = nullptr;
     {
@@ -340,6 +405,7 @@ OptixPipelineResult OptixPipeline::create(OptixBackend& backend,
         if (e != cudaSuccess) {
             ::optixPipelineDestroy(pipeline);
             ::optixProgramGroupDestroy(hitgroup_pg);
+            ::optixProgramGroupDestroy(miss_shadow_pg);
             ::optixProgramGroupDestroy(miss_pg);
             ::optixProgramGroupDestroy(raygen_pg);
             ::optixModuleDestroy(module);
@@ -355,6 +421,7 @@ OptixPipelineResult OptixPipeline::create(OptixBackend& backend,
             ::cudaFree(d_records);
             ::optixPipelineDestroy(pipeline);
             ::optixProgramGroupDestroy(hitgroup_pg);
+            ::optixProgramGroupDestroy(miss_shadow_pg);
             ::optixProgramGroupDestroy(miss_pg);
             ::optixProgramGroupDestroy(raygen_pg);
             ::optixModuleDestroy(module);
@@ -371,6 +438,7 @@ OptixPipelineResult OptixPipeline::create(OptixBackend& backend,
             ::cudaFree(d_records);
             ::optixPipelineDestroy(pipeline);
             ::optixProgramGroupDestroy(hitgroup_pg);
+            ::optixProgramGroupDestroy(miss_shadow_pg);
             ::optixProgramGroupDestroy(miss_pg);
             ::optixProgramGroupDestroy(raygen_pg);
             ::optixModuleDestroy(module);
@@ -379,14 +447,34 @@ OptixPipelineResult OptixPipeline::create(OptixBackend& backend,
             return r;
         }
     }
+    // Stage 20L: second miss record (shadow) at offset
+    // kRaygenSize + kMissSize.
     {
         const ::cudaError_t e = ::cudaMemcpy(
             static_cast<char*>(d_records) + kRaygenSize + kMissSize,
+            &miss_shadow_record, kMissSize, cudaMemcpyHostToDevice);
+        if (e != cudaSuccess) {
+            ::cudaFree(d_records);
+            ::optixPipelineDestroy(pipeline);
+            ::optixProgramGroupDestroy(hitgroup_pg);
+            ::optixProgramGroupDestroy(miss_shadow_pg);
+            ::optixProgramGroupDestroy(miss_pg);
+            ::optixProgramGroupDestroy(raygen_pg);
+            ::optixModuleDestroy(module);
+            r.error_message = std::string("cudaMemcpy(miss_shadow record) failed: ")
+                            + ::cudaGetErrorString(e);
+            return r;
+        }
+    }
+    {
+        const ::cudaError_t e = ::cudaMemcpy(
+            static_cast<char*>(d_records) + kRaygenSize + kMissSize * 2u,
             &hitgroup_record, kHitGroupSize, cudaMemcpyHostToDevice);
         if (e != cudaSuccess) {
             ::cudaFree(d_records);
             ::optixPipelineDestroy(pipeline);
             ::optixProgramGroupDestroy(hitgroup_pg);
+            ::optixProgramGroupDestroy(miss_shadow_pg);
             ::optixProgramGroupDestroy(miss_pg);
             ::optixProgramGroupDestroy(raygen_pg);
             ::optixModuleDestroy(module);
@@ -397,14 +485,18 @@ OptixPipelineResult OptixPipeline::create(OptixBackend& backend,
     }
 
     // Allocate + populate the host-side SBT descriptor.
+    // Stage 20L: missRecordCount = 2 covers both
+    // missSbtIndex = 0 (radiance) and 1 (shadow); the shadow
+    // record sits at offset kRaygenSize + kMissSize and the
+    // hitgroup record now starts at kRaygenSize + 2 * kMissSize.
     auto* sbt = new ::OptixShaderBindingTable{};
     sbt->raygenRecord                 = reinterpret_cast<::CUdeviceptr>(d_records);
     sbt->missRecordBase               = reinterpret_cast<::CUdeviceptr>(
         static_cast<char*>(d_records) + kRaygenSize);
     sbt->missRecordStrideInBytes      = static_cast<unsigned>(kMissSize);
-    sbt->missRecordCount              = 1;
+    sbt->missRecordCount              = 2;
     sbt->hitgroupRecordBase           = reinterpret_cast<::CUdeviceptr>(
-        static_cast<char*>(d_records) + kRaygenSize + kMissSize);
+        static_cast<char*>(d_records) + kRaygenSize + kMissSize * 2u);
     sbt->hitgroupRecordStrideInBytes  = static_cast<unsigned>(kHitGroupSize);
     sbt->hitgroupRecordCount          = 1;
 
@@ -418,6 +510,7 @@ OptixPipelineResult OptixPipeline::create(OptixBackend& backend,
             ::cudaFree(d_records);
             ::optixPipelineDestroy(pipeline);
             ::optixProgramGroupDestroy(hitgroup_pg);
+            ::optixProgramGroupDestroy(miss_shadow_pg);
             ::optixProgramGroupDestroy(miss_pg);
             ::optixProgramGroupDestroy(raygen_pg);
             ::optixModuleDestroy(module);
@@ -431,6 +524,7 @@ OptixPipelineResult OptixPipeline::create(OptixBackend& backend,
     module_             = module;
     prog_raygen_        = raygen_pg;
     prog_miss_          = miss_pg;
+    prog_miss_shadow_   = miss_shadow_pg;
     prog_hitgroup_      = hitgroup_pg;
     pipeline_           = pipeline;
     sbt_record_buf_     = d_records;
@@ -467,6 +561,10 @@ void OptixPipeline::reset() noexcept {
     if (prog_hitgroup_ != nullptr) {
         ::optixProgramGroupDestroy(static_cast<::OptixProgramGroup>(prog_hitgroup_));
         prog_hitgroup_ = nullptr;
+    }
+    if (prog_miss_shadow_ != nullptr) {
+        ::optixProgramGroupDestroy(static_cast<::OptixProgramGroup>(prog_miss_shadow_));
+        prog_miss_shadow_ = nullptr;
     }
     if (prog_miss_ != nullptr) {
         ::optixProgramGroupDestroy(static_cast<::OptixProgramGroup>(prog_miss_));
@@ -548,6 +646,7 @@ void OptixPipeline::reset() noexcept {
     module_             = nullptr;
     prog_raygen_        = nullptr;
     prog_miss_          = nullptr;
+    prog_miss_shadow_   = nullptr;
     prog_hitgroup_      = nullptr;
     pipeline_           = nullptr;
     sbt_record_buf_     = nullptr;

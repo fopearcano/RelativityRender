@@ -248,6 +248,23 @@ extern "C" __global__ void __miss__radiance() {
     set_payload_rgb(color.x, color.y, color.z);
 }
 
+// ---- miss (shadow) ----------------------------------------------
+//
+// Stage 20L shadow-ray miss program. Bound to miss SBT record 1
+// (radiance miss is bound to record 0). Shadow rays trace with
+// OPTIX_RAY_FLAG_DISABLE_CLOSESTHIT | OPTIX_RAY_FLAG_TERMINATE_ON_FIRST_HIT
+// + missSbtIndex = 1. If the ray escapes (no geometry hit), this
+// program runs and sets payload register 0 = 1 (visible). If
+// the ray hits anything, neither this miss nor the radiance
+// closest-hit fire (closest-hit is disabled by the ray flag);
+// payload register 0 stays at the initial value of 0
+// (occluded) the raygen / closest-hit caller wrote before the
+// trace.
+
+extern "C" __global__ void __miss__shadow() {
+    optixSetPayload_0(1u);
+}
+
 // ---- closest-hit -------------------------------------------------
 
 extern "C" __global__ void __closesthit__radiance() {
@@ -321,6 +338,23 @@ extern "C" __global__ void __closesthit__radiance() {
 
         const int n_lights = optixLaunchParams.light_count;
         const auto* lights = optixLaunchParams.lights;
+        // Stage 20L: cache the shadow-rays toggle once + a
+        // shadow-origin offset along the surface normal to
+        // dodge self-intersection. Shadow rays use the
+        // single existing ray type but pass
+        // OPTIX_RAY_FLAG_DISABLE_CLOSESTHIT |
+        // OPTIX_RAY_FLAG_TERMINATE_ON_FIRST_HIT, plus
+        // missSbtIndex = 1 so the dedicated
+        // __miss__shadow program runs when the ray escapes.
+        const bool  enable_shadows = optixLaunchParams.enable_shadows;
+        const Vec3  shadow_origin{pos.x + normal.x * 1.0e-3f,
+                                  pos.y + normal.y * 1.0e-3f,
+                                  pos.z + normal.z * 1.0e-3f};
+
+        // Helper lambdas in OptiX device code aren't supported;
+        // we inline a small "is_visible" routine per light type
+        // below.
+
         if (n_lights > 0 && lights != nullptr) {
             for (int li = 0; li < n_lights; ++li) {
                 const rr::lighting::Light L = lights[li];
@@ -339,9 +373,39 @@ extern "C" __global__ void __closesthit__radiance() {
                                       + normal.y * to_light.y
                                       + normal.z * to_light.z;
                     const float lambert = ndotl > 0.0f ? ndotl : 0.0f;
-                    direct.x += light_color.x * lambert;
-                    direct.y += light_color.y * lambert;
-                    direct.z += light_color.z * lambert;
+
+                    // Stage 20L: shadow ray for directional
+                    // light. Effectively-infinite tmax. Skip
+                    // entirely when ndotl <= 0 (light is
+                    // behind the surface; no need to trace).
+                    bool visible = true;
+                    if (enable_shadows && lambert > 0.0f) {
+                        unsigned int v = 0u;  // 0 = occluded
+                        optixTrace(
+                            optixLaunchParams.scene_handle,
+                            make_float3(shadow_origin.x,
+                                        shadow_origin.y,
+                                        shadow_origin.z),
+                            make_float3(to_light.x,
+                                        to_light.y,
+                                        to_light.z),
+                            /*tmin=*/1.0e-3f,
+                            /*tmax=*/1.0e30f,
+                            /*time=*/0.0f,
+                            OptixVisibilityMask(255),
+                            OPTIX_RAY_FLAG_DISABLE_CLOSESTHIT
+                              | OPTIX_RAY_FLAG_TERMINATE_ON_FIRST_HIT,
+                            /*sbtOffset=*/0,
+                            /*sbtStride=*/0,
+                            /*missSbtIndex=*/1,
+                            v);
+                        visible = (v != 0u);
+                    }
+                    if (visible) {
+                        direct.x += light_color.x * lambert;
+                        direct.y += light_color.y * lambert;
+                        direct.z += light_color.z * lambert;
+                    }
                 } else if (L.type == rr::lighting::LightType::Point) {
                     // Inverse-square falloff with epsilon floor.
                     const Vec3 delta{L.position.x - pos.x,
@@ -361,10 +425,46 @@ extern "C" __global__ void __closesthit__radiance() {
                                       + normal.z * to_light.z;
                     const float lambert = ndotl > 0.0f ? ndotl : 0.0f;
                     const float scale   = lambert / falloff_inv;
-                    direct.x += light_color.x * scale;
-                    direct.y += light_color.y * scale;
-                    direct.z += light_color.z * scale;
+
+                    // Stage 20L: shadow ray for point light.
+                    // tmax = distance to light - epsilon so
+                    // the ray terminates at the light's
+                    // position rather than continuing past
+                    // it. Skip when lambert <= 0.
+                    bool visible = true;
+                    if (enable_shadows && lambert > 0.0f) {
+                        unsigned int v = 0u;
+                        optixTrace(
+                            optixLaunchParams.scene_handle,
+                            make_float3(shadow_origin.x,
+                                        shadow_origin.y,
+                                        shadow_origin.z),
+                            make_float3(to_light.x,
+                                        to_light.y,
+                                        to_light.z),
+                            /*tmin=*/1.0e-3f,
+                            /*tmax=*/dist - 1.0e-3f,
+                            /*time=*/0.0f,
+                            OptixVisibilityMask(255),
+                            OPTIX_RAY_FLAG_DISABLE_CLOSESTHIT
+                              | OPTIX_RAY_FLAG_TERMINATE_ON_FIRST_HIT,
+                            /*sbtOffset=*/0,
+                            /*sbtStride=*/0,
+                            /*missSbtIndex=*/1,
+                            v);
+                        visible = (v != 0u);
+                    }
+                    if (visible) {
+                        direct.x += light_color.x * scale;
+                        direct.y += light_color.y * scale;
+                        direct.z += light_color.z * scale;
+                    }
                 } else if (L.type == rr::lighting::LightType::Environment) {
+                    // Environment ambient is not shadowed in
+                    // Stage 20L (it is a directionless flat
+                    // term; tracing visibility per env light
+                    // requires hemisphere sampling, which
+                    // belongs in the path tracer).
                     ambient.x += light_color.x;
                     ambient.y += light_color.y;
                     ambient.z += light_color.z;

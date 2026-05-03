@@ -19340,6 +19340,343 @@ lights remain unimplemented.
   fallback; clean build;
   ctest 7/7 green.
 
+## Stage 20L — OptiX shadow rays
+
+**Scope of this slice (Stage 20L;
+master order #17, "OptiX upgrade
+path"): add visibility testing to
+the OptiX direct-lighting branch.
+The closest-hit's `shading_mode
+== 2` block now traces an
+occlusion ray per directional /
+point light when
+`optixLaunchParams.enable_shadows`
+is set; lights whose shadow ray
+hits geometry are excluded from
+the contribution. Single ray
+type per the "minimal" rule —
+shadow rays use the existing ray
+type with
+`OPTIX_RAY_FLAG_DISABLE_CLOSESTHIT
+| OPTIX_RAY_FLAG_TERMINATE_ON_FIRST_HIT`
++ `missSbtIndex = 1`, routing
+through a dedicated
+`__miss__shadow` program that
+sets a single-register
+visibility flag. Output:
+`output/optix_shadow_test.ppm`.**
+
+### What ships
+
+- `src/optix/OptixLaunchParams.h`:
+  new `bool enable_shadows =
+  false` field. Default `false`
+  preserves Stage 20K
+  behaviour byte-for-byte; the
+  Stage 20L
+  `--render-optix-shadow-test`
+  CLI sets it to `true`.
+- `src/optix/OptixPrograms.cu`:
+  new `__miss__shadow` program
+  bound to miss SBT record 1.
+  Fires when a shadow ray
+  escapes geometry; sets
+  payload register 0 = 1
+  (visible). Closest-hit's
+  `shading_mode == 2` branch
+  traces a shadow ray per
+  directional / point light
+  when `enable_shadows` is
+  set; if the ray hits
+  geometry, neither the
+  shadow miss nor the radiance
+  closest-hit fires (closest-
+  hit disabled by the
+  `DISABLE_CLOSESTHIT` flag),
+  payload[0] stays at the
+  initial 0 (occluded) the
+  caller wrote, and the
+  light's contribution is
+  skipped. Environment lights
+  are NOT shadowed (they're a
+  flat ambient term;
+  per-direction visibility
+  belongs in the path tracer).
+  Skips the trace entirely
+  when `lambert <= 0` (light
+  behind the surface; no need
+  to test).
+- `src/optix/OptixPipeline.{h,cpp}`:
+    - new `prog_miss_shadow_`
+      member field (move /
+      reset / destroy paths
+      updated).
+    - `create()` now compiles a
+      second miss program group
+      (`__miss__shadow`) and
+      builds an SBT layout of
+      `[raygen][miss_radiance]
+      [miss_shadow][hitgroup]`
+      with `missRecordCount =
+      2`; existing entries
+      continue to use
+      `missSbtIndex = 0`.
+    - `link_opts.maxTraceDepth`
+      bumped from 1 to 2 so the
+      closest-hit can recurse
+      into a shadow ray. Per-
+      trace cost on non-
+      recursive paths is
+      unchanged.
+- `src/optix/OptixRenderer.{h,cpp}`:
+  `render_direct_lighting`
+  signature gains a trailing
+  `bool enable_shadows = false`
+  argument. Default `false`
+  preserves Stage 20K's
+  `--render-optix-direct-lighting`
+  output. The new
+  `--render-optix-shadow-test`
+  CLI passes `true` so each
+  light's contribution is gated
+  on a shadow trace.
+- `src/core/CommandLine.{h,cpp}`:
+  new `Action::RenderOptixShadowTest`
+  enum value; new
+  `--render-optix-shadow-test
+  <file>` parser branch (takes a
+  `.rrscene` path argument);
+  help-text entry; mutex error
+  message updated; validation
+  list updated.
+- `src/main.cpp`: new
+  `run_render_optix_shadow_test
+  (const Config&)` dispatcher.
+  Loads `cfg.scene_path` and
+  calls
+  `OptixRenderer::render_direct_lighting(...,
+  /*enable_shadows=*/true)`.
+  Default output
+  `output/optix_shadow_test.ppm`
+  (overridable via `--output`).
+- `CMakeLists.txt`: banner /
+  DESCRIPTION bumped to "Stage
+  20L: OptiX shadow rays"
+  (two-line cosmetic).
+- `docs/BUILD_PLAN.md`: this
+  slice-closing entry.
+
+### Shadow-ray idiom (single ray type)
+
+Per the "Keep ray types
+minimal" rule, shadow rays
+re-use the single existing ray
+type (sbtOffset = 0) but
+configure their trace call so
+the closest-hit is bypassed
+entirely:
+
+```
+optixTrace(handle,
+           shadow_origin, to_light,
+           tmin = 1e-3, tmax = <distance to light>,
+           time = 0, mask = 0xFF,
+           rayFlags = OPTIX_RAY_FLAG_DISABLE_CLOSESTHIT
+                    | OPTIX_RAY_FLAG_TERMINATE_ON_FIRST_HIT,
+           sbtOffset = 0, sbtStride = 0,
+           missSbtIndex = 1,    // <-- routes to __miss__shadow
+           p0 = 0u);            // initial 0 = occluded
+```
+
+If the ray hits geometry:
+neither program fires;
+payload[0] stays 0; light is
+skipped.
+
+If the ray escapes:
+`__miss__shadow` runs, sets
+payload[0] = 1; light is
+counted.
+
+### Hard-rule audit
+
+- Shadow ray type - **yes**.
+  Single ray type re-used; no
+  extra ray-type complexity.
+  The "shadow-ness" of a trace
+  comes from
+  `DISABLE_CLOSESTHIT |
+  TERMINATE_ON_FIRST_HIT` +
+  `missSbtIndex = 1`.
+- Occlusion payload - **yes**.
+  Single-register visibility
+  flag in payload[0]; 0 =
+  occluded, 1 = visible.
+- Any-hit optional or closest-
+  hit occlusion path - **yes**,
+  miss-program path. We chose
+  the miss-program idiom
+  (cleaner than any-hit because
+  it doesn't require an
+  additional program type or a
+  conditional `optixTerminateRay`
+  call). The closest-hit is
+  bypassed entirely via the
+  `DISABLE_CLOSESTHIT` ray
+  flag.
+- Direct light visibility -
+  **yes**. The `shading_mode
+  == 2` branch evaluates a
+  shadow trace per directional
+  / point light when
+  `enable_shadows` is set;
+  occluded lights are skipped.
+  Environment lights are not
+  shadowed (flat ambient term).
+  Skips the trace when
+  `lambert <= 0` (light is
+  behind the surface).
+- Keep ray types minimal -
+  **yes**. Single ray type;
+  the SBT just gains one
+  additional miss record
+  bound to `__miss__shadow`,
+  which the consumer addresses
+  via `missSbtIndex = 1`.
+- Compiles with OptiX OFF -
+  **yes**. `cmake -S . -B
+  build` no flags: clean
+  build; ctest 6/6 green;
+  audit-host fallback returns
+  the documented "requires
+  OptiX" error after a
+  successful scene-load.
+- Compiles with OptiX ON -
+  **yes**. `cmake -S . -B
+  /tmp/rr-20l-on
+  -DRR_ENABLE_OPTIX=ON`: non-
+  blocking SDK-not-found
+  warning per Stage 12B.4;
+  rr_optix STATIC compiles via
+  two-layer audit-host
+  fallback (including the
+  new audit-host stub for
+  `render_direct_lighting`'s
+  extended signature); ctest
+  7/7 green.
+
+### Backward compatibility
+
+- `enable_shadows = false`
+  default preserves every
+  existing render entry's
+  output byte-for-byte:
+    - `--render-optix-test` /
+      `--render-optix-triangle`
+      / `--render-optix-relativity`
+      / `--render-optix-raygen`
+      / `--render-optix-mesh-scene`
+      / `--render-optix-material-scene`:
+      none of these set
+      `shading_mode = 2`, so
+      the shadow-ray code path
+      is unreachable for them.
+    - `--render-optix-direct-lighting`
+      passes `enable_shadows =
+      false` (default), so
+      the closest-hit's
+      `shading_mode == 2`
+      branch evaluates direct
+      lighting unconditionally
+      — Stage 20K behaviour
+      unchanged.
+    - `--render-optix-pathtrace`:
+      uses the path-tracer
+      closest-hit family
+      (different program
+      entirely); does not
+      consult `enable_shadows`.
+- The SBT now has two miss
+  records instead of one. All
+  existing entries pass
+  `missSbtIndex = 0`
+  (radiance) explicitly
+  through their `optixTrace`
+  calls, so the second miss
+  record (`__miss__shadow`) is
+  not consumed by them.
+- `maxTraceDepth = 2` (up from
+  1). OptiX implementations
+  generally allocate trace
+  state lazily; the increase
+  primarily affects pipeline
+  state setup, not per-trace
+  cost. Non-recursive paths
+  pay no extra cost.
+
+### Audit-host CLI smoke checks (all confirmed)
+
+- `--render-optix-shadow-test`
+  (no arg): parser returns
+  "missing value after
+  --render-optix-shadow-test"
+  + usage; exits non-zero.
+- `--render-optix-shadow-test
+  /nonexistent.rrscene`:
+  returns "scene file not
+  found:
+  /nonexistent.rrscene" before
+  reaching the OptiX gate.
+- `--render-optix-shadow-test
+  scenes/test_lights.rrscene`:
+  loads scene host-side, then
+  returns "--render-optix-
+  shadow-test requires OptiX.
+  Rebuild with
+  -DRR_ENABLE_OPTIX=ON ..."
+  and exits 1.
+- `--help` shows the new
+  entry with documented
+  default output and shadow-
+  ray semantics.
+
+### Status (unchanged)
+
+Module #6 (OptiX Backend),
+module #11 (Lighting), and
+milestone M15 all remain at
+`partial implementation`.
+Adding visibility testing to
+the OptiX direct-lighting
+branch threads more of the
+lighting plumbing through the
+SBT but does not lift the
+project-wide visual-validation
+gate (no frame rendered
+through the OptiX path on a
+real OptiX-SDK host in this
+branch). The actual
+`output/optix_shadow_test.ppm`
+output is gated on the same
+future real-hardware run as
+the other OptiX entries.
+
+### Verified at the build
+
+- `cmake -S . -B build` (audit
+  host, no flags): banner
+  shows "Stage 20L: OptiX
+  shadow rays"; clean build;
+  ctest 6/6 green.
+- `cmake -S . -B /tmp/rr-20l-on
+  -DRR_ENABLE_OPTIX=ON`: non-
+  blocking SDK-not-found
+  warning per Stage 12B.4;
+  rr_optix STATIC compiles
+  via two-layer audit-host
+  fallback; clean build;
+  ctest 7/7 green.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:

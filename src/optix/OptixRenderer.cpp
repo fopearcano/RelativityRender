@@ -1780,7 +1780,8 @@ OptixRenderer::render_pathtrace_progressive(
 
 OptixRenderer::Result
 OptixRenderer::render_direct_lighting(const rr::scene::Scene& scene,
-                                      int width, int height) noexcept {
+                                      int width, int height,
+                                      bool enable_shadows) noexcept {
     Result r;
 
     if (width <= 0 || height <= 0) {
@@ -1965,6 +1966,7 @@ OptixRenderer::render_direct_lighting(const rr::scene::Scene& scene,
     params.lights       =
         static_cast<const rr::lighting::Light*>(d_lights);
     params.light_count  = light_count;
+    params.enable_shadows = enable_shadows;  // Stage 20L
     // Default observer + relativity params (|beta| = 0); the
     // direct-lighting closest-hit threads its result through
     // the existing Stage 17A.5 / 20H Doppler-and-searchlight
@@ -2162,7 +2164,8 @@ OptixRenderer::render_pathtrace_progressive(
 OptixRenderer::Result
 OptixRenderer::render_direct_lighting(const rr::scene::Scene& /*scene*/,
                                       int /*width*/,
-                                      int /*height*/) noexcept {
+                                      int /*height*/,
+                                      bool /*enable_shadows*/) noexcept {
     Result r;
     r.ok = false;
     r.message =

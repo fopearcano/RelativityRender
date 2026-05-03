@@ -164,11 +164,16 @@ private:
     void*       module_         = nullptr;  // OptixModule
     void*       prog_raygen_    = nullptr;  // OptixProgramGroup
     void*       prog_miss_      = nullptr;  // OptixProgramGroup
+    // Stage 20L: second miss program group bound to
+    // __miss__shadow. Built unconditionally even when
+    // path_tracer == true; consumers that do not trace
+    // shadow rays simply do not reference missSbtIndex = 1.
+    void*       prog_miss_shadow_ = nullptr; // OptixProgramGroup
     // Stage 17A.4: hit-group program group (closest-hit only;
     // any-hit + intersection programs are not used).
     void*       prog_hitgroup_  = nullptr;  // OptixProgramGroup
     void*       pipeline_       = nullptr;  // OptixPipeline_t*
-    // Device buffer holding [raygen][miss][hitgroup] records.
+    // Device buffer holding [raygen][miss_radiance][miss_shadow][hitgroup] records.
     void*       sbt_record_buf_ = nullptr;
     void*       sbt_descriptor_ = nullptr;  // host-side OptixShaderBindingTable
     void*       launch_params_  = nullptr;  // device buffer for OptixLaunchParams

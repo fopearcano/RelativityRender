@@ -161,6 +161,24 @@ struct OptixLaunchParams {
     // safety net.
     const rr::lighting::Light* lights      = nullptr;
     std::int32_t               light_count = 0;
+
+    // ---- Stage 20L direct-lighting visibility ----
+    //
+    // When `true` and `shading_mode == 2`, the closest-hit
+    // traces an occlusion ray per light before accumulating
+    // that light's contribution. Default `false` preserves
+    // the Stage 20K behaviour (every light contributes
+    // unconditionally; the CUDA Stage 9B "shadows are
+    // deferred" precedent).
+    //
+    // Shadow rays use the single existing ray type but pass
+    // `OPTIX_RAY_FLAG_DISABLE_CLOSESTHIT |
+    // OPTIX_RAY_FLAG_TERMINATE_ON_FIRST_HIT` + `missSbtIndex
+    // = 1`, so the closest-hit is bypassed entirely; the
+    // dedicated `__miss__shadow` program (bound to miss SBT
+    // record 1) sets a single visibility-flag payload
+    // register when the ray escapes.
+    bool          enable_shadows = false;
 };
 
 }  // namespace rr::optix
