@@ -63,3 +63,11 @@
 - Manual mode is the only mode required for v1.0; automatic mode lands only when the renderer server / preview UI / DCC bridge needs it.
 - In both modes the underlying pipeline is identical (Stage 21A.5); only the trigger differs.
 - Mode selection does not affect the failure behaviour (Stage 21A.7): noisy fallback applies to both.
+
+## v1 scope
+
+- Single-frame denoise only: each render is denoised in isolation.
+- No temporal denoise: no inter-frame state, no history buffer, no per-frame accumulation across CLI invocations.
+- No motion vectors: no `AOVType::Motion` AOV, no per-frame camera/scene delta tracking.
+- No interactive preview: no real-time / per-tile / progressive denoise; the denoiser runs once at the end of a completed render.
+- Anything beyond these four constraints is explicitly post-v1 and lands only when a downstream consumer (server / preview UI / DCC bridge) actually needs it.
