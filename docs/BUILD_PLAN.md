@@ -21913,6 +21913,139 @@ setup, input binding, and
   every prior rr_optix
   sub-stage.
 
+## Stage 21B.5 — denoiser init function (logging)
+
+**Scope of this slice (Stage 21B.5;
+master order #24, "Denoising"):
+add success / failure logging
+to the existing
+`OptixDenoiser::initialize`
+method (the function itself
+already exists from Stage 21B.4;
+this slice only adds the log
+calls). Per the user's rules:
+"creates OptixDenoiser" (already
+happening from Stage 21B.4),
+"logs success/failure" (new),
+"no execution yet", "no image
+processing". Logging follows
+the established rr_optix
+pattern (`std::fprintf(stderr,
+"[OptiX:INFO|ERROR] ...")`)
+matching `OptixBackend.cpp` /
+`OptixPipeline.cpp`.**
+
+### What ships
+
+- `src/optix/OptixDenoiser.cpp`
+  (SDK_FOUND branch only):
+    - `#include <cstdio>` added
+      inside the SDK_FOUND
+      include block.
+    - `initialize(backend)` now
+      logs:
+        - **Success path**:
+          `[OptiX:INFO]
+          OptixDenoiser created
+          (HDR model, guideAlbedo
+          =1, guideNormal=1,
+          denoiseAlpha=COPY).`
+          on stderr after
+          `optixDenoiserCreate`
+          succeeds.
+        - **Failure paths**
+          (three of them):
+          `[OptiX:ERROR]
+          denoiser init failed:
+          <reason>` on stderr,
+          where `<reason>` is the
+          same string the method
+          stores in
+          `last_error_`. Covers
+          (1) `backend.isInitialized()
+          == false`, (2) null
+          device-context, (3)
+          `optixDenoiserCreate`
+          non-OK return.
+- This `BUILD_PLAN.md`
+  slice-closing entry.
+
+### What does NOT ship
+
+- The audit-host fallback
+  (ENABLE on, SDK_FOUND off)
+  remains silent: it returns
+  `false` with `last_error_`
+  set; the consumer's existing
+  `Logger::error(...)` call
+  surfaces the message
+  exactly once per failure.
+  Adding fprintf there would
+  double-log on the consumer
+  side.
+- `shutdown()` does NOT log
+  in this slice; the user
+  asked only about
+  initialize. Adding
+  destruction logs is a
+  future polish slice.
+- No
+  `optixDenoiserComputeMemoryResources`,
+  no `optixDenoiserSetup`,
+  no `optixDenoiserInvoke`,
+  no `cudaMalloc`. Per the
+  user's rules: "no
+  execution yet, no image
+  processing".
+
+### Backward compatibility
+
+- The class' public surface
+  is byte-identical with
+  Stage 21B.4. Behaviour for
+  `denoise_aov_buffers_to_ppm`
+  is unchanged on the audit
+  host (still hits the
+  Stage 19C.3 noisy-Beauty
+  fallback path because
+  `initialize()` returns
+  `false`). On a real
+  OptiX-SDK host, the
+  pre-existing failure log
+  emitted by the consumer's
+  `Logger::error(...)` is now
+  preceded by an `[OptiX:
+  ERROR] denoiser init
+  failed: ...` line on
+  stderr — first time the
+  user is told whether init
+  succeeded as soon as the
+  underlying SDK call
+  returns.
+- The CUDA renderer is
+  byte-identical (the slice
+  touches only
+  `src/optix/OptixDenoiser.cpp`).
+
+### Verified at the build
+
+- `cmake -S . -B build_off
+  -DRR_ENABLE_CUDA=OFF
+  -DRR_ENABLE_OPTIX=OFF`
+  (audit host): clean build;
+  ctest 6/6 green.
+- `cmake -S . -B build_on_audit
+  -DRR_ENABLE_CUDA=OFF
+  -DRR_ENABLE_OPTIX=ON`
+  (audit host, no SDK):
+  clean build; ctest 7/7
+  green. The new fprintf
+  calls compile inside the
+  SDK_FOUND gate; on this
+  host the gate is
+  undefined, so the calls
+  are compiled out.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:

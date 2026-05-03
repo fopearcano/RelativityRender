@@ -42,6 +42,12 @@
     // changes.
     #include <optix.h>
     #include <optix_stubs.h>
+
+    // Stage 21B.5: log success / failure of denoiser init
+    // via the established rr_optix pattern
+    // (`std::fprintf(stderr, "[OptiX:INFO|ERROR] ...")`,
+    // matching `OptixBackend.cpp`).
+    #include <cstdio>
 #endif
 
 namespace rr::optix {
@@ -140,6 +146,9 @@ bool OptixDenoiser::initialize(OptixBackend& backend) noexcept {
         last_error_ =
             "OptixDenoiser::initialize: backend is not initialized; "
             "call OptixBackend::initialize() first.";
+        std::fprintf(stderr,
+                     "[OptiX:ERROR] denoiser init failed: %s\n",
+                     last_error_.c_str());
         return false;
     }
 
@@ -148,6 +157,9 @@ bool OptixDenoiser::initialize(OptixBackend& backend) noexcept {
         last_error_ =
             "OptixDenoiser::initialize: OptixDeviceContext is null even "
             "though backend.isInitialized() is true; internal error.";
+        std::fprintf(stderr,
+                     "[OptiX:ERROR] denoiser init failed: %s\n",
+                     last_error_.c_str());
         return false;
     }
 
@@ -168,11 +180,18 @@ bool OptixDenoiser::initialize(OptixBackend& backend) noexcept {
     if (res != OPTIX_SUCCESS) {
         last_error_ = std::string("optixDenoiserCreate failed: ")
                     + ::optixGetErrorName(res);
+        std::fprintf(stderr,
+                     "[OptiX:ERROR] denoiser init failed: %s\n",
+                     last_error_.c_str());
         return false;
     }
 
     denoiser_    = denoiser;
     initialized_ = true;
+    std::fprintf(stderr,
+                 "[OptiX:INFO] OptixDenoiser created "
+                 "(HDR model, guideAlbedo=1, guideNormal=1, "
+                 "denoiseAlpha=COPY).\n");
     return true;
 }
 
