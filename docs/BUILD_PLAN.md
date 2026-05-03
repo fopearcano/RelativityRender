@@ -18612,6 +18612,396 @@ same global cap.
   `optix_tests` 56-assertion
   pass included).
 
+## Stage 20J — OptiX accumulation
+
+**Scope of this slice (Stage 20J;
+master order #17, "OptiX upgrade
+path"): connect the Stage 20I
+OptiX path tracer to the
+existing Stage 11B accumulation
+primitives (`rr::cuda::launch_accum_*`
+in rr_gpu) so multi-sample
+renders accumulate sample-by-
+sample instead of averaging
+inside the raygen. The CLI
+output filenames stay the same
+(`output/optix_pathtrace_spp1.ppm`
++ `output/optix_pathtrace_spp16.ppm`),
+but they now come from a
+checkpointed progressive
+accumulator: the same
+accumulation buffer feeds both
+PPMs (1 sample for spp1,
+16 samples for spp16), so the
+spp16 output is the spp1 image
+plus 15 more progressively-
+accumulated samples — matching
+how the CUDA path tracer
+operates and giving a real
+"progressive output" capability
+the user can extend with more
+checkpoints in a later slice.**
+
+### What ships
+
+- `src/optix/OptixPrograms.cu`
+  raygen: combine
+  `optixLaunchParams.sample_index +
+  inner_loop_counter` for the
+  per-sample RNG seed. Stage
+  20I's behaviour is preserved
+  byte-for-byte when
+  `sample_index == 0` (the
+  Stage 20I default); Stage
+  20J's progressive flow
+  passes `sample_index = 0..N-1`
+  with `spp = 1` per launch and
+  the resulting RNG sequence is
+  bit-identical to Stage 20I's
+  spp = N single-launch path
+  for the same total sample
+  count.
+- `src/optix/OptixRenderer.{h,cpp}`:
+  new types
+  `PathtraceCheckpoint { sample_count,
+  image }` and
+  `PathtraceProgressiveResult { ok,
+  message, checkpoints,
+  total_gpu_time_ms }`. New
+  static method
+  `render_pathtrace_progressive(scene,
+  width, height, max_bounces,
+  seed, checkpoint_samples)`
+  that:
+    - Validates inputs (positive
+      dims, max_bounces >= 1,
+      non-empty checkpoint list,
+      every checkpoint >= 1).
+    - Picks the first non-empty
+      visible mesh (mirrors
+      Stages 20F / 20G / 20I).
+    - Looks up the picked mesh's
+      material and pushes it
+      into the SBT hit-record
+      via Stage 20G's
+      `set_hit_material(...)`.
+    - Builds the GAS via the
+      Stage 17A.2
+      `build_mesh_gas(...)`.
+    - Allocates three Rgba32F
+      device buffers via
+      cudaMalloc:
+      `d_framebuffer` (single-
+      sample radiance per
+      launch), `d_accumulator`
+      (running sum across
+      samples), `d_display`
+      (resolved scaled buffer
+      the host downloads at each
+      checkpoint).
+    - Calls
+      `rr::cuda::launch_accum_clear(d_accumulator)`
+      to zero the accumulator.
+    - For each
+      `sample_index` in
+      `[0, max_checkpoint)`:
+      sets `OptixLaunchParams::spp
+      = 1` and
+      `sample_index =
+      sample_index`, runs
+      `optixLaunch`,
+      `cudaDeviceSynchronize`,
+      then
+      `launch_accum_first_sample`
+      on sample 0 (the
+      `cudaMemcpy(D2D)`
+      first-sample fast path
+      from Stage 18A.4) or
+      `launch_accum_add` on
+      subsequent samples.
+    - When `sample_index + 1`
+      matches a checkpoint,
+      runs
+      `launch_accum_resolve(d_accumulator,
+      d_display, 1.0f /
+      (sample_index+1))` and
+      `cudaMemcpy(D2H)` into a
+      fresh `rr::image::Image`,
+      then appends to
+      `result.checkpoints`.
+    - Cleans up all device
+      allocations + returns the
+      result.
+- `src/optix/OptixRenderer.cpp`:
+  added include for
+  `cuda/CudaAccumulation.cuh`
+  (host-friendly header in
+  rr_gpu — already PRIVATE-
+  linked since Stage 18A.1, so
+  no new dep edge) +
+  `<algorithm>` for
+  `std::max_element`. Audit-
+  host stub for
+  `render_pathtrace_progressive`
+  returns `ok = false` with the
+  documented "requires OptiX
+  SDK" message.
+- `src/main.cpp`: migrated
+  `run_render_optix_pathtrace`
+  to call
+  `render_pathtrace_progressive`
+  with `kCheckpoints = {1, 16}`
+  + `kMaxBounces = 3` +
+  `kSeed = 0u`. Iterates the
+  returned `checkpoints` and
+  writes each to its
+  corresponding PPM
+  (`spp1.ppm` for sample_count
+  1, `spp16.ppm` for 16). The
+  Stage 20I single-launch
+  flow is replaced by the
+  progressive flow at the CLI
+  layer; the older
+  `OptixRenderer::render_pathtrace`
+  static method is unchanged
+  and remains available for
+  callers that want a quick
+  one-launch path.
+- `CMakeLists.txt`: banner /
+  DESCRIPTION bumped to "Stage
+  20J: OptiX accumulation"
+  (two-line cosmetic).
+- `docs/BUILD_PLAN.md`: this
+  slice-closing entry.
+
+### Why no rr_renderer dep was added
+
+The accumulation primitives
+`rr::cuda::launch_accum_clear` /
+`_first_sample` / `_add` /
+`_resolve` live in
+`src/cuda/CudaAccumulation.{cuh,cu}`,
+which is part of `rr_gpu` (per
+the rr_gpu STATIC target's
+sources list). The header is
+host-friendly (no
+`<cuda_runtime.h>` pulled into
+its callers per Stage 11B's
+contract). rr_optix already
+PRIVATE-links rr_gpu since
+Stage 18A.1, so this slice
+calls the launchers directly
+from `OptixRenderer.cpp`
+without adding any new link
+edge.
+
+The host-side
+`rr::renderer::AccumulationBuffer`
+class (in rr_renderer) is a
+thin OO wrapper around the same
+launchers; this slice
+deliberately mirrors its
+semantics (clear, accumulate,
+resolve) without taking the
+class dependency, because that
+edge would create a circular
+arrow from rr_optix (#6 OptiX
+backend) up to rr_renderer
+(#15 progressive renderer +
+#17 AOVs) — the wrong
+direction per
+`docs/MASTER_ARCHITECTURE.md`
+§5 and the Stage 361230a
+dependency-boundary audit.
+
+### Bit-identical to Stage 20I for the same total sample count
+
+The raygen now combines
+`optixLaunchParams.sample_index`
+with the in-raygen loop counter
+when seeding the per-sample
+RNG. With Stage 20I's
+single-launch flow
+(spp = N, sample_index = 0)
+the RNG seeds for samples
+[0..N-1] are
+`make_pixel_rng(x, y, 0+s, seed)`
+for s in [0..N-1]. With Stage
+20J's progressive flow
+(N launches, spp = 1,
+sample_index = 0..N-1) the
+seeds for sample s are
+`make_pixel_rng(x, y, s+0, seed)`.
+Same sequence; same accumulated
+radiance.
+
+The CUDA-side accumulation
+primitives are deterministic
+single-precision adds (Stage
+18A.4 documented this:
+"Behaviour is bit-identical
+across both paths (single-
+precision add is
+deterministic)"), so the spp16
+PPM the progressive flow
+produces matches the spp16 PPM
+the Stage 20I flow would have
+produced for the same
+(scene, camera, seed) inputs,
+modulo the float4-vectorised
+add path being deterministic
+across both kernels.
+
+### Hard-rule audit
+
+- Reuse or mirror existing
+  accumulation buffer - **yes**.
+  Mirrors via direct calls to
+  the `rr::cuda::launch_accum_*`
+  primitives in rr_gpu (the
+  same primitives
+  `rr::renderer::AccumulationBuffer`
+  uses). No code is duplicated;
+  the launchers are shared
+  with the CUDA path tracer.
+- Support sample index -
+  **yes**. Raygen seed combines
+  `optixLaunchParams.sample_index`
+  with the in-raygen counter;
+  Stage 20J's loop drives
+  sample_index from 0 to
+  max_checkpoint-1 across
+  successive launches.
+- Reset accumulation - **yes**.
+  Each
+  `render_pathtrace_progressive`
+  call begins with a fresh
+  `cudaMalloc` + an explicit
+  `launch_accum_clear` on the
+  accumulator. The old buffer
+  (if any) is freed at function
+  exit; the next call starts
+  clean.
+- Save progressive output -
+  **yes**. The `checkpoint_samples`
+  vector argument lets the
+  caller request resolved
+  images at any sample-count
+  milestone; the CLI passes
+  `{1, 16}` so the existing
+  spp1.ppm + spp16.ppm outputs
+  come from the SAME
+  accumulator at different
+  points in the sample loop.
+  Future callers can request
+  more checkpoints (e.g.
+  `{1, 4, 16, 64}`) without
+  changing the renderer.
+- No denoiser yet - **yes**.
+  This slice does not touch
+  the OptiX denoiser
+  (`src/optix/OptixDenoiser.{h,cpp}`)
+  or the `--denoise` modifier
+  flag. `git diff --stat
+  src/optix/OptixDenoiser.*`
+  empty.
+- No C4D - **yes**. No source
+  / build / doc reference to
+  Cinema 4D added or modified
+  by this slice.
+- Compiles with OptiX OFF -
+  **yes**. `cmake -S . -B
+  build` (no flags): clean
+  build; ctest 6/6 green;
+  audit-host fallback returns
+  the documented "requires
+  OptiX" error after a
+  successful scene-load.
+- Compiles with OptiX ON -
+  **yes**. `cmake -S . -B
+  /tmp/rr-20j-on
+  -DRR_ENABLE_OPTIX=ON`: non-
+  blocking SDK-not-found
+  warning per Stage 12B.4;
+  rr_optix STATIC compiles
+  via two-layer audit-host
+  fallback (including the new
+  audit-host stub for
+  `render_pathtrace_progressive`);
+  ctest 7/7 green.
+
+### Audit-host CLI smoke checks
+
+- `--render-optix-pathtrace`
+  (no arg): "missing value
+  after --render-optix-
+  pathtrace" + usage; exits
+  non-zero.
+- `--render-optix-pathtrace
+  /nonexistent.rrscene`:
+  "scene file not found:
+  /nonexistent.rrscene" before
+  reaching the OptiX gate.
+- `--render-optix-pathtrace
+  scenes/test_mesh.rrscene`:
+  loads scene successfully
+  (parser is host-side; runs
+  without OptiX), then returns
+  "--render-optix-pathtrace
+  requires OptiX. Rebuild with
+  -DRR_ENABLE_OPTIX=ON ..." and
+  exits 1.
+- `--help` shows the existing
+  `--render-optix-pathtrace`
+  entry text from Stage 20I
+  (output-path documentation
+  is unchanged: still
+  `output/optix_pathtrace_spp1.ppm`
+  + `output/optix_pathtrace_spp16.ppm`).
+
+### Status (unchanged)
+
+Module #6 (OptiX Backend),
+module #14 (Path Tracer),
+module #15 (Progressive
+Renderer), and milestone M15
+all remain at `partial
+implementation`. Wiring the
+OptiX path tracer through the
+accumulation primitives is a
+behaviour-preserving refactor
++ a new progressive API; the
+project-wide visual-validation
+gate is unchanged. The actual
+`output/optix_pathtrace_*.ppm`
+images are gated on the same
+future real-hardware run as
+the other OptiX entries.
+
+### Verified at the build
+
+- `cmake -S . -B build` (audit
+  host, no flags): banner
+  shows "Stage 20J: OptiX
+  accumulation"; clean build;
+  ctest 6/6 green.
+- `cmake -S . -B /tmp/rr-20j-on
+  -DRR_ENABLE_OPTIX=ON`: non-
+  blocking SDK-not-found
+  warning per Stage 12B.4;
+  rr_optix STATIC compiles via
+  two-layer audit-host
+  fallback; clean build; ctest
+  7/7 green (Stage 20D
+  optix_tests 56-assertion
+  pass included).
+- `git diff --stat
+  src/optix/OptixDenoiser.*`
+  empty (no denoiser changes).
+- `git grep -n -i 'cinema *4d\|c4d_'
+  src/` returns zero matches
+  (no C4D changes).
+
 ## Next stage
 
 When prompted, the natural follow-ups are:

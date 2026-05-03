@@ -1405,47 +1405,61 @@ int run_render_optix_pathtrace(const rr::core::Config& cfg) {
                   "to/optix-sdk).");
     return 1;
 #else
+    // Stage 20J: progressive accumulation. One render call;
+    // the renderer iterates samples internally + snaps a
+    // resolved image at each requested checkpoint. Output is
+    // bit-identical to the Stage 20I single-launch path
+    // (raygen seed combines optixLaunchParams.sample_index +
+    // the in-raygen loop counter, so spp=N with sample_index=0
+    // and N x spp=1 with sample_index=0..N-1 produce the same
+    // RNG sequence and the same accumulated radiance).
     constexpr int kMaxBounces = 3;
     constexpr unsigned int kSeed = 0u;
+    const std::vector<int> kCheckpoints = { 1, 16 };
 
-    struct PtRun { int spp; const char* path; const char* label; };
-    static constexpr PtRun kRuns[] = {
-        { 1,  "output/optix_pathtrace_spp1.ppm",
-              "render-optix-pathtrace (spp=1)" },
-        { 16, "output/optix_pathtrace_spp16.ppm",
-              "render-optix-pathtrace (spp=16)" },
-    };
+    auto pr = rr::optix::OptixRenderer::render_pathtrace_progressive(
+        load.scene, cfg.width, cfg.height,
+        kMaxBounces, kSeed, kCheckpoints);
+    if (!pr.ok) {
+        Logger::error("optix path-trace progressive render failed: "
+                    + pr.message);
+        return 1;
+    }
+    log_gpu_timing("render-optix-pathtrace (progressive total)",
+                   cfg.width, cfg.height, pr.total_gpu_time_ms);
 
     int failures = 0;
-    for (const auto& run : kRuns) {
-        auto r = rr::optix::OptixRenderer::render_pathtrace(
-            load.scene, cfg.width, cfg.height,
-            run.spp, kMaxBounces, kSeed);
-        if (!r.ok) {
-            Logger::error(std::string("optix path-trace render failed (")
-                        + run.label + "): " + r.message);
-            ++failures;
-            continue;
+    for (const auto& cp : pr.checkpoints) {
+        std::string out_path;
+        if (cp.sample_count == 1) {
+            out_path = "output/optix_pathtrace_spp1.ppm";
+        } else if (cp.sample_count == 16) {
+            out_path = "output/optix_pathtrace_spp16.ppm";
+        } else {
+            // Future-proof: derive a path from the sample
+            // count. Today only spp=1 and spp=16 are
+            // requested by this action.
+            out_path = "output/optix_pathtrace_spp"
+                     + std::to_string(cp.sample_count) + ".ppm";
         }
-        log_gpu_timing(run.label, cfg.width, cfg.height, r.gpu_time_ms);
 
         namespace fs = std::filesystem;
-        const fs::path out_fs = run.path;
+        const fs::path out_fs = out_path;
         if (out_fs.has_parent_path()) {
             std::error_code ec;
             fs::create_directories(out_fs.parent_path(), ec);
         }
-        if (!r.image.save_ppm(out_fs)) {
-            Logger::error(std::string("could not write PPM: ") + run.path);
+        if (!cp.image.save_ppm(out_fs)) {
+            Logger::error(std::string("could not write PPM: ") + out_path);
             ++failures;
             continue;
         }
 
         std::error_code ec;
         const fs::path  abs = fs::absolute(out_fs, ec);
-        Logger::info(std::string("wrote OptiX pathtrace ")
-                   + (run.spp == 1 ? "(spp=1): " : "(spp=16): ")
-                   + (ec ? std::string(run.path) : abs.string())
+        Logger::info(std::string("wrote OptiX pathtrace (spp=")
+                   + std::to_string(cp.sample_count) + "): "
+                   + (ec ? out_path : abs.string())
                    + " (" + std::to_string(cfg.width) + "x"
                    + std::to_string(cfg.height) + ", RGBA32F)");
     }

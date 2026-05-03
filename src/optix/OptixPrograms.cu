@@ -466,10 +466,22 @@ extern "C" __global__ void __raygen__pathtrace() {
     Vec3 primary_dir{0.0f, 0.0f, -1.0f};
 
     for (int sample = 0; sample < spp; ++sample) {
+        // Stage 20J: combine the host-supplied
+        // `optixLaunchParams.sample_index` with the in-raygen
+        // loop counter so the same RNG sequence is produced
+        // regardless of whether the host runs ONE launch with
+        // spp = N (sample_index = 0) or N launches with
+        // spp = 1 (sample_index = 0..N-1). This makes the
+        // Stage 20I single-launch path and the Stage 20J
+        // progressive multi-launch path bit-identical for the
+        // same total sample count.
+        const std::uint32_t combined_seed_idx =
+            optixLaunchParams.sample_index +
+            static_cast<std::uint32_t>(sample);
         rr::pathtracer::Rng rng = rr::pathtracer::make_pixel_rng(
             static_cast<unsigned int>(x),
             static_cast<unsigned int>(y),
-            static_cast<unsigned int>(sample),
+            combined_seed_idx,
             static_cast<std::uint64_t>(optixLaunchParams.seed));
 
         auto ray = rr::camera::generate_camera_ray(

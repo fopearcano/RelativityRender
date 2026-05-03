@@ -3,6 +3,7 @@
 #include "image/Image.h"
 
 #include <string>
+#include <vector>
 
 // Per OPTIX_BACKEND_PLAN.md §19, host-facing OptiX render
 // orchestrator - the analogue of `cuda/CudaRenderer.{h,cu}`.
@@ -213,6 +214,66 @@ public:
         int width, int height,
         int spp, int max_bounces,
         unsigned int seed = 0u) noexcept;
+
+    // Stage 20J progressive checkpoint snapshot. One per
+    // requested element of `checkpoint_samples` argument to
+    // `render_pathtrace_progressive`.
+    struct PathtraceCheckpoint {
+        int              sample_count = 0;     // 1, 16, ...
+        rr::image::Image image;                // resolved Rgba32F
+    };
+
+    // Stage 20J progressive result: each requested checkpoint
+    // produces one image. `total_gpu_time_ms` is the sum of
+    // the per-launch elapsed times across every accumulated
+    // sample (not just the checkpointed ones).
+    struct PathtraceProgressiveResult {
+        bool                              ok = false;
+        std::string                       message;
+        std::vector<PathtraceCheckpoint>  checkpoints;
+        float                             total_gpu_time_ms = 0.0f;
+    };
+
+    // Stage 20J progressive OptiX path tracer. Connects the
+    // `__raygen__pathtrace` family from Stage 20I to the
+    // existing `rr::cuda::launch_accum_*` accumulation
+    // primitives in rr_gpu. Each entry of
+    // `checkpoint_samples` (in ascending order; values are
+    // sample counts, not zero-based indices) produces one
+    // resolved `PathtraceCheckpoint` image. The largest
+    // checkpoint determines the total samples accumulated.
+    //
+    // Per-launch flow:
+    //   - Allocate single-sample framebuffer + accumulator +
+    //     display buffers (cudaMalloc).
+    //   - launch_accum_clear(accumulator).
+    //   - For sample_index in [0, max_checkpoint):
+    //     - Set OptixLaunchParams.spp = 1, sample_index =
+    //       sample_index.
+    //     - optixLaunch (raygen writes single-sample radiance
+    //       to framebuffer).
+    //     - First sample: launch_accum_first_sample(accum,
+    //       framebuffer); subsequent: launch_accum_add(accum,
+    //       framebuffer).
+    //     - If sample_index + 1 is a checkpoint, run
+    //       launch_accum_resolve(accum, display, 1.0f /
+    //       (sample_index+1)) + cudaMemcpy(D2H) into a fresh
+    //       Image; append to result.checkpoints.
+    //
+    // Mirrors `rr::renderer::AccumulationBuffer` semantics
+    // (clear, accumulate, resolve) without taking a hard
+    // dependency on rr_renderer; the launchers reside in
+    // rr_gpu (via `cuda/CudaAccumulation.cuh`) which rr_optix
+    // already PRIVATE-links per Stage 18A.1.
+    //
+    // Same audit-host fallback semantics as render_test.
+    [[nodiscard]] static PathtraceProgressiveResult
+    render_pathtrace_progressive(
+        const rr::scene::Scene& scene,
+        int width, int height,
+        int max_bounces,
+        unsigned int seed,
+        const std::vector<int>& checkpoint_samples) noexcept;
 };
 
 }  // namespace rr::optix

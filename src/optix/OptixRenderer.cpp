@@ -10,6 +10,7 @@
     #include <optix_stubs.h>
 
     #include "camera/Camera.h"
+    #include "cuda/CudaAccumulation.cuh"  // Stage 20J: launch_accum_*
     #include "geometry/Mesh.h"           // Stage 20F: Mesh / Vertex / Triangle
     #include "gpu/GpuTiming.h"
     #include "math/Vec3.h"
@@ -17,6 +18,7 @@
     #include "relativity/RelativityParams.h"
     #include "scene/Scene.h"             // Stage 20F: Scene / SceneMesh
 
+    #include <algorithm>                  // Stage 20J: std::max_element
     #include <cstddef>
     #include <cstdint>
     #include <cstring>
@@ -1451,6 +1453,331 @@ OptixRenderer::render_pathtrace(const rr::scene::Scene& scene,
     return r;
 }
 
+OptixRenderer::PathtraceProgressiveResult
+OptixRenderer::render_pathtrace_progressive(
+    const rr::scene::Scene& scene,
+    int width, int height,
+    int max_bounces,
+    unsigned int seed,
+    const std::vector<int>& checkpoint_samples) noexcept {
+    PathtraceProgressiveResult R;
+
+    if (width <= 0 || height <= 0) {
+        R.message = "OptixRenderer::render_pathtrace_progressive: "
+                    "invalid dimensions";
+        return R;
+    }
+    if (max_bounces < 1) {
+        R.message = "OptixRenderer::render_pathtrace_progressive: "
+                    "max_bounces must be >= 1";
+        return R;
+    }
+    if (checkpoint_samples.empty()) {
+        R.message = "OptixRenderer::render_pathtrace_progressive: "
+                    "checkpoint_samples is empty";
+        return R;
+    }
+    for (int n : checkpoint_samples) {
+        if (n < 1) {
+            R.message = "OptixRenderer::render_pathtrace_progressive: "
+                        "checkpoint_samples must contain values >= 1";
+            return R;
+        }
+    }
+    // Largest checkpoint = total samples to accumulate.
+    const int max_spp = *std::max_element(checkpoint_samples.begin(),
+                                          checkpoint_samples.end());
+
+    // First-non-empty-mesh selection (mirrors Stage 20F / 20G /
+    // 20I).
+    const rr::geometry::Mesh* picked = nullptr;
+    for (const auto& sm : scene.meshes) {
+        if (!sm.object.visible) continue;
+        if (sm.geometry.empty()) continue;
+        picked = &sm.geometry;
+        break;
+    }
+    if (picked == nullptr) {
+        R.message = "OptixRenderer::render_pathtrace_progressive: "
+                    "scene contains no visible non-empty mesh.";
+        return R;
+    }
+
+    rr::material::MaterialParams material_params{};
+    if (picked->material_id >= 0
+     && static_cast<std::size_t>(picked->material_id) < scene.materials.size()) {
+        material_params = scene.materials[picked->material_id].params;
+    }
+
+    OptixBackend backend;
+    if (!backend.initialize()) {
+        R.message = "OptixRenderer::render_pathtrace_progressive: "
+                    "backend init failed: "
+                  + backend.last_error();
+        return R;
+    }
+
+    OptixPipeline pipeline;
+    {
+        OptixPipelineOptions opts;
+        opts.path_tracer = true;
+        const auto pr = pipeline.create(backend, opts);
+        if (!pr.ok) {
+            R.message = "OptixRenderer::render_pathtrace_progressive: "
+                      + pr.error_message;
+            return R;
+        }
+    }
+    {
+        const auto pr = pipeline.set_hit_material(
+            material_params, /*shading_mode=*/1);
+        if (!pr.ok) {
+            R.message = "OptixRenderer::render_pathtrace_progressive: "
+                      + pr.error_message;
+            return R;
+        }
+    }
+
+    // Position extraction + index upload (Stage 20F / 20G / 20I shape).
+    std::vector<float> flat_positions;
+    flat_positions.reserve(picked->vertices.size() * 3u);
+    for (const auto& v : picked->vertices) {
+        flat_positions.push_back(v.position.x);
+        flat_positions.push_back(v.position.y);
+        flat_positions.push_back(v.position.z);
+    }
+
+    const std::size_t n_vertices  = picked->vertices.size();
+    const std::size_t n_triangles = picked->triangles.size();
+
+    void* d_positions = nullptr;
+    {
+        const std::size_t bytes = flat_positions.size() * sizeof(float);
+        if (::cudaMalloc(&d_positions, bytes) != cudaSuccess) {
+            R.message = "render_pathtrace_progressive: cudaMalloc(positions) failed";
+            return R;
+        }
+        if (::cudaMemcpy(d_positions, flat_positions.data(), bytes,
+                         cudaMemcpyHostToDevice) != cudaSuccess) {
+            ::cudaFree(d_positions);
+            R.message = "render_pathtrace_progressive: cudaMemcpy(positions) failed";
+            return R;
+        }
+    }
+    void* d_indices = nullptr;
+    {
+        const std::size_t bytes =
+            n_triangles * sizeof(rr::geometry::Triangle);
+        if (::cudaMalloc(&d_indices, bytes) != cudaSuccess) {
+            ::cudaFree(d_positions);
+            R.message = "render_pathtrace_progressive: cudaMalloc(indices) failed";
+            return R;
+        }
+        if (::cudaMemcpy(d_indices, picked->triangles.data(), bytes,
+                         cudaMemcpyHostToDevice) != cudaSuccess) {
+            ::cudaFree(d_indices);
+            ::cudaFree(d_positions);
+            R.message = "render_pathtrace_progressive: cudaMemcpy(indices) failed";
+            return R;
+        }
+    }
+
+    BuildGasResult gas_result;
+    {
+        MeshGasInput gi{};
+        gi.device_vertices = d_positions;
+        gi.vertex_count    = n_vertices;
+        gi.device_indices  = d_indices;
+        gi.triangle_count  = n_triangles;
+        gas_result = build_mesh_gas(backend, gi);
+        if (!gas_result.ok) {
+            ::cudaFree(d_indices);
+            ::cudaFree(d_positions);
+            R.message = "render_pathtrace_progressive: "
+                      + gas_result.error_message;
+            return R;
+        }
+    }
+
+    rr::camera::Camera camera = scene.camera;
+    camera.set_aspect(static_cast<float>(width)
+                    / static_cast<float>(height));
+    const rr::camera::GpuCamera gpu_cam = camera.to_gpu();
+
+    // Stage 20J: allocate three Rgba32F device buffers:
+    //   d_framebuffer = per-launch single-sample radiance
+    //   d_accumulator = running sum across all samples so far
+    //   d_display     = scaled (running-sum / sample-count)
+    //                   buffer the host downloads at each
+    //                   checkpoint.
+    const std::size_t pixel_count =
+        static_cast<std::size_t>(width)
+      * static_cast<std::size_t>(height);
+    const std::size_t float_count = pixel_count * 4u;
+    const std::size_t buffer_bytes = float_count * sizeof(float);
+
+    void* d_framebuffer = nullptr;
+    void* d_accumulator = nullptr;
+    void* d_display     = nullptr;
+
+    auto cleanup = [&]() {
+        if (d_display)     ::cudaFree(d_display);
+        if (d_accumulator) ::cudaFree(d_accumulator);
+        if (d_framebuffer) ::cudaFree(d_framebuffer);
+        ::cudaFree(d_indices);
+        ::cudaFree(d_positions);
+    };
+
+    if (::cudaMalloc(&d_framebuffer, buffer_bytes) != cudaSuccess) {
+        cleanup();
+        R.message = "render_pathtrace_progressive: cudaMalloc(framebuffer) failed";
+        return R;
+    }
+    if (::cudaMalloc(&d_accumulator, buffer_bytes) != cudaSuccess) {
+        cleanup();
+        R.message = "render_pathtrace_progressive: cudaMalloc(accumulator) failed";
+        return R;
+    }
+    if (::cudaMalloc(&d_display, buffer_bytes) != cudaSuccess) {
+        cleanup();
+        R.message = "render_pathtrace_progressive: cudaMalloc(display) failed";
+        return R;
+    }
+
+    // Reset the accumulator. Stage 11B's `launch_accum_clear`
+    // forwards to `cudaMemset` on the device; the buffer
+    // starts in the documented zero state every progressive
+    // path-trace invocation expects.
+    if (!rr::cuda::launch_accum_clear(static_cast<float*>(d_accumulator),
+                                       float_count)) {
+        cleanup();
+        R.message = "render_pathtrace_progressive: launch_accum_clear failed";
+        return R;
+    }
+
+    rr::gpu::GpuTimer timer;
+
+    for (int sample_index = 0; sample_index < max_spp; ++sample_index) {
+        // Populate launch params for THIS sample. spp = 1 so
+        // the raygen's inner loop runs once; sample_index
+        // controls the RNG seed via Stage 20J's combined
+        // sample_index + inner-loop-counter formula.
+        OptixLaunchParams params{};
+        params.framebuffer  = static_cast<float*>(d_framebuffer);
+        params.width        = width;
+        params.height       = height;
+        params.camera       = gpu_cam;
+        params.scene_handle = gas_result.gas.handle();
+        params.spp          = 1;
+        params.max_bounces  = max_bounces;
+        params.seed         = seed;
+        params.sample_index =
+            static_cast<std::uint32_t>(sample_index);
+
+        {
+            const ::cudaError_t e = ::cudaMemcpy(
+                pipeline.launch_params_device_ptr(),
+                &params, sizeof(params), cudaMemcpyHostToDevice);
+            if (e != cudaSuccess) {
+                cleanup();
+                R.message = std::string("render_pathtrace_progressive: ")
+                          + "cudaMemcpy(launch params) failed: "
+                          + ::cudaGetErrorString(e);
+                return R;
+            }
+        }
+
+        {
+            const auto* sbt = static_cast<const ::OptixShaderBindingTable*>(
+                pipeline.shader_binding_table());
+            timer.start();
+            const ::OptixResult res = ::optixLaunch(
+                static_cast<::OptixPipeline>(pipeline.pipeline_handle()),
+                /*stream=*/0,
+                reinterpret_cast<::CUdeviceptr>(pipeline.launch_params_device_ptr()),
+                pipeline.launch_params_size_bytes(),
+                sbt,
+                static_cast<unsigned>(width),
+                static_cast<unsigned>(height),
+                /*depth=*/1u);
+            timer.stop();
+            if (res != OPTIX_SUCCESS) {
+                cleanup();
+                R.message = std::string("render_pathtrace_progressive: "
+                                        "optixLaunch failed: ")
+                          + ::optixGetErrorName(res);
+                return R;
+            }
+        }
+        if (::cudaDeviceSynchronize() != cudaSuccess) {
+            cleanup();
+            R.message = "render_pathtrace_progressive: "
+                        "cudaDeviceSynchronize failed";
+            return R;
+        }
+        R.total_gpu_time_ms += timer.elapsed_ms();
+
+        // Accumulate. Stage 18A.4 first-sample fast path on
+        // sample 0 (cudaMemcpy D2D); scalar/float4 add for
+        // sample >= 1.
+        const bool ok_acc = (sample_index == 0)
+            ? rr::cuda::launch_accum_first_sample(
+                  static_cast<float*>(d_accumulator),
+                  static_cast<const float*>(d_framebuffer),
+                  float_count)
+            : rr::cuda::launch_accum_add(
+                  static_cast<float*>(d_accumulator),
+                  static_cast<const float*>(d_framebuffer),
+                  float_count);
+        if (!ok_acc) {
+            cleanup();
+            R.message = "render_pathtrace_progressive: "
+                        "launch_accum_first_sample / _add failed";
+            return R;
+        }
+
+        // Checkpoint? Resolve + download + record.
+        const int samples_done = sample_index + 1;
+        bool is_checkpoint = false;
+        for (int c : checkpoint_samples) {
+            if (c == samples_done) { is_checkpoint = true; break; }
+        }
+        if (is_checkpoint) {
+            const float inv_samples =
+                1.0f / static_cast<float>(samples_done);
+            if (!rr::cuda::launch_accum_resolve(
+                    static_cast<const float*>(d_accumulator),
+                    static_cast<float*>(d_display),
+                    float_count, inv_samples)) {
+                cleanup();
+                R.message = "render_pathtrace_progressive: "
+                            "launch_accum_resolve failed";
+                return R;
+            }
+
+            rr::image::Image img(width, height,
+                                 rr::image::PixelFormat::Rgba32F);
+            if (::cudaMemcpy(img.data(), d_display, buffer_bytes,
+                             cudaMemcpyDeviceToHost) != cudaSuccess) {
+                cleanup();
+                R.message = "render_pathtrace_progressive: "
+                            "cudaMemcpy(d->h, display) failed";
+                return R;
+            }
+
+            PathtraceCheckpoint cp;
+            cp.sample_count = samples_done;
+            cp.image        = std::move(img);
+            R.checkpoints.push_back(std::move(cp));
+        }
+    }
+
+    cleanup();
+    R.ok      = true;
+    R.message = "OptiX path-trace progressive render complete.";
+    return R;
+}
+
 #else   // RELATIVITYRENDER_OPTIX_SDK_FOUND
 
 OptixRenderer::Result
@@ -1542,6 +1869,24 @@ OptixRenderer::render_pathtrace(const rr::scene::Scene& /*scene*/,
     r.message =
         "OptixRenderer::render_pathtrace requires the OptiX SDK; "
         "rebuild with -DRR_ENABLE_OPTIX=ON and pass "
+        "-DOPTIX_ROOT=/path/to/optix-sdk so <optix.h> is "
+        "available. The CUDA path is unaffected.";
+    return r;
+}
+
+OptixRenderer::PathtraceProgressiveResult
+OptixRenderer::render_pathtrace_progressive(
+    const rr::scene::Scene& /*scene*/,
+    int /*width*/,
+    int /*height*/,
+    int /*max_bounces*/,
+    unsigned int /*seed*/,
+    const std::vector<int>& /*checkpoint_samples*/) noexcept {
+    PathtraceProgressiveResult r;
+    r.ok = false;
+    r.message =
+        "OptixRenderer::render_pathtrace_progressive requires the "
+        "OptiX SDK; rebuild with -DRR_ENABLE_OPTIX=ON and pass "
         "-DOPTIX_ROOT=/path/to/optix-sdk so <optix.h> is "
         "available. The CUDA path is unaffected.";
     return r;
