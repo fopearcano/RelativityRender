@@ -19677,6 +19677,361 @@ the other OptiX entries.
   fallback; clean build;
   ctest 7/7 green.
 
+## Stage 20M — OptiX texture sampling
+
+**Scope of this slice (Stage 20M;
+master order #17, "OptiX upgrade
+path"): use the existing texture
+system (`rr::cuda::DeviceTextureView`
++ `sampleTextureNearest`, Stage
+13B.2) inside the OptiX
+material-flat closest-hit. Per-
+vertex UVs + triangle indices are
+uploaded as side buffers (the GAS
+keeps its tightly-packed `float3`
+position layout per Stage 20F),
+threaded through
+`OptixLaunchParams`, and read
+inside the closest-hit when the
+material has
+`useBaseColorTexture == true`.
+Mirrors the CUDA
+`--render-textured-material`'s
+Stage 13B.3 shape — same 2x2
+four-colour reference texture +
+textured-quad scene built inline
+by the dispatcher.**
+
+### What ships
+
+- `src/optix/OptixLaunchParams.h`:
+  four new fields. Defaults
+  preserve Stage 20G behaviour
+  byte-for-byte (texture sampling
+  short-circuits when any of
+  these is null / zero):
+    - `const rr::math::Vec2*
+      mesh_uvs = nullptr` —
+      device per-vertex UV array.
+    - `const rr::geometry::Triangle*
+      mesh_indices = nullptr` —
+      device triangle-index
+      array (mirrors the GAS
+      indices).
+    - `const rr::cuda::DeviceTextureView*
+      textures = nullptr` —
+      device array of
+      per-texture views (each
+      points at its own pixel
+      buffer + carries width /
+      height / format).
+    - `std::int32_t texture_count
+      = 0`.
+- `src/optix/OptixPrograms.cu`:
+  closest-hit `shading_mode == 1`
+  branch extended. When the SBT
+  hit-record's `params` carries
+  `useBaseColorTexture == true`
+  AND `baseColorTextureId` is in
+  `[0, texture_count)` AND all
+  three launch-params pointers
+  are non-null, the closest-hit:
+    - reads barycentrics via
+      `optixGetTriangleBarycentrics()`
+      (returns `(b1, b2)`;
+      `b0 = 1 - b1 - b2`),
+    - reads the triangle's
+      vertex indices via
+      `optixLaunchParams.mesh_indices[prim_idx]`,
+    - looks up the three vertex
+      UVs via
+      `optixLaunchParams.mesh_uvs[v0..v2]`,
+    - barycentric-interpolates
+      the UV,
+    - samples
+      `optixLaunchParams.textures[baseColorTextureId]`
+      via the Stage 13B.2
+      `rr::cuda::sampleTextureNearest`
+      (RR_HD inline; same code
+      path the CUDA renderer
+      uses).
+  Falls back to flat
+  `params.baseColor` otherwise.
+  Emission term unchanged.
+- `src/optix/OptixRenderer.{h,cpp}`:
+  new
+  `render_textured_material(scene,
+  textures, w, h)` static method.
+  Same first-non-empty-mesh
+  selection + GAS-build path as
+  Stage 20F. Additionally:
+    - Extracts per-vertex UVs into
+      a separate `Vec2` buffer (the
+      `Vertex` POD's UV slot,
+      previously skipped by the
+      GAS-only upload) and uploads
+      to a device buffer.
+    - Uploads the per-triangle
+      `Triangle` index array as
+      `mesh_indices` (the same
+      data already used by the GAS
+      builder; uploaded again so
+      the closest-hit can index it
+      directly without unpacking
+      from `optixGetTriangleVertexData`).
+    - Iterates `textures`: for each
+      `ImageTexture`, allocates a
+      device pixel buffer +
+      `cudaMemcpy`s the bytes.
+      Builds a host-side array of
+      `DeviceTextureView` (each
+      pointing at its respective
+      device buffer + recording
+      `width / height / format`),
+      then uploads the array to
+      a single device buffer.
+    - Sets the SBT hit-record via
+      `set_hit_material(material,
+      shading_mode = 1)`.
+    - Threads everything through
+      `OptixLaunchParams`. Audit-
+      host stub returns the
+      documented "requires
+      OptiX SDK" error.
+  Forward declarations
+  (`namespace rr::texture { class
+  ImageTexture; }`) added to
+  `OptixRenderer.h`; the cpp
+  pulls in `texture/ImageTexture.h`
+  unconditionally so both the
+  SDK-found path AND the audit-
+  host stub see the complete
+  type for `std::vector<ImageTexture>&`.
+- `src/core/CommandLine.{h,cpp}`:
+  new `Action::RenderOptixTexturedMaterial`
+  enum value; new
+  `--render-optix-textured-material`
+  parser branch (takes NO `<file>`
+  argument — mirrors CUDA
+  `--render-textured-material`'s
+  shape: the dispatcher builds
+  the procedural scene + texture
+  inline); help-text entry; mutex
+  error message updated;
+  validation list updated.
+- `src/main.cpp`: new
+  `run_render_optix_textured_material(const
+  Config&)` dispatcher. Builds
+  the same procedural scene as
+  the CUDA dispatcher (textured
+  quad with material 0 carrying
+  `useBaseColorTexture = true`
+  + `baseColorTextureId = 0`)
+  + the same 2x2 four-colour
+  reference texture (top-left
+  red, top-right green,
+  bottom-left blue, bottom-right
+  yellow), then calls
+  `OptixRenderer::render_textured_material(scene,
+  textures, w, h)`. Default
+  output
+  `output/optix_textured_material.ppm`.
+  Scene / texture / vector /
+  cstring includes lifted out
+  of the `RR_HAS_CUDA` gate so
+  the audit-host build can
+  construct the procedural
+  scene before reaching the
+  OptiX gate (same shape as
+  the loader-then-OptiX-error
+  pattern).
+- `CMakeLists.txt`: banner /
+  DESCRIPTION bumped to "Stage
+  20M: OptiX texture sampling"
+  (two-line cosmetic).
+- `docs/BUILD_PLAN.md`: this
+  slice-closing entry.
+
+### Texture upload + sample chain
+
+```
+Host (render_textured_material):
+  for each ImageTexture tex:
+    cudaMalloc(d_pixels, tex.pixels().size())
+    cudaMemcpy(d_pixels, tex.pixels().data(), ...)
+    view_host.push_back({ d_pixels, tex.width(), tex.height(), tex.format() })
+  cudaMalloc(d_views, view_host.size() * sizeof(DeviceTextureView))
+  cudaMemcpy(d_views, view_host.data(), ...)
+  cudaMalloc(d_uvs / d_indices) + cudaMemcpy as before
+  optixLaunchParams.{mesh_uvs, mesh_indices, textures, texture_count} = ...
+  set_hit_material(mat with useBaseColorTexture=true, shading_mode=1)
+
+Device (__closesthit__radiance shading_mode==1):
+  if useBaseColorTexture && texId valid && launch params non-null:
+    bary  = optixGetTriangleBarycentrics()  // returns (b1, b2); b0 = 1-b1-b2
+    tri   = mesh_indices[optixGetPrimitiveIndex()]
+    uv    = uv[v0]*b0 + uv[v1]*b1 + uv[v2]*b2
+    base  = sampleTextureNearest(textures[baseColorTextureId], uv)
+  else:
+    base  = params.baseColor
+  color = base + params.emissionColor * params.emissionStrength
+```
+
+### Hard-rule audit
+
+- Upload texture data usable by
+  OptiX device programs - **yes**.
+  Per-texture pixel buffers
+  uploaded via `cudaMalloc` +
+  `cudaMemcpy`; each becomes a
+  `DeviceTextureView` entry in
+  the launch-params array. The
+  Stage 13B.2 view POD is RR_HD-
+  callable so it works in OptiX
+  device code without changes.
+- Sample nearest texture in
+  closest-hit - **yes**. Calls
+  `rr::cuda::sampleTextureNearest`
+  (RR_HD inline) inside the
+  closest-hit's
+  `shading_mode == 1` branch.
+  Same sampler the CUDA renderer
+  uses; bit-identical sampling
+  result for the same view + UV.
+- Support baseColorTextureId -
+  **yes**. The closest-hit reads
+  `params.baseColorTextureId`
+  from the SBT hit-record and
+  indexes the launch-params
+  textures array. Out-of-range
+  ids fall back to flat
+  `params.baseColor`. Mirrors the
+  CUDA k_render_scene safety
+  net (lines 401-409 of
+  CudaTestKernel.cu).
+- No advanced filtering -
+  **yes**. `sampleTextureNearest`
+  is nearest-neighbour with
+  clamp-to-edge UV addressing;
+  no MIP, no anisotropic, no
+  bilinear / trilinear.
+- Compiles with OptiX OFF -
+  **yes**. `cmake -S . -B build`
+  (no flags) clean; ctest 6/6
+  green; audit-host fallback
+  returns the documented
+  "requires OptiX" error after
+  successfully building the
+  procedural scene.
+- Compiles with OptiX ON -
+  **yes**. `cmake -S . -B
+  /tmp/rr-20m-on
+  -DRR_ENABLE_OPTIX=ON`: non-
+  blocking SDK-not-found
+  warning per Stage 12B.4;
+  rr_optix STATIC compiles via
+  two-layer audit-host
+  fallback (including the new
+  audit-host stub for
+  `render_textured_material`);
+  ctest 7/7 green.
+
+### Backward compatibility
+
+- Stage 20M's launch-params
+  fields (`mesh_uvs`,
+  `mesh_indices`, `textures`,
+  `texture_count`) all default
+  to null / zero. Existing
+  render entries
+  (`--render-optix-test`,
+  `--render-optix-triangle`,
+  `--render-optix-relativity`,
+  `--render-optix-raygen`,
+  `--render-optix-mesh-scene`,
+  `--render-optix-material-scene`,
+  `--render-optix-direct-lighting`,
+  `--render-optix-shadow-test`,
+  `--render-optix-pathtrace`)
+  do not populate them, so the
+  closest-hit's texture-sample
+  short-circuit fires and they
+  fall back to flat `baseColor`
+  — Stage 20G output preserved
+  byte-for-byte.
+- The closest-hit's
+  `shading_mode == 1` branch is
+  the existing Stage 20G
+  material-flat path; the
+  texture path is an *additive*
+  branch inside it (gated on
+  `useBaseColorTexture`), not a
+  replacement. Materials with
+  `useBaseColorTexture == false`
+  see the Stage 20G code path
+  byte-for-byte.
+
+### Audit-host CLI smoke checks
+
+- `--render-optix-textured-material`
+  (audit host): returns
+  "--render-optix-textured-material
+  requires OptiX. Rebuild with
+  -DRR_ENABLE_OPTIX=ON ..." and
+  exits 1 (after successfully
+  building the procedural
+  scene + texture host-side).
+- `--render-optix-textured-material
+  --render-optix-mesh-scene foo`:
+  returns the mutual-exclusion
+  error which now includes
+  `--render-optix-textured-material`
+  alongside the other render-*
+  actions.
+- `--help` shows the new entry
+  with documented default
+  output + texture-sampling
+  description.
+
+### Status (unchanged)
+
+Module #6 (OptiX Backend),
+module #10 (Texture System),
+and milestone M16 all remain at
+their existing statuses.
+Wiring the existing Stage 13B.2
+nearest-neighbour sampler into
+the OptiX closest-hit threads
+the texture data through the
+SBT/launch-params, but does
+not lift the project-wide
+visual-validation gate (no
+frame rendered through the
+OptiX path on a real OptiX-SDK
+host in this branch). Module
+#10's `foundation landed`
+status reflects that texture
+sampling is still nearest-
+neighbour only (no MIP / UDIM
+/ HDR decode); this slice does
+not change that.
+
+### Verified at the build
+
+- `cmake -S . -B build` (audit
+  host, no flags): banner
+  shows "Stage 20M: OptiX
+  texture sampling"; clean
+  build; ctest 6/6 green.
+- `cmake -S . -B /tmp/rr-20m-on
+  -DRR_ENABLE_OPTIX=ON`: non-
+  blocking SDK-not-found
+  warning per Stage 12B.4;
+  rr_optix STATIC compiles
+  via two-layer audit-host
+  fallback; clean build;
+  ctest 7/7 green.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:

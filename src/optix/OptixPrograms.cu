@@ -49,6 +49,8 @@
 #include <optix.h>
 
 #include "camera/CameraRay.h"
+#include "cuda/CudaTexture.cuh"        // Stage 20M: nearest-neighbour sampler
+#include "math/Vec2.h"                 // Stage 20M: UV interpolation
 #include "math/Vec3.h"
 #include "optix/OptixLaunchParams.h"
 #include "optix/OptixSBT.h"           // Stage 20G: HitGroupData
@@ -487,15 +489,54 @@ extern "C" __global__ void __closesthit__radiance() {
         color.z = albedo.z * (direct.z + ambient.z) + emission.z;
     } else if (hg != nullptr && hg->shading_mode == 1) {
         // Material flat shading: baseColor + emissionColor *
-        // emissionStrength. Closest-hit does not consult
-        // textures (Stage 20G: "no textures yet"), so
-        // useBaseColorTexture / baseColorTextureId are
-        // intentionally ignored here.
-        color.x = hg->params.baseColor.x
+        // emissionStrength. Stage 20M: when the material has
+        // `useBaseColorTexture` AND
+        // `baseColorTextureId` is in range AND the launch
+        // params carry a textures array + per-vertex UV
+        // buffers, sample the texture at the interpolated UV
+        // instead of using the flat `params.baseColor`. The
+        // emission term is unchanged.
+        Vec3 base{hg->params.baseColor.x,
+                  hg->params.baseColor.y,
+                  hg->params.baseColor.z};
+        if (hg->params.useBaseColorTexture
+         && hg->params.baseColorTextureId >= 0
+         && hg->params.baseColorTextureId
+                < optixLaunchParams.texture_count
+         && optixLaunchParams.textures      != nullptr
+         && optixLaunchParams.mesh_uvs      != nullptr
+         && optixLaunchParams.mesh_indices  != nullptr) {
+            // Interpolate UV via barycentrics. OptiX returns
+            // (b1, b2) from `optixGetTriangleBarycentrics`;
+            // b0 = 1 - b1 - b2.
+            const float2 bary = optixGetTriangleBarycentrics();
+            const float  b1   = bary.x;
+            const float  b2   = bary.y;
+            const float  b0   = 1.0f - b1 - b2;
+
+            const unsigned int prim_idx = optixGetPrimitiveIndex();
+            const auto tri = optixLaunchParams.mesh_indices[prim_idx];
+
+            const auto uv0 = optixLaunchParams.mesh_uvs[tri.v0];
+            const auto uv1 = optixLaunchParams.mesh_uvs[tri.v1];
+            const auto uv2 = optixLaunchParams.mesh_uvs[tri.v2];
+
+            const rr::math::Vec2 uv{
+                uv0.x * b0 + uv1.x * b1 + uv2.x * b2,
+                uv0.y * b0 + uv1.y * b1 + uv2.y * b2};
+
+            // Stage 13B.2 nearest-neighbour sampler. The
+            // returned magenta on invalid view propagates so
+            // the failure is visible in the framebuffer.
+            const auto& view =
+                optixLaunchParams.textures[hg->params.baseColorTextureId];
+            base = rr::cuda::sampleTextureNearest(view, uv);
+        }
+        color.x = base.x
                 + hg->params.emissionColor.x * hg->params.emissionStrength;
-        color.y = hg->params.baseColor.y
+        color.y = base.y
                 + hg->params.emissionColor.y * hg->params.emissionStrength;
-        color.z = hg->params.baseColor.z
+        color.z = base.z
                 + hg->params.emissionColor.z * hg->params.emissionStrength;
     } else {
         // Stage 17A.4 default: normal-as-color shading.

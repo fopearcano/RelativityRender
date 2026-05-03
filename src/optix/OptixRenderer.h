@@ -17,9 +17,11 @@
 // opt-in alternative gated on `-DRR_ENABLE_OPTIX=
 // ON` + a located OptiX SDK.
 
-// Forward decl so `render_mesh_scene` can take a Scene reference
-// without `OptixRenderer.h` pulling in scene/Scene.h transitively.
-namespace rr::scene { struct Scene; }
+// Forward decls so `render_mesh_scene` / `render_textured_material`
+// can take Scene + ImageTexture references without
+// `OptixRenderer.h` pulling those headers in transitively.
+namespace rr::scene   { struct Scene; }
+namespace rr::texture { class  ImageTexture; }
 
 namespace rr::optix {
 
@@ -306,6 +308,46 @@ public:
         const rr::scene::Scene& scene,
         int width, int height,
         bool enable_shadows = false) noexcept;
+
+    // Stage 20M textured-material render. Same first-non-
+    // empty-mesh selection + GAS-build path as
+    // render_material_scene. Additionally:
+    // - Uploads per-vertex UVs + triangle indices for the
+    //   picked mesh to device buffers; threads the pointers
+    //   into `OptixLaunchParams::mesh_uvs` /
+    //   `mesh_indices` so the closest-hit can interpolate
+    //   UVs at hit time via `optixGetTriangleBarycentrics()`.
+    // - Uploads `scene.textures` to device-resident
+    //   per-texture pixel buffers + builds a
+    //   `rr::cuda::DeviceTextureView` array on device;
+    //   threads the array pointer + count into
+    //   `OptixLaunchParams::textures` /
+    //   `texture_count`.
+    // - Sets the SBT hit-record's `shading_mode = 1` so the
+    //   closest-hit material-flat branch fires; that branch
+    //   reads `useBaseColorTexture` /
+    //   `baseColorTextureId` on the material and samples
+    //   `textures[id]` via `rr::cuda::sampleTextureNearest`
+    //   (Stage 13B.2 RR_HD inline) instead of using flat
+    //   `baseColor`.
+    //
+    // Output: `output/optix_textured_material.ppm`.
+    // Mirrors the CUDA `--render-textured-material`'s
+    // Stage 13B.3 shape conceptually. No advanced filtering
+    // (Stage 20M rule); nearest-neighbour only.
+    //
+    // Textures are passed as a separate argument because
+    // `rr::scene::Scene` does not currently carry a textures
+    // field; the caller is responsible for keeping the
+    // ImageTexture vector alive across the call (the
+    // function reads the raw byte data from each entry's
+    // `pixels()` and copies it to device buffers up front).
+    //
+    // Same audit-host fallback semantics as render_test.
+    [[nodiscard]] static Result render_textured_material(
+        const rr::scene::Scene& scene,
+        const std::vector<rr::texture::ImageTexture>& textures,
+        int width, int height) noexcept;
 };
 
 }  // namespace rr::optix

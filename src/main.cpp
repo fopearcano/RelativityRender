@@ -30,30 +30,38 @@
     #include "optix/OptixRenderer.h"
 #endif
 
+// Stage 20M: lift host-side scene / texture / vector / cstring
+// includes out of the RR_HAS_CUDA gate so the audit-host
+// `--render-optix-textured-material` dispatcher can construct
+// its procedural Scene + ImageTexture even when CUDA is OFF
+// (the OptiX render call is still gated on
+// RELATIVITYRENDER_ENABLE_OPTIX inside the dispatcher).
+#include "geometry/Mesh.h"
+#include "material/MaterialTypes.h"
+#include "math/Vec2.h"
+#include "math/Vec3.h"
+#include "scene/Scene.h"
+#include "texture/ImageTexture.h"
+
+#include <cstddef>
+#include <cstring>
+#include <vector>
+
 #ifdef RR_HAS_CUDA
     #include "camera/Camera.h"
     #include "cuda/CudaAccumulation.cuh"
     #include "cuda/CudaRenderer.h"
-    #include "geometry/Mesh.h"
     #include "geometry/Sphere.h"
     #include "geometry/Triangle.h"
     #include "gpu/GpuBuffer.h"
     #include "gpu/GpuScene.h"
     #include "lighting/Light.h"
     #include "material/Material.h"
-    #include "material/MaterialTypes.h"
-    #include "math/Vec3.h"
     #include "pathtracer/PathTracer.h"
     #include "relativity/RelativityParams.h"
     #include "renderer/AccumulationBuffer.h"
     #include "renderer/AOV.h"
     #include "renderer/GpuAOVBuffer.h"
-    #include "scene/Scene.h"
-    #include "texture/ImageTexture.h"
-
-    #include <cstddef>
-    #include <cstring>
-    #include <vector>
 #endif
 
 #include "image/Image.h"
@@ -1602,6 +1610,120 @@ int run_render_optix_shadow_test(const rr::core::Config& cfg) {
     std::error_code ec;
     const fs::path  abs = fs::absolute(out_fs, ec);
     Logger::info(std::string("wrote OptiX shadow test: ")
+               + (ec ? out_path : abs.string())
+               + " (" + std::to_string(cfg.width) + "x"
+               + std::to_string(cfg.height) + ", RGBA32F)");
+    return 0;
+#endif
+}
+
+// `--render-optix-textured-material` dispatch (Stage 20M).
+// Mirrors the CUDA `--render-textured-material` shape: takes
+// no scene file, constructs a procedural textured-quad scene
+// + 2x2 four-colour reference texture inline, then runs the
+// OptiX closest-hit's material-flat branch with texture
+// sampling enabled.
+//
+// Default output: `output/optix_textured_material.ppm`.
+// `--output` overrides. Requires both `-DRR_ENABLE_OPTIX=ON`
+// and a host with the CUDA Toolkit + OptiX SDK installed; the
+// audit-host fallback returns the documented "requires
+// OptiX" error.
+int run_render_optix_textured_material(const rr::core::Config& cfg) {
+    using rr::core::Logger;
+
+    const std::string out_path = cfg.output_path.empty()
+        ? std::string("output/optix_textured_material.ppm")
+        : cfg.output_path;
+
+    // Build a scene with a textured quad + the matching
+    // material. Mirrors the CUDA --render-textured-material
+    // dispatcher's shape so the OptiX output is comparable.
+    rr::scene::Scene scene;
+    scene.render_settings.width  = cfg.width;
+    scene.render_settings.height = cfg.height;
+    scene.camera.set_aspect(static_cast<float>(cfg.width)
+                          / static_cast<float>(cfg.height));
+
+    rr::material::MaterialParams textured_params;
+    textured_params.baseColor           = rr::math::Vec3{0.65f, 0.65f, 0.65f};
+    textured_params.useBaseColorTexture = true;
+    textured_params.baseColorTextureId  = 0;
+    scene.materials.push_back({0, "textured", textured_params});
+
+    rr::geometry::Mesh quad;
+    quad.vertices.push_back({rr::math::Vec3{-3.0f, -3.0f, -6.0f},
+                             rr::math::Vec3{0.0f, 0.0f, 1.0f},
+                             rr::math::Vec2{0.0f, 1.0f}});
+    quad.vertices.push_back({rr::math::Vec3{ 3.0f, -3.0f, -6.0f},
+                             rr::math::Vec3{0.0f, 0.0f, 1.0f},
+                             rr::math::Vec2{1.0f, 1.0f}});
+    quad.vertices.push_back({rr::math::Vec3{ 3.0f,  3.0f, -6.0f},
+                             rr::math::Vec3{0.0f, 0.0f, 1.0f},
+                             rr::math::Vec2{1.0f, 0.0f}});
+    quad.vertices.push_back({rr::math::Vec3{-3.0f,  3.0f, -6.0f},
+                             rr::math::Vec3{0.0f, 0.0f, 1.0f},
+                             rr::math::Vec2{0.0f, 0.0f}});
+    quad.triangles.push_back({0, 1, 2});
+    quad.triangles.push_back({0, 2, 3});
+    quad.material_id = 0;
+
+    rr::scene::SceneMesh smesh;
+    smesh.object.name  = "textured-quad";
+    smesh.geometry     = std::move(quad);
+    scene.meshes.push_back(std::move(smesh));
+
+    // 2x2 four-colour reference texture (top-left red,
+    // top-right green, bottom-left blue, bottom-right yellow).
+    // Same pattern as the CUDA --render-texture-sample-test +
+    // --render-textured-material; uv = (0, 0) at the top-left
+    // texel. Stored as Rgba8.
+    std::vector<rr::texture::ImageTexture> textures;
+    {
+        rr::texture::ImageTexture tex0(
+            2, 2,
+            rr::texture::ImageTextureFormat::Rgba8,
+            "textured_material_pattern");
+        const unsigned char rgba_bytes[16] = {
+            255,   0,   0, 255,    0, 255,   0, 255,
+              0,   0, 255, 255,  255, 255,   0, 255,
+        };
+        tex0.pixels().resize(sizeof rgba_bytes);
+        std::memcpy(tex0.pixels().data(), rgba_bytes, sizeof rgba_bytes);
+        textures.push_back(std::move(tex0));
+    }
+
+#ifndef RELATIVITYRENDER_ENABLE_OPTIX
+    Logger::error("--render-optix-textured-material requires OptiX. "
+                  "Rebuild with -DRR_ENABLE_OPTIX="
+                  "ON on a host with the CUDA Toolkit + OptiX "
+                  "SDK installed (also pass -DOPTIX_ROOT=/path/"
+                  "to/optix-sdk).");
+    return 1;
+#else
+    auto r = rr::optix::OptixRenderer::render_textured_material(
+        scene, textures, cfg.width, cfg.height);
+    if (!r.ok) {
+        Logger::error("optix textured-material render failed: " + r.message);
+        return 1;
+    }
+    log_gpu_timing("render-optix-textured-material",
+                   cfg.width, cfg.height, r.gpu_time_ms);
+
+    namespace fs = std::filesystem;
+    const fs::path out_fs = out_path;
+    if (out_fs.has_parent_path()) {
+        std::error_code ec;
+        fs::create_directories(out_fs.parent_path(), ec);
+    }
+    if (!r.image.save_ppm(out_fs)) {
+        Logger::error("could not write PPM: " + out_path);
+        return 1;
+    }
+
+    std::error_code ec;
+    const fs::path  abs = fs::absolute(out_fs, ec);
+    Logger::info(std::string("wrote OptiX textured material: ")
                + (ec ? out_path : abs.string())
                + " (" + std::to_string(cfg.width) + "x"
                + std::to_string(cfg.height) + ", RGBA32F)");
@@ -3663,6 +3785,9 @@ int main(int argc, char** argv) {
 
         case CommandLine::Action::RenderOptixShadowTest:
             return run_render_optix_shadow_test(result.config);
+
+        case CommandLine::Action::RenderOptixTexturedMaterial:
+            return run_render_optix_textured_material(result.config);
 
         case CommandLine::Action::RenderDenoise:
             return run_render_denoise(result.config);

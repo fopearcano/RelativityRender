@@ -3,6 +3,10 @@
 #include "optix/OptixAccel.h"
 #include "optix/OptixBackend.h"
 #include "optix/OptixPipeline.h"
+#include "texture/ImageTexture.h"   // Stage 20M: complete type for
+                                     // `std::vector<ImageTexture>&` in
+                                     // both SDK-found impls and audit-
+                                     // host stubs.
 
 #ifdef RELATIVITYRENDER_OPTIX_SDK_FOUND
     #include <cuda_runtime.h>
@@ -11,12 +15,15 @@
 
     #include "camera/Camera.h"
     #include "cuda/CudaAccumulation.cuh"  // Stage 20J: launch_accum_*
-    #include "geometry/Mesh.h"           // Stage 20F: Mesh / Vertex / Triangle
+    #include "cuda/CudaTexture.cuh"       // Stage 20M: DeviceTextureView
+    #include "geometry/Mesh.h"            // Stage 20F: Mesh / Vertex / Triangle
     #include "gpu/GpuTiming.h"
+    #include "math/Vec2.h"                // Stage 20M: per-vertex UVs
     #include "math/Vec3.h"
     #include "optix/OptixLaunchParams.h"
     #include "relativity/RelativityParams.h"
-    #include "scene/Scene.h"             // Stage 20F: Scene / SceneMesh
+    #include "scene/Scene.h"              // Stage 20F: Scene / SceneMesh
+    #include "texture/ImageTexture.h"     // Stage 20M: texture upload
 
     #include <algorithm>                  // Stage 20J: std::max_element
     #include <cstddef>
@@ -2047,6 +2054,321 @@ OptixRenderer::render_direct_lighting(const rr::scene::Scene& scene,
     return r;
 }
 
+OptixRenderer::Result
+OptixRenderer::render_textured_material(
+    const rr::scene::Scene& scene,
+    const std::vector<rr::texture::ImageTexture>& textures,
+    int width, int height) noexcept {
+    Result r;
+
+    if (width <= 0 || height <= 0) {
+        r.message = "OptixRenderer::render_textured_material: invalid dimensions";
+        return r;
+    }
+
+    // First-non-empty-mesh selection (mirrors Stage 20F shape).
+    const rr::geometry::Mesh* picked = nullptr;
+    for (const auto& sm : scene.meshes) {
+        if (!sm.object.visible) continue;
+        if (sm.geometry.empty()) continue;
+        picked = &sm.geometry;
+        break;
+    }
+    if (picked == nullptr) {
+        r.message = "render_textured_material: scene contains no "
+                    "visible non-empty mesh.";
+        return r;
+    }
+
+    // Pick the material (defaults to a fallback if material_id is
+    // out of range). The material's `useBaseColorTexture` flag +
+    // `baseColorTextureId` field decide whether the closest-hit
+    // samples a texture or falls back to flat baseColor.
+    rr::material::MaterialParams material_params{};
+    if (picked->material_id >= 0
+     && static_cast<std::size_t>(picked->material_id) < scene.materials.size()) {
+        material_params = scene.materials[picked->material_id].params;
+    }
+
+    OptixBackend backend;
+    if (!backend.initialize()) {
+        r.message = "render_textured_material: backend init failed: "
+                  + backend.last_error();
+        return r;
+    }
+
+    OptixPipeline pipeline;
+    {
+        OptixPipelineOptions opts;
+        opts.path_tracer = false;
+        const auto pr = pipeline.create(backend, opts);
+        if (!pr.ok) {
+            r.message = "render_textured_material: " + pr.error_message;
+            return r;
+        }
+    }
+    {
+        // shading_mode = 1 = material-flat. Stage 20M extends
+        // that branch to optionally sample a texture.
+        const auto pr = pipeline.set_hit_material(
+            material_params, /*shading_mode=*/1);
+        if (!pr.ok) {
+            r.message = "render_textured_material: " + pr.error_message;
+            return r;
+        }
+    }
+
+    // Position extraction + index upload (Stage 20F shape).
+    std::vector<float> flat_positions;
+    flat_positions.reserve(picked->vertices.size() * 3u);
+    for (const auto& v : picked->vertices) {
+        flat_positions.push_back(v.position.x);
+        flat_positions.push_back(v.position.y);
+        flat_positions.push_back(v.position.z);
+    }
+    // Stage 20M: also extract per-vertex UVs into a parallel
+    // Vec2 buffer the closest-hit will index by triangle vertex
+    // indices.
+    std::vector<rr::math::Vec2> flat_uvs;
+    flat_uvs.reserve(picked->vertices.size());
+    for (const auto& v : picked->vertices) {
+        flat_uvs.push_back(v.uv);
+    }
+
+    const std::size_t n_vertices  = picked->vertices.size();
+    const std::size_t n_triangles = picked->triangles.size();
+
+    // Device buffers: positions (for GAS) + indices (for GAS +
+    // for closest-hit UV lookup) + UVs (for closest-hit) +
+    // per-texture pixel buffers + DeviceTextureView array +
+    // framebuffer. All allocations registered into a vector
+    // for the unified cleanup path.
+    std::vector<void*> device_allocs;
+    auto cleanup = [&]() {
+        for (auto* p : device_allocs) {
+            if (p) ::cudaFree(p);
+        }
+        device_allocs.clear();
+    };
+    auto register_alloc = [&](void* p) -> void* {
+        device_allocs.push_back(p);
+        return p;
+    };
+
+    void* d_positions = nullptr;
+    {
+        const std::size_t bytes = flat_positions.size() * sizeof(float);
+        if (::cudaMalloc(&d_positions, bytes) != cudaSuccess) {
+            r.message = "render_textured_material: cudaMalloc(positions) failed";
+            return r;
+        }
+        register_alloc(d_positions);
+        if (::cudaMemcpy(d_positions, flat_positions.data(), bytes,
+                         cudaMemcpyHostToDevice) != cudaSuccess) {
+            cleanup();
+            r.message = "render_textured_material: cudaMemcpy(positions) failed";
+            return r;
+        }
+    }
+
+    void* d_indices = nullptr;
+    {
+        const std::size_t bytes =
+            n_triangles * sizeof(rr::geometry::Triangle);
+        if (::cudaMalloc(&d_indices, bytes) != cudaSuccess) {
+            cleanup();
+            r.message = "render_textured_material: cudaMalloc(indices) failed";
+            return r;
+        }
+        register_alloc(d_indices);
+        if (::cudaMemcpy(d_indices, picked->triangles.data(), bytes,
+                         cudaMemcpyHostToDevice) != cudaSuccess) {
+            cleanup();
+            r.message = "render_textured_material: cudaMemcpy(indices) failed";
+            return r;
+        }
+    }
+
+    void* d_uvs = nullptr;
+    {
+        const std::size_t bytes = flat_uvs.size() * sizeof(rr::math::Vec2);
+        if (::cudaMalloc(&d_uvs, bytes) != cudaSuccess) {
+            cleanup();
+            r.message = "render_textured_material: cudaMalloc(uvs) failed";
+            return r;
+        }
+        register_alloc(d_uvs);
+        if (::cudaMemcpy(d_uvs, flat_uvs.data(), bytes,
+                         cudaMemcpyHostToDevice) != cudaSuccess) {
+            cleanup();
+            r.message = "render_textured_material: cudaMemcpy(uvs) failed";
+            return r;
+        }
+    }
+
+    BuildGasResult gas_result;
+    {
+        MeshGasInput gi{};
+        gi.device_vertices = d_positions;
+        gi.vertex_count    = n_vertices;
+        gi.device_indices  = d_indices;
+        gi.triangle_count  = n_triangles;
+        gas_result = build_mesh_gas(backend, gi);
+        if (!gas_result.ok) {
+            cleanup();
+            r.message = "render_textured_material: " + gas_result.error_message;
+            return r;
+        }
+    }
+
+    // Stage 20M: upload textures. For each entry build a
+    // per-texture pixel buffer + record a DeviceTextureView
+    // entry pointing at it. Then upload the array of views to
+    // a single device buffer.
+    std::vector<rr::cuda::DeviceTextureView> view_host;
+    view_host.reserve(textures.size());
+    for (const auto& tex : textures) {
+        rr::cuda::DeviceTextureView v{};
+        v.width  = tex.width();
+        v.height = tex.height();
+        v.format = tex.format();
+
+        const auto& bytes = tex.pixels();
+        if (bytes.empty()) {
+            // Zero-pixel texture: leave pixels = nullptr so the
+            // sampler's `device_texture_view_valid` check
+            // returns false and the magenta fallback fires.
+            view_host.push_back(v);
+            continue;
+        }
+
+        void* d_pixels = nullptr;
+        if (::cudaMalloc(&d_pixels, bytes.size()) != cudaSuccess) {
+            cleanup();
+            r.message = "render_textured_material: cudaMalloc(texture pixels) failed";
+            return r;
+        }
+        register_alloc(d_pixels);
+        if (::cudaMemcpy(d_pixels, bytes.data(), bytes.size(),
+                         cudaMemcpyHostToDevice) != cudaSuccess) {
+            cleanup();
+            r.message = "render_textured_material: cudaMemcpy(texture pixels) failed";
+            return r;
+        }
+        v.pixels = static_cast<const std::byte*>(d_pixels);
+        view_host.push_back(v);
+    }
+
+    void* d_views = nullptr;
+    if (!view_host.empty()) {
+        const std::size_t bytes =
+            view_host.size() * sizeof(rr::cuda::DeviceTextureView);
+        if (::cudaMalloc(&d_views, bytes) != cudaSuccess) {
+            cleanup();
+            r.message = "render_textured_material: cudaMalloc(view array) failed";
+            return r;
+        }
+        register_alloc(d_views);
+        if (::cudaMemcpy(d_views, view_host.data(), bytes,
+                         cudaMemcpyHostToDevice) != cudaSuccess) {
+            cleanup();
+            r.message = "render_textured_material: cudaMemcpy(view array) failed";
+            return r;
+        }
+    }
+
+    rr::camera::Camera camera = scene.camera;
+    camera.set_aspect(static_cast<float>(width)
+                    / static_cast<float>(height));
+    const rr::camera::GpuCamera gpu_cam = camera.to_gpu();
+
+    const std::size_t framebuffer_floats =
+        static_cast<std::size_t>(width)
+      * static_cast<std::size_t>(height) * 4u;
+    const std::size_t framebuffer_bytes  = framebuffer_floats * sizeof(float);
+
+    void* d_framebuffer = nullptr;
+    if (::cudaMalloc(&d_framebuffer, framebuffer_bytes) != cudaSuccess) {
+        cleanup();
+        r.message = "render_textured_material: cudaMalloc(framebuffer) failed";
+        return r;
+    }
+    register_alloc(d_framebuffer);
+
+    OptixLaunchParams params{};
+    params.framebuffer  = static_cast<float*>(d_framebuffer);
+    params.width        = width;
+    params.height       = height;
+    params.camera       = gpu_cam;
+    params.scene_handle = gas_result.gas.handle();
+    params.mesh_uvs     =
+        static_cast<const rr::math::Vec2*>(d_uvs);
+    params.mesh_indices =
+        static_cast<const rr::geometry::Triangle*>(d_indices);
+    params.textures     =
+        static_cast<const rr::cuda::DeviceTextureView*>(d_views);
+    params.texture_count = static_cast<std::int32_t>(view_host.size());
+
+    {
+        const ::cudaError_t e = ::cudaMemcpy(
+            pipeline.launch_params_device_ptr(),
+            &params, sizeof(params), cudaMemcpyHostToDevice);
+        if (e != cudaSuccess) {
+            cleanup();
+            r.message = std::string("render_textured_material: ")
+                      + "cudaMemcpy(launch params) failed: "
+                      + ::cudaGetErrorString(e);
+            return r;
+        }
+    }
+
+    rr::gpu::GpuTimer timer;
+    {
+        const auto* sbt = static_cast<const ::OptixShaderBindingTable*>(
+            pipeline.shader_binding_table());
+        timer.start();
+        const ::OptixResult res = ::optixLaunch(
+            static_cast<::OptixPipeline>(pipeline.pipeline_handle()),
+            /*stream=*/0,
+            reinterpret_cast<::CUdeviceptr>(pipeline.launch_params_device_ptr()),
+            pipeline.launch_params_size_bytes(),
+            sbt,
+            static_cast<unsigned>(width),
+            static_cast<unsigned>(height),
+            /*depth=*/1u);
+        timer.stop();
+        if (res != OPTIX_SUCCESS) {
+            cleanup();
+            r.message = std::string("render_textured_material: "
+                                    "optixLaunch failed: ")
+                      + ::optixGetErrorName(res);
+            return r;
+        }
+    }
+
+    if (::cudaDeviceSynchronize() != cudaSuccess) {
+        cleanup();
+        r.message = "render_textured_material: cudaDeviceSynchronize failed";
+        return r;
+    }
+    r.gpu_time_ms = timer.elapsed_ms();
+
+    rr::image::Image img(width, height, rr::image::PixelFormat::Rgba32F);
+    if (::cudaMemcpy(img.data(), d_framebuffer, framebuffer_bytes,
+                     cudaMemcpyDeviceToHost) != cudaSuccess) {
+        cleanup();
+        r.message = "render_textured_material: cudaMemcpy(d->h) failed";
+        return r;
+    }
+
+    cleanup();
+
+    r.image   = std::move(img);
+    r.ok      = true;
+    r.message = "OptiX textured-material render complete.";
+    return r;
+}
+
 #else   // RELATIVITYRENDER_OPTIX_SDK_FOUND
 
 OptixRenderer::Result
@@ -2155,6 +2477,22 @@ OptixRenderer::render_pathtrace_progressive(
     r.ok = false;
     r.message =
         "OptixRenderer::render_pathtrace_progressive requires the "
+        "OptiX SDK; rebuild with -DRR_ENABLE_OPTIX=ON and pass "
+        "-DOPTIX_ROOT=/path/to/optix-sdk so <optix.h> is "
+        "available. The CUDA path is unaffected.";
+    return r;
+}
+
+OptixRenderer::Result
+OptixRenderer::render_textured_material(
+    const rr::scene::Scene& /*scene*/,
+    const std::vector<rr::texture::ImageTexture>& /*textures*/,
+    int /*width*/,
+    int /*height*/) noexcept {
+    Result r;
+    r.ok = false;
+    r.message =
+        "OptixRenderer::render_textured_material requires the "
         "OptiX SDK; rebuild with -DRR_ENABLE_OPTIX=ON and pass "
         "-DOPTIX_ROOT=/path/to/optix-sdk so <optix.h> is "
         "available. The CUDA path is unaffected.";

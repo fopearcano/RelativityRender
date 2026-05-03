@@ -65,6 +65,7 @@ bool set_action(CommandLine::Action& current, CommandLine::Action target,
                 "--render-optix-pathtrace / "
                 "--render-optix-direct-lighting / "
                 "--render-optix-shadow-test / "
+                "--render-optix-textured-material / "
                 "--render-denoise / "
                 "--render-demo)";
         return false;
@@ -362,6 +363,18 @@ CommandLine::ParseResult CommandLine::parse(int argc, char** argv) {
                 return r;
             }
             r.config.scene_path.assign(value);
+        } else if (a == "--render-optix-textured-material") {
+            // Stage 20M: OptiX textured-material render.
+            // Mirrors the CUDA --render-textured-material
+            // shape: takes NO scene argument (the dispatcher
+            // builds the procedural textured-quad scene + 2x2
+            // reference texture inline) and writes
+            // output/optix_textured_material.ppm.
+            if (!set_action(r.action, Action::RenderOptixTexturedMaterial,
+                            r.error_message)) {
+                r.action = Action::Error;
+                return r;
+            }
         } else if (a == "--render-denoise") {
             if (!set_action(r.action, Action::RenderDenoise,
                             r.error_message)) {
@@ -465,6 +478,7 @@ CommandLine::ParseResult CommandLine::parse(int argc, char** argv) {
      || r.action == Action::RenderOptixPathtrace
      || r.action == Action::RenderOptixDirectLighting
      || r.action == Action::RenderOptixShadowTest
+     || r.action == Action::RenderOptixTexturedMaterial
      || r.action == Action::RenderDenoise) {
         if (auto err = r.config.validate(); !err.empty()) {
             r.action        = Action::Error;
@@ -746,6 +760,22 @@ std::string CommandLine::usage(std::string_view argv0) {
                                   "trace through the dedicated\n"
        << "                        __miss__shadow program. Default "
                                   "output output/optix_shadow_test.ppm.\n"
+       << "                        Same OptiX requirements as above.\n"
+       << "  --render-optix-textured-material\n"
+       << "                        Stage 20M OptiX textured-material "
+                                  "render. Builds a procedural\n"
+       << "                        textured-quad scene + 2x2 reference "
+                                  "texture inline (mirrors\n"
+       << "                        CUDA --render-textured-material), "
+                                  "uploads UVs + indices +\n"
+       << "                        per-texture pixel buffers + a "
+                                  "DeviceTextureView array via\n"
+       << "                        OptixLaunchParams, runs the "
+                                  "closest-hit material-flat branch\n"
+       << "                        with nearest-neighbour texture "
+                                  "sampling. No advanced filtering.\n"
+       << "                        Default output "
+                                  "output/optix_textured_material.ppm.\n"
        << "                        Same OptiX requirements as above.\n"
        << "  --render-denoise      Stage 19B.3 OptiX denoiser end-to-end "
                                   "fixture. Builds a small\n"

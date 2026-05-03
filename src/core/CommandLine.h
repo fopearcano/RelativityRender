@@ -378,6 +378,13 @@ public:
         // toward the light source. Output:
         // output/optix_shadow_test.ppm.
         RenderOptixShadowTest,
+        // Stage 20M OptiX textured-material render. Builds a
+        // procedural textured-quad scene (mirroring CUDA
+        // --render-textured-material) + a 2x2 reference
+        // texture, runs the closest-hit material-flat branch
+        // with texture sampling enabled. Output:
+        // output/optix_textured_material.ppm.
+        RenderOptixTexturedMaterial,
         RenderDenoise,
         // Stage 19E.2: smallest-meaningful-relativistic-render demo.
         // Single sphere + one diffuse material + one environment

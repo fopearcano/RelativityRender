@@ -1,7 +1,10 @@
 #pragma once
 
 #include "camera/CameraRay.h"
-#include "lighting/Light.h"           // Stage 20K: Light POD union
+#include "cuda/CudaTexture.cuh"        // Stage 20M: DeviceTextureView
+#include "geometry/Triangle.h"         // Stage 20M: per-vertex UV indexing
+#include "lighting/Light.h"            // Stage 20K: Light POD union
+#include "math/Vec2.h"                 // Stage 20M: per-vertex UVs
 #include "relativity/RelativityParams.h"
 
 #include <cstdint>
@@ -179,6 +182,39 @@ struct OptixLaunchParams {
     // record 1) sets a single visibility-flag payload
     // register when the ray escapes.
     bool          enable_shadows = false;
+
+    // ---- Stage 20M textured-material state ----
+    //
+    // Used by the radiance closest-hit when the SBT hit-record
+    // carries `shading_mode == 1` AND the picked material has
+    // `useBaseColorTexture == true`. The closest-hit interpolates
+    // UVs via `optixGetTriangleBarycentrics()`, looks up
+    // `textures[baseColorTextureId]`, and calls
+    // `rr::cuda::sampleTextureNearest(...)` instead of using
+    // `params.baseColor` directly.
+    //
+    // Defaults (all-null + zero) preserve Stage 20G behaviour
+    // byte-for-byte: the closest-hit's
+    // `useBaseColorTexture` check evaluates to "no" in that
+    // state and falls back to `params.baseColor`.
+    //
+    // - `mesh_uvs`: device-resident array of per-vertex `Vec2`
+    //   UVs (one per Vertex). Indexed by triangle vertex
+    //   indices.
+    // - `mesh_indices`: device-resident array of `Triangle`
+    //   (3 x uint32_t). Same data as the GAS index buffer;
+    //   uploaded separately so the closest-hit can find a
+    //   triangle's vertex indices.
+    // - `textures`: device-resident array of
+    //   `rr::cuda::DeviceTextureView`. One entry per scene
+    //   texture; the host builds the array by allocating
+    //   per-texture pixel buffers + recording (pixels, w, h,
+    //   format) for each.
+    // - `texture_count`: number of entries in `textures`.
+    const rr::math::Vec2*                mesh_uvs      = nullptr;
+    const rr::geometry::Triangle*        mesh_indices  = nullptr;
+    const rr::cuda::DeviceTextureView*   textures      = nullptr;
+    std::int32_t                         texture_count = 0;
 };
 
 }  // namespace rr::optix
