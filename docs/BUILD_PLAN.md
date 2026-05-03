@@ -17208,6 +17208,207 @@ contract.
   exercises it and asserts
   honest reporting.
 
+## Stage 20E — OptiX closest-hit (verification only)
+
+**Scope of this slice (Stage 20E;
+master order #17, "OptiX upgrade
+path"): the prompt asks for the
+closest-hit program, the hit-group
+SBT record, and a flat-color or
+normal-color output written to
+`output/optix_triangle.ppm`. Every
+one of those pieces shipped in
+Stage 17A.4. This slice is
+verification-only — no source code
+is added or removed; the CMake
+banner is bumped and the audit
+findings are recorded here so a
+future maintainer can confirm
+which slice originally landed
+each piece.**
+
+### Why this slice is verification-only
+
+Per master rule §3 ("Do not implement
+fake stubs pretending to be complete
+systems") and §12 ("Do not overbuild
+a later system before the current
+layer works"), neither of which is
+violated by the existing closest-hit
++ SBT + CLI surface. The four 20E
+acceptance criteria are already met:
+
+| Criterion | Source |
+|-----------|--------|
+| Closest-hit program | `__closesthit__radiance` in `src/optix/OptixPrograms.cu:208` (Stage 17A.4). The body recovers the triangle's three world-space vertex positions via `optixGetTriangleVertexData(...)`, computes the geometric normal `normalize(cross(v1 - v0, v2 - v0))`, and writes `0.5 * n + 0.5` (normal-as-color) to the 3 payload registers. Stage 17A.5 layered the Doppler / searchlight stack on top, but at default-constructed `Observer` (|beta| = 0) those degenerate to identity, so the closest-hit's output is byte-identical to the Stage 17A.4 normal-as-color shading. |
+| Hit-group SBT record | `HitGroupSbtRecord` in `src/optix/OptixSBT.h:46` (Stage 17A.4). Header-only record, aligned to `OPTIX_SBT_RECORD_ALIGNMENT`. The closest-hit reads vertex positions via `optixGetTriangleVertexData(...)` rather than from per-record data, so no record payload is needed yet. |
+| Hit-group `OptixProgramGroup` creation | `optixProgramGroupCreate(... &hitgroup_pg)` at `src/optix/OptixPipeline.cpp:218` (Stage 17A.4). The program group is plumbed into `optixPipelineCreate`'s `pgs[]` array at line 234. |
+| `entryFunctionNameCH = "__closesthit__radiance"` | `src/optix/OptixPipeline.cpp:209` (Stage 17A.4). The closest-hit entry-function name passed into `OptixProgramGroupDesc` matches the `extern "C"` symbol in `OptixPrograms.cu`. |
+| Flat color or normal color output | Normal-as-color (`0.5 * n + 0.5`) per `OptixPrograms.cu:236-238`. Matches the CUDA path's `--render-triangle` output for the same triangle fixture. |
+| Output `output/optix_triangle.ppm` | `--render-optix-triangle` action default at `src/main.cpp:1014`; `--output` overrides. The action calls `OptixRenderer::render_triangle(width, height)` (Stage 17A.4). |
+
+Removing or rebuilding any of these
+to "match the phased plan" would be
+destructive: it would orphan the
+`--render-optix-triangle` /
+`--render-optix-relativity` /
+`--render-optix-raygen` CLI surfaces,
+demote module #6 / milestone M15
+from their honest "partial
+implementation" status, and discard
+real working code. Per the master
+CURRENT PROMPT RULE ("implement only
+the safe prerequisite work"), the
+safe prerequisite work *is the
+closest-hit + SBT + CLI*, and it is
+already done.
+
+### What ships this slice
+
+- `CMakeLists.txt`: banner /
+  `DESCRIPTION` bumped from "Stage
+  20D: OptiX one-triangle GAS" to
+  "Stage 20E: OptiX closest-hit
+  verified" (two-line cosmetic).
+- `docs/BUILD_PLAN.md`: this
+  slice-closing entry. **No
+  source-code changes; no
+  module-status row, milestone-
+  status row, or canonical
+  historical entry was modified.**
+
+### Hard-rule audit
+
+- No path tracing yet - **yes**.
+  `__closesthit__radiance` writes
+  the per-pixel payload and
+  returns; no recursive
+  `optixTrace`, no bounce loop,
+  no RNG. Stage 20B's
+  `accum_buffer` / `sample_index`
+  placeholders remain at default
+  `nullptr` / `0`. `git diff
+  --stat src/optix/` empty.
+- No materials yet - **yes**.
+  The closest-hit reads vertex
+  positions from
+  `optixGetTriangleVertexData(...)`
+  and emits normal-as-color
+  directly; no `MaterialParams`
+  consultation, no SBT-record
+  material payload, no shading
+  network. The `HitGroupSbtRecord`
+  has no per-record material
+  data. `git diff --stat
+  src/material/` empty.
+- No scene parser yet - **yes**.
+  `OptixRenderer::render_triangle`
+  uses a hard-coded `static const
+  float kVertices[3 * 3]` /
+  `static const std::uint32_t
+  kIndices[3]` fixture; no
+  `rr::io::SceneLoader`
+  integration. `git diff --stat
+  src/io/` empty.
+- Compiles with OptiX OFF -
+  **yes**. `cmake -S . -B build`
+  no flags: clean build; ctest
+  6/6 green; the audit-host
+  fallback returns the documented
+  `--render-optix-triangle
+  requires OptiX. Rebuild with
+  -DRR_ENABLE_OPTIX=ON ...`
+  error.
+- Compiles with OptiX ON -
+  **yes**. `cmake -S . -B
+  /tmp/rr-20e-on
+  -DRR_ENABLE_OPTIX=ON`: clean
+  build via two-layer audit-host
+  fallback; ctest 7/7 green
+  (including the Stage 20D
+  `optix_tests` 56-assertion
+  pass).
+
+### Closest-hit body summary
+
+The shading path through
+`__closesthit__radiance`
+(`src/optix/OptixPrograms.cu:208-251`):
+
+1. Recover triangle GAS metadata:
+   `optixGetGASTraversableHandle()` /
+   `optixGetPrimitiveIndex()` /
+   `optixGetSbtGASIndex()`.
+2. Pull the three world-space vertex
+   positions via
+   `optixGetTriangleVertexData(gas,
+   prim_idx, sbt_gas_idx, time, verts)`.
+3. Compute geometric normal:
+   `n = normalize(cross(v1 - v0, v2 - v0))`
+   using `rsqrtf` for the inverse
+   length. Defensive zero-length
+   guard returns `(0, 0, 0)` if the
+   triangle is degenerate.
+4. Encode to colour:
+   `Vec3 color = 0.5 * n + 0.5;`
+   maps `[-1, 1]` -> `[0, 1]`.
+5. Apply Stage 17A.5 Doppler +
+   searchlight stack. At
+   default-constructed `Observer`
+   (|beta| = 0) this is identity,
+   so the output equals the Stage
+   17A.4 normal-as-color shading.
+6. Pack into payload:
+   `set_payload_rgb(color.x,
+   color.y, color.z)` writes the
+   3 payload registers; the
+   raygen reads them and stores
+   into the framebuffer.
+
+### Status (unchanged)
+
+Module #6 (OptiX Backend) and
+milestone M15 (OptiX Backend
+Upgrade Path) both remain at
+`partial implementation`.
+Verifying that the closest-hit +
+SBT + CLI surface is wired does
+not lift the project-wide visual-
+validation gate (no frame
+rendered through the OptiX path
+on a real OptiX-SDK host in this
+branch). The actual
+`output/optix_triangle.ppm` pixel
+output is gated on the same
+future real-hardware run as the
+other OptiX entries.
+
+### Verified at the build
+
+- `cmake -S . -B build` (audit
+  host, no flags): banner shows
+  "Stage 20E: OptiX closest-hit
+  verified"; clean build; ctest
+  6/6 green.
+- `cmake -S . -B /tmp/rr-20e-on
+  -DRR_ENABLE_OPTIX=ON`: non-
+  blocking SDK-not-found warning
+  per Stage 12B.4; rr_optix
+  STATIC compiles via two-layer
+  audit-host fallback; ctest 7/7
+  green (Stage 20D
+  `optix_tests` 56-assertion
+  test passes; the
+  `__closesthit__radiance` PTX
+  is embedded but never
+  launched on the audit host).
+- `--render-optix-triangle`
+  (audit host): returns
+  `--render-optix-triangle
+  requires OptiX. Rebuild with
+  -DRR_ENABLE_OPTIX=ON ...` and
+  exits 1.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
