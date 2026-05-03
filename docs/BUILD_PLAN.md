@@ -21132,6 +21132,58 @@ new minimal plan.
   ctest 6/6 from the post-
   Stage-20 baseline.
 
+## Stage 21A.8 — denoiser modes (planning)
+
+**Scope of this slice (Stage 21A.8;
+master order #24, "Denoising"):
+append a five-bullet "Modes"
+section to `docs/DENOISER_PLAN.md`.
+Pins manual denoise (CLI flag)
+as the only v1.0 mode, declares
+automatic-after-render as a
+future / optional mode (out of
+scope for v1.0; lands when
+server / preview UI / DCC
+bridge needs it), records that
+both modes share the identical
+pipeline (Stage 21A.5) and only
+differ in trigger, and pins
+that mode selection does not
+affect the failure behaviour
+(Stage 21A.7). NO
+implementation; NO source
+changes.**
+
+### What ships
+
+- `docs/DENOISER_PLAN.md` extended
+  with a single `## Modes`
+  section (five bullets).
+- This `BUILD_PLAN.md`
+  slice-closing entry.
+
+### Backward compatibility
+
+Documentation-only slice. The
+existing manual-mode CLI
+surfaces (`--render-denoise`
+dedicated action;
+`--render-aovs --denoise`
+modifier) shipped in Stage
+19B.3 / 19B.4 already implement
+manual mode; this entry simply
+formalises the v1.0 mode set.
+Automatic mode is not wired in
+any code path today.
+
+### Verified at the build
+
+- Documentation-only; no build
+  configuration touched. The
+  audit-host OFF build remains
+  ctest 6/6 from the post-
+  Stage-20 baseline.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
