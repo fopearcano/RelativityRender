@@ -20308,6 +20308,227 @@ host in this branch).
   GAS-build / launch-params
   / cleanup machinery.
 
+## Stage 20O — OptiX denoiser handoff (audit)
+
+**Scope of this slice (Stage 20O;
+master order #17, "OptiX upgrade
+path"): audit-only verification
+that the Stage 20N OptiX AOV path
+produces the Beauty / Albedo /
+Normal buffers the existing
+`OptixDenoiser::set_inputs(...)`
+contract requires, in the same
+layout the existing CUDA-path
+denoiser handoff
+(`denoise_aov_buffers_to_ppm`,
+Stage 19B.4) already consumes.
+NO denoiser orchestration is wired
+into the OptiX path in this slice
+- this entry exists to formally
+close out the Stage 20N feature
+and document the prerequisites
+the next slice will rely on.**
+
+### What ships
+
+- This audit-only `BUILD_PLAN.md`
+  entry. No code or build-system
+  changes; the Stage 20N
+  artifacts already cover every
+  prerequisite below.
+
+### Required buffers vs producer
+
+`docs/DENOISER_PLAN.md` §8.1 +
+`OptixDenoiser::Inputs` (Stage
+19B.2) require three device-
+resident `float*` buffers per
+`optixDenoiserInvoke`:
+
+| Slot   | Components | Layout                                  | Producer (Stage 20N)                                              |
+|--------|-----------:|-----------------------------------------|-------------------------------------------------------------------|
+| Beauty |          3 | linear-light RGB, no tone mapping       | `OptixLaunchParams::aov_beauty` written by closest-hit (post-     |
+|        |            |                                         | Doppler / searchlight) and miss (env colour post-Doppler).        |
+| Albedo |          3 | linear RGB, base colour BEFORE lighting | `OptixLaunchParams::aov_albedo` written by closest-hit (raw       |
+|        |            |                                         | `MaterialParams::baseColor` before any direct-lighting eval) and  |
+|        |            |                                         | miss (env colour PRE-Doppler).                                    |
+| Normal |          3 | XYZ in `[0, 1]` (encoded `0.5 n + 0.5`) | `OptixLaunchParams::aov_normal` written by closest-hit (encoded   |
+|        |            |                                         | shading normal) and miss (zero).                                  |
+
+All three buffers are allocated
+by `OptixRenderer::render_aovs`
+(Stage 20N) as float-strided
+device memory of
+`width * height * 3` floats and
+populated by
+`__raygen__radiance` /
+`__closesthit__radiance`
+(`shading_mode == 2`) /
+`__miss__radiance`. The
+`Depth`, `DopplerFactor`, and
+`SearchlightFactor` AOVs from
+the same launch are not
+required by the denoiser today
+(DENOISER_PLAN §8.2 explicitly
+defers Depth + Motion).
+
+### Encoded-normal convention
+
+Both paths emit the Normal AOV
+as `0.5 * n + 0.5` rather than
+the raw camera-space `n` in
+`[-1, 1]`. This is intentional
+parity with the CUDA path:
+- CUDA producer: Stage 14A.3
+  closest-hit
+  (`src/cuda/CudaTestKernel.cu`,
+  AOV-write block) encodes
+  `n_enc = 0.5 * n + 0.5` for
+  hits, `(0, 0, 0)` for misses.
+- OptiX producer: Stage 20N
+  closest-hit
+  (`src/optix/OptixPrograms.cu`,
+  `__closesthit__radiance` /
+  `shading_mode == 2`) writes
+  `aov_normal[pix3 + i] =
+  0.5 * n.{x,y,z} + 0.5` for
+  hits, `0` for misses.
+- Consumer: Stage 19B.4
+  `denoise_aov_buffers_to_ppm`
+  binds `aov_set[1].device_ptr()`
+  (the encoded-normal buffer)
+  directly to
+  `OptixDenoiser::Inputs::normal_device`
+  with no on-host re-encoding.
+
+The encoded form is what
+`OptixDenoiser` already
+consumes in production; the
+OptiX-path AOV pipeline
+inherits this convention
+without modification. A
+future slice that needs the
+unencoded form (e.g. a
+separate post-process AOV
+that wants signed normals)
+would add an additional buffer
+rather than retroactively
+changing the existing one.
+
+### Lifetime gap (carried forward)
+
+Stage 20N's
+`OptixRenderer::render_aovs`
+allocates the three AOV device
+buffers, runs `optixLaunch`,
+downloads each buffer into a
+host `Image`, and frees the
+device buffers via its
+`cleanup` lambda before
+returning. This is the correct
+shape for the audit-host CLI
+smoke (the artifact is the PPM
+file) but does not match the
+Stage 19B.4 CUDA-path denoiser
+flow, which keeps the
+device-resident `GpuAOVBuffer`
+instances alive across the
+`denoise_aov_buffers_to_ppm`
+call (the buffers stay in
+scope on the host side,
+exposing `device_ptr()` to
+`OptixDenoiser::set_inputs`).
+
+The OptiX-path equivalent that
+the next slice (post-Stage
+20O) will need is a sibling
+entry — e.g.
+`render_aovs_for_denoise`
+returning the device pointers
++ a cleanup token, OR an
+`OptixRenderer` member that
+keeps the buffers alive across
+a denoiser invoke. This audit
+flags the gap explicitly so
+the next slice's brief is
+clear: the producers exist;
+the only missing piece is
+durable ownership.
+
+### Backward compatibility
+
+This slice is documentation-only
+(no source / CMake / CLI
+changes). Every Stage 20N
+behaviour is preserved
+byte-for-byte; every prior
+OptiX entry's AOV-pointer
+defaults remain `nullptr` and
+produce identical output to
+their pre-Stage-20N
+versions.
+
+### Status (unchanged)
+
+Module #6 (OptiX Backend) and
+the AOV system both remain at
+their existing maturity
+statuses. Auditing the
+producer / consumer contract
+for the OptiX path's AOV
+buffers does not lift the
+project-wide visual-validation
+gate, nor does it advance any
+denoiser-related milestone -
+the actual OptiX denoiser
+handoff lands in a subsequent
+slice.
+
+### Verified at the build
+
+- `cmake -S . -B build_off
+  -DRR_ENABLE_CUDA=OFF
+  -DRR_ENABLE_OPTIX=OFF`
+  (audit host): banner shows
+  "Stage 20N: OptiX AOVs"
+  (Stage 20O is documentation-
+  only; the banner deliberately
+  does NOT bump for an audit-
+  only slice); clean build;
+  ctest 6/6 green.
+- `./build_off/bin/RelativityRender
+  --render-optix-aovs` (audit
+  host): exits 1 with the
+  documented "--render-optix-aovs
+  requires OptiX..." error per
+  Stage 20N. Confirms the new
+  CLI entry the producer wires
+  through is reachable from
+  command parsing.
+- Producer / consumer contract
+  audit: the three required
+  buffers (Beauty / Albedo /
+  Normal) are present on
+  `OptixLaunchParams` (Stage
+  20N) AND wired through the
+  three program entries
+  (raygen / closest-hit / miss)
+  in
+  `src/optix/OptixPrograms.cu`
+  AND allocated + downloaded by
+  `OptixRenderer::render_aovs`
+  in `src/optix/OptixRenderer.cpp`.
+  Layout (FLOAT3, linear-space,
+  encoded-normal convention)
+  matches what the existing
+  Stage 19B.4
+  `denoise_aov_buffers_to_ppm`
+  consumes from the CUDA path -
+  byte-for-byte format parity
+  confirmed via inline source
+  comparison. No code change
+  required.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
