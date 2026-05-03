@@ -116,6 +116,30 @@ struct OptixLaunchParams {
     // need to grow the POD again.
     float*        accum_buffer = nullptr;  // Rgba32F, 4 floats / pixel
     std::uint32_t sample_index = 0;        // first sample = 0
+
+    // ---- Stage 20I path-tracer launch state ----
+    //
+    // Used by the `__raygen__pathtrace` /
+    // `__miss__pathtrace` / `__closesthit__pathtrace`
+    // entry-point family. Existing entries
+    // (`__raygen__pinhole` etc.) ignore these fields.
+    //
+    // - `spp` = samples per pixel for the launch. The path-
+    //   tracer raygen iterates this loop GPU-side, seeding
+    //   `rr::pathtracer::Rng` from
+    //   `(x, y, sample_index, seed)` for each sample. Default
+    //   1 = single-sample (no AA jitter beyond the deterministic
+    //   pixel-centre).
+    // - `max_bounces` = bounce-loop limit per sample (1 means
+    //   primary only; the path tracer breaks out of the loop
+    //   on miss or after the limit is hit). Default 1 keeps
+    //   the launch-params POD backwards-safe.
+    // - `seed` = artist-supplied RNG seed (combined with
+    //   `(x, y, sample_index)` via `pathtracer::make_pixel_rng`).
+    //   Default 0 = deterministic.
+    std::int32_t  spp          = 1;
+    std::int32_t  max_bounces  = 1;
+    std::uint32_t seed         = 0;
 };
 
 }  // namespace rr::optix

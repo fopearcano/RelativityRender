@@ -62,6 +62,7 @@ bool set_action(CommandLine::Action& current, CommandLine::Action target,
                 "--render-optix-raygen / "
                 "--render-optix-mesh-scene / "
                 "--render-optix-material-scene / "
+                "--render-optix-pathtrace / "
                 "--render-denoise / "
                 "--render-demo)";
         return false;
@@ -312,6 +313,21 @@ CommandLine::ParseResult CommandLine::parse(int argc, char** argv) {
                 return r;
             }
             r.config.scene_path.assign(value);
+        } else if (a == "--render-optix-pathtrace") {
+            // Stage 20I: OptiX minimum-viable path tracer. Same
+            // <file> argument shape as --render-optix-mesh-scene;
+            // the dispatcher runs the launch twice (spp=1 then
+            // spp=16) and writes two PPMs.
+            if (!set_action(r.action, Action::RenderOptixPathtrace,
+                            r.error_message)) {
+                r.action = Action::Error;
+                return r;
+            }
+            if (!take_value(argc, argv, i, a, value, r.error_message)) {
+                r.action = Action::Error;
+                return r;
+            }
+            r.config.scene_path.assign(value);
         } else if (a == "--render-denoise") {
             if (!set_action(r.action, Action::RenderDenoise,
                             r.error_message)) {
@@ -412,6 +428,7 @@ CommandLine::ParseResult CommandLine::parse(int argc, char** argv) {
      || r.action == Action::RenderOptixRaygen
      || r.action == Action::RenderOptixMeshScene
      || r.action == Action::RenderOptixMaterialScene
+     || r.action == Action::RenderOptixPathtrace
      || r.action == Action::RenderDenoise) {
         if (auto err = r.config.validate(); !err.empty()) {
             r.action        = Action::Error;
@@ -649,6 +666,20 @@ std::string CommandLine::usage(std::string_view argv0) {
                                   "normal-as-color. No textures,\n"
        << "                        no path tracing. Default output "
                                   "output/optix_material_scene.ppm.\n"
+       << "                        Same OptiX requirements as above.\n"
+       << "  --render-optix-pathtrace <file>\n"
+       << "                        Stage 20I minimum-viable OptiX path "
+                                  "tracer. Loads <file>, builds\n"
+       << "                        a path-tracer pipeline (raygen / miss "
+                                  "/ closest-hit entries that\n"
+       << "                        iterate spp samples + max_bounces "
+                                  "bounces in raygen), runs the\n"
+       << "                        launch at spp=1 then spp=16, writes "
+                                  "two PPMs:\n"
+       << "                        output/optix_pathtrace_spp1.ppm + "
+                                  "output/optix_pathtrace_spp16.ppm.\n"
+       << "                        Diffuse Lambert BSDF only (no NEE / "
+                                  "MIS / shadows / textures).\n"
        << "                        Same OptiX requirements as above.\n"
        << "  --render-denoise      Stage 19B.3 OptiX denoiser end-to-end "
                                   "fixture. Builds a small\n"

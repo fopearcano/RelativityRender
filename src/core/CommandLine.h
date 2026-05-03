@@ -359,6 +359,12 @@ public:
         // baseColor + emission instead of normal-as-color.
         // Output: output/optix_material_scene.ppm.
         RenderOptixMaterialScene,
+        // Stage 20I OptiX minimum-viable path tracer. Loads a
+        // .rrscene file, builds a path-tracer pipeline, and
+        // runs the launch at spp=1 + spp=16. Outputs:
+        // output/optix_pathtrace_spp1.ppm and
+        // output/optix_pathtrace_spp16.ppm.
+        RenderOptixPathtrace,
         RenderDenoise,
         // Stage 19E.2: smallest-meaningful-relativistic-render demo.
         // Single sphere + one diffuse material + one environment

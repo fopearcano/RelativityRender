@@ -51,6 +51,28 @@ struct OptixPipelineResult {
     std::string error_message;
 };
 
+// Stage 20I: pipeline build options. Selects which entry
+// function names get bound when `OptixPipeline::create()`
+// builds the program groups.
+//
+// Default (`path_tracer = false`) preserves the Stage 17A.3+
+// surface used by every existing OptiX render entry:
+//   raygen      = __raygen__pinhole
+//   miss        = __miss__radiance
+//   closesthit  = __closesthit__radiance
+//
+// `path_tracer = true` switches to the Stage 20I family:
+//   raygen      = __raygen__pathtrace
+//   miss        = __miss__pathtrace
+//   closesthit  = __closesthit__pathtrace
+//
+// Both program-group sets live in the same compiled PTX
+// (src/optix/OptixPrograms.cu); the SBT records bind whichever
+// triple this option selects.
+struct OptixPipelineOptions {
+    bool path_tracer = false;
+};
+
 // Move-only owner for the OptiX module + program groups +
 // pipeline + SBT records. Created via `create()`; destroyed
 // automatically on scope exit (or via explicit `reset()`).
@@ -74,10 +96,15 @@ public:
     // (`backend.isInitialized() == true`); otherwise the
     // result is `ok=false` with a clear error.
     //
-    // Stage 17A.3's SBT has exactly two records (raygen +
-    // miss); subsequent sub-stages grow the program-group set
-    // and the corresponding SBT records.
-    [[nodiscard]] OptixPipelineResult create(OptixBackend& backend);
+    // Stage 17A.3's SBT has exactly three records (raygen +
+    // miss + closest-hit). Stage 20I adds the
+    // `OptixPipelineOptions` argument to select between the
+    // existing radiance entry points and the new path-tracer
+    // entry points. Both sets live in the same compiled PTX;
+    // the SBT records bind whichever triple is selected.
+    [[nodiscard]] OptixPipelineResult create(
+        OptixBackend& backend,
+        OptixPipelineOptions opts = OptixPipelineOptions{});
 
     // Free every device + host resource owned by the
     // pipeline. Idempotent. Destructor calls this.

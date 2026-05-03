@@ -103,7 +103,8 @@ std::size_t OptixPipeline::launch_params_size_bytes() const noexcept {
 
 #ifdef RELATIVITYRENDER_OPTIX_SDK_FOUND
 
-OptixPipelineResult OptixPipeline::create(OptixBackend& backend) {
+OptixPipelineResult OptixPipeline::create(OptixBackend& backend,
+                                          OptixPipelineOptions opts) {
     OptixPipelineResult r;
 
     if (!backend.isInitialized()) {
@@ -142,7 +143,16 @@ OptixPipelineResult OptixPipeline::create(OptixBackend& backend) {
     // aberration), read by both __closesthit__radiance and
     // __miss__radiance to apply Doppler color + searchlight
     // without recomputing D in each shader.
-    pipeline_opts.numPayloadValues                 = 4;
+    // Stage 20I: bumped to 10 to fit the path-tracer payload
+    // layout used by the new __raygen__pathtrace family. The
+    // existing radiance programs only use registers [0..3]
+    // (RGB + D); the higher registers stay unused for them.
+    // The path-tracer programs use:
+    //   p0     status (0 = hit, 1 = miss)
+    //   p1..p3 hit position xyz (hit only; unused on miss)
+    //   p4..p6 hit normal xyz (hit) OR miss radiance xyz
+    //   p7..p9 hit albedo xyz (hit only; unused on miss)
+    pipeline_opts.numPayloadValues                 = 10;
     pipeline_opts.numAttributeValues               = 2;
     pipeline_opts.exceptionFlags                   = OPTIX_EXCEPTION_FLAG_NONE;
     pipeline_opts.pipelineLaunchParamsVariableName = "optixLaunchParams";
@@ -165,17 +175,31 @@ OptixPipelineResult OptixPipeline::create(OptixBackend& backend) {
     }
 
     // 2. Program groups (raygen + miss).
+    // Stage 20I: pick entry function names based on
+    // `opts.path_tracer`. Both program-group sets live in the
+    // same compiled PTX module; only the SBT-bound names
+    // differ.
+    const char* const k_raygen_name = opts.path_tracer
+                                    ? "__raygen__pathtrace"
+                                    : "__raygen__pinhole";
+    const char* const k_miss_name   = opts.path_tracer
+                                    ? "__miss__pathtrace"
+                                    : "__miss__radiance";
+    const char* const k_ch_name     = opts.path_tracer
+                                    ? "__closesthit__pathtrace"
+                                    : "__closesthit__radiance";
+
     ::OptixProgramGroupOptions pg_opts{};
 
     ::OptixProgramGroupDesc raygen_desc{};
     raygen_desc.kind = OPTIX_PROGRAM_GROUP_KIND_RAYGEN;
     raygen_desc.raygen.module            = module;
-    raygen_desc.raygen.entryFunctionName = "__raygen__pinhole";
+    raygen_desc.raygen.entryFunctionName = k_raygen_name;
 
     ::OptixProgramGroupDesc miss_desc{};
     miss_desc.kind = OPTIX_PROGRAM_GROUP_KIND_MISS;
     miss_desc.miss.module                = module;
-    miss_desc.miss.entryFunctionName     = "__miss__radiance";
+    miss_desc.miss.entryFunctionName     = k_miss_name;
 
     ::OptixProgramGroup raygen_pg = nullptr;
     {
@@ -211,7 +235,7 @@ OptixPipelineResult OptixPipeline::create(OptixBackend& backend) {
     ::OptixProgramGroupDesc hitgroup_desc{};
     hitgroup_desc.kind = OPTIX_PROGRAM_GROUP_KIND_HITGROUP;
     hitgroup_desc.hitgroup.moduleCH            = module;
-    hitgroup_desc.hitgroup.entryFunctionNameCH = "__closesthit__radiance";
+    hitgroup_desc.hitgroup.entryFunctionNameCH = k_ch_name;
     // No any-hit (moduleAH / entryFunctionNameAH stay null).
     // No intersection (moduleIS / entryFunctionNameIS stay null;
     // built-in triangle intersection is used).
@@ -507,7 +531,8 @@ OptixPipeline::set_hit_material(
 
 #else   // RELATIVITYRENDER_OPTIX_SDK_FOUND
 
-OptixPipelineResult OptixPipeline::create(OptixBackend& /*backend*/) {
+OptixPipelineResult OptixPipeline::create(OptixBackend& /*backend*/,
+                                          OptixPipelineOptions /*opts*/) {
     OptixPipelineResult r;
     r.error_message =
         "OptixPipeline::create requires the OptiX SDK; rebuild "

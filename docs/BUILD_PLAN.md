@@ -18248,6 +18248,370 @@ formula coverage from Stage
   (Stage 20D `optix_tests`
   56-assertion pass included).
 
+## Stage 20I — minimum-viable OptiX path tracer
+
+**Scope of this slice (Stage 20I;
+master order #17, "OptiX upgrade
+path"): the first OptiX path-
+tracing entry. Until now every
+OptiX render entry traced exactly
+one primary ray per pixel; this
+slice adds a full sample loop +
+bounce loop + diffuse Lambert
+BSDF inside the raygen,
+conceptually mirroring the CUDA
+`--render-pathtrace`. Existing
+OptiX render entries are
+preserved byte-identical: the
+new path-tracer entry-point
+family is bound only when the
+new `OptixPipelineOptions::path_tracer`
+flag is set; the existing
+radiance entry-point family is
+unchanged.**
+
+### What ships
+
+- `src/optix/OptixLaunchParams.h`:
+  three new path-tracer fields
+  (defaults preserve existing-
+  entry behaviour byte-for-byte):
+    - `std::int32_t spp = 1` —
+      samples per pixel (raygen
+      loops this many times).
+    - `std::int32_t max_bounces
+      = 1` — bounce-loop limit
+      per sample.
+    - `std::uint32_t seed = 0` —
+      RNG seed combined with
+      `(x, y, sample)` via
+      `pathtracer::make_pixel_rng`.
+- `src/optix/OptixPipeline.{h,cpp}`:
+  new `OptixPipelineOptions`
+  struct + `bool path_tracer =
+  false` flag; `create()` gains a
+  trailing options argument
+  (default `{}` preserves Stage
+  17A.3+ behaviour). When
+  `opts.path_tracer == true` the
+  program-group descs bind:
+    - `__raygen__pathtrace`
+      instead of
+      `__raygen__pinhole`
+    - `__miss__pathtrace`
+      instead of
+      `__miss__radiance`
+    - `__closesthit__pathtrace`
+      instead of
+      `__closesthit__radiance`
+  `numPayloadValues` bumped from
+  4 to 10 to fit the path-tracer
+  payload layout (status +
+  position + normal + albedo).
+  Existing programs only use
+  registers [0..3]; the higher
+  registers are unused for them.
+- `src/optix/OptixPrograms.cu`:
+  three new device programs at
+  the end of the file:
+    - `__raygen__pathtrace`:
+      seeds an RNG per (pixel,
+      sample), generates the
+      primary ray, applies
+      aberration (gated on
+      `enable_aberration`),
+      iterates `max_bounces`
+      bounces calling
+      `optixTrace`, accumulates
+      `throughput *= albedo` per
+      bounce + `radiance +=
+      throughput * env` on miss,
+      averages across `spp`
+      samples, applies the
+      Stage 17A.5 / 20H Doppler
+      + searchlight stack to the
+      final radiance using the
+      primary aberrated
+      direction.
+    - `__miss__pathtrace`: writes
+      the Stage 17A.4 sky
+      gradient as environment
+      radiance into payload
+      registers [4..6].
+    - `__closesthit__pathtrace`:
+      writes hit position
+      ([1..3]), geometric normal
+      flipped to face the
+      incident ray ([4..6]),
+      and `params.baseColor`
+      from the Stage 20G
+      hit-record SBT data
+      ([7..9]) as the diffuse
+      albedo.
+  Plus three new helpers
+  (`pt_set_hit`, `pt_set_miss`,
+  `pt_align_to_normal`) +
+  `pt_environment_radiance`.
+- `src/optix/OptixRenderer.{h,cpp}`:
+  new `render_pathtrace(const
+  Scene&, int width, int height,
+  int spp, int max_bounces,
+  unsigned int seed = 0u)`
+  static method. Same first-
+  visible-non-empty-mesh
+  selection + GAS-build path as
+  Stage 20F / 20G. Creates the
+  pipeline with
+  `path_tracer = true`; threads
+  the picked mesh's
+  `MaterialParams` into the
+  hit-group SBT record via
+  `set_hit_material(...)`
+  (closest-hit reads
+  `params.baseColor` as
+  albedo). Audit-host fallback
+  signature matches.
+- `src/core/CommandLine.{h,cpp}`:
+  new `Action::RenderOptixPathtrace`
+  enum value; new
+  `--render-optix-pathtrace
+  <file>` parser branch (takes a
+  `.rrscene` path argument);
+  help-text entry; mutex error
+  message updated; validation
+  list updated.
+- `src/main.cpp`: new
+  `run_render_optix_pathtrace
+  (const Config&)` dispatcher.
+  Loads `cfg.scene_path` via
+  `rr::io::load(...)`, then
+  runs the path tracer twice —
+  spp=1 + spp=16 — writing
+  `output/optix_pathtrace_spp1.ppm`
+  and
+  `output/optix_pathtrace_spp16.ppm`.
+  `max_bounces = 3`, `seed = 0`
+  defaults (matching CUDA
+  `--render-pathtrace`).
+  `--output` is ignored (the
+  action produces two outputs,
+  not one).
+- `CMakeLists.txt`: banner /
+  `DESCRIPTION` bumped to "Stage
+  20I: OptiX path tracer"
+  (two-line cosmetic).
+- `docs/BUILD_PLAN.md`: this
+  slice-closing entry. **No
+  module-status row, milestone-
+  status row, or canonical
+  historical entry was modified.**
+
+### Path-tracer payload layout
+
+| Register | Hit                | Miss                      |
+|---------:|--------------------|---------------------------|
+| p0       | status = 0 (HIT)   | status = 1 (MISS)         |
+| p1..p3   | position xyz       | 0 (unused)                |
+| p4..p6   | normal xyz         | environment radiance xyz  |
+| p7..p9   | albedo rgb         | 0 (unused)                |
+
+The host-side pipeline's
+`numPayloadValues = 10` matches
+this layout; the existing
+radiance programs only use
+[0..3] and ignore the higher
+registers.
+
+### Backward compatibility
+
+- `--render-optix-test`,
+  `--render-optix-triangle`,
+  `--render-optix-relativity`,
+  `--render-optix-raygen`,
+  `--render-optix-mesh-scene`,
+  `--render-optix-material-scene`:
+  all create their pipelines
+  with the default
+  `OptixPipelineOptions{}`
+  (`path_tracer == false`), so
+  the SBT binds the radiance
+  entry-point family. Their
+  closest-hit / miss / raygen
+  bodies are byte-identical
+  pre-/post-slice.
+- The `numPayloadValues = 10`
+  bump means existing programs
+  see 10 payload registers
+  available (vs the previous 4)
+  — they only read / write
+  registers [0..3] so the higher
+  registers are dead weight on
+  their critical path. No
+  visible behaviour change.
+
+### Hard-rule audit
+
+- One diffuse BSDF -
+  **yes**. `__closesthit__pathtrace`
+  emits Lambert albedo only;
+  the raygen samples a cosine-
+  weighted hemisphere; no
+  specular / metallic / glass
+  branches. Identical
+  conceptually to the CUDA
+  `k_pathtrace_sample`'s
+  diffuse-only path.
+- No MIS yet - **yes**. The
+  raygen does not weight light-
+  source samples vs. BSDF
+  samples; environment
+  contribution comes only from
+  the bounce-direction sampling
+  hitting a miss.
+- No textures yet - **yes**.
+  `albedo` comes from
+  `params.baseColor` directly;
+  `useBaseColorTexture` /
+  `baseColorTextureId` are not
+  consulted; no texture sampler
+  linked.
+- No shadows yet - **yes**. The
+  raygen does not trace shadow
+  rays toward light sources;
+  only the path-recursion's
+  miss contributes light.
+- Match CUDA conceptually -
+  **yes**. The raygen mirrors
+  `k_pathtrace_sample` step-by-
+  step: per-pixel RNG via
+  `make_pixel_rng(x, y, sample,
+  seed)`, primary ray
+  generation + aberration,
+  bounce loop with
+  `intersect`-equivalent
+  `optixTrace`, environment
+  fallback on miss, cosine-
+  hemisphere bounce sample
+  aligned to normal,
+  `throughput *= albedo`
+  identity. The Doppler /
+  searchlight stack is applied
+  to the FINAL accumulated
+  radiance using the primary
+  aberrated direction (matches
+  the CUDA path tracer's
+  composition of the
+  relativistic stack on top of
+  accumulated radiance, not
+  per-bounce).
+- All per-ray math GPU-side -
+  **yes**. The raygen runs on
+  device; the new helpers
+  (`pt_set_hit`, `pt_set_miss`,
+  `pt_align_to_normal`,
+  `pt_environment_radiance`)
+  are `__device__
+  __forceinline__`. RNG +
+  Sampling primitives (RR_HD)
+  reuse the existing
+  `pathtracer/RNG.h` +
+  `pathtracer/Sampling.h`
+  headers shared with the CUDA
+  path.
+- Compiles with OptiX OFF -
+  **yes**. `cmake -S . -B
+  build` no flags: clean
+  build; ctest 6/6 green; the
+  audit-host fallback returns
+  the documented `--render-
+  optix-pathtrace requires
+  OptiX. Rebuild with
+  -DRR_ENABLE_OPTIX=ON ...`
+  error after a successful
+  scene-load.
+- Compiles with OptiX ON -
+  **yes**. `cmake -S . -B
+  /tmp/rr-20i-on
+  -DRR_ENABLE_OPTIX=ON`: non-
+  blocking SDK-not-found
+  warning per Stage 12B.4;
+  rr_optix STATIC compiles via
+  the two-layer audit-host
+  fallback (including the
+  updated pipeline / renderer
+  signatures); ctest 7/7 green.
+
+### Audit-host CLI smoke checks
+
+- `--render-optix-pathtrace`
+  (no arg): parser returns
+  `missing value after
+  --render-optix-pathtrace` +
+  usage; exits non-zero.
+- `--render-optix-pathtrace
+  /nonexistent.rrscene`: returns
+  `scene file not found:
+  /nonexistent.rrscene` from
+  the `sceneFileExists` check
+  before reaching the OptiX
+  gate.
+- `--render-optix-pathtrace
+  scenes/test_mesh.rrscene`
+  (audit host): loads the scene
+  successfully (parser is
+  host-side; runs without
+  OptiX), then returns
+  `--render-optix-pathtrace
+  requires OptiX. Rebuild with
+  -DRR_ENABLE_OPTIX=ON ...` and
+  exits 1 (loader integration
+  is wired *before* the OptiX
+  gate, matching Stage 20F /
+  20G shape).
+- `--help` shows the new entry
+  with documented dual outputs
+  (`output/optix_pathtrace_spp1.ppm`
+  + `output/optix_pathtrace_spp16.ppm`).
+
+### Status (unchanged)
+
+Module #6 (OptiX Backend) and
+milestone M15 (OptiX Backend
+Upgrade Path) both remain at
+`partial implementation`. Adding
+the path-tracer programs +
+pipeline-options selector
+extends the OptiX surface but
+does not lift the project-wide
+visual-validation gate (no
+frame rendered through the
+OptiX path on a real OptiX-SDK
+host in this branch). The
+actual `output/optix_pathtrace_*.ppm`
+images are gated on the same
+future real-hardware run as the
+other OptiX entries; module #14
+(Path Tracer) remains
+"partial implementation" by the
+same global cap.
+
+### Verified at the build
+
+- `cmake -S . -B build` (audit
+  host, no flags): banner shows
+  "Stage 20I: OptiX path tracer";
+  clean build; ctest 6/6 green.
+- `cmake -S . -B /tmp/rr-20i-on
+  -DRR_ENABLE_OPTIX=ON`: non-
+  blocking SDK-not-found
+  warning per Stage 12B.4;
+  rr_optix STATIC compiles via
+  two-layer audit-host
+  fallback; clean build; ctest
+  7/7 green (Stage 20D
+  `optix_tests` 56-assertion
+  pass included).
+
 ## Next stage
 
 When prompted, the natural follow-ups are:

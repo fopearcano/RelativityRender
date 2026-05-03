@@ -182,6 +182,37 @@ public:
     [[nodiscard]] static Result render_material_scene(
         const rr::scene::Scene& scene,
         int width, int height) noexcept;
+
+    // Stage 20I minimum-viable OptiX path tracer. Builds a
+    // path-tracer pipeline (raygen / miss / closest-hit
+    // entries that iterate samples + bounces in raygen),
+    // builds an OptiX GAS from the first non-empty mesh in
+    // `scene.meshes`, populates the hit-group SBT record with
+    // the picked mesh's material (closest-hit reads
+    // `params.baseColor` as the diffuse albedo), and runs the
+    // path-tracer launch. The raygen owns:
+    //   - per-pixel RNG (seeded from
+    //     `rr::pathtracer::make_pixel_rng(x, y, sample, seed)`)
+    //   - sample loop (`spp` iterations)
+    //   - bounce loop (up to `max_bounces` per sample)
+    //   - throughput / radiance accumulation
+    // Miss returns the Stage 17A.4 sky gradient as
+    // environment radiance; closest-hit fills payload with
+    // hit position / normal / albedo. No NEE / MIS / shadows
+    // / textures yet (Stage 20I scope).
+    //
+    // `seed` controls deterministic RNG (default 0). The
+    // Doppler / searchlight stack composes on top of the
+    // accumulated radiance using the primary aberrated ray
+    // direction (matches CUDA path-tracer behaviour
+    // conceptually; per-bounce relativistic effects deferred).
+    //
+    // Same audit-host fallback semantics as render_test.
+    [[nodiscard]] static Result render_pathtrace(
+        const rr::scene::Scene& scene,
+        int width, int height,
+        int spp, int max_bounces,
+        unsigned int seed = 0u) noexcept;
 };
 
 }  // namespace rr::optix

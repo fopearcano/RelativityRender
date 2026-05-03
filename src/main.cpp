@@ -1356,6 +1356,104 @@ int run_render_optix_material_scene(const rr::core::Config& cfg) {
 #endif
 }
 
+// `--render-optix-pathtrace <file>` dispatch (Stage 20I).
+// Loads a `.rrscene` file via the existing SceneLoader and
+// runs the OptiX path tracer twice — spp=1 + spp=16 — writing
+// two PPMs:
+//   output/optix_pathtrace_spp1.ppm
+//   output/optix_pathtrace_spp16.ppm
+//
+// Mirrors the CUDA `--render-pathtrace`'s 2-spp shape (which
+// writes `output/pathtrace_spp_1.ppm` + `output/pathtrace_spp_16.ppm`)
+// so the OptiX path is comparable. `--output` is ignored;
+// the output paths are fixed for this action (the action
+// produces two outputs, not one).
+//
+// max_bounces defaults to 3 (matches CUDA path tracer's
+// default for `--render-pathtrace`); seed defaults to 0.
+//
+// Requires both `-DRR_ENABLE_OPTIX=ON` and a host with the
+// CUDA Toolkit + OptiX SDK installed; the audit-host fallback
+// returns the documented "requires OptiX" error after
+// successfully loading the scene file (so loader-side bugs
+// surface honestly on the audit host).
+int run_render_optix_pathtrace(const rr::core::Config& cfg) {
+    using rr::core::Logger;
+
+    if (cfg.scene_path.empty()) {
+        Logger::error("--render-optix-pathtrace requires a .rrscene "
+                      "file path argument.");
+        return 1;
+    }
+
+    if (!rr::io::sceneFileExists(cfg.scene_path)) {
+        Logger::error("scene file not found: " + cfg.scene_path);
+        return 1;
+    }
+    auto load = rr::io::load(cfg.scene_path);
+    if (!load.ok) {
+        Logger::error("failed to load scene '" + cfg.scene_path
+                    + "': " + load.error_message);
+        return 1;
+    }
+
+#ifndef RELATIVITYRENDER_ENABLE_OPTIX
+    Logger::error("--render-optix-pathtrace requires OptiX. "
+                  "Rebuild with -DRR_ENABLE_OPTIX="
+                  "ON on a host with the CUDA Toolkit + OptiX "
+                  "SDK installed (also pass -DOPTIX_ROOT=/path/"
+                  "to/optix-sdk).");
+    return 1;
+#else
+    constexpr int kMaxBounces = 3;
+    constexpr unsigned int kSeed = 0u;
+
+    struct PtRun { int spp; const char* path; const char* label; };
+    static constexpr PtRun kRuns[] = {
+        { 1,  "output/optix_pathtrace_spp1.ppm",
+              "render-optix-pathtrace (spp=1)" },
+        { 16, "output/optix_pathtrace_spp16.ppm",
+              "render-optix-pathtrace (spp=16)" },
+    };
+
+    int failures = 0;
+    for (const auto& run : kRuns) {
+        auto r = rr::optix::OptixRenderer::render_pathtrace(
+            load.scene, cfg.width, cfg.height,
+            run.spp, kMaxBounces, kSeed);
+        if (!r.ok) {
+            Logger::error(std::string("optix path-trace render failed (")
+                        + run.label + "): " + r.message);
+            ++failures;
+            continue;
+        }
+        log_gpu_timing(run.label, cfg.width, cfg.height, r.gpu_time_ms);
+
+        namespace fs = std::filesystem;
+        const fs::path out_fs = run.path;
+        if (out_fs.has_parent_path()) {
+            std::error_code ec;
+            fs::create_directories(out_fs.parent_path(), ec);
+        }
+        if (!r.image.save_ppm(out_fs)) {
+            Logger::error(std::string("could not write PPM: ") + run.path);
+            ++failures;
+            continue;
+        }
+
+        std::error_code ec;
+        const fs::path  abs = fs::absolute(out_fs, ec);
+        Logger::info(std::string("wrote OptiX pathtrace ")
+                   + (run.spp == 1 ? "(spp=1): " : "(spp=16): ")
+                   + (ec ? std::string(run.path) : abs.string())
+                   + " (" + std::to_string(cfg.width) + "x"
+                   + std::to_string(cfg.height) + ", RGBA32F)");
+    }
+
+    return failures == 0 ? 0 : 1;
+#endif
+}
+
 // `--render-optix-test` dispatch (Stage 17A.3). Drives the
 // minimum-viable OptiX pipeline: initialise OptixBackend, build
 // pipeline (raygen + miss; no closest-hit, no path tracer),
@@ -3401,6 +3499,9 @@ int main(int argc, char** argv) {
 
         case CommandLine::Action::RenderOptixMaterialScene:
             return run_render_optix_material_scene(result.config);
+
+        case CommandLine::Action::RenderOptixPathtrace:
+            return run_render_optix_pathtrace(result.config);
 
         case CommandLine::Action::RenderDenoise:
             return run_render_denoise(result.config);
