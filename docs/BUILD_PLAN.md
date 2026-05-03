@@ -20967,6 +20967,57 @@ changes its runtime behaviour.
   ctest 6/6 from the post-
   Stage-20 baseline.
 
+## Stage 21A.5 — denoiser pipeline position (planning)
+
+**Scope of this slice (Stage 21A.5;
+master order #24, "Denoising"):
+append a five-bullet "Pipeline"
+section to `docs/DENOISER_PLAN.md`.
+Pins the stage order
+(`render → AOV buffers →
+denoiser → final image`),
+declares the denoiser runs
+strictly after GPU rendering
+(post-`cudaDeviceSynchronize`),
+records that it reads existing
+AOV device pointers in place (no
+extra copy / upload), declares
+no modification to core renderer
+logic (kernels / SBT /
+path-tracer untouched), and
+preserves the pre-denoise Beauty
+AOV as a fallback / debug
+artifact. NO implementation; NO
+source changes.**
+
+### What ships
+
+- `docs/DENOISER_PLAN.md` extended
+  with a single `## Pipeline`
+  section (five bullets).
+- This `BUILD_PLAN.md`
+  slice-closing entry.
+
+### Backward compatibility
+
+Documentation-only slice. The
+existing renderer / kernels /
+SBT / path-tracer machinery
+across both backends (CUDA +
+OptiX) is unaffected; this
+entry simply restates the
+"denoiser is a strictly
+post-render stage" contract in
+the new minimal plan.
+
+### Verified at the build
+
+- Documentation-only; no build
+  configuration touched. The
+  audit-host OFF build remains
+  ctest 6/6 from the post-
+  Stage-20 baseline.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
