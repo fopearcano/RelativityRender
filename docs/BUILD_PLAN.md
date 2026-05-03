@@ -20865,6 +20865,60 @@ unaffected.
   ctest 6/6 from the post-
   Stage-20 baseline.
 
+## Stage 21A.3 — denoiser required inputs (planning)
+
+**Scope of this slice (Stage 21A.3;
+master order #24, "Denoising"):
+append a five-bullet "Required
+inputs" section to
+`docs/DENOISER_PLAN.md`. Pins
+Beauty (noisy linear-RGB),
+Albedo (linear RGB, pre-lighting
+base colour), and Normal (per-
+pixel shading normal) as the
+mandatory denoiser inputs and
+maps them to the existing Stage
+14 AOV pipeline
+(`rr::renderer::GpuAOVBuffer`
+populated by
+`CudaRenderer::render_scene_with_aovs`
+for the CUDA path / Stage 20N
+`OptixRenderer::render_aovs` for
+the OptiX path). Declares all
+three as mandatory (missing any
+is a configuration error, not a
+degraded mode). NO
+implementation; NO source
+changes.**
+
+### What ships
+
+- `docs/DENOISER_PLAN.md` extended
+  with a single `## Required
+  inputs` section (five bullets).
+- This `BUILD_PLAN.md`
+  slice-closing entry.
+
+### Backward compatibility
+
+Documentation-only slice. The
+existing OptiX denoiser
+implementation (Stage 19B.1..
+19C.3) — which already binds
+exactly these three AOVs via
+`OptixDenoiser::Inputs` — is
+unaffected; this entry simply
+restates the contract in the
+new minimal plan.
+
+### Verified at the build
+
+- Documentation-only; no build
+  configuration touched. The
+  audit-host OFF build remains
+  ctest 6/6 from the post-
+  Stage-20 baseline.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
