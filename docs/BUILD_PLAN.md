@@ -20740,6 +20740,131 @@ in a subsequent slice.
   rule "no CPU per-pixel work"
   satisfied end-to-end.
 
+## Stage 21A.1 — denoiser purpose (planning)
+
+**Scope of this slice (Stage 21A.1;
+master order #24, "Denoising"):
+restart `docs/DENOISER_PLAN.md`
+as a deliberately-minimal
+incremental planning artifact.
+This sub-stage adds only a
+five-bullet "Purpose" section
+covering: noise reduction from
+the path tracer, low-spp
+usability, output usability for
+previews / server / DCC
+iteration, preservation of
+relativistic shading cues via
+AOV guides, and the post-process-
+only boundary (no bounce-budget
+replacement, no shading-bug fix,
+no tone-mapping substitute). NO
+implementation; NO source
+changes.**
+
+### What ships
+
+- `docs/DENOISER_PLAN.md` rewritten
+  from scratch with a single
+  `## Purpose` section (five
+  bullets, in line with the
+  prompt's max-5-bullets
+  constraint).
+- This `BUILD_PLAN.md`
+  slice-closing entry.
+
+### Recovery of prior planning content
+
+The previous 1200-line plan
+(Stage 19A.1..19A.7 spec that
+drove the Stage 19B.1..19C.3
+denoiser implementation) is
+preserved in git history. To
+read it:
+
+```
+git show fcd90bd^:docs/DENOISER_PLAN.md
+```
+
+The Stage 19B / 19C
+implementation it specified is
+unaffected: every shipped
+source artifact (the
+`OptixDenoiser` class,
+`denoise_aov_buffers_to_ppm`
+host helper, `--render-denoise`
+CLI surface) remains in place
+and continues to work.
+
+### Backward compatibility
+
+Documentation-only slice. No
+source / CMake / CLI changes.
+Every prior build configuration
+remains green; the existing
+denoiser implementation is
+untouched.
+
+### Verified at the build
+
+- `git status` clean before and
+  after the docs change.
+- `cmake -S . -B build_off
+  -DRR_ENABLE_CUDA=OFF
+  -DRR_ENABLE_OPTIX=OFF`
+  (audit host): unchanged from
+  the post-Stage-20 baseline
+  (ctest 6/6).
+- `git show fcd90bd^:docs/DENOISER_PLAN.md
+  | wc -l`: 1200 (prior content
+  is recoverable byte-for-byte
+  from git).
+
+## Stage 21A.2 — denoiser backend (planning)
+
+**Scope of this slice (Stage 21A.2;
+master order #24, "Denoising"):
+append a five-bullet "Backend"
+section to `docs/DENOISER_PLAN.md`.
+Pins the OptiX denoiser as the
+primary (and only) backend for
+v1.0, requires the OptiX SDK at
+build time, keeps the CUDA
+renderer independent (the
+denoiser is a sibling pipeline
+stage), declares no fallback /
+alternative denoiser is required
+for v1.0, and documents the
+runtime "denoiser requires OptiX"
+error path. NO implementation; NO
+source changes.**
+
+### What ships
+
+- `docs/DENOISER_PLAN.md` extended
+  with a single `## Backend`
+  section (five bullets).
+- This `BUILD_PLAN.md`
+  slice-closing entry.
+
+### Backward compatibility
+
+Documentation-only slice. The
+existing OptiX denoiser
+implementation (Stage 19B.1..
+19C.3) and its CLI surfaces
+(`--render-denoise`,
+`--render-aovs --denoise`) are
+unaffected.
+
+### Verified at the build
+
+- Documentation-only; no build
+  configuration touched. The
+  audit-host OFF build remains
+  ctest 6/6 from the post-
+  Stage-20 baseline.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
