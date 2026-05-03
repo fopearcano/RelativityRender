@@ -21236,6 +21236,96 @@ v1 commitment.
   ctest 6/6 from the post-
   Stage-20 baseline.
 
+## Stage 21A.10 — denoiser plan complete (planning)
+
+**Scope of this slice (Stage 21A.10;
+master order #24, "Denoising"):
+append a five-bullet "Status"
+section to `docs/DENOISER_PLAN.md`.
+Records the v1 plan as
+complete (Purpose, Backend,
+Required inputs, Optional
+inputs, Pipeline, Output,
+Failure behavior, Modes, v1
+scope all defined), declares
+readiness for implementation in
+Stage 21B, pins that no further
+planning sub-stages are
+required before implementation,
+mandates that any subsequent
+scope / inputs / pipeline /
+failure-behaviour change
+requires a new planning slice
+(this plan is the v1 contract),
+and clarifies that post-Stage-21B
+updates will record actual
+implementation status, not
+redesign. NO implementation; NO
+source changes.**
+
+### What ships
+
+- `docs/DENOISER_PLAN.md` extended
+  with a single `## Status`
+  section (five bullets). The
+  plan now totals nine sections
+  (Purpose, Backend, Required
+  inputs, Optional inputs,
+  Pipeline, Output, Failure
+  behavior, Modes, v1 scope) +
+  the closing Status section.
+- This `BUILD_PLAN.md`
+  slice-closing entry.
+
+### Stage 21A planning arc summary
+
+The full Stage 21A planning arc
+landed across 10 sub-stages:
+
+| Sub-stage | Section          | Commit    |
+|-----------|------------------|-----------|
+| 21A.1     | Purpose          | `4d08f96` |
+| 21A.2     | Backend          | `4dc4522` |
+| 21A.3     | Required inputs  | `1971110` |
+| 21A.4     | Optional inputs  | `f7049cb` |
+| 21A.5     | Pipeline         | `1f54491` |
+| 21A.6     | Output           | `8050f79` |
+| 21A.7     | Failure behavior | `914fde5` |
+| 21A.8     | Modes            | `22b39ed` |
+| 21A.9     | v1 scope         | `a8ec7ca` |
+| 21A.10    | Status           | `871052f` |
+
+Every section is at most five
+bullets; the entire plan is
+intentionally small and
+incremental, in deliberate
+contrast to the prior
+1200-line Stage 19A planning
+artifact (recoverable from
+git history at
+`fcd90bd^:docs/DENOISER_PLAN.md`).
+
+### Backward compatibility
+
+Documentation-only slice. The
+existing OptiX denoiser
+implementation (Stage 19B.1..
+19C.3) is unaffected. Stage 21B
+will be the implementation
+slice that closes the OptiX-
+side denoiser-handoff gaps
+(post-Stage-20 audit Gaps A
++ B + C) using this plan as
+its contract.
+
+### Verified at the build
+
+- Documentation-only; no build
+  configuration touched. The
+  audit-host OFF build remains
+  ctest 6/6 from the post-
+  Stage-20 baseline.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
