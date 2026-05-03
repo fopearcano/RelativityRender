@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <string>
 
 // Stage 21B.1 / 21B.2 - OptixDenoiser wrapper class skeleton.
@@ -75,6 +76,16 @@ private:
     int         input_width_             = 0;
     int         input_height_            = 0;
     int         input_beauty_components_ = 0;
+
+    // Stage 21B.6: memory-resource sizes returned by
+    // `optixDenoiserComputeMemoryResources` for the most
+    // recent successful `set_inputs(...)` call. Stored
+    // here so subsequent sub-stages can size the device-
+    // side state + scratch buffers without re-querying.
+    // No allocation happens in Stage 21B.6 itself.
+    std::size_t state_size_              = 0;
+    std::size_t scratch_size_            = 0;
+
     std::string last_error_;
 };
 

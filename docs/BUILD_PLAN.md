@@ -22046,6 +22046,198 @@ matching `OptixBackend.cpp` /
   undefined, so the calls
   are compiled out.
 
+## Stage 21B.6 — denoiser memory requirements
+
+**Scope of this slice (Stage 21B.6;
+master order #24, "Denoising"):
+wire
+`optixDenoiserComputeMemoryResources`
+into `OptixDenoiser::set_inputs`
+and store the returned `state`
++ `scratch` sizes in two new
+private members. Per the user's
+rules: "use
+optixDenoiserComputeMemoryResources",
+"store state size and scratch
+size", "do not allocate yet"
+(no `cudaMalloc`), "must
+compile". The set_inputs
+function gets a partial
+SDK_FOUND implementation: it
+validates inputs, queries
+memory sizes, stores the sizes
++ dimensions + beauty-component
+count, sets `inputs_set_ =
+true`, and returns. NO buffer
+allocation; NO descriptor-
+binding (`OptixImage2D` triplet
+will land in a subsequent
+sub-stage).**
+
+### What ships
+
+- `src/optix/OptixDenoiser.h`:
+    - new `<cstddef>` include.
+    - two new private members:
+      `std::size_t state_size_
+      = 0` and `std::size_t
+      scratch_size_ = 0`.
+- `src/optix/OptixDenoiser.cpp`:
+    - move-ctor / move-assign
+      now copy + reset
+      `state_size_` and
+      `scratch_size_`.
+    - `shutdown()` resets both
+      to 0.
+    - `set_inputs(inputs)` ON
+      branch is split on
+      `RELATIVITYRENDER_OPTIX_SDK_FOUND`
+      (mirroring the Stage
+      21B.4 `initialize`
+      split):
+        - **SDK_FOUND**: real
+          implementation.
+          Validates `initialized_`,
+          three non-null device
+          pointers (beauty /
+          albedo / normal),
+          positive width /
+          height, and
+          `beauty_components`
+          in `{3, 4}`. Calls
+          `optixDenoiserComputeMemoryResources(
+          denoiser, w, h, &sizes)`.
+          On success: stores
+          `sizes.stateSizeInBytes`
+          and
+          `sizes.withoutOverlapScratchSizeInBytes`
+          in the new private
+          members; stores the
+          dimensions / beauty
+          component count;
+          sets `inputs_set_ =
+          true`; clears
+          `last_error_`. On any
+          failure: populates
+          `last_error_` with
+          the documented
+          message + emits
+          `[OptiX:ERROR]
+          denoiser set_inputs
+          failed: ...` on
+          stderr.
+        - **SDK_FOUND undefined**:
+          existing audit-host
+          stub; reports the
+          documented "requires
+          SDK" error.
+    - Success log:
+      `[OptiX:INFO]
+      OptixDenoiser memory
+      resources queried:
+      width=W height=H
+      stateSize=N scratchSize=M
+      (no allocation yet).`
+- This `BUILD_PLAN.md`
+  slice-closing entry.
+
+### What does NOT ship
+
+- No `cudaMalloc(d_state,
+  state_size_)` or
+  `cudaMalloc(d_scratch,
+  scratch_size_)`. Per the
+  user's "do not allocate
+  yet" rule. Those land in a
+  subsequent sub-stage.
+- No `OptixImage2D` descriptor
+  triplet construction
+  (`input_images_` stays null).
+  The descriptor binding lands
+  in a subsequent sub-stage
+  (after the buffer
+  allocations are wired so the
+  descriptors can carry valid
+  device pointers + sizes).
+- No `optixDenoiserSetup`,
+  no `optixDenoiserInvoke`,
+  no image processing of any
+  kind.
+
+### Behaviour matrix
+
+| Build mode               | `set_inputs(inputs)` behaviour                                                  |
+|--------------------------|---------------------------------------------------------------------------------|
+| OFF                      | `.cpp` not compiled                                                             |
+| ON, no SDK (audit host)  | Returns `false`; `last_error()` reports "requires OptiX SDK..."                 |
+| ON, SDK found            | Validates inputs; calls `optixDenoiserComputeMemoryResources`; stores sizes,    |
+|                          | dimensions, beauty components; sets `inputs_set_ = true`; returns `true`. The   |
+|                          | descriptor binding + buffer allocation land in subsequent Stage 21B sub-stages. |
+
+### Backward compatibility
+
+- The class' public surface
+  is byte-identical with
+  Stage 21B.5 (no method
+  signatures changed; only
+  two new private members).
+- `denoise_aov_buffers_to_ppm`
+  in `main.cpp`: behaviour
+  on the audit host is
+  unchanged (the existing
+  `set_inputs` audit-host
+  stub still returns `false`
+  with the "requires SDK"
+  error; consumer takes the
+  Stage 19C.3 noisy-Beauty
+  fallback path). On a real
+  OptiX-SDK host, the
+  consumer's call to
+  `set_inputs(inputs)` now
+  succeeds (returns `true`
+  after the memory query)
+  but the subsequent
+  `invoke(output)` call still
+  returns `false` with "not
+  implemented in Stage 21B.1"
+  — so the consumer still
+  takes the noisy-Beauty
+  fallback path. The
+  user-visible image is
+  unchanged.
+- The CUDA renderer is
+  byte-identical (the slice
+  touches only
+  `src/optix/OptixDenoiser.{h,cpp}`).
+
+### Verified at the build
+
+- `cmake -S . -B build_off
+  -DRR_ENABLE_CUDA=OFF
+  -DRR_ENABLE_OPTIX=OFF`
+  (audit host): clean build;
+  ctest 6/6 green.
+- `cmake -S . -B build_on_audit
+  -DRR_ENABLE_CUDA=OFF
+  -DRR_ENABLE_OPTIX=ON`
+  (audit host, no SDK):
+  clean build; ctest 7/7
+  green. The new
+  `optixDenoiserComputeMemoryResources`
+  call compiles inside the
+  SDK_FOUND gate; on this
+  host the gate is
+  undefined, so the call is
+  compiled out and the
+  audit-host stub fires
+  instead.
+- The SDK-found
+  `optixDenoiserComputeMemoryResources`
+  call path is structurally
+  in place but cannot be
+  empirically verified on
+  this audit host (no SDK).
+
 ## Next stage
 
 When prompted, the natural follow-ups are:

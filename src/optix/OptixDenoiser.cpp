@@ -64,6 +64,8 @@ OptixDenoiser::OptixDenoiser(OptixDenoiser&& other) noexcept
       input_width_(other.input_width_),
       input_height_(other.input_height_),
       input_beauty_components_(other.input_beauty_components_),
+      state_size_(other.state_size_),
+      scratch_size_(other.scratch_size_),
       last_error_(std::move(other.last_error_)) {
     other.denoiser_                = nullptr;
     other.initialized_             = false;
@@ -72,6 +74,8 @@ OptixDenoiser::OptixDenoiser(OptixDenoiser&& other) noexcept
     other.input_width_             = 0;
     other.input_height_            = 0;
     other.input_beauty_components_ = 0;
+    other.state_size_              = 0;
+    other.scratch_size_            = 0;
 }
 
 OptixDenoiser& OptixDenoiser::operator=(OptixDenoiser&& other) noexcept {
@@ -84,6 +88,8 @@ OptixDenoiser& OptixDenoiser::operator=(OptixDenoiser&& other) noexcept {
         input_width_             = other.input_width_;
         input_height_            = other.input_height_;
         input_beauty_components_ = other.input_beauty_components_;
+        state_size_              = other.state_size_;
+        scratch_size_            = other.scratch_size_;
         last_error_              = std::move(other.last_error_);
         other.denoiser_                = nullptr;
         other.initialized_             = false;
@@ -92,6 +98,8 @@ OptixDenoiser& OptixDenoiser::operator=(OptixDenoiser&& other) noexcept {
         other.input_width_             = 0;
         other.input_height_            = 0;
         other.input_beauty_components_ = 0;
+        other.state_size_              = 0;
+        other.scratch_size_            = 0;
     }
     return *this;
 }
@@ -121,6 +129,8 @@ void OptixDenoiser::shutdown() noexcept {
     input_width_             = 0;
     input_height_            = 0;
     input_beauty_components_ = 0;
+    state_size_              = 0;
+    scratch_size_            = 0;
 }
 
 #ifdef RELATIVITYRENDER_ENABLE_OPTIX
@@ -212,11 +222,108 @@ bool OptixDenoiser::initialize(OptixBackend& /*backend*/) noexcept {
 
 #endif  // RELATIVITYRENDER_OPTIX_SDK_FOUND
 
+// ---- set_inputs: Stage 21B.6 memory-query split -----------
+// Stage 21B.6 wires the second real SDK call:
+// `optixDenoiserComputeMemoryResources` queries the
+// per-resolution state + scratch sizes for the framebuffer
+// dimensions provided in `inputs` and stores them in
+// `state_size_` / `scratch_size_`. NO buffer allocation
+// happens here (per the user's "do not allocate yet"
+// rule); the descriptor binding (OptixImage2D triplet)
+// also lands in a subsequent sub-stage.
+
+#ifdef RELATIVITYRENDER_OPTIX_SDK_FOUND
+
+bool OptixDenoiser::set_inputs(const Inputs& inputs) noexcept {
+    if (!initialized_) {
+        last_error_ =
+            "OptixDenoiser::set_inputs: denoiser is not initialized; "
+            "call initialize(backend) first.";
+        std::fprintf(stderr,
+                     "[OptiX:ERROR] denoiser set_inputs failed: %s\n",
+                     last_error_.c_str());
+        return false;
+    }
+    if (inputs.beauty_device == nullptr
+     || inputs.albedo_device == nullptr
+     || inputs.normal_device == nullptr) {
+        last_error_ =
+            "OptixDenoiser::set_inputs: every device pointer "
+            "(beauty / albedo / normal) must be non-null.";
+        std::fprintf(stderr,
+                     "[OptiX:ERROR] denoiser set_inputs failed: %s\n",
+                     last_error_.c_str());
+        return false;
+    }
+    if (inputs.width <= 0 || inputs.height <= 0) {
+        last_error_ =
+            "OptixDenoiser::set_inputs: width and height must be "
+            "positive.";
+        std::fprintf(stderr,
+                     "[OptiX:ERROR] denoiser set_inputs failed: %s\n",
+                     last_error_.c_str());
+        return false;
+    }
+    if (inputs.beauty_components != 3 && inputs.beauty_components != 4) {
+        last_error_ =
+            "OptixDenoiser::set_inputs: beauty_components must be 3 "
+            "(FLOAT3) or 4 (FLOAT4).";
+        std::fprintf(stderr,
+                     "[OptiX:ERROR] denoiser set_inputs failed: %s\n",
+                     last_error_.c_str());
+        return false;
+    }
+
+    auto* denoiser = static_cast<::OptixDenoiser>(denoiser_);
+    const auto w   = static_cast<unsigned int>(inputs.width);
+    const auto h   = static_cast<unsigned int>(inputs.height);
+
+    ::OptixDenoiserSizes sizes{};
+    const ::OptixResult res =
+        ::optixDenoiserComputeMemoryResources(denoiser, w, h, &sizes);
+    if (res != OPTIX_SUCCESS) {
+        last_error_ =
+            std::string("optixDenoiserComputeMemoryResources failed: ")
+          + ::optixGetErrorName(res);
+        std::fprintf(stderr,
+                     "[OptiX:ERROR] denoiser set_inputs failed: %s\n",
+                     last_error_.c_str());
+        return false;
+    }
+
+    // Stage 21B.6: store the queried sizes. NO cudaMalloc is
+    // called here per the user's rules; allocating the state
+    // + scratch buffers is a subsequent sub-stage's
+    // responsibility. The OptixImage2D descriptor triplet is
+    // also not built yet (`input_images_` stays null).
+    state_size_              = sizes.stateSizeInBytes;
+    scratch_size_            = sizes.withoutOverlapScratchSizeInBytes;
+    input_width_             = inputs.width;
+    input_height_            = inputs.height;
+    input_beauty_components_ = inputs.beauty_components;
+    inputs_set_              = true;
+    last_error_.clear();
+
+    std::fprintf(stderr,
+                 "[OptiX:INFO] OptixDenoiser memory resources "
+                 "queried: width=%u height=%u stateSize=%zu "
+                 "scratchSize=%zu (no allocation yet).\n",
+                 w, h, state_size_, scratch_size_);
+    return true;
+}
+
+#else  // RELATIVITYRENDER_OPTIX_SDK_FOUND
+
 bool OptixDenoiser::set_inputs(const Inputs& /*inputs*/) noexcept {
     last_error_ =
-        "OptixDenoiser::set_inputs: not implemented in Stage 21B.1.";
+        "OptixDenoiser::set_inputs requires the OptiX SDK; "
+        "rebuild with -DRR_ENABLE_OPTIX=ON and pass "
+        "-DOPTIX_ROOT=/path/to/optix-sdk so <optix.h> is "
+        "available. The CUDA path is unaffected.";
     return false;
 }
+
+#endif  // RELATIVITYRENDER_OPTIX_SDK_FOUND
 
 bool OptixDenoiser::invoke(const Output& /*output*/) noexcept {
     last_error_ =
