@@ -1,5 +1,5 @@
-// Stage 17A.3 / 17A.4 / 17A.5 OptiX device programs per
-// `docs/OPTIX_BACKEND_PLAN.md` §20. Compiled to PTX by the
+// Stage 17A.3 / 17A.4 / 17A.5 / 20G / 20H OptiX device programs
+// per `docs/OPTIX_BACKEND_PLAN.md` §20. Compiled to PTX by the
 // build system (`nvcc --ptx`) and embedded into rr_optix as a
 // host-side C-string via `cmake/EmbedPtxAsHeader.cmake`.
 //
@@ -19,21 +19,29 @@
 //   Doppler colour shift (`applyDopplerColor`) and the
 //   relativistic-beaming searchlight scale
 //   (`1 + (D^4 - 1) * searchlight_strength`) to the base
-//   shade before encoding into payload registers. The Doppler
-//   factor `D` is computed once per program from
-//   `optixGetWorldRayDirection()` (which already carries the
-//   aberrated direction the raygen passed to `optixTrace`).
-// - At |beta| = 0 every helper degenerates to identity, so
-//   `--render-optix-test` and `--render-optix-triangle`
-//   continue to produce the Stage 17A.3 / 17A.4 pixels
-//   byte-for-byte; the relativity divergence only fires when
-//   the host populates a non-zero observer velocity.
+//   shade before encoding into payload registers.
 //
-// Stage 17A.5 still NO bounce loop, NO RNG, NO materials,
-// NO any-hit, NO intersection program (built-in triangle
-// intersection is used). The `numPayloadValues = 3` setting
-// in the host-side pipeline compile options matches the 3
-// `optixSetPayload_N` slots used here.
+// Stage 20G adds material-flat shading via the SBT hit-record
+// `HitGroupData::shading_mode`; the relativistic stack composes
+// uniformly over both shading modes.
+//
+// Stage 20H moves the Doppler-factor computation OUT of the
+// closest-hit / miss programs and INTO the raygen. The raygen
+// computes D = dopplerFactor(rel, aberrated_dir) once per
+// pixel, packs it into payload register 3 as INPUT to
+// optixTrace, and the shaders read it via
+// optixGetPayload_3() instead of recomputing. Output is
+// byte-identical to the Stage 17A.5 form because OptiX 7+
+// guarantees `optixGetWorldRayDirection()` in the called
+// shader equals the direction passed to `optixTrace` from
+// the raygen — so the D value the shader would have
+// computed locally is the same D the raygen passes.
+//
+// Stage 17A.5 still NO bounce loop, NO RNG, NO any-hit, NO
+// intersection program (built-in triangle intersection is
+// used). The `numPayloadValues = 4` setting in the host-side
+// pipeline compile options matches the 4 `optixSetPayload_N` /
+// `optixGetPayload_N` slots used here (RGB + D).
 //
 // All per-pixel work runs on the GPU; the host's only role is
 // uploading launch parameters + downloading the framebuffer.
@@ -48,7 +56,7 @@
 
 extern "C" __constant__ rr::optix::OptixLaunchParams optixLaunchParams;
 
-// ---- payload helpers (3 RGB floats → 3 payload registers) -------
+// ---- payload helpers (3 RGB floats + 1 Doppler factor) ----------
 
 namespace {
 
@@ -66,30 +74,25 @@ __device__ __forceinline__ rr::math::Vec3 read_payload_rgb(unsigned int p0,
                           __uint_as_float(p2)};
 }
 
-// Apply the Stage 17A.5 Doppler + searchlight stack to a base
-// colour, using the photon's direction in the scene frame
-// (i.e. the aberrated ray the raygen passed to `optixTrace`).
-// Mirrors the eight-step pipeline in
-// `src/cuda/CudaTestKernel.cu`'s `k_sphere_relativistic` /
-// `k_render_scene`, restricted to the Doppler colour shift +
-// the bolometric searchlight scale.
+// Stage 20H: Doppler factor lives in payload register 3. The
+// raygen sets it as INPUT before `optixTrace`; the shaders
+// read it via `optixGetPayload_3()` instead of recomputing.
+__device__ __forceinline__ float read_payload_doppler() {
+    return __uint_as_float(optixGetPayload_3());
+}
+
+// Stage 20H: apply Doppler colour shift + searchlight beaming
+// to a base colour using a precomputed D. Functionally
+// equivalent to the 2-arg version below, just skips the
+// per-shader D recomputation. The math leaf's
+// `applyDopplerColor` and `searchlightFactor` calls are
+// identical.
 __device__ __forceinline__ rr::math::Vec3
-apply_doppler_and_searchlight(rr::math::Vec3 base_color,
-                              rr::math::Vec3 ray_dir_world) {
+apply_doppler_and_searchlight_with_D(rr::math::Vec3 base_color,
+                                     float          D) {
     using rr::math::Vec3;
 
-    const auto& obs = optixLaunchParams.observer;
     const auto& par = optixLaunchParams.params;
-
-    // Stage 18A.3: precompute the launch-invariant relativity
-    // scalars (|beta|, gamma) once per program invocation. Skips
-    // the redundant `length` + `gamma` reductions inside the
-    // two-arg `dopplerFactor` overload.
-    const auto rel = rr::relativity::precompute_relativity(obs.velocity);
-
-    // Doppler factor for the (possibly aberrated) photon
-    // direction in the scene frame. Computed once and reused.
-    const float D = rr::relativity::dopplerFactor(rel, ray_dir_world);
 
     Vec3 color = base_color;
 
@@ -109,6 +112,28 @@ apply_doppler_and_searchlight(rr::math::Vec3 base_color,
     }
 
     return color;
+}
+
+// Apply the Stage 17A.5 Doppler + searchlight stack to a base
+// colour, using the photon's direction in the scene frame
+// (i.e. the aberrated ray the raygen passed to `optixTrace`).
+// Stage 20H wraps the new with-D form by recomputing D from
+// the launch-params observer; kept for any future shader that
+// does not have access to the cached D.
+__device__ __forceinline__ rr::math::Vec3
+apply_doppler_and_searchlight(rr::math::Vec3 base_color,
+                              rr::math::Vec3 ray_dir_world) {
+    const auto& obs = optixLaunchParams.observer;
+
+    // Stage 18A.3: precompute the launch-invariant relativity
+    // scalars (|beta|, gamma) once per program invocation.
+    const auto rel = rr::relativity::precompute_relativity(obs.velocity);
+
+    // Doppler factor for the (possibly aberrated) photon
+    // direction in the scene frame. Computed once and reused.
+    const float D = rr::relativity::dopplerFactor(rel, ray_dir_world);
+
+    return apply_doppler_and_searchlight_with_D(base_color, D);
 }
 
 }  // namespace
@@ -152,15 +177,27 @@ extern "C" __global__ void __raygen__pinhole() {
     // Stage 18A.3: feed the precomputed `(|beta|, gamma)`
     // snapshot into `aberrateDirection` so the per-pixel `sqrt`
     // count drops by one (the `length(beta_vec)` reduction).
+    const auto rel = rr::relativity::precompute_relativity(
+        optixLaunchParams.observer.velocity);
     if (optixLaunchParams.params.enable_aberration) {
-        const auto rel = rr::relativity::precompute_relativity(
-            optixLaunchParams.observer.velocity);
         ray.direction = rr::relativity::aberrateDirection(
             rel, ray.direction);
     }
 
-    // Trace. 3 payload registers hold the resulting RGB.
+    // Stage 20H: compute Doppler factor for the (possibly
+    // aberrated) ray direction in the scene frame, ONCE in
+    // raygen. Pack into payload register 3 as INPUT to
+    // optixTrace; the shaders read it via
+    // `optixGetPayload_3()` instead of recomputing.
+    // At |beta| = 0 this is 1.0 (identity); at non-zero
+    // beta the closest-hit / miss apply the Doppler colour
+    // shift + searchlight scale using this cached value.
+    const float D = rr::relativity::dopplerFactor(rel, ray.direction);
+
+    // Trace. 4 payload registers: [0..2] = output RGB,
+    // [3] = input Doppler factor D.
     unsigned int p0 = 0u, p1 = 0u, p2 = 0u;
+    unsigned int p3 = __float_as_uint(D);
     optixTrace(
         optixLaunchParams.scene_handle,
         make_float3(ray.origin.x,    ray.origin.y,    ray.origin.z),
@@ -169,7 +206,7 @@ extern "C" __global__ void __raygen__pinhole() {
         /*time=*/0.0f, OptixVisibilityMask(255),
         OPTIX_RAY_FLAG_NONE,
         /*sbtOffset=*/0, /*sbtStride=*/0, /*missSbtIndex=*/0,
-        p0, p1, p2);
+        p0, p1, p2, p3);
 
     const auto rgb = read_payload_rgb(p0, p1, p2);
     fb[pix + 0] = rgb.x;
@@ -195,11 +232,16 @@ extern "C" __global__ void __miss__radiance() {
                (1.0f - t) * 1.0f + t * 0.7f,
                (1.0f - t) * 1.0f + t * 1.0f};
 
-    // Stage 17A.5: Doppler colour shift + searchlight beaming
-    // applied to the sky base colour. At |beta| = 0 these are
-    // identity, so the Stage 17A.4 sky matches byte-for-byte.
-    const Vec3 dir_v{dir.x, dir.y, dir.z};
-    color = apply_doppler_and_searchlight(color, dir_v);
+    // Stage 17A.5 / 20H: Doppler colour shift + searchlight
+    // beaming applied to the sky base colour. D is read from
+    // payload register 3 (set by raygen) instead of being
+    // recomputed; output is byte-identical because OptiX 7+
+    // guarantees `optixGetWorldRayDirection()` equals the
+    // direction the raygen passed to `optixTrace`. At
+    // |beta| = 0 the helper is identity so the Stage 17A.4
+    // sky matches byte-for-byte.
+    const float D = read_payload_doppler();
+    color = apply_doppler_and_searchlight_with_D(color, D);
 
     set_payload_rgb(color.x, color.y, color.z);
 }
@@ -265,16 +307,14 @@ extern "C" __global__ void __closesthit__radiance() {
         color.z = 0.5f * n.z + 0.5f;
     }
 
-    // Stage 17A.5: Doppler colour shift + searchlight beaming
-    // applied to the base shade. The ray direction passed to
-    // `optixTrace` was already aberrated by the raygen, so
-    // `optixGetWorldRayDirection()` is the photon's direction
-    // in the scene frame - the same input
-    // `k_sphere_relativistic` feeds into `dopplerFactor`.
-    // Composes uniformly on top of either shading mode above.
-    const float3 dir = optixGetWorldRayDirection();
-    const Vec3   dir_v{dir.x, dir.y, dir.z};
-    color = apply_doppler_and_searchlight(color, dir_v);
+    // Stage 17A.5 / 20H: Doppler colour shift + searchlight
+    // beaming applied to the base shade. D is read from
+    // payload register 3 (set by raygen) instead of being
+    // recomputed via `optixGetWorldRayDirection()`. Output is
+    // byte-identical because the raygen-cached D matches what
+    // the closest-hit would compute locally.
+    const float D = read_payload_doppler();
+    color = apply_doppler_and_searchlight_with_D(color, D);
 
     set_payload_rgb(color.x, color.y, color.z);
 }

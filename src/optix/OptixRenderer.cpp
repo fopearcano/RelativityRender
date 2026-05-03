@@ -352,13 +352,22 @@ OptixRenderer::render_triangle(int width, int height) noexcept {
 }
 
 OptixRenderer::Result
-OptixRenderer::render_relativistic(int width, int height) noexcept {
+OptixRenderer::render_relativistic(int width, int height,
+                                   float beta_magnitude) noexcept {
     Result r;
 
     if (width <= 0 || height <= 0) {
         r.message = "OptixRenderer::render_relativistic: invalid dimensions";
         return r;
     }
+
+    // Stage 20H: clamp the artist-supplied |beta| at <= 0.999999
+    // before constructing the observer velocity. Negative
+    // inputs fold to magnitude per the existing clampBeta
+    // contract (see tests/relativity_tests.cpp #6). Default
+    // beta_magnitude = 0.5 preserves Stage 17A.5 output.
+    const float beta_clamped = rr::relativity::clampBeta(
+        beta_magnitude, /*max_beta=*/0.999999f);
 
     OptixBackend backend;
     if (!backend.initialize()) {
@@ -437,15 +446,17 @@ OptixRenderer::render_relativistic(int width, int height) noexcept {
                     / static_cast<float>(height));
     const rr::camera::GpuCamera gpu_cam = camera.to_gpu();
 
-    // Stage 17A.5: observer state. beta = 0.5 along -Z (the
-    // camera's default forward direction) -> approaching the
-    // triangle -> blueshift + forward aberration + searchlight
-    // brightening. The chosen magnitude mirrors `--render-aovs`
-    // (Stage 14A.3): strong enough that the relativistic
-    // effects are clearly visible, but well clear of the high-
-    // beta numerical regime.
+    // Stage 17A.5: observer state along -Z (the camera's
+    // default forward direction) -> approaching the triangle
+    // -> blueshift + forward aberration + searchlight
+    // brightening. Stage 20H: caller-supplied magnitude;
+    // default 0.5 mirrors the original Stage 17A.5 fixture so
+    // existing `--render-optix-relativity` (no `--beta`) is
+    // byte-identical pre-/post-slice. `beta_clamped` is the
+    // post-clampBeta value computed at the top of this
+    // function.
     rr::relativity::Observer observer;
-    observer.velocity = rr::math::Vec3{0.0f, 0.0f, -0.5f};
+    observer.velocity = rr::math::Vec3{0.0f, 0.0f, -beta_clamped};
     rr::relativity::RelativityParams params;  // all effects enabled at strength 1
 
     const std::size_t framebuffer_floats =
@@ -1220,7 +1231,8 @@ OptixRenderer::render_triangle(int /*width*/, int /*height*/) noexcept {
 }
 
 OptixRenderer::Result
-OptixRenderer::render_relativistic(int /*width*/, int /*height*/) noexcept {
+OptixRenderer::render_relativistic(int /*width*/, int /*height*/,
+                                   float /*beta_magnitude*/) noexcept {
     Result r;
     r.ok = false;
     r.message =

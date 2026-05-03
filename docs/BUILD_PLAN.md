@@ -17968,6 +17968,286 @@ as the other OptiX entries.
   hit reachable for them at
   byte-identical behaviour).
 
+## Stage 20H — OptiX relativistic raygen (D-via-payload)
+
+**Scope of this slice (Stage 20H;
+master order #17, "OptiX upgrade
+path"): the prompt's spec for
+"OptiX relativistic raygen" — the
+relativistic stack (aberration in
+raygen + Doppler colour shift +
+searchlight beaming in shading) —
+already shipped as Stage 17A.5.
+Stage 20H delivers two genuine
+deltas:**
+
+**1. Wire the existing `--beta`
+modifier into `--render-optix-
+relativity`** so the artist can
+request a specific |beta| and get
+a matching default output filename
+(`output/optix_relativity_beta075.ppm`
+when `--beta 0.75`, mirroring the
+CUDA path's
+`--render-relativistic`
+4-beta-sweep naming
+`sphere_beta_NNN.ppm`).
+
+**2. Move the per-ray Doppler
+factor computation OUT of the
+closest-hit / miss programs and
+INTO the raygen,** passing D via
+a new payload register 3. Output
+is byte-identical (OptiX 7+
+guarantees `optixGetWorldRayDirection()`
+in the called shader equals the
+direction passed to `optixTrace`,
+so the cached D matches what the
+shader would compute locally) but
+now matches the user's spec
+"compute Doppler factor in
+raygen, store/use Doppler payload
+data, apply Doppler color +
+searchlight in shading".
+
+### What ships
+
+- `src/optix/OptixPipeline.cpp`:
+  bumped `pipeline_opts.numPayloadValues`
+  from 3 to 4. Register 3 now
+  carries the Doppler factor D
+  passed from raygen to closest-
+  hit / miss.
+- `src/optix/OptixPrograms.cu`:
+    - New device helper
+      `read_payload_doppler()`
+      reading
+      `optixGetPayload_3()`.
+    - New helper overload
+      `apply_doppler_and_searchlight_with_D(color, D)`
+      that takes a precomputed D;
+      the existing 2-arg
+      `apply_doppler_and_searchlight(color, ray_dir)`
+      becomes a thin wrapper that
+      computes D + delegates.
+    - `__raygen__pinhole`:
+      precomputes `(|beta|, gamma)`
+      ONCE (Stage 18A.3 invariant),
+      aberrates the ray direction
+      (gated on
+      `enable_aberration`),
+      computes
+      `D = dopplerFactor(rel,
+      ray.direction)`, packs D
+      into `p3 = __float_as_uint(D)`,
+      and passes 4 payload
+      arguments to `optixTrace`.
+    - `__closesthit__radiance`
+      and `__miss__radiance`:
+      read D via
+      `read_payload_doppler()`
+      and call the
+      `apply_doppler_and_searchlight_with_D`
+      overload; no per-shader
+      `dopplerFactor` recomputation.
+    - Output is byte-identical to
+      Stage 17A.5 / 20G for every
+      OptiX render entry (raygen
+      cached D matches what each
+      shader would compute via
+      `optixGetWorldRayDirection()`).
+- `src/optix/OptixRenderer.{h,cpp}`:
+  `render_relativistic` gains a
+  trailing `float beta_magnitude
+  = 0.5f` argument. The default
+  (0.5) preserves Stage 17A.5
+  output byte-for-byte. The
+  implementation passes the
+  artist value through
+  `rr::relativity::clampBeta(...,
+  0.999999f)` before populating
+  `observer.velocity = (0, 0,
+  -beta_clamped)`. Audit-host
+  fallback signature updated to
+  match.
+- `src/main.cpp`:
+  `run_render_optix_relativity`
+  reads `cfg.beta`. Sentinel
+  `cfg.beta < 0` (default)
+  triggers the historical
+  beta=0.5 path + the historical
+  default output
+  `output/optix_relativity.ppm`.
+  An explicit `cfg.beta >= 0`
+  triggers a new default output
+  filename derived from the beta
+  value (round to 3-digit
+  integer, format
+  `output/optix_relativity_beta%03d.ppm`).
+  `--output` always wins over
+  the derived default.
+  `<cstdio>` added for
+  `std::snprintf`.
+- `src/core/CommandLine.cpp`:
+  `--beta` help text rewritten
+  to enumerate both consumers
+  (`--render-demo` Stage 19E.2,
+  `--render-optix-relativity`
+  Stage 20H) with their
+  defaults + the
+  `optix_relativity_beta{NNN}.ppm`
+  derived-filename rule.
+- `CMakeLists.txt`: banner /
+  DESCRIPTION bumped from "Stage
+  20G: OptiX material SBT" to
+  "Stage 20H: OptiX relativistic
+  raygen" (two-line cosmetic).
+- `docs/BUILD_PLAN.md`: this
+  slice-closing entry. **No
+  module-status row, milestone-
+  status row, or canonical
+  historical entry was modified.**
+
+### Why output is byte-identical for existing entries
+
+OptiX 7+ guarantees that inside
+the called shader,
+`optixGetWorldRayDirection()`
+returns the direction passed to
+`optixTrace`. The raygen's cached
+`D = dopplerFactor(rel,
+ray.direction)` therefore equals
+the value each shader would
+compute locally via
+`dopplerFactor(rel,
+optixGetWorldRayDirection())`.
+The math leaf is byte-identical
+across host and device, and the
+invariants (|beta|, gamma) come
+from the same launch-params
+observer in both call sites. So
+this slice is a pure refactor
+plus a CLI ergonomic addition;
+no shader visibly changes.
+
+### Hard-rule audit
+
+- Must match CUDA relativity
+  behavior conceptually -
+  **yes**. The CUDA path
+  (`k_sphere_relativistic` /
+  `k_render_scene`) computes
+  aberration once + Doppler
+  once per pixel; this slice
+  brings the OptiX path to the
+  same shape (Stage 18A.3
+  precomputed invariants in
+  raygen + cached D in
+  payload). The Stage 17A.5
+  Doppler colour shift +
+  searchlight scale is
+  unchanged.
+- All per-ray math GPU-side -
+  **yes**. The raygen runs on
+  device; the new
+  `apply_doppler_and_searchlight_with_D`
+  overload is `__device__
+  __forceinline__`. The host's
+  only contribution is
+  populating
+  `OptixLaunchParams::observer`
+  (Stage 17A.5 contract,
+  unchanged).
+- Compiles with OptiX OFF -
+  **yes**. `cmake -S . -B
+  build` (no flags) clean;
+  ctest 6/6 green; the audit-
+  host fallback returns the
+  documented `--render-optix-
+  relativity requires OptiX.
+  Rebuild with -DRR_ENABLE_OPTIX=ON
+  ...` error.
+- Compiles with OptiX ON -
+  **yes**. `cmake -S . -B
+  /tmp/rr-20h-on
+  -DRR_ENABLE_OPTIX=ON`: clean
+  build via two-layer audit-
+  host fallback (including the
+  updated `render_relativistic`
+  signature in the no-SDK
+  branch); ctest 7/7 green.
+
+### Audit-host CLI smoke checks
+
+- `--render-optix-relativity`
+  (no `--beta`): returns
+  `--render-optix-relativity
+  requires OptiX. Rebuild ...`
+  audit-host error. Pre-slice
+  default output path
+  preserved
+  (`output/optix_relativity.ppm`).
+- `--render-optix-relativity
+  --beta 0.75` (audit-host):
+  returns the same audit-host
+  error; the default output
+  path WOULD be
+  `output/optix_relativity_beta075.ppm`
+  on a real OptiX-SDK host
+  run.
+- `--render-optix-relativity
+  --beta 0.0`: derived path is
+  `..._beta000.ppm`.
+  `--render-optix-relativity
+  --beta 0.95`: derived path
+  is `..._beta095.ppm`. Both
+  match the CUDA
+  `--render-relativistic`
+  4-beta-sweep
+  `sphere_beta_NNN.ppm`
+  naming.
+- `--help` shows the rewritten
+  `--beta` entry enumerating
+  both consumers + the
+  filename rule.
+
+### Status (unchanged)
+
+Module #6 (OptiX Backend) and
+milestone M15 (OptiX Backend
+Upgrade Path) both remain at
+`partial implementation`. Adding
+the payload-D refactor + the
+`--beta` ergonomic does not lift
+the project-wide visual-
+validation gate. The actual
+`output/optix_relativity_beta075.ppm`
+output is gated on the same
+future real-hardware run as the
+other OptiX entries; module
+#13 (Relativistic Camera Model)
+remains "production ready" with
+its 800-assertion analytic-
+formula coverage from Stage
+19E.1.
+
+### Verified at the build
+
+- `cmake -S . -B build` (audit
+  host, no flags): banner shows
+  "Stage 20H: OptiX relativistic
+  raygen"; clean build; ctest
+  6/6 green.
+- `cmake -S . -B /tmp/rr-20h-on
+  -DRR_ENABLE_OPTIX=ON`: non-
+  blocking SDK-not-found
+  warning per Stage 12B.4;
+  rr_optix STATIC compiles via
+  two-layer audit-host
+  fallback; ctest 7/7 green
+  (Stage 20D `optix_tests`
+  56-assertion pass included).
+
 ## Next stage
 
 When prompted, the natural follow-ups are:

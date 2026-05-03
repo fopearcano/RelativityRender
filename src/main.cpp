@@ -18,6 +18,7 @@
 
 #include <atomic>
 #include <csignal>
+#include <cstdio>      // Stage 20H: snprintf for the beta-suffixed default output path
 
 // Stage 12B.5: rr_optix is only linked into the executable when
 // RELATIVITYRENDER_ENABLE_OPTIX=ON, so the include is gated on the
@@ -1067,9 +1068,41 @@ int run_render_optix_triangle(const rr::core::Config& cfg) {
 int run_render_optix_relativity(const rr::core::Config& cfg) {
     using rr::core::Logger;
 
-    const std::string out_path = cfg.output_path.empty()
-        ? std::string("output/optix_relativity.ppm")
-        : cfg.output_path;
+    // Stage 20H: optional --beta modifier. Sentinel cfg.beta
+    // (default -1.0f from Stage 19E.2) means "use the
+    // historical 0.5 fixture + write output/optix_relativity.ppm
+    // unchanged"; an explicit non-negative value picks the
+    // beta magnitude AND derives the default output filename
+    // `output/optix_relativity_beta{NNN}.ppm` (matching the
+    // CUDA path's `--render-relativistic` 4-beta sweep
+    // naming, e.g. beta=0.75 -> ..._beta075.ppm).
+    const bool  user_beta_set    = (cfg.beta >= 0.0f);
+    const float effective_beta   = user_beta_set ? cfg.beta : 0.5f;
+
+    auto default_path_for_beta = [](float beta_value) -> std::string {
+        // Encode |beta| as 3-digit integer (round-to-nearest).
+        // Values >= 1.0 are clamped at 999 so the filename
+        // stays 3-digit; the renderer's clampBeta will cap
+        // the actual run at 0.999999. Negative inputs fold
+        // to magnitude.
+        if (beta_value < 0.0f) beta_value = -beta_value;
+        int n = static_cast<int>(beta_value * 100.0f + 0.5f);
+        if (n < 0)   n = 0;
+        if (n > 999) n = 999;
+        char buf[40];
+        std::snprintf(buf, sizeof(buf),
+                      "output/optix_relativity_beta%03d.ppm", n);
+        return std::string(buf);
+    };
+
+    std::string out_path;
+    if (!cfg.output_path.empty()) {
+        out_path = cfg.output_path;
+    } else if (user_beta_set) {
+        out_path = default_path_for_beta(effective_beta);
+    } else {
+        out_path = "output/optix_relativity.ppm";
+    }
 
 #ifndef RELATIVITYRENDER_ENABLE_OPTIX
     (void)cfg;
@@ -1080,7 +1113,8 @@ int run_render_optix_relativity(const rr::core::Config& cfg) {
                   "to/optix-sdk).");
     return 1;
 #else
-    auto r = rr::optix::OptixRenderer::render_relativistic(cfg.width, cfg.height);
+    auto r = rr::optix::OptixRenderer::render_relativistic(
+        cfg.width, cfg.height, effective_beta);
     if (!r.ok) {
         Logger::error("optix relativistic render failed: " + r.message);
         return 1;

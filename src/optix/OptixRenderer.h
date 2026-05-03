@@ -91,8 +91,19 @@ public:
     // brightening, but stays well clear of the high-beta
     // numerical regime.
     //
+    // Stage 20H: `beta_magnitude` lets the caller pick the
+    // |beta| along -Z; the observer velocity becomes
+    // (0, 0, -beta_magnitude). Default 0.5 preserves the
+    // Stage 17A.5 shape so callers that pass no explicit
+    // beta get the documented `output/optix_relativity.ppm`
+    // pixels byte-for-byte. Magnitude is clamped at <=
+    // 0.999999 by `rr::relativity::clampBeta` inside the
+    // implementation.
+    //
     // Same audit-host fallback semantics as render_test.
-    [[nodiscard]] static Result render_relativistic(int width, int height) noexcept;
+    [[nodiscard]] static Result render_relativistic(
+        int width, int height,
+        float beta_magnitude = 0.5f) noexcept;
 
     // Stage 20C raygen-only render. Exercises the OptiX raygen
     // + miss + minimal-SBT + pipeline-creation surface end-to-

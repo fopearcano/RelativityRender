@@ -137,7 +137,12 @@ OptixPipelineResult OptixPipeline::create(OptixBackend& backend) {
         OPTIX_TRAVERSABLE_GRAPH_FLAG_ALLOW_SINGLE_GAS;
     // Stage 17A.4: 3 payload registers carry the closest-hit /
     // miss RGB result back to the raygen.
-    pipeline_opts.numPayloadValues                 = 3;
+    // Stage 20H: bumped to 4. Register 3 carries the per-ray
+    // Doppler factor D computed once in the raygen (after
+    // aberration), read by both __closesthit__radiance and
+    // __miss__radiance to apply Doppler color + searchlight
+    // without recomputing D in each shader.
+    pipeline_opts.numPayloadValues                 = 4;
     pipeline_opts.numAttributeValues               = 2;
     pipeline_opts.exceptionFlags                   = OPTIX_EXCEPTION_FLAG_NONE;
     pipeline_opts.pipelineLaunchParamsVariableName = "optixLaunchParams";
