@@ -16,6 +16,10 @@
 // opt-in alternative gated on `-DRR_ENABLE_OPTIX=
 // ON` + a located OptiX SDK.
 
+// Forward decl so `render_mesh_scene` can take a Scene reference
+// without `OptixRenderer.h` pulling in scene/Scene.h transitively.
+namespace rr::scene { struct Scene; }
+
 namespace rr::optix {
 
 class OptixRenderer {
@@ -115,6 +119,35 @@ public:
     //
     // Same audit-host fallback semantics as render_test.
     [[nodiscard]] static Result render_raygen(int width, int height) noexcept;
+
+    // Stage 20F mesh-scene render. Builds an OptiX GAS from
+    // the first non-empty mesh in `scene.meshes` (extracting
+    // positions to a tightly-packed `float3` buffer that
+    // `build_mesh_gas` consumes), uses the scene's `camera`
+    // for primary-ray generation, and runs the existing
+    // raygen + miss + closest-hit pipeline (Stages 17A.3 -
+    // 17A.5). Closest-hit emits normal-as-color shading;
+    // miss emits the gradient sky. No materials beyond
+    // the closest-hit's normal-as-color base (per Stage 20F
+    // rules); no path tracing.
+    //
+    // The caller is expected to have populated `scene` via
+    // `rr::io::SceneLoader::load(...)`. Multi-mesh scenes
+    // are supported in the parser but only the first
+    // visible non-empty mesh is uploaded for this slice
+    // (the existing `GpuScene::upload_mesh` slot holds one
+    // mesh; OptiX-side multi-mesh / IAS lands later).
+    //
+    // On failure (no mesh in scene, allocation failure, GAS
+    // build error, launch error) the result is `ok = false`
+    // with a human-readable `message`; image is empty.
+    //
+    // Same audit-host fallback semantics as render_test
+    // (returns `ok = false` with a "requires OptiX SDK"
+    // message when the SDK was not located at build time).
+    [[nodiscard]] static Result render_mesh_scene(
+        const rr::scene::Scene& scene,
+        int width, int height) noexcept;
 };
 
 }  // namespace rr::optix

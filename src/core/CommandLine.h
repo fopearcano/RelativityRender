@@ -346,6 +346,12 @@ public:
         // ray misses; the miss program writes the env-color
         // gradient per pixel. Output: output/optix_raygen.ppm.
         RenderOptixRaygen,
+        // Stage 20F OptiX mesh-scene render. Loads a .rrscene
+        // file via the existing SceneLoader, builds an OptiX
+        // GAS from the first non-empty mesh in scene.meshes,
+        // and runs the existing raygen + miss + closest-hit
+        // pipeline. Output: output/optix_mesh_scene.ppm.
+        RenderOptixMeshScene,
         RenderDenoise,
         // Stage 19E.2: smallest-meaningful-relativistic-render demo.
         // Single sphere + one diffuse material + one environment

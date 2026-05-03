@@ -60,6 +60,7 @@ bool set_action(CommandLine::Action& current, CommandLine::Action target,
                 "--render-optix-triangle / "
                 "--render-optix-relativity / "
                 "--render-optix-raygen / "
+                "--render-optix-mesh-scene / "
                 "--render-denoise / "
                 "--render-demo)";
         return false;
@@ -278,6 +279,22 @@ CommandLine::ParseResult CommandLine::parse(int argc, char** argv) {
                 r.action = Action::Error;
                 return r;
             }
+        } else if (a == "--render-optix-mesh-scene") {
+            // Stage 20F: OptiX mesh-scene render. Like
+            // --render-pathtrace / --render-from-scene, takes a
+            // .rrscene path as its argument; the loaded
+            // Scene's first non-empty mesh is uploaded to a GAS
+            // and rendered through the existing OptiX pipeline.
+            if (!set_action(r.action, Action::RenderOptixMeshScene,
+                            r.error_message)) {
+                r.action = Action::Error;
+                return r;
+            }
+            if (!take_value(argc, argv, i, a, value, r.error_message)) {
+                r.action = Action::Error;
+                return r;
+            }
+            r.config.scene_path.assign(value);
         } else if (a == "--render-denoise") {
             if (!set_action(r.action, Action::RenderDenoise,
                             r.error_message)) {
@@ -376,6 +393,7 @@ CommandLine::ParseResult CommandLine::parse(int argc, char** argv) {
      || r.action == Action::RenderOptixTriangle
      || r.action == Action::RenderOptixRelativity
      || r.action == Action::RenderOptixRaygen
+     || r.action == Action::RenderOptixMeshScene
      || r.action == Action::RenderDenoise) {
         if (auto err = r.config.validate(); !err.empty()) {
             r.action        = Action::Error;
@@ -584,6 +602,22 @@ std::string CommandLine::usage(std::string_view argv0) {
        << "                        closest-hit firing. Default output "
                                   "output/optix_raygen.ppm.\n"
        << "                        Same OptiX requirements as above.\n"
+       << "  --render-optix-mesh-scene <file>\n"
+       << "                        Stage 20F OptiX mesh-scene render. "
+                                  "Loads <file> via SceneLoader,\n"
+       << "                        builds an OptiX GAS from the first "
+                                  "non-empty mesh in scene.meshes\n"
+       << "                        (positions extracted to a tightly-"
+                                  "packed float3 buffer the GAS\n"
+       << "                        builder requires), uses the scene's "
+                                  "camera, runs the existing\n"
+       << "                        raygen + miss + closest-hit pipeline "
+                                  "(normal-as-color shading +\n"
+       << "                        gradient sky). No materials beyond "
+                                  "basic color, no path tracing.\n"
+       << "                        Default output "
+                                  "output/optix_mesh_scene.ppm. Same\n"
+       << "                        OptiX requirements as above.\n"
        << "  --render-denoise      Stage 19B.3 OptiX denoiser end-to-end "
                                   "fixture. Builds a small\n"
        << "                        4-sphere demo scene + renders it via "

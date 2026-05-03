@@ -1165,6 +1165,89 @@ int run_render_optix_raygen(const rr::core::Config& cfg) {
 #endif
 }
 
+// `--render-optix-mesh-scene <file>` dispatch (Stage 20F).
+// Loads a `.rrscene` file via the existing SceneLoader,
+// hands the resulting `rr::scene::Scene` to
+// `OptixRenderer::render_mesh_scene`, which builds an OptiX
+// GAS from the first non-empty mesh and runs the existing
+// raygen + miss + closest-hit pipeline (normal-as-color
+// shading on hits + gradient sky on misses). No materials,
+// no path tracing — Stage 20F rules.
+//
+// `cfg.scene_path` carries the file path. `cfg.width` /
+// `cfg.height` populate the framebuffer dimensions and the
+// camera aspect.
+//
+// Default output: `output/optix_mesh_scene.ppm`. `--output`
+// overrides. Requires both `-DRR_ENABLE_OPTIX=ON` and a host
+// with the CUDA Toolkit + OptiX SDK installed; the audit-host
+// fallback returns the documented "requires OptiX" error.
+int run_render_optix_mesh_scene(const rr::core::Config& cfg) {
+    using rr::core::Logger;
+
+    const std::string out_path = cfg.output_path.empty()
+        ? std::string("output/optix_mesh_scene.ppm")
+        : cfg.output_path;
+
+    if (cfg.scene_path.empty()) {
+        Logger::error("--render-optix-mesh-scene requires a .rrscene "
+                      "file path argument.");
+        return 1;
+    }
+
+    // Scene load runs on the audit host too — `rr_io` is host-
+    // only and the loader does not require CUDA / OptiX. We
+    // load up front so a missing file or parse failure surfaces
+    // with the same diagnostic on every host.
+    if (!rr::io::sceneFileExists(cfg.scene_path)) {
+        Logger::error("scene file not found: " + cfg.scene_path);
+        return 1;
+    }
+    auto load = rr::io::load(cfg.scene_path);
+    if (!load.ok) {
+        Logger::error("failed to load scene '" + cfg.scene_path
+                    + "': " + load.error_message);
+        return 1;
+    }
+
+#ifndef RELATIVITYRENDER_ENABLE_OPTIX
+    Logger::error("--render-optix-mesh-scene requires OptiX. "
+                  "Rebuild with -DRR_ENABLE_OPTIX="
+                  "ON on a host with the CUDA Toolkit + OptiX "
+                  "SDK installed (also pass -DOPTIX_ROOT=/path/"
+                  "to/optix-sdk).");
+    return 1;
+#else
+    auto r = rr::optix::OptixRenderer::render_mesh_scene(
+        load.scene, cfg.width, cfg.height);
+    if (!r.ok) {
+        Logger::error("optix mesh-scene render failed: " + r.message);
+        return 1;
+    }
+    log_gpu_timing("render-optix-mesh-scene", cfg.width, cfg.height,
+                   r.gpu_time_ms);
+
+    namespace fs = std::filesystem;
+    const fs::path out_fs = out_path;
+    if (out_fs.has_parent_path()) {
+        std::error_code ec;
+        fs::create_directories(out_fs.parent_path(), ec);
+    }
+    if (!r.image.save_ppm(out_fs)) {
+        Logger::error("could not write PPM: " + out_path);
+        return 1;
+    }
+
+    std::error_code ec;
+    const fs::path  abs = fs::absolute(out_fs, ec);
+    Logger::info(std::string("wrote OptiX mesh scene: ")
+               + (ec ? out_path : abs.string())
+               + " (" + std::to_string(cfg.width) + "x"
+               + std::to_string(cfg.height) + ", RGBA32F)");
+    return 0;
+#endif
+}
+
 // `--render-optix-test` dispatch (Stage 17A.3). Drives the
 // minimum-viable OptiX pipeline: initialise OptixBackend, build
 // pipeline (raygen + miss; no closest-hit, no path tracer),
@@ -3204,6 +3287,9 @@ int main(int argc, char** argv) {
 
         case CommandLine::Action::RenderOptixRaygen:
             return run_render_optix_raygen(result.config);
+
+        case CommandLine::Action::RenderOptixMeshScene:
+            return run_render_optix_mesh_scene(result.config);
 
         case CommandLine::Action::RenderDenoise:
             return run_render_denoise(result.config);

@@ -17409,6 +17409,255 @@ other OptiX entries.
   -DRR_ENABLE_OPTIX=ON ...` and
   exits 1.
 
+## Stage 20F — OptiX mesh-scene GAS
+
+**Scope of this slice (Stage 20F;
+master order #17, "OptiX upgrade
+path"): build an OptiX
+acceleration structure from a
+loaded RelativityRender Scene's
+mesh data, render through the
+existing Stage 17A.3-17A.5 raygen
++ miss + closest-hit pipeline,
+write the result to
+`output/optix_mesh_scene.ppm`.
+Prior OptiX render entries
+(`render_test`, `render_triangle`,
+`render_relativistic`,
+`render_raygen`) all use a hard-
+coded triangle fixture; this is
+the first OptiX entry that
+consumes loaded scene data via
+the existing `.rrscene` parser.**
+
+### What ships
+
+- `src/optix/OptixRenderer.{h,cpp}`:
+  new `render_mesh_scene(const
+  rr::scene::Scene& scene, int
+  width, int height) noexcept`
+  static method.
+    - Picks the first visible non-
+      empty mesh in `scene.meshes`
+      (mirrors the CUDA path's
+      `--render-full-scene`
+      selection logic).
+    - Extracts per-vertex
+      positions into a
+      tightly-packed `float3`
+      buffer (`std::vector<float>`,
+      3 floats / vertex). The
+      Mesh's `Vertex` POD is 32
+      bytes (position + normal +
+      uv) but `build_mesh_gas`
+      requires
+      `vertexStrideInBytes = 12`
+      per `OptixAccel.cpp:143`.
+      The adaptation lives on the
+      host so the GAS builder's
+      contract stays narrow.
+      Allowed under master rule
+      §6 ("CPU may upload data to
+      GPU"); not per-pixel
+      rendering.
+    - Indices: `Triangle` is
+      `3 x uint32_t == 12 bytes`,
+      layout-compatible with the
+      flat `uint32_t[3*N]` form
+      `build_mesh_gas` expects.
+      Uploaded directly via
+      `cudaMemcpy(picked->triangles
+      .data(), ...)`.
+    - Calls `build_mesh_gas` with
+      the device positions /
+      indices buffers; threads
+      the resulting traversable
+      handle into
+      `params.scene_handle`.
+    - Uses `scene.camera` for
+      primary-ray generation
+      (aspect overridden to match
+      the requested framebuffer
+      dimensions).
+    - Default `observer` +
+      `params` (|beta| = 0); the
+      existing closest-hit's
+      Doppler / searchlight stack
+      degenerates to identity.
+      Output is normal-as-color
+      shading on hits + gradient
+      sky on misses, matching the
+      rule "no materials beyond
+      basic color".
+    - `accum_buffer` +
+      `sample_index` left at
+      Stage 20B defaults
+      (`nullptr` / `0`): no
+      path tracing.
+    - Same audit-host fallback
+      shape as every other OptiX
+      render entry.
+- `src/core/CommandLine.{h,cpp}`:
+  new `Action::RenderOptixMeshScene`
+  enum value; new
+  `--render-optix-mesh-scene <file>`
+  parser branch (takes a `.rrscene`
+  path argument like
+  `--render-pathtrace`); help-
+  text entry; mutual-exclusion
+  error message updated;
+  validation list updated.
+- `src/main.cpp`: new
+  `run_render_optix_mesh_scene
+  (const Config&)` dispatcher.
+  Loads `cfg.scene_path` via
+  `rr::io::load(...)` (host-side,
+  runs on the audit host too) and
+  hands the resulting Scene to
+  `OptixRenderer::render_mesh_scene
+  (...)`. Default output
+  `output/optix_mesh_scene.ppm`
+  (overridable via `--output`).
+  New `case RenderOptixMeshScene:`
+  in the action switch.
+- `CMakeLists.txt`: banner /
+  `DESCRIPTION` bumped from
+  "Stage 20E: OptiX closest-hit
+  verified" to "Stage 20F:
+  OptiX mesh-scene GAS"
+  (two-line cosmetic).
+- `docs/BUILD_PLAN.md`: this
+  slice-closing entry. **No
+  module-status row, milestone-
+  status row, or canonical
+  historical entry was modified.**
+
+### Hard-rule audit
+
+- Use existing .rrscene loader -
+  **yes**. The dispatcher calls
+  `rr::io::load(cfg.scene_path)`
+  (Stage 10B+) and consumes the
+  resulting `LoadResult`
+  unchanged. No parser /
+  loader modification.
+- No materials beyond basic
+  color - **yes**. The closest-
+  hit emits normal-as-color
+  (`0.5*n + 0.5`); the
+  `Material` data on
+  `picked->material_id` is read
+  by neither the host nor the
+  closest-hit. Stage 20F's
+  output is fully described by
+  geometry-derived normals.
+- No path tracing yet - **yes**.
+  No bounce loop / no RNG /
+  `accum_buffer` + `sample_index`
+  remain at Stage 20B defaults.
+  `__closesthit__radiance` writes
+  the per-pixel payload and
+  returns directly; raygen
+  writes once and exits.
+- Compiles with OptiX OFF -
+  **yes**. `cmake -S . -B build`
+  (no flags) clean; ctest 6/6
+  green; the audit-host
+  fallback returns the
+  documented `--render-optix-
+  mesh-scene requires OptiX.
+  Rebuild with -DRR_ENABLE_OPTIX=ON
+  ...` error after a successful
+  scene-load (the loader runs
+  host-side and surfaces real
+  scene errors honestly even on
+  OptiX-OFF builds).
+- Compiles with OptiX ON -
+  **yes**. `cmake -S . -B
+  /tmp/rr-20f-on
+  -DRR_ENABLE_OPTIX=ON`: clean
+  build via two-layer audit-
+  host fallback; ctest 7/7 green
+  (Stage 20D `optix_tests`
+  56-assertion pass included).
+- Single-mesh scope (multi-mesh
+  IAS deferred) - **yes**, in
+  line with the existing
+  `GpuScene::upload_mesh` slot
+  + the CUDA path's `--render-
+  full-scene` "first non-empty
+  mesh" selection. Multi-mesh /
+  IAS is a future slice that
+  affects both backends; this
+  slice does not pre-empt that
+  decision.
+
+### Audit-host CLI smoke checks
+
+- `--render-optix-mesh-scene`
+  (no argument): parser returns
+  `missing value after
+  --render-optix-mesh-scene` and
+  prints usage; exits non-zero.
+- `--render-optix-mesh-scene
+  /nonexistent.rrscene`: returns
+  `scene file not found:
+  /nonexistent.rrscene` from the
+  `sceneFileExists` check; exits
+  1 before reaching the OptiX
+  fallback.
+- `--render-optix-mesh-scene
+  scenes/test_mesh.rrscene`
+  (audit host): loads the scene
+  successfully (parser is host-
+  side; runs without OptiX),
+  then returns
+  `--render-optix-mesh-scene
+  requires OptiX. Rebuild with
+  -DRR_ENABLE_OPTIX=ON ...` and
+  exits 1. Demonstrates that the
+  loader integration is wired
+  *before* the OptiX gate, so
+  loader-side bugs surface
+  honestly on the audit host.
+- `--help` shows the new entry
+  with documented default output
+  + scene-shape description.
+
+### Status (unchanged)
+
+Module #6 (OptiX Backend) and
+milestone M15 (OptiX Backend
+Upgrade Path) both remain at
+`partial implementation`. Adding
+a new render entry that consumes
+loaded scene data does not lift
+the project-wide visual-
+validation gate (no frame
+rendered through the OptiX path
+on a real OptiX-SDK host in
+this branch). The actual
+`output/optix_mesh_scene.ppm`
+output is gated on the same
+future real-hardware run as the
+other OptiX entries.
+
+### Verified at the build
+
+- `cmake -S . -B build` (audit
+  host, no flags): banner shows
+  "Stage 20F: OptiX mesh-scene
+  GAS"; clean build; ctest 6/6
+  green.
+- `cmake -S . -B /tmp/rr-20f-on
+  -DRR_ENABLE_OPTIX=ON` (audit
+  host, no SDK): non-blocking
+  SDK-not-found warning per
+  Stage 12B.4; rr_optix STATIC
+  compiles via two-layer audit-
+  host fallback; clean build;
+  ctest 7/7 green.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
