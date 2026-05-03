@@ -21488,6 +21488,132 @@ has a slightly tighter contract).
   zero hits (no SDK include
   anywhere).
 
+## Stage 21B.2 — denoiser compile guards
+
+**Scope of this slice (Stage 21B.2;
+master order #24, "Denoising"):
+add explicit
+`RELATIVITYRENDER_ENABLE_OPTIX`
+compile guards to
+`src/optix/OptixDenoiser.cpp`.
+Per the user's rules: "OFF →
+class exists but inactive", "ON
+→ class prepared for OptiX
+usage", "must compile both ON
+and OFF", "no SDK calls yet".
+The class declaration in the
+header stays unconditional
+(consumers can include the
+header without depending on the
+gate); the `.cpp` body branches
+on `RELATIVITYRENDER_ENABLE_OPTIX`
+to surface different `last_error()`
+messages depending on the build
+mode. Trivial members
+(constructor, destructor, move
+ops, getters, `shutdown`) stay
+unconditional. NO SDK calls;
+NO behaviour change beyond the
+error message text.**
+
+### What ships
+
+- `src/optix/OptixDenoiser.h`:
+  documentation comment block
+  added describing the gating
+  contract (class always
+  declared; `.cpp` branches on
+  `RELATIVITYRENDER_ENABLE_OPTIX`).
+  The class' public surface is
+  unchanged.
+- `src/optix/OptixDenoiser.cpp`:
+  the three not-yet-wired
+  methods (`initialize`,
+  `set_inputs`, `invoke`) move
+  inside an
+  `#ifdef RELATIVITYRENDER_ENABLE_OPTIX`
+  / `#else` / `#endif` block:
+    - **ON branch**: existing
+      Stage 21B.1 stubs ("not
+      implemented in Stage 21B.1
+      ...; OptiX SDK wiring
+      lands in subsequent Stage
+      21B sub-stages"). Class
+      is "prepared for OptiX
+      usage".
+    - **OFF branch**: new stubs
+      ("OptiX disabled at build
+      time. Rebuild with
+      `-DRR_ENABLE_OPTIX=ON` to
+      enable the denoiser").
+      Class is inactive but
+      compilable.
+- This `BUILD_PLAN.md`
+  slice-closing entry.
+
+### Backward compatibility
+
+- The class' public surface
+  (constructors, destructor,
+  move ops, `Inputs` /
+  `Output` structs, every
+  method declaration) is
+  byte-identical with Stage
+  21B.1.
+- `denoise_aov_buffers_to_ppm`
+  in `main.cpp` and the
+  `--render-denoise` /
+  `--render-aovs --denoise`
+  CLI surfaces are unchanged
+  and continue to take the
+  Stage 19C.3 noisy-Beauty
+  fallback path on
+  denoise failure.
+- The CUDA renderer is
+  byte-identical (the slice
+  touches only
+  `src/optix/OptixDenoiser.{h,cpp}`).
+
+### Why both branches
+
+`rr_optix` is built only when
+`RR_ENABLE_OPTIX=ON` per the
+Stage 12B.3 contract, so the
+`#else` branch is never reached
+in the default OFF build (the
+.cpp simply isn't compiled).
+The branch is present anyway
+so master rule 2 ("keep every
+step compilable") holds at the
+file level — if a future slice
+or a contributor's local
+configuration forces the .cpp
+into compilation under OFF, it
+compiles cleanly with the
+documented "OptiX disabled at
+build time" error.
+
+### Verified at the build
+
+- `cmake -S . -B build_off
+  -DRR_ENABLE_CUDA=OFF
+  -DRR_ENABLE_OPTIX=OFF`
+  (audit host): clean build;
+  ctest 6/6 green.
+- `cmake -S . -B build_on_audit
+  -DRR_ENABLE_CUDA=OFF
+  -DRR_ENABLE_OPTIX=ON`
+  (audit host, no SDK):
+  clean build; ctest 7/7
+  green.
+- `grep -n "optix.h\|<optix"
+  src/optix/OptixDenoiser.h
+  src/optix/OptixDenoiser.cpp`:
+  hits inside doc-comment
+  text only; no actual
+  `#include <optix.h>` line
+  anywhere.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:

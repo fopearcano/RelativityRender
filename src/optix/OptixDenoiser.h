@@ -2,19 +2,29 @@
 
 #include <string>
 
-// Stage 21B.1 - OptixDenoiser wrapper class skeleton.
+// Stage 21B.1 / 21B.2 - OptixDenoiser wrapper class skeleton.
 //
-// This file is intentionally minimal: a class shell whose
-// methods all return false / no-op with a documented "not
-// implemented" message. No <optix.h> include, no SDK calls,
-// no functionality. Subsequent Stage 21B sub-stages add the
-// real OptiX wiring per the Stage 21A planning arc.
+// Class is declared unconditionally so consumers can include
+// this header in any TU without depending on OptiX gating
+// macros. The class' public surface is identical in both
+// build modes; only the per-method behaviour changes.
 //
-// Compiles with -DRR_ENABLE_OPTIX=OFF (the file is simply
-// not built; rr_optix is disabled per the Stage 12B.3
-// contract) and with -DRR_ENABLE_OPTIX=ON (this header is
-// SDK-free; the .cpp compiles cleanly without the OptiX
-// SDK and the audit-host fallback path is the only path).
+// Compile gating contract (Stage 21B.2):
+// - `RR_ENABLE_OPTIX=OFF` -> rr_optix is not built per the
+//   Stage 12B.3 contract; consumers gate their own
+//   `OptixDenoiser` usage with `#ifdef
+//   RELATIVITYRENDER_ENABLE_OPTIX`. If the .cpp were forced
+//   to compile in this mode, every method returns the
+//   documented "OptiX disabled at build time" error.
+// - `RR_ENABLE_OPTIX=ON` -> the class is "prepared for OptiX
+//   usage": every method currently returns the documented
+//   "not implemented in Stage 21B.1" error and will be
+//   filled in by subsequent Stage 21B sub-stages
+//   (initialize -> 21B.x, set_inputs -> 21B.y, invoke ->
+//   21B.z, ... per the Stage 21A plan).
+//
+// In both modes there are zero `<optix.h>` includes and zero
+// SDK calls; the actual OptiX wiring lands later.
 
 namespace rr::optix {
 
