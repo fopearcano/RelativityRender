@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.20)
 
 project(RelativityRender
     VERSION     0.1.0
-    DESCRIPTION "RelativityRender - GPU renderer platform (Stage 20C: OptiX raygen baseline)"
+    DESCRIPTION "RelativityRender - GPU renderer platform (Stage 20D: OptiX one-triangle GAS)"
     LANGUAGES   CXX
 )
 
@@ -59,7 +59,7 @@ endif()
 
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
-message(STATUS "RelativityRender ${PROJECT_VERSION} (Stage 20C: OptiX raygen baseline)")
+message(STATUS "RelativityRender ${PROJECT_VERSION} (Stage 20D: OptiX one-triangle GAS)")
 
 message(STATUS "  Build type   : ${CMAKE_BUILD_TYPE}")
 message(STATUS "  C++ standard : ${CMAKE_CXX_STANDARD}")
@@ -693,4 +693,26 @@ if(RR_BUILD_TESTS)
     target_link_libraries(demo_tests PRIVATE rr_camera rr_relativity)
     rr_apply_warnings(demo_tests)
     add_test(NAME demo_tests COMMAND demo_tests)
+
+    # optix_tests (Stage 20D) covers the OptiX backend's host-
+    # side surface: OptixBackend lifecycle (initialize / shutdown
+    # / device_context / last_error), OptixGas default + move +
+    # reset semantics, build_mesh_gas audit-host fallback (returns
+    # ok=false with a documented error when the SDK is not
+    # located OR the backend is not initialised), and the
+    # OptixLaunchParams POD defaults (every Stage 17A.3-17A.5 +
+    # 20B field defaults to a value that keeps existing OptiX
+    # rendering programs producing byte-identical output). The
+    # final test asserts the GAS-handle -> launch-params plumbing
+    # matches what OptixRenderer::render_triangle does at runtime.
+    #
+    # Gated on RR_ENABLE_OPTIX (rr_optix only exists when the
+    # option is ON). The test compiles + runs on the audit host
+    # because every code path it exercises is host-side.
+    if(RR_ENABLE_OPTIX)
+        add_executable(optix_tests tests/optix_tests.cpp)
+        target_link_libraries(optix_tests PRIVATE rr_optix)
+        rr_apply_warnings(optix_tests)
+        add_test(NAME optix_tests COMMAND optix_tests)
+    endif()
 endif()

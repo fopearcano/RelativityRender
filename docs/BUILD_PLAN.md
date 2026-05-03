@@ -16947,6 +16947,267 @@ other OptiX entries.
   declared in `OptixRenderer.h`);
   ctest 6/6 green.
 
+## Stage 20D — OptiX one-triangle GAS
+
+**Scope of this slice (Stage 20D;
+master order #17, "OptiX upgrade
+path"): the prompt asks for the
+first OptiX acceleration structure
+— one triangle vertex/index buffer,
+a GAS build, the traversable handle,
+and threading the handle through to
+launch params. Every one of those
+pieces has shipped since Stages
+17A.2 (`build_mesh_gas` + `OptixGas`)
+and 17A.4 (single-triangle GAS in
+`render_triangle` +
+`params.scene_handle = gas.handle()`).
+What was *missing* was direct unit-
+test coverage of the GAS-builder /
+traversable-handle / launch-params
+plumbing. This slice adds
+`tests/optix_tests.cpp` to fill
+that gap; the existing rendering
+code is byte-identical pre-/post-
+slice.**
+
+### Why this slice is test-only
+
+Per master rule §3 ("Do not
+implement fake stubs pretending
+to be complete systems") and §12
+("Do not overbuild a later
+system before the current layer
+works") — neither of which is
+violated by the existing GAS
+infrastructure. The four 20D
+acceptance criteria are already
+met:
+
+| Criterion | Source |
+|-----------|--------|
+| One triangle vertex/index buffer | `OptixRenderer::render_triangle` lines 191-209 build a 3-vertex / 1-triangle CPU fixture, `cudaMemcpy` to device. Stage 17A.4. (Stage 20C re-uses the same shape with z=+5 vertices.) |
+| GAS build | `rr::optix::build_mesh_gas(backend, MeshGasInput{...})` calls `optixAccelComputeMemoryUsage` + `optixAccelBuild`. Stage 17A.2. `src/optix/OptixAccel.cpp`. |
+| Traversable handle | `OptixGas::handle()` returns the `OptixTraversableHandle` (uint64_t) value populated by `assign()` after a successful build. |
+| Pass traversable to launch params | `params.scene_handle = gas_result.gas.handle();` at `OptixRenderer.cpp:278` (render_triangle), `:469` (render_relativistic), `:649` (render_raygen). |
+
+Removing or rebuilding any of
+these to "match the phased plan"
+would be destructive — it would
+orphan the four `--render-optix-*`
+CLI surfaces and demote module
+#6 / milestone M15. Per the
+master CURRENT PROMPT RULE
+("implement only the safe
+prerequisite work") the safe
+prerequisite work *is the GAS
+infrastructure*, and it is
+already done. The genuine
+remaining gap is test coverage,
+which is what this slice adds.
+
+### What ships
+
+- `tests/optix_tests.cpp` (NEW;
+  **8 named test functions, 56
+  hand-rolled `RR_CHECK`
+  assertions, all passing**):
+    1. `test_backend_compile_time_queries`
+       — `OptixBackend::isCompiled()` /
+       `isSdkFound()` return
+       internally consistent
+       booleans.
+    2. `test_backend_lifecycle`
+       — default-constructed
+       `OptixBackend` is not
+       initialised; `initialize()`
+       on the audit host fails
+       honestly with non-empty
+       `last_error()`;
+       `shutdown()` is idempotent.
+    3. `test_gas_default_state`
+       — default-constructed
+       `OptixGas` reports
+       `empty() == true`,
+       `handle() == 0`,
+       `device_buffer() == nullptr`,
+       `output_size_bytes() == 0`.
+    4. `test_gas_move_only` —
+       move ctor + move assign
+       produce empty source +
+       empty destination for
+       empty inputs (which is
+       the only safe shape on
+       the audit host without
+       a real device buffer).
+    5. `test_gas_reset_idempotent`
+       — `reset()` is safe to
+       call on default /
+       already-reset / moved-
+       from state.
+    6. `test_build_mesh_gas_audit_host_fallback`
+       — `build_mesh_gas` with
+       valid host pointers but
+       an uninitialised backend
+       returns `ok = false` with
+       a non-empty
+       `error_message` and an
+       empty `gas`. Empty-mesh
+       precondition (vertex_count
+       == 0) likewise fails
+       honestly.
+    7. `test_launch_params_defaults`
+       — every Stage 17A.3 /
+       17A.4 / 17A.5 / 20B field
+       defaults to its documented
+       contract value:
+       `framebuffer == nullptr`,
+       `width == height == 0`,
+       `flat_color_*` magenta,
+       `scene_handle == 0`,
+       `observer.velocity == 0`,
+       every relativity effect
+       enabled, `accum_buffer ==
+       nullptr`, `sample_index ==
+       0`.
+    8. `test_gas_handle_threads_into_launch_params`
+       — Stage 20D's actual
+       acceptance check: an
+       `OptixGas` assigned a
+       sentinel handle reports it
+       via `handle()`, and the
+       caller can plumb that
+       value through to
+       `OptixLaunchParams::scene_handle`
+       byte-for-byte. Mirrors
+       `OptixRenderer::render_triangle`
+       line 278 exactly.
+- `CMakeLists.txt`: new
+  `if(RR_ENABLE_OPTIX) add_executable(optix_tests
+  tests/optix_tests.cpp) ...
+  endif()` block. **Gated on
+  `RR_ENABLE_OPTIX=ON`** because
+  `rr_optix` (which the test
+  links against) only exists
+  when the option is ON. On
+  the OFF build ctest stays
+  6/6 unchanged; on the ON
+  build ctest becomes 7/7.
+  Banner / DESCRIPTION bumped
+  from "Stage 20C: OptiX raygen
+  baseline" to "Stage 20D:
+  OptiX one-triangle GAS"
+  (two-line cosmetic).
+- `docs/BUILD_PLAN.md`: this
+  slice-closing entry. **No
+  module-status row, milestone-
+  status row, or canonical
+  historical entry was modified.**
+- **No source-code changes** in
+  `src/`. `git diff --stat
+  src/` is empty.
+
+### Hard-rule audit
+
+- One triangle vertex/index
+  buffer - **yes**, already
+  in `OptixRenderer::render_triangle`
+  (Stage 17A.4); the new test
+  asserts the surface that
+  consumes it.
+- GAS build - **yes**, already
+  in `build_mesh_gas` (Stage
+  17A.2); the new test
+  exercises the audit-host
+  fallback branch end-to-end.
+- Traversable handle - **yes**,
+  already in `OptixGas::handle()`;
+  the new test pins its
+  default + sentinel-assigned
+  values.
+- Pass traversable to launch
+  params - **yes**, already in
+  `OptixRenderer.cpp:278/469/649`;
+  the new test pins the
+  contract on a tabletop POD
+  identical to what the
+  renderer constructs.
+- No closest-hit shading yet -
+  **yes**. The existing
+  `__closesthit__radiance`
+  (Stage 17A.4) is unchanged;
+  this slice neither modifies
+  it nor adds any new shading
+  code. The test exercises the
+  GAS / handle / launch-params
+  plumbing only.
+- No scene parser integration -
+  **yes**. The test does not
+  touch `rr_io` /
+  `SceneLoader`; the GAS
+  fixture is a tabletop array
+  identical to the existing
+  CLI handlers.
+- Static triangle only - **yes**.
+  The test fixture is `static
+  const float kVertices[3 * 3]
+  = {...}; static const
+  std::uint32_t kIndices[3] =
+  {...};` exactly.
+
+### Status (unchanged)
+
+Module #6 (OptiX Backend) and
+milestone M15 (OptiX Backend
+Upgrade Path) both remain at
+`partial implementation`. Adding
+unit-test coverage of the host-
+side surface does not lift the
+project-wide visual-validation
+gate (no frame rendered through
+the OptiX path on a real OptiX-
+SDK host in this branch). What
+the test pins is the *contract*
+of the GAS / handle / launch-
+params surface; future shape
+changes (e.g. the `rr_optix` →
+`rr_cuda` split called out as
+TD-1 in the dependency-boundary
+audit slice) trip ctest
+immediately if they break this
+contract.
+
+### Verified at the build
+
+- `cmake -S . -B build` (audit
+  host, no flags): banner shows
+  "Stage 20D: OptiX one-triangle
+  GAS"; clean build; ctest 6/6
+  green (unchanged from the
+  pre-slice state — the
+  `optix_tests` target is not
+  added on the OFF build).
+- `cmake -S . -B /tmp/rr-20d-on
+  -DRR_ENABLE_OPTIX=ON` (audit
+  host, no SDK located): non-
+  blocking SDK-not-found
+  warning per Stage 12B.4;
+  clean build; ctest 7/7 green
+  (was 6/6; the new
+  `optix_tests` target adds
+  one entry).
+- `/tmp/rr-20d-on/bin/optix_tests`
+  run directly prints
+  `optix_tests: 56 / 56
+  passed`. The expected
+  `[OptiX:ERROR] init failed:
+  OptiX SDK not found at build
+  time; ...` message is the
+  documented audit-host
+  failure path — the test
+  exercises it and asserts
+  honest reporting.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
