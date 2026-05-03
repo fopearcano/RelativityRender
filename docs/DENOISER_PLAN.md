@@ -55,3 +55,11 @@
 - The renderer must not crash, abort, or exit non-zero solely because the denoiser failed: render success and denoise success are decoupled.
 - The fallback artifact written to `output/denoised.ppm` is the noisy Beauty AOV (per Stage 21A.6); the user always gets a file at the documented path.
 - Repeated denoiser failures are not retried within a single render; the dispatcher takes the fallback path on the first error.
+
+## Modes
+
+- Manual denoise (v1.0): user opts in via a CLI flag (`--denoise` modifier or a dedicated `--render-denoise` action); the renderer never denoises a render the user did not ask to denoise.
+- Automatic after render (future, optional): a scene-level toggle that runs the denoiser at the end of every render without an explicit CLI flag; out of scope for v1.0.
+- Manual mode is the only mode required for v1.0; automatic mode lands only when the renderer server / preview UI / DCC bridge needs it.
+- In both modes the underlying pipeline is identical (Stage 21A.5); only the trigger differs.
+- Mode selection does not affect the failure behaviour (Stage 21A.7): noisy fallback applies to both.
