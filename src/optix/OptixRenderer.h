@@ -274,6 +274,27 @@ public:
         int max_bounces,
         unsigned int seed,
         const std::vector<int>& checkpoint_samples) noexcept;
+
+    // Stage 20K basic direct-lighting render. Same first-non-
+    // empty-mesh selection + GAS-build path as render_mesh_scene.
+    // Uploads `scene.lights` to a device-resident buffer, threads
+    // the pointer + count into `OptixLaunchParams::lights /
+    // light_count`, sets the SBT hit-record's
+    // `shading_mode = 2` so the closest-hit evaluates direct
+    // lighting (point + directional + emission + environment
+    // ambient), and runs a single launch (no spp loop, no
+    // bounce loop). Output: `output/optix_direct_lighting.ppm`.
+    //
+    // Mirrors the CUDA `--render-direct-lighting` shape
+    // conceptually (Stage 9B). No shadow rays — matches the
+    // CUDA path's "shadows are deferred" precedent. The Stage
+    // 17A.5 / 20H Doppler + searchlight stack composes on top
+    // of the lit shade via the existing payload-D channel.
+    //
+    // Same audit-host fallback semantics as render_test.
+    [[nodiscard]] static Result render_direct_lighting(
+        const rr::scene::Scene& scene,
+        int width, int height) noexcept;
 };
 
 }  // namespace rr::optix

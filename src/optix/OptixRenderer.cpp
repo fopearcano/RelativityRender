@@ -1778,6 +1778,273 @@ OptixRenderer::render_pathtrace_progressive(
     return R;
 }
 
+OptixRenderer::Result
+OptixRenderer::render_direct_lighting(const rr::scene::Scene& scene,
+                                      int width, int height) noexcept {
+    Result r;
+
+    if (width <= 0 || height <= 0) {
+        r.message = "OptixRenderer::render_direct_lighting: invalid dimensions";
+        return r;
+    }
+
+    // Same first-non-empty-mesh selection as Stage 20F / 20G /
+    // 20I / 20J. Multi-mesh / IAS deferred.
+    const rr::geometry::Mesh* picked = nullptr;
+    for (const auto& sm : scene.meshes) {
+        if (!sm.object.visible) continue;
+        if (sm.geometry.empty()) continue;
+        picked = &sm.geometry;
+        break;
+    }
+    if (picked == nullptr) {
+        r.message = "OptixRenderer::render_direct_lighting: scene contains "
+                    "no visible non-empty mesh.";
+        return r;
+    }
+
+    rr::material::MaterialParams material_params{};
+    if (picked->material_id >= 0
+     && static_cast<std::size_t>(picked->material_id) < scene.materials.size()) {
+        material_params = scene.materials[picked->material_id].params;
+    }
+
+    OptixBackend backend;
+    if (!backend.initialize()) {
+        r.message = "OptixRenderer::render_direct_lighting: "
+                    "backend init failed: "
+                  + backend.last_error();
+        return r;
+    }
+
+    OptixPipeline pipeline;
+    {
+        // Use the radiance entry-point family (path_tracer = false)
+        // since direct lighting evaluates at the primary hit and
+        // does not require the path-tracer raygen.
+        OptixPipelineOptions opts;
+        opts.path_tracer = false;
+        const auto pr = pipeline.create(backend, opts);
+        if (!pr.ok) {
+            r.message = "OptixRenderer::render_direct_lighting: "
+                      + pr.error_message;
+            return r;
+        }
+    }
+    {
+        // Stage 20K: shading_mode = 2 selects the direct-
+        // lighting branch in __closesthit__radiance.
+        const auto pr = pipeline.set_hit_material(
+            material_params, /*shading_mode=*/2);
+        if (!pr.ok) {
+            r.message = "OptixRenderer::render_direct_lighting: "
+                      + pr.error_message;
+            return r;
+        }
+    }
+
+    // Position extraction + index upload (Stage 20F shape).
+    std::vector<float> flat_positions;
+    flat_positions.reserve(picked->vertices.size() * 3u);
+    for (const auto& v : picked->vertices) {
+        flat_positions.push_back(v.position.x);
+        flat_positions.push_back(v.position.y);
+        flat_positions.push_back(v.position.z);
+    }
+
+    const std::size_t n_vertices  = picked->vertices.size();
+    const std::size_t n_triangles = picked->triangles.size();
+
+    void* d_positions = nullptr;
+    {
+        const std::size_t bytes = flat_positions.size() * sizeof(float);
+        if (::cudaMalloc(&d_positions, bytes) != cudaSuccess) {
+            r.message = "render_direct_lighting: cudaMalloc(positions) failed";
+            return r;
+        }
+        if (::cudaMemcpy(d_positions, flat_positions.data(), bytes,
+                         cudaMemcpyHostToDevice) != cudaSuccess) {
+            ::cudaFree(d_positions);
+            r.message = "render_direct_lighting: cudaMemcpy(positions) failed";
+            return r;
+        }
+    }
+    void* d_indices = nullptr;
+    {
+        const std::size_t bytes =
+            n_triangles * sizeof(rr::geometry::Triangle);
+        if (::cudaMalloc(&d_indices, bytes) != cudaSuccess) {
+            ::cudaFree(d_positions);
+            r.message = "render_direct_lighting: cudaMalloc(indices) failed";
+            return r;
+        }
+        if (::cudaMemcpy(d_indices, picked->triangles.data(), bytes,
+                         cudaMemcpyHostToDevice) != cudaSuccess) {
+            ::cudaFree(d_indices);
+            ::cudaFree(d_positions);
+            r.message = "render_direct_lighting: cudaMemcpy(indices) failed";
+            return r;
+        }
+    }
+
+    BuildGasResult gas_result;
+    {
+        MeshGasInput gi{};
+        gi.device_vertices = d_positions;
+        gi.vertex_count    = n_vertices;
+        gi.device_indices  = d_indices;
+        gi.triangle_count  = n_triangles;
+        gas_result = build_mesh_gas(backend, gi);
+        if (!gas_result.ok) {
+            ::cudaFree(d_indices);
+            ::cudaFree(d_positions);
+            r.message = "render_direct_lighting: " + gas_result.error_message;
+            return r;
+        }
+    }
+
+    // Stage 20K: upload lights to a device-resident buffer.
+    // The closest-hit reads `optixLaunchParams.lights` directly;
+    // we keep this buffer alive across the launch.
+    void*       d_lights     = nullptr;
+    const int   light_count  = static_cast<int>(scene.lights.size());
+    if (light_count > 0) {
+        const std::size_t bytes =
+            static_cast<std::size_t>(light_count) * sizeof(rr::lighting::Light);
+        if (::cudaMalloc(&d_lights, bytes) != cudaSuccess) {
+            ::cudaFree(d_indices);
+            ::cudaFree(d_positions);
+            r.message = "render_direct_lighting: cudaMalloc(lights) failed";
+            return r;
+        }
+        // Copy light POD union per scene-light entry.
+        std::vector<rr::lighting::Light> light_pods;
+        light_pods.reserve(scene.lights.size());
+        for (const auto& sl : scene.lights) {
+            light_pods.push_back(sl.data);
+        }
+        if (::cudaMemcpy(d_lights, light_pods.data(), bytes,
+                         cudaMemcpyHostToDevice) != cudaSuccess) {
+            ::cudaFree(d_lights);
+            ::cudaFree(d_indices);
+            ::cudaFree(d_positions);
+            r.message = "render_direct_lighting: cudaMemcpy(lights) failed";
+            return r;
+        }
+    }
+    // light_count == 0 leaves d_lights == nullptr; the closest-
+    // hit's "no lights uploaded" branch hits the implicit
+    // ambient floor + emission, matching the CUDA path's
+    // safety-net behaviour.
+
+    rr::camera::Camera camera = scene.camera;
+    camera.set_aspect(static_cast<float>(width)
+                    / static_cast<float>(height));
+    const rr::camera::GpuCamera gpu_cam = camera.to_gpu();
+
+    const std::size_t framebuffer_floats =
+        static_cast<std::size_t>(width)
+      * static_cast<std::size_t>(height) * 4u;
+    const std::size_t framebuffer_bytes  = framebuffer_floats * sizeof(float);
+
+    void* d_framebuffer = nullptr;
+    if (::cudaMalloc(&d_framebuffer, framebuffer_bytes) != cudaSuccess) {
+        if (d_lights) ::cudaFree(d_lights);
+        ::cudaFree(d_indices);
+        ::cudaFree(d_positions);
+        r.message = "render_direct_lighting: cudaMalloc(framebuffer) failed";
+        return r;
+    }
+
+    OptixLaunchParams params{};
+    params.framebuffer  = static_cast<float*>(d_framebuffer);
+    params.width        = width;
+    params.height       = height;
+    params.camera       = gpu_cam;
+    params.scene_handle = gas_result.gas.handle();
+    params.lights       =
+        static_cast<const rr::lighting::Light*>(d_lights);
+    params.light_count  = light_count;
+    // Default observer + relativity params (|beta| = 0); the
+    // direct-lighting closest-hit threads its result through
+    // the existing Stage 17A.5 / 20H Doppler-and-searchlight
+    // helper which is identity at zero beta.
+
+    {
+        const ::cudaError_t e = ::cudaMemcpy(
+            pipeline.launch_params_device_ptr(),
+            &params, sizeof(params), cudaMemcpyHostToDevice);
+        if (e != cudaSuccess) {
+            ::cudaFree(d_framebuffer);
+            if (d_lights) ::cudaFree(d_lights);
+            ::cudaFree(d_indices);
+            ::cudaFree(d_positions);
+            r.message = std::string("render_direct_lighting: ")
+                      + "cudaMemcpy(launch params) failed: "
+                      + ::cudaGetErrorString(e);
+            return r;
+        }
+    }
+
+    rr::gpu::GpuTimer timer;
+    {
+        const auto* sbt = static_cast<const ::OptixShaderBindingTable*>(
+            pipeline.shader_binding_table());
+        timer.start();
+        const ::OptixResult res = ::optixLaunch(
+            static_cast<::OptixPipeline>(pipeline.pipeline_handle()),
+            /*stream=*/0,
+            reinterpret_cast<::CUdeviceptr>(pipeline.launch_params_device_ptr()),
+            pipeline.launch_params_size_bytes(),
+            sbt,
+            static_cast<unsigned>(width),
+            static_cast<unsigned>(height),
+            /*depth=*/1u);
+        timer.stop();
+        if (res != OPTIX_SUCCESS) {
+            ::cudaFree(d_framebuffer);
+            if (d_lights) ::cudaFree(d_lights);
+            ::cudaFree(d_indices);
+            ::cudaFree(d_positions);
+            r.message = std::string("render_direct_lighting: "
+                                    "optixLaunch failed: ")
+                      + ::optixGetErrorName(res);
+            return r;
+        }
+    }
+
+    if (::cudaDeviceSynchronize() != cudaSuccess) {
+        ::cudaFree(d_framebuffer);
+        if (d_lights) ::cudaFree(d_lights);
+        ::cudaFree(d_indices);
+        ::cudaFree(d_positions);
+        r.message = "render_direct_lighting: cudaDeviceSynchronize failed";
+        return r;
+    }
+    r.gpu_time_ms = timer.elapsed_ms();
+
+    rr::image::Image img(width, height, rr::image::PixelFormat::Rgba32F);
+    if (::cudaMemcpy(img.data(), d_framebuffer, framebuffer_bytes,
+                     cudaMemcpyDeviceToHost) != cudaSuccess) {
+        ::cudaFree(d_framebuffer);
+        if (d_lights) ::cudaFree(d_lights);
+        ::cudaFree(d_indices);
+        ::cudaFree(d_positions);
+        r.message = "render_direct_lighting: cudaMemcpy(d->h) failed";
+        return r;
+    }
+
+    ::cudaFree(d_framebuffer);
+    if (d_lights) ::cudaFree(d_lights);
+    ::cudaFree(d_indices);
+    ::cudaFree(d_positions);
+
+    r.image   = std::move(img);
+    r.ok      = true;
+    r.message = "OptiX direct-lighting render complete.";
+    return r;
+}
+
 #else   // RELATIVITYRENDER_OPTIX_SDK_FOUND
 
 OptixRenderer::Result
@@ -1887,6 +2154,20 @@ OptixRenderer::render_pathtrace_progressive(
     r.message =
         "OptixRenderer::render_pathtrace_progressive requires the "
         "OptiX SDK; rebuild with -DRR_ENABLE_OPTIX=ON and pass "
+        "-DOPTIX_ROOT=/path/to/optix-sdk so <optix.h> is "
+        "available. The CUDA path is unaffected.";
+    return r;
+}
+
+OptixRenderer::Result
+OptixRenderer::render_direct_lighting(const rr::scene::Scene& /*scene*/,
+                                      int /*width*/,
+                                      int /*height*/) noexcept {
+    Result r;
+    r.ok = false;
+    r.message =
+        "OptixRenderer::render_direct_lighting requires the OptiX "
+        "SDK; rebuild with -DRR_ENABLE_OPTIX=ON and pass "
         "-DOPTIX_ROOT=/path/to/optix-sdk so <optix.h> is "
         "available. The CUDA path is unaffected.";
     return r;

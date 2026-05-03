@@ -1,6 +1,7 @@
 #pragma once
 
 #include "camera/CameraRay.h"
+#include "lighting/Light.h"           // Stage 20K: Light POD union
 #include "relativity/RelativityParams.h"
 
 #include <cstdint>
@@ -140,6 +141,26 @@ struct OptixLaunchParams {
     std::int32_t  spp          = 1;
     std::int32_t  max_bounces  = 1;
     std::uint32_t seed         = 0;
+
+    // ---- Stage 20K direct-lighting state ----
+    //
+    // Used by the radiance closest-hit when the SBT hit-record
+    // carries `shading_mode == 2` (Stage 20K direct lighting).
+    // The host populates `lights` with a device-resident
+    // `rr::lighting::Light` array uploaded via cudaMalloc +
+    // cudaMemcpy; `light_count` is the number of entries.
+    // Other shading modes (0 = normal-as-color, 1 = material
+    // flat from Stage 20G) ignore these fields.
+    //
+    // At default (`lights == nullptr`, `light_count == 0`) the
+    // direct-lighting branch finds zero lights, falls into
+    // its "no lights uploaded" path (Stage 8B facing-ratio
+    // fallback), and produces a sensible image without
+    // requiring the host to populate the field — same shape
+    // as the CUDA `--render-direct-lighting`'s no-lights
+    // safety net.
+    const rr::lighting::Light* lights      = nullptr;
+    std::int32_t               light_count = 0;
 };
 
 }  // namespace rr::optix

@@ -265,7 +265,127 @@ extern "C" __global__ void __closesthit__radiance() {
         optixGetSbtDataPointer());
 
     Vec3 color;
-    if (hg != nullptr && hg->shading_mode == 1) {
+    if (hg != nullptr && hg->shading_mode == 2) {
+        // Stage 20K direct lighting: evaluate albedo *
+        // (sum of point + directional contributions +
+        // ambient) + emission. No shadow rays (matches the
+        // CUDA `k_render_scene` Stage 9B precedent: "shadows
+        // are deferred"). No textures (Stage 20K rule).
+        // Mirrors the CUDA `k_render_scene` direct-lighting
+        // shape exactly.
+        const float3 ro = optixGetWorldRayOrigin();
+        const float3 rd = optixGetWorldRayDirection();
+        const float  th = optixGetRayTmax();
+        const Vec3   pos{ro.x + rd.x * th,
+                         ro.y + rd.y * th,
+                         ro.z + rd.z * th};
+
+        // Geometric normal (same form as the path tracer's
+        // closest-hit; Stage 20I computed it from
+        // optixGetTriangleVertexData).
+        const OptixTraversableHandle gas2     = optixGetGASTraversableHandle();
+        const unsigned int           pidx     = optixGetPrimitiveIndex();
+        const unsigned int           sgi      = optixGetSbtGASIndex();
+        float3 verts[3];
+        optixGetTriangleVertexData(gas2, pidx, sgi,
+                                   /*time=*/0.0f, verts);
+        const float3 e1 = make_float3(verts[1].x - verts[0].x,
+                                      verts[1].y - verts[0].y,
+                                      verts[1].z - verts[0].z);
+        const float3 e2 = make_float3(verts[2].x - verts[0].x,
+                                      verts[2].y - verts[0].y,
+                                      verts[2].z - verts[0].z);
+        float3 n_dl = make_float3(e1.y * e2.z - e1.z * e2.y,
+                                  e1.z * e2.x - e1.x * e2.z,
+                                  e1.x * e2.y - e1.y * e2.x);
+        const float len2_dl = n_dl.x * n_dl.x + n_dl.y * n_dl.y
+                            + n_dl.z * n_dl.z;
+        const float inv_dl  = (len2_dl > 0.0f) ? rsqrtf(len2_dl) : 0.0f;
+        n_dl.x *= inv_dl; n_dl.y *= inv_dl; n_dl.z *= inv_dl;
+        Vec3 normal{n_dl.x, n_dl.y, n_dl.z};
+
+        // Material data from the SBT hit-record.
+        const Vec3 albedo{hg->params.baseColor.x,
+                          hg->params.baseColor.y,
+                          hg->params.baseColor.z};
+        const Vec3 emission{hg->params.emissionColor.x
+                                * hg->params.emissionStrength,
+                            hg->params.emissionColor.y
+                                * hg->params.emissionStrength,
+                            hg->params.emissionColor.z
+                                * hg->params.emissionStrength};
+
+        Vec3 direct  = Vec3{0.0f, 0.0f, 0.0f};
+        Vec3 ambient = Vec3{0.0f, 0.0f, 0.0f};
+        bool has_env = false;
+
+        const int n_lights = optixLaunchParams.light_count;
+        const auto* lights = optixLaunchParams.lights;
+        if (n_lights > 0 && lights != nullptr) {
+            for (int li = 0; li < n_lights; ++li) {
+                const rr::lighting::Light L = lights[li];
+                const Vec3 light_color{L.color.x * L.intensity,
+                                       L.color.y * L.intensity,
+                                       L.color.z * L.intensity};
+
+                if (L.type == rr::lighting::LightType::Directional) {
+                    // Photons travel along L.direction; "to-light"
+                    // is its negation. (Mirrors CUDA k_render_scene
+                    // line 429.)
+                    const Vec3 to_light{-L.direction.x,
+                                        -L.direction.y,
+                                        -L.direction.z};
+                    const float ndotl = normal.x * to_light.x
+                                      + normal.y * to_light.y
+                                      + normal.z * to_light.z;
+                    const float lambert = ndotl > 0.0f ? ndotl : 0.0f;
+                    direct.x += light_color.x * lambert;
+                    direct.y += light_color.y * lambert;
+                    direct.z += light_color.z * lambert;
+                } else if (L.type == rr::lighting::LightType::Point) {
+                    // Inverse-square falloff with epsilon floor.
+                    const Vec3 delta{L.position.x - pos.x,
+                                     L.position.y - pos.y,
+                                     L.position.z - pos.z};
+                    const float d2  = delta.x * delta.x
+                                    + delta.y * delta.y
+                                    + delta.z * delta.z;
+                    const float falloff_inv = (d2 > 1.0e-4f)
+                                            ? d2 : 1.0e-4f;
+                    const float dist = sqrtf(falloff_inv);
+                    const Vec3 to_light{delta.x / dist,
+                                        delta.y / dist,
+                                        delta.z / dist};
+                    const float ndotl = normal.x * to_light.x
+                                      + normal.y * to_light.y
+                                      + normal.z * to_light.z;
+                    const float lambert = ndotl > 0.0f ? ndotl : 0.0f;
+                    const float scale   = lambert / falloff_inv;
+                    direct.x += light_color.x * scale;
+                    direct.y += light_color.y * scale;
+                    direct.z += light_color.z * scale;
+                } else if (L.type == rr::lighting::LightType::Environment) {
+                    ambient.x += light_color.x;
+                    ambient.y += light_color.y;
+                    ambient.z += light_color.z;
+                    has_env = true;
+                }
+                // LightType::Area: PLACEHOLDER per Stage 9B; ignored.
+            }
+        }
+
+        // Implicit ambient floor when no Environment light is
+        // present (matches CUDA k_render_scene line 467-469).
+        if (!has_env) {
+            ambient.x += 0.05f;
+            ambient.y += 0.05f;
+            ambient.z += 0.05f;
+        }
+
+        color.x = albedo.x * (direct.x + ambient.x) + emission.x;
+        color.y = albedo.y * (direct.y + ambient.y) + emission.y;
+        color.z = albedo.z * (direct.z + ambient.z) + emission.z;
+    } else if (hg != nullptr && hg->shading_mode == 1) {
         // Material flat shading: baseColor + emissionColor *
         // emissionStrength. Closest-hit does not consult
         // textures (Stage 20G: "no textures yet"), so

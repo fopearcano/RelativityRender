@@ -365,6 +365,13 @@ public:
         // output/optix_pathtrace_spp1.ppm and
         // output/optix_pathtrace_spp16.ppm.
         RenderOptixPathtrace,
+        // Stage 20K OptiX direct-lighting render. Same
+        // mesh-scene plumbing as RenderOptixMaterialScene,
+        // but the closest-hit additionally evaluates direct
+        // lighting (point + directional + emission +
+        // environment ambient) using scene.lights. Output:
+        // output/optix_direct_lighting.ppm.
+        RenderOptixDirectLighting,
         RenderDenoise,
         // Stage 19E.2: smallest-meaningful-relativistic-render demo.
         // Single sphere + one diffuse material + one environment

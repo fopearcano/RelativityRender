@@ -19002,6 +19002,344 @@ the other OptiX entries.
   src/` returns zero matches
   (no C4D changes).
 
+## Stage 20K — OptiX direct lighting
+
+**Scope of this slice (Stage 20K;
+master order #17, "OptiX upgrade
+path"): add basic light
+contribution to the OptiX
+backend. The closest-hit gains
+a third shading-mode branch
+(`shading_mode == 2`) that
+evaluates Lambert diffuse
+direct lighting (point +
+directional + emission +
+environment ambient) at the
+primary hit, mirroring the CUDA
+`--render-direct-lighting`'s
+Stage 9B shape exactly. New
+`--render-optix-direct-lighting
+<file>` CLI action loads a
+scene, uploads `scene.lights`
+to a device buffer, threads
+that pointer into
+`OptixLaunchParams::lights`,
+sets the SBT hit-record's
+`shading_mode = 2`, and runs a
+single launch. No shadow rays
+(matches CUDA precedent
+"shadows are deferred"); no
+path tracing past the primary
+hit; no MIS.**
+
+### What ships
+
+- `src/optix/OptixLaunchParams.h`:
+  two new fields — `const
+  rr::lighting::Light* lights =
+  nullptr` + `std::int32_t
+  light_count = 0` — defaults
+  preserve existing-entry
+  behaviour byte-for-byte
+  (`light_count == 0` triggers
+  the closest-hit's "no lights
+  uploaded" path, which
+  produces the implicit ambient
+  floor + emission output).
+  Adds an include for
+  `lighting/Light.h` so the POD
+  type is in scope.
+- `src/optix/OptixPrograms.cu`:
+  new `shading_mode == 2`
+  branch in
+  `__closesthit__radiance`.
+  Recovers hit position +
+  geometric normal (same form
+  as the path-tracer closest-
+  hit), reads `params.baseColor`
+  as albedo and
+  `params.emissionColor *
+  emissionStrength` as
+  emission, iterates
+  `optixLaunchParams.lights`
+  and accumulates per-light
+  Lambert contributions:
+    - `Directional`: `direct
+      += light_color * max(0,
+      dot(normal, -L.direction))`
+    - `Point`: inverse-square
+      falloff with a 1e-4
+      epsilon floor;
+      `direct += light_color *
+      (lambert / d2)` where
+      `d2 = max(dot(delta,
+      delta), 1e-4f)` and
+      `to_light = delta / dist`
+    - `Environment`: `ambient
+      += light_color`; sets
+      `has_env = true`
+    - `Area`: PLACEHOLDER per
+      Stage 9B; ignored.
+  When no Environment light is
+  uploaded, an implicit ambient
+  floor of `(0.05, 0.05, 0.05)`
+  is added so a scene with only
+  point / directional lights
+  doesn't collapse to black at
+  glancing angles. Final shade
+  is `albedo * (direct +
+  ambient) + emission`. Mirrors
+  `src/cuda/CudaTestKernel.cu`
+  `k_render_scene` lines 413-
+  471 step-by-step.
+- `src/optix/OptixRenderer.{h,cpp}`:
+  new
+  `render_direct_lighting(scene,
+  width, height) noexcept`
+  static method. Picks the
+  first non-empty mesh, builds
+  the GAS, uploads
+  `scene.lights` to a device
+  buffer (`cudaMalloc` +
+  `cudaMemcpy`), creates a
+  pipeline with `path_tracer
+  = false` (radiance entry
+  points), and calls
+  `set_hit_material(material,
+  shading_mode = 2)` so the
+  closest-hit dispatches into
+  the new branch. Threads the
+  lights pointer + count into
+  `OptixLaunchParams`. Runs a
+  single launch. Audit-host
+  stub returns the documented
+  "requires OptiX SDK" error.
+- `src/core/CommandLine.{h,cpp}`:
+  new
+  `Action::RenderOptixDirectLighting`
+  enum value; new
+  `--render-optix-direct-lighting
+  <file>` parser branch (takes
+  a `.rrscene` path argument);
+  help-text entry; mutex error
+  message updated; validation
+  list updated.
+- `src/main.cpp`: new
+  `run_render_optix_direct_lighting(const
+  Config&)` dispatcher. Loads
+  `cfg.scene_path` via
+  `rr::io::load(...)` (host-
+  side; runs on the audit host
+  too), then calls
+  `OptixRenderer::render_direct_lighting(...)`.
+  Default output
+  `output/optix_direct_lighting.ppm`
+  (overridable via `--output`).
+- `CMakeLists.txt`: banner /
+  DESCRIPTION bumped to "Stage
+  20K: OptiX direct lighting"
+  (two-line cosmetic).
+- `docs/BUILD_PLAN.md`: this
+  slice-closing entry.
+
+### Backward compatibility
+
+The new `shading_mode = 2`
+branch is the third in
+`__closesthit__radiance`'s
+existing if/else-if chain:
+
+| Mode | Source            | Output                                              |
+|:----:|-------------------|-----------------------------------------------------|
+| 0    | Stage 17A.4 default | normal-as-color (`0.5 * n + 0.5`)                |
+| 1    | Stage 20G material  | `baseColor + emissionColor * emissionStrength`   |
+| 2    | Stage 20K (this slice) | `albedo * (direct + ambient) + emission`        |
+
+Mode 0 (default after
+`OptixPipeline::create()`) is
+what every existing render
+entry receives — none of them
+call `set_hit_material(...)`
+for mode 2. So
+`--render-optix-test`,
+`--render-optix-triangle`,
+`--render-optix-relativity`,
+`--render-optix-raygen`,
+`--render-optix-mesh-scene`,
+`--render-optix-material-scene`
+(mode 1),
+`--render-optix-pathtrace` (the
+path-tracer pipeline binds a
+different closest-hit family
+entirely) all retain their
+existing visual output byte-
+for-byte.
+
+The new fields on
+`OptixLaunchParams` (`lights`,
+`light_count`) default to
+`nullptr` and `0` respectively,
+so existing render entries
+that do not populate them get
+the closest-hit's "no lights
+uploaded" branch — equivalent
+to the empty-lights case in
+the existing CUDA kernel.
+
+### Hard-rule audit
+
+- Directional light - **yes**.
+  Closest-hit branches on
+  `LightType::Directional` and
+  computes `light_color *
+  max(0, dot(normal, -direction))`
+  per the CUDA reference.
+- Point light - **yes**. Same
+  branch shape with
+  inverse-square falloff +
+  epsilon floor matching
+  CUDA's
+  `falloff_inv = max(d2, 1e-4f)`.
+- Emission - **yes**. Closest-
+  hit reads
+  `params.emissionColor *
+  emissionStrength` and adds
+  it on top of the lit shade.
+  Same arithmetic as the CUDA
+  reference's `color = albedo
+  * (direct + ambient) +
+  emission`.
+- Environment fallback -
+  **yes**, two ways:
+    1. The miss program writes
+       the Stage 17A.4 sky-
+       gradient environment
+       radiance (already
+       present from Stages
+       17A.3/17A.5). Pixels
+       whose primary ray
+       misses the geometry
+       see the gradient sky.
+    2. `LightType::Environment`
+       in `scene.lights[]` is
+       added to the
+       direct-lighting
+       ambient term (same
+       CUDA shape).
+- No MIS yet - **yes**.
+  Direct lighting evaluates
+  every light unconditionally;
+  no light-source vs. BSDF
+  importance-weighted
+  combination.
+- No shadow rays unless
+  simple - **yes**. Zero
+  `optixTrace` calls in the
+  closest-hit's
+  `shading_mode == 2` branch;
+  shadows are deferred per the
+  CUDA Stage 9B precedent.
+- No textures yet - **yes**.
+  `params.baseColor` is read
+  directly;
+  `useBaseColorTexture` /
+  `baseColorTextureId` are
+  not consulted (matches the
+  Stage 20G constraint
+  carried forward).
+- Compiles with OptiX OFF -
+  **yes**. `cmake -S . -B
+  build` no flags: clean
+  build; ctest 6/6 green;
+  audit-host fallback returns
+  the documented "requires
+  OptiX" error after a
+  successful scene-load.
+- Compiles with OptiX ON -
+  **yes**. `cmake -S . -B
+  /tmp/rr-20k-on
+  -DRR_ENABLE_OPTIX=ON`: non-
+  blocking SDK-not-found
+  warning per Stage 12B.4;
+  rr_optix STATIC compiles via
+  two-layer audit-host
+  fallback (including the
+  audit-host stub for
+  `render_direct_lighting`);
+  ctest 7/7 green.
+
+### Audit-host CLI smoke checks
+
+- `--render-optix-direct-lighting`
+  (no arg): parser returns
+  "missing value after
+  --render-optix-direct-lighting"
+  + usage; exits non-zero.
+- `--render-optix-direct-lighting
+  /nonexistent.rrscene`: returns
+  "scene file not found:
+  /nonexistent.rrscene" before
+  reaching the OptiX gate.
+- `--render-optix-direct-lighting
+  scenes/test_lights.rrscene`:
+  loads the scene successfully
+  (parser is host-side; runs
+  without OptiX), then returns
+  "--render-optix-direct-lighting
+  requires OptiX. Rebuild with
+  -DRR_ENABLE_OPTIX=ON ..." and
+  exits 1.
+- `--help` shows the new entry
+  with documented default
+  output and shading
+  description.
+
+### Status (unchanged)
+
+Module #6 (OptiX Backend),
+module #11 (Lighting), and
+milestone M15 all remain at
+`partial implementation`.
+Adding direct lighting to the
+OptiX closest-hit threads more
+of the lighting data through
+the SBT/launch-params, but
+does not lift the project-wide
+visual-validation gate (no
+frame rendered through the
+OptiX path on a real OptiX-SDK
+host in this branch). The
+actual `output/optix_direct_lighting.ppm`
+output is gated on the same
+future real-hardware run as
+the other OptiX entries.
+Module #11 (Lighting)'s status
+("foundation landed") reflects
+that Area + Environment
+lights are still flagged
+PLACEHOLDER in source for the
+path-tracer integration; this
+slice's direct-lighting branch
+does correctly handle
+Environment lights but Area
+lights remain unimplemented.
+
+### Verified at the build
+
+- `cmake -S . -B build` (audit
+  host, no flags): banner
+  shows "Stage 20K: OptiX
+  direct lighting"; clean
+  build; ctest 6/6 green.
+- `cmake -S . -B /tmp/rr-20k-on
+  -DRR_ENABLE_OPTIX=ON`: non-
+  blocking SDK-not-found
+  warning per Stage 12B.4;
+  rr_optix STATIC compiles
+  via two-layer audit-host
+  fallback; clean build;
+  ctest 7/7 green.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
