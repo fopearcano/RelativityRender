@@ -21018,6 +21018,63 @@ the new minimal plan.
   ctest 6/6 from the post-
   Stage-20 baseline.
 
+## Stage 21A.6 — denoiser output (planning)
+
+**Scope of this slice (Stage 21A.6;
+master order #24, "Denoising"):
+append a five-bullet "Output"
+section to `docs/DENOISER_PLAN.md`.
+Pins the default output path
+`output/denoised.ppm`, declares
+the denoiser writes separately
+from raw render artifacts (no
+overwrite of `output/render.ppm`,
+`output/aov_*.ppm`,
+`output/optix_*.ppm`), keeps the
+linear-radiance-in / linear-
+radiance-out contract identical
+to raw renders, preserves
+`output/aov_beauty.ppm` alongside
+`output/denoised.ppm` for before/
+after comparison, and pins the
+fallback contract (write the
+noisy Beauty AOV to
+`output/denoised.ppm` on any
+denoiser-side failure so the
+file always exists). NO
+implementation; NO source
+changes.**
+
+### What ships
+
+- `docs/DENOISER_PLAN.md` extended
+  with a single `## Output`
+  section (five bullets).
+- This `BUILD_PLAN.md`
+  slice-closing entry.
+
+### Backward compatibility
+
+Documentation-only slice. The
+existing OptiX denoiser
+implementation (Stage 19B.1..
+19C.3) — which already writes
+`output/denoised.ppm` and
+implements the fallback
+contract per the prior
+DENOISER_PLAN §9.3 — is
+unaffected; this entry simply
+restates the contract in the
+new minimal plan.
+
+### Verified at the build
+
+- Documentation-only; no build
+  configuration touched. The
+  audit-host OFF build remains
+  ctest 6/6 from the post-
+  Stage-20 baseline.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
