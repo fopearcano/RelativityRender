@@ -15,3 +15,11 @@
 - The CUDA renderer remains independent: the denoiser is a sibling pipeline stage, not a CUDA dependency, and the CUDA path keeps building and running with `RR_ENABLE_OPTIX=OFF`.
 - No alternative / fallback denoiser is required for v1.0 (no NVIDIA NRD, no Intel Open Image Denoise, no in-house variant).
 - When OptiX is unavailable at runtime the renderer surfaces a clear "denoiser requires OptiX" error and continues to produce noisy AOVs.
+
+## Required inputs
+
+- Beauty (noisy linear-RGB radiance) — the path tracer's per-pixel estimate, sourced from the Stage 14 `AOVType::Beauty` buffer.
+- Albedo (linear RGB, base colour at hit before lighting) — sourced from the Stage 14 `AOVType::Albedo` buffer.
+- Normal (per-pixel shading normal) — sourced from the Stage 14 `AOVType::Normal` buffer.
+- All three come from the Stage 14 AOV pipeline (`rr::renderer::GpuAOVBuffer`), populated by the renderer's AOV-aware launch (`CudaRenderer::render_scene_with_aovs` for the CUDA path; the Stage 20N `OptixRenderer::render_aovs` for the OptiX path).
+- All three are mandatory: missing any of them is a denoiser configuration error, not a degraded mode.
