@@ -21184,6 +21184,58 @@ any code path today.
   ctest 6/6 from the post-
   Stage-20 baseline.
 
+## Stage 21A.9 — denoiser v1 scope (planning)
+
+**Scope of this slice (Stage 21A.9;
+master order #24, "Denoising"):
+append a five-bullet "v1 scope"
+section to `docs/DENOISER_PLAN.md`.
+Pins single-frame denoise as
+the only v1 mode, declares no
+temporal denoise (no
+inter-frame state / history
+buffer / cross-CLI
+accumulation), no motion
+vectors (no `AOVType::Motion`,
+no per-frame camera/scene
+delta tracking), no interactive
+preview (no real-time /
+per-tile / progressive
+denoise), and pins anything
+beyond these four constraints
+as post-v1 (lands only when a
+downstream consumer actually
+needs it). NO implementation;
+NO source changes.**
+
+### What ships
+
+- `docs/DENOISER_PLAN.md` extended
+  with a single `## v1 scope`
+  section (five bullets).
+- This `BUILD_PLAN.md`
+  slice-closing entry.
+
+### Backward compatibility
+
+Documentation-only slice. The
+existing OptiX denoiser
+implementation (Stage 19B.1..
+19C.3) is already a single-
+frame, non-temporal, no-motion-
+vectors, non-interactive
+denoiser; this entry simply
+formalises that scope as the
+v1 commitment.
+
+### Verified at the build
+
+- Documentation-only; no build
+  configuration touched. The
+  audit-host OFF build remains
+  ctest 6/6 from the post-
+  Stage-20 baseline.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
