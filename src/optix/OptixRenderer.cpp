@@ -953,6 +953,246 @@ OptixRenderer::render_mesh_scene(const rr::scene::Scene& scene,
     return r;
 }
 
+OptixRenderer::Result
+OptixRenderer::render_material_scene(const rr::scene::Scene& scene,
+                                     int width, int height) noexcept {
+    Result r;
+
+    if (width <= 0 || height <= 0) {
+        r.message = "OptixRenderer::render_material_scene: invalid dimensions";
+        return r;
+    }
+
+    // Same first-non-empty-mesh selection as render_mesh_scene.
+    // Multi-mesh / IAS support deferred to a later slice.
+    const rr::geometry::Mesh* picked = nullptr;
+    for (const auto& sm : scene.meshes) {
+        if (!sm.object.visible) continue;
+        if (sm.geometry.empty()) continue;
+        picked = &sm.geometry;
+        break;
+    }
+    if (picked == nullptr) {
+        r.message = "OptixRenderer::render_material_scene: scene contains "
+                    "no visible non-empty mesh.";
+        return r;
+    }
+
+    // Stage 20G: look up the picked mesh's material via
+    // material_id. Fall back to a default-constructed
+    // MaterialParams (light-grey baseColor, no emission) when
+    // the id is -1 or out of range. Either way the closest-
+    // hit will use shading_mode = 1 so the rendered output
+    // visibly reflects the chosen material data.
+    rr::material::MaterialParams material_params{};
+    if (picked->material_id >= 0
+     && static_cast<std::size_t>(picked->material_id) < scene.materials.size()) {
+        material_params = scene.materials[picked->material_id].params;
+    }
+
+    OptixBackend backend;
+    if (!backend.initialize()) {
+        r.message = "OptixRenderer::render_material_scene: "
+                    "backend init failed: "
+                  + backend.last_error();
+        return r;
+    }
+
+    OptixPipeline pipeline;
+    {
+        const auto pr = pipeline.create(backend);
+        if (!pr.ok) {
+            r.message = "OptixRenderer::render_material_scene: "
+                      + pr.error_message;
+            return r;
+        }
+    }
+
+    // Stage 20G: tell the pipeline's hit-group SBT record to
+    // emit material flat shading (`baseColor + emission`)
+    // instead of the default normal-as-color. This is the
+    // SBT-side material linkage the prompt asks for.
+    {
+        const auto pr = pipeline.set_hit_material(
+            material_params, /*shading_mode=*/1);
+        if (!pr.ok) {
+            r.message = "OptixRenderer::render_material_scene: "
+                      + pr.error_message;
+            return r;
+        }
+    }
+
+    // Position extraction + index upload identical to
+    // render_mesh_scene (Stage 20F). The Vertex POD is 32
+    // bytes (position + normal + uv); build_mesh_gas needs
+    // a tightly-packed float3 buffer (12 bytes / vertex).
+    std::vector<float> flat_positions;
+    flat_positions.reserve(picked->vertices.size() * 3u);
+    for (const auto& v : picked->vertices) {
+        flat_positions.push_back(v.position.x);
+        flat_positions.push_back(v.position.y);
+        flat_positions.push_back(v.position.z);
+    }
+
+    const std::size_t n_vertices  = picked->vertices.size();
+    const std::size_t n_triangles = picked->triangles.size();
+
+    void* d_positions = nullptr;
+    {
+        const std::size_t bytes = flat_positions.size() * sizeof(float);
+        if (::cudaMalloc(&d_positions, bytes) != cudaSuccess) {
+            r.message = "OptixRenderer::render_material_scene: "
+                        "cudaMalloc(positions) failed";
+            return r;
+        }
+        if (::cudaMemcpy(d_positions, flat_positions.data(), bytes,
+                         cudaMemcpyHostToDevice) != cudaSuccess) {
+            ::cudaFree(d_positions);
+            r.message = "OptixRenderer::render_material_scene: "
+                        "cudaMemcpy(positions) failed";
+            return r;
+        }
+    }
+
+    void* d_indices = nullptr;
+    {
+        const std::size_t bytes =
+            n_triangles * sizeof(rr::geometry::Triangle);
+        if (::cudaMalloc(&d_indices, bytes) != cudaSuccess) {
+            ::cudaFree(d_positions);
+            r.message = "OptixRenderer::render_material_scene: "
+                        "cudaMalloc(indices) failed";
+            return r;
+        }
+        if (::cudaMemcpy(d_indices, picked->triangles.data(), bytes,
+                         cudaMemcpyHostToDevice) != cudaSuccess) {
+            ::cudaFree(d_indices);
+            ::cudaFree(d_positions);
+            r.message = "OptixRenderer::render_material_scene: "
+                        "cudaMemcpy(indices) failed";
+            return r;
+        }
+    }
+
+    BuildGasResult gas_result;
+    {
+        MeshGasInput gi{};
+        gi.device_vertices = d_positions;
+        gi.vertex_count    = n_vertices;
+        gi.device_indices  = d_indices;
+        gi.triangle_count  = n_triangles;
+        gas_result = build_mesh_gas(backend, gi);
+        if (!gas_result.ok) {
+            ::cudaFree(d_indices);
+            ::cudaFree(d_positions);
+            r.message = "OptixRenderer::render_material_scene: "
+                      + gas_result.error_message;
+            return r;
+        }
+    }
+
+    rr::camera::Camera camera = scene.camera;
+    camera.set_aspect(static_cast<float>(width)
+                    / static_cast<float>(height));
+    const rr::camera::GpuCamera gpu_cam = camera.to_gpu();
+
+    const std::size_t framebuffer_floats =
+        static_cast<std::size_t>(width)
+      * static_cast<std::size_t>(height) * 4u;
+    const std::size_t framebuffer_bytes  = framebuffer_floats * sizeof(float);
+
+    void* d_framebuffer = nullptr;
+    if (::cudaMalloc(&d_framebuffer, framebuffer_bytes) != cudaSuccess) {
+        ::cudaFree(d_indices);
+        ::cudaFree(d_positions);
+        r.message = "OptixRenderer::render_material_scene: "
+                    "cudaMalloc(framebuffer) failed";
+        return r;
+    }
+
+    OptixLaunchParams params{};
+    params.framebuffer  = static_cast<float*>(d_framebuffer);
+    params.width        = width;
+    params.height       = height;
+    params.camera       = gpu_cam;
+    params.scene_handle = gas_result.gas.handle();
+    // Default `observer` + `params` (|beta| = 0): closest-hit
+    // emits material-flat shading; Doppler / searchlight stack
+    // composes as identity. Stage 20G rule "no path tracing":
+    // accum_buffer + sample_index left at Stage 20B defaults.
+
+    {
+        const ::cudaError_t e = ::cudaMemcpy(
+            pipeline.launch_params_device_ptr(),
+            &params, sizeof(params), cudaMemcpyHostToDevice);
+        if (e != cudaSuccess) {
+            ::cudaFree(d_framebuffer);
+            ::cudaFree(d_indices);
+            ::cudaFree(d_positions);
+            r.message = std::string("OptixRenderer::render_material_scene: ")
+                      + "cudaMemcpy(launch params) failed: "
+                      + ::cudaGetErrorString(e);
+            return r;
+        }
+    }
+
+    rr::gpu::GpuTimer timer;
+    {
+        const auto* sbt = static_cast<const ::OptixShaderBindingTable*>(
+            pipeline.shader_binding_table());
+        timer.start();
+        const ::OptixResult res = ::optixLaunch(
+            static_cast<::OptixPipeline>(pipeline.pipeline_handle()),
+            /*stream=*/0,
+            reinterpret_cast<::CUdeviceptr>(pipeline.launch_params_device_ptr()),
+            pipeline.launch_params_size_bytes(),
+            sbt,
+            static_cast<unsigned>(width),
+            static_cast<unsigned>(height),
+            /*depth=*/1u);
+        timer.stop();
+        if (res != OPTIX_SUCCESS) {
+            ::cudaFree(d_framebuffer);
+            ::cudaFree(d_indices);
+            ::cudaFree(d_positions);
+            r.message = std::string("OptixRenderer::render_material_scene: "
+                                    "optixLaunch failed: ")
+                      + ::optixGetErrorName(res);
+            return r;
+        }
+    }
+
+    if (::cudaDeviceSynchronize() != cudaSuccess) {
+        ::cudaFree(d_framebuffer);
+        ::cudaFree(d_indices);
+        ::cudaFree(d_positions);
+        r.message = "OptixRenderer::render_material_scene: "
+                    "cudaDeviceSynchronize failed";
+        return r;
+    }
+    r.gpu_time_ms = timer.elapsed_ms();
+
+    rr::image::Image img(width, height, rr::image::PixelFormat::Rgba32F);
+    if (::cudaMemcpy(img.data(), d_framebuffer, framebuffer_bytes,
+                     cudaMemcpyDeviceToHost) != cudaSuccess) {
+        ::cudaFree(d_framebuffer);
+        ::cudaFree(d_indices);
+        ::cudaFree(d_positions);
+        r.message = "OptixRenderer::render_material_scene: "
+                    "cudaMemcpy(d->h) failed";
+        return r;
+    }
+
+    ::cudaFree(d_framebuffer);
+    ::cudaFree(d_indices);
+    ::cudaFree(d_positions);
+
+    r.image   = std::move(img);
+    r.ok      = true;
+    r.message = "OptiX material-scene render complete.";
+    return r;
+}
+
 #else   // RELATIVITYRENDER_OPTIX_SDK_FOUND
 
 OptixRenderer::Result
@@ -1012,6 +1252,20 @@ OptixRenderer::render_mesh_scene(const rr::scene::Scene& /*scene*/,
     r.message =
         "OptixRenderer::render_mesh_scene requires the OptiX SDK; "
         "rebuild with -DRR_ENABLE_OPTIX=ON and pass "
+        "-DOPTIX_ROOT=/path/to/optix-sdk so <optix.h> is "
+        "available. The CUDA path is unaffected.";
+    return r;
+}
+
+OptixRenderer::Result
+OptixRenderer::render_material_scene(const rr::scene::Scene& /*scene*/,
+                                     int /*width*/,
+                                     int /*height*/) noexcept {
+    Result r;
+    r.ok = false;
+    r.message =
+        "OptixRenderer::render_material_scene requires the OptiX "
+        "SDK; rebuild with -DRR_ENABLE_OPTIX=ON and pass "
         "-DOPTIX_ROOT=/path/to/optix-sdk so <optix.h> is "
         "available. The CUDA path is unaffected.";
     return r;

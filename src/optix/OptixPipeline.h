@@ -1,5 +1,7 @@
 #pragma once
 
+#include "material/MaterialTypes.h"
+
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -103,6 +105,29 @@ public:
     // The backend owns the buffer; consumers do not free it.
     [[nodiscard]] void*         launch_params_device_ptr() const noexcept;
     [[nodiscard]] std::size_t   launch_params_size_bytes() const noexcept;
+
+    // Stage 20G: re-upload the data portion of the hit-group
+    // SBT record with new `MaterialParams` + `shading_mode`.
+    // The header bytes (packed by `optixSbtRecordPackHeader`
+    // during `create()`) are preserved; only the per-record
+    // `HitGroupData` is overwritten.
+    //
+    // Default state after `create()` is `HitGroupData{}` -
+    // `shading_mode = 0` (closest-hit emits normal-as-color)
+    // - so existing OptiX render entries that never call this
+    // method retain their Stage 17A.4 / 17A.5 visual output.
+    // The new `--render-optix-material-scene` action calls
+    // this with the picked mesh's material + `mode = 1`
+    // (closest-hit emits `baseColor + emissionColor *
+    // emissionStrength`).
+    //
+    // Returns success only when the pipeline is `valid()` and
+    // the per-record data slot was successfully re-uploaded.
+    // No-op + returns failure on invalid pipeline / audit-
+    // host fallback.
+    [[nodiscard]] OptixPipelineResult set_hit_material(
+        const rr::material::MaterialParams& params,
+        int shading_mode = 1) noexcept;
 
 private:
     // Opaque internal state. The .cpp casts these back to

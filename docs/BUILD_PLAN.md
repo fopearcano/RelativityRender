@@ -17658,6 +17658,316 @@ other OptiX entries.
   host fallback; clean build;
   ctest 7/7 green.
 
+## Stage 20G — OptiX material SBT
+
+**Scope of this slice (Stage 20G;
+master order #17, "OptiX upgrade
+path"): pass material data through
+the SBT / hit records so the
+closest-hit can read baseColor /
+emission for the picked mesh
+instead of emitting normal-as-
+color. The key design choice is
+preserving Stage 17A.4 / 17A.5
+visual output for every existing
+OptiX render entry — the closest-
+hit branches on a new
+`shading_mode` flag in the SBT
+record, defaulting to mode 0
+(normal-as-color) so untouched
+entries are byte-identical pre-/
+post-slice.**
+
+### What ships
+
+- `src/optix/OptixSBT.h`: new
+  `HitGroupData` POD (embedded
+  `MaterialParams` + `int
+  shading_mode`); `HitGroupSbtRecord`
+  extended with the
+  `HitGroupData data` field after
+  the OPTIX_SBT_RECORD_HEADER_SIZE
+  bytes. Pulls in
+  `material/MaterialTypes.h` so
+  the `MaterialParams` POD is in
+  scope; SDK-gating preserved.
+- `src/optix/OptixPipeline.{h,cpp}`:
+  new
+  `OptixPipeline::set_hit_material(
+  const MaterialParams& params,
+  int shading_mode = 1)` static
+  method.  Re-uploads only the
+  data portion of the on-device
+  hit-group SBT record (offset =
+  `kRaygenSize + kMissSize +
+  offsetof(HitGroupSbtRecord,
+  data)`), preserving the header
+  bytes packed by
+  `optixSbtRecordPackHeader(...)`
+  during `create()`. Audit-host
+  fallback returns the documented
+  "requires OptiX SDK" error.
+  `OptixPipeline.h` adds a new
+  include of
+  `material/MaterialTypes.h`.
+- `src/optix/OptixPrograms.cu`:
+  `__closesthit__radiance` now
+  reads
+  `optixGetSbtDataPointer()` ->
+  `const HitGroupData*` and
+  branches on `shading_mode`:
+  - mode 0 (default; existing
+    behaviour for every render
+    entry that does not call
+    `set_hit_material`): recover
+    the geometric normal from
+    `optixGetTriangleVertexData(...)`
+    and emit `0.5 * n + 0.5`.
+    Byte-identical pre-/post-
+    slice for `--render-optix-
+    triangle` /
+    `--render-optix-relativity` /
+    `--render-optix-raygen` /
+    `--render-optix-mesh-scene`.
+  - mode 1 (Stage 20G; set by
+    the new render entry): emit
+    `params.baseColor +
+    params.emissionColor *
+    params.emissionStrength`. No
+    texture sampling (Stage 20G
+    rule "no textures yet").
+  In both modes, the Stage 17A.5
+  Doppler / searchlight stack
+  composes uniformly on top via
+  the existing
+  `apply_doppler_and_searchlight`
+  helper (identity at default
+  observer, |beta| = 0).
+- `src/optix/OptixRenderer.{h,cpp}`:
+  new
+  `render_material_scene(const
+  Scene&, int, int) noexcept`
+  static method. Same first-
+  visible-non-empty-mesh selection
+  as `render_mesh_scene` (Stage
+  20F). Looks up the picked
+  mesh's material via
+  `picked->material_id` in
+  `scene.materials`; falls back
+  to default `MaterialParams{}`
+  (light-grey baseColor) when
+  the id is `-1` or out of
+  range. Calls
+  `pipeline.set_hit_material(
+  material_params, 1)` after
+  `pipeline.create()`. Audit-
+  host fallback shape matches
+  every other OptiX render
+  entry.
+- `src/core/CommandLine.{h,cpp}`:
+  new `Action::RenderOptixMaterialScene`
+  enum value; new
+  `--render-optix-material-scene
+  <file>` parser branch
+  (mirroring
+  `--render-optix-mesh-scene`'s
+  shape); help-text entry;
+  mutual-exclusion error message
+  updated; validation list
+  updated.
+- `src/main.cpp`: new
+  `run_render_optix_material_scene
+  (const Config&)` dispatcher.
+  Loads `cfg.scene_path` via
+  `rr::io::load(...)` (host-side;
+  runs on the audit host too),
+  then calls
+  `OptixRenderer::render_material_scene
+  (...)`. Default output
+  `output/optix_material_scene.ppm`
+  (overridable via `--output`).
+  New `case
+  RenderOptixMaterialScene:` in
+  the action switch.
+- `CMakeLists.txt`: banner /
+  `DESCRIPTION` bumped from
+  "Stage 20F: OptiX mesh-scene
+  GAS" to "Stage 20G: OptiX
+  material SBT" (two-line
+  cosmetic).
+- `docs/BUILD_PLAN.md`: this
+  slice-closing entry. **No
+  module-status row, milestone-
+  status row, or canonical
+  historical entry was modified.**
+
+### Backward compatibility (existing OptiX entries)
+
+All existing OptiX render entries
+retain Stage 17A.4 / 17A.5 visual
+output byte-for-byte:
+- `--render-optix-test`: never
+  calls `set_hit_material`; SBT
+  hit-group record carries
+  default `HitGroupData{}` ->
+  `shading_mode = 0`. Triangle
+  is unused (no GAS); raygen
+  flat-color path is unaffected.
+- `--render-optix-triangle`:
+  same — `shading_mode = 0`,
+  closest-hit recovers normal
+  from GAS metadata, emits
+  `0.5 * n + 0.5`. Unchanged.
+- `--render-optix-relativity`:
+  same plus the Stage 17A.5
+  Doppler / searchlight stack;
+  `shading_mode = 0` keeps the
+  base shade as normal-as-color.
+  Unchanged.
+- `--render-optix-raygen`: same
+  — closest-hit dormant for the
+  behind-camera GAS; only the
+  miss program runs; the
+  `shading_mode` field is
+  irrelevant.
+- `--render-optix-mesh-scene`:
+  same — Stage 20F render entry
+  does not call
+  `set_hit_material`; closest-
+  hit emits normal-as-color for
+  the loaded mesh. Unchanged.
+
+Only the new
+`--render-optix-material-scene`
+sets `shading_mode = 1` and
+exercises the new code path.
+
+### Hard-rule audit
+
+- No textures yet - **yes**.
+  `__closesthit__radiance`'s
+  mode 1 path emits `baseColor
+  + emissionColor *
+  emissionStrength` directly
+  from the SBT record's POD;
+  it does not consult
+  `useBaseColorTexture` /
+  `baseColorTextureId`. The
+  closest-hit links no texture
+  sampler; the SBT record carries
+  no texture handle.
+- No path tracing yet - **yes**.
+  Closest-hit writes the per-
+  pixel payload and returns;
+  no recursive `optixTrace`,
+  no bounce loop, no RNG.
+  Stage 20B's `accum_buffer` /
+  `sample_index` placeholders
+  remain at default `nullptr`
+  / `0`.
+- Compiles with OptiX OFF -
+  **yes**. `cmake -S . -B
+  build` (no flags) produces
+  a clean build; ctest 6/6
+  green; the audit-host
+  fallback returns the
+  documented `--render-optix-
+  material-scene requires
+  OptiX. Rebuild with
+  -DRR_ENABLE_OPTIX=ON ...`
+  error after a successful
+  scene-load.
+- Compiles with OptiX ON -
+  **yes**. `cmake -S . -B
+  /tmp/rr-20g-on
+  -DRR_ENABLE_OPTIX=ON`: non-
+  blocking SDK-not-found
+  warning per Stage 12B.4;
+  rr_optix STATIC compiles
+  via the two-layer audit-
+  host fallback (including
+  the new `set_hit_material`
+  fallback stub); ctest 7/7
+  green.
+- Material id linkage -
+  **yes**, via `picked->material_id`
+  -> `scene.materials[material_id]
+  .params` -> `set_hit_material(
+  params, 1)` -> SBT record
+  data slot -> closest-hit
+  reads via
+  `optixGetSbtDataPointer()`.
+
+### Audit-host CLI smoke checks (all confirmed)
+
+- `--render-optix-material-scene`
+  (no arg): parser returns
+  `missing value after
+  --render-optix-material-scene`
+  + usage; exits non-zero.
+- `--render-optix-material-scene
+  /nonexistent.rrscene`: returns
+  `scene file not found:
+  /nonexistent.rrscene` from
+  the `sceneFileExists` check
+  before reaching the OptiX
+  gate.
+- `--render-optix-material-scene
+  scenes/test_mesh.rrscene`:
+  loads the scene successfully
+  (parser is host-side; runs
+  without OptiX), then returns
+  `--render-optix-material-scene
+  requires OptiX. Rebuild with
+  -DRR_ENABLE_OPTIX=ON ...` and
+  exits 1.
+- `--help` shows the new entry
+  with documented default
+  output and shading
+  description.
+
+### Status (unchanged)
+
+Module #6 (OptiX Backend) and
+milestone M15 (OptiX Backend
+Upgrade Path) both remain at
+`partial implementation`.
+Adding material data through
+the SBT does not lift the
+project-wide visual-validation
+gate — actual
+`output/optix_material_scene.ppm`
+pixel output is gated on the
+same future real-hardware run
+as the other OptiX entries.
+
+### Verified at the build
+
+- `cmake -S . -B build` (audit
+  host, no flags): banner shows
+  "Stage 20G: OptiX material
+  SBT"; clean build; ctest 6/6
+  green.
+- `cmake -S . -B /tmp/rr-20g-on
+  -DRR_ENABLE_OPTIX=ON`: clean
+  build via two-layer audit-
+  host fallback; ctest 7/7
+  green (Stage 20D
+  `optix_tests` 56-assertion
+  pass included).
+- Existing OptiX entries
+  (`--render-optix-test` /
+  `--render-optix-triangle` /
+  `--render-optix-relativity` /
+  `--render-optix-raygen` /
+  `--render-optix-mesh-scene`)
+  return their pre-slice
+  audit-host errors unchanged
+  (the `shading_mode = 0`
+  default keeps the closest-
+  hit reachable for them at
+  byte-identical behaviour).
+
 ## Next stage
 
 When prompted, the natural follow-ups are:

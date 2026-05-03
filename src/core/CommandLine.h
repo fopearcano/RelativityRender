@@ -352,6 +352,13 @@ public:
         // and runs the existing raygen + miss + closest-hit
         // pipeline. Output: output/optix_mesh_scene.ppm.
         RenderOptixMeshScene,
+        // Stage 20G OptiX material-scene render. Same mesh
+        // selection + GAS-build path as RenderOptixMeshScene,
+        // but additionally populates the hit-group SBT record
+        // with the picked mesh's material; closest-hit emits
+        // baseColor + emission instead of normal-as-color.
+        // Output: output/optix_material_scene.ppm.
+        RenderOptixMaterialScene,
         RenderDenoise,
         // Stage 19E.2: smallest-meaningful-relativistic-render demo.
         // Single sphere + one diffuse material + one environment

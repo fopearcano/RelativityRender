@@ -61,6 +61,7 @@ bool set_action(CommandLine::Action& current, CommandLine::Action target,
                 "--render-optix-relativity / "
                 "--render-optix-raygen / "
                 "--render-optix-mesh-scene / "
+                "--render-optix-material-scene / "
                 "--render-denoise / "
                 "--render-demo)";
         return false;
@@ -295,6 +296,22 @@ CommandLine::ParseResult CommandLine::parse(int argc, char** argv) {
                 return r;
             }
             r.config.scene_path.assign(value);
+        } else if (a == "--render-optix-material-scene") {
+            // Stage 20G: OptiX material-scene render. Same shape
+            // as --render-optix-mesh-scene; the picked mesh's
+            // material data is uploaded into the hit-group SBT
+            // record and the closest-hit emits baseColor +
+            // emission instead of normal-as-color.
+            if (!set_action(r.action, Action::RenderOptixMaterialScene,
+                            r.error_message)) {
+                r.action = Action::Error;
+                return r;
+            }
+            if (!take_value(argc, argv, i, a, value, r.error_message)) {
+                r.action = Action::Error;
+                return r;
+            }
+            r.config.scene_path.assign(value);
         } else if (a == "--render-denoise") {
             if (!set_action(r.action, Action::RenderDenoise,
                             r.error_message)) {
@@ -394,6 +411,7 @@ CommandLine::ParseResult CommandLine::parse(int argc, char** argv) {
      || r.action == Action::RenderOptixRelativity
      || r.action == Action::RenderOptixRaygen
      || r.action == Action::RenderOptixMeshScene
+     || r.action == Action::RenderOptixMaterialScene
      || r.action == Action::RenderDenoise) {
         if (auto err = r.config.validate(); !err.empty()) {
             r.action        = Action::Error;
@@ -618,6 +636,20 @@ std::string CommandLine::usage(std::string_view argv0) {
        << "                        Default output "
                                   "output/optix_mesh_scene.ppm. Same\n"
        << "                        OptiX requirements as above.\n"
+       << "  --render-optix-material-scene <file>\n"
+       << "                        Stage 20G OptiX material-scene render. "
+                                  "Same mesh-scene plumbing as\n"
+       << "                        --render-optix-mesh-scene, but the "
+                                  "picked mesh's material data\n"
+       << "                        (MaterialParams baseColor + "
+                                  "emissionColor + emissionStrength)\n"
+       << "                        is copied into the hit-group SBT "
+                                  "record and the closest-hit\n"
+       << "                        emits baseColor + emission instead of "
+                                  "normal-as-color. No textures,\n"
+       << "                        no path tracing. Default output "
+                                  "output/optix_material_scene.ppm.\n"
+       << "                        Same OptiX requirements as above.\n"
        << "  --render-denoise      Stage 19B.3 OptiX denoiser end-to-end "
                                   "fixture. Builds a small\n"
        << "                        4-sphere demo scene + renders it via "

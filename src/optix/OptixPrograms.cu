@@ -43,6 +43,7 @@
 #include "camera/CameraRay.h"
 #include "math/Vec3.h"
 #include "optix/OptixLaunchParams.h"
+#include "optix/OptixSBT.h"           // Stage 20G: HitGroupData
 #include "relativity/RelativityMath.h"
 
 extern "C" __constant__ rr::optix::OptixLaunchParams optixLaunchParams;
@@ -208,34 +209,61 @@ extern "C" __global__ void __miss__radiance() {
 extern "C" __global__ void __closesthit__radiance() {
     using rr::math::Vec3;
 
-    // Recover the triangle's three world-space vertex
-    // positions from the GAS metadata.
-    const OptixTraversableHandle gas      = optixGetGASTraversableHandle();
-    const unsigned int prim_idx           = optixGetPrimitiveIndex();
-    const unsigned int sbt_gas_idx        = optixGetSbtGASIndex();
-    float3 verts[3];
-    optixGetTriangleVertexData(gas, prim_idx, sbt_gas_idx,
-                               /*time=*/0.0f, verts);
+    // Stage 20G: read per-record material data from the SBT.
+    // Layout populated by OptixPipeline::create() (default
+    // HitGroupData{} -> shading_mode = 0) and optionally
+    // re-uploaded by OptixPipeline::set_hit_material(...)
+    // (mode = 1, picked mesh's material params). The default
+    // shading_mode = 0 preserves Stage 17A.4's normal-as-
+    // color output byte-for-byte for every render entry that
+    // does not call set_hit_material(...).
+    const auto* hg = static_cast<const rr::optix::HitGroupData*>(
+        optixGetSbtDataPointer());
 
-    // Geometric normal = normalize(cross(v1 - v0, v2 - v0)).
-    const float3 e1 = make_float3(verts[1].x - verts[0].x,
-                                  verts[1].y - verts[0].y,
-                                  verts[1].z - verts[0].z);
-    const float3 e2 = make_float3(verts[2].x - verts[0].x,
-                                  verts[2].y - verts[0].y,
-                                  verts[2].z - verts[0].z);
-    float3 n = make_float3(e1.y * e2.z - e1.z * e2.y,
-                           e1.z * e2.x - e1.x * e2.z,
-                           e1.x * e2.y - e1.y * e2.x);
-    const float len2 = n.x * n.x + n.y * n.y + n.z * n.z;
-    const float inv  = (len2 > 0.0f) ? rsqrtf(len2) : 0.0f;
-    n.x *= inv; n.y *= inv; n.z *= inv;
+    Vec3 color;
+    if (hg != nullptr && hg->shading_mode == 1) {
+        // Material flat shading: baseColor + emissionColor *
+        // emissionStrength. Closest-hit does not consult
+        // textures (Stage 20G: "no textures yet"), so
+        // useBaseColorTexture / baseColorTextureId are
+        // intentionally ignored here.
+        color.x = hg->params.baseColor.x
+                + hg->params.emissionColor.x * hg->params.emissionStrength;
+        color.y = hg->params.baseColor.y
+                + hg->params.emissionColor.y * hg->params.emissionStrength;
+        color.z = hg->params.baseColor.z
+                + hg->params.emissionColor.z * hg->params.emissionStrength;
+    } else {
+        // Stage 17A.4 default: normal-as-color shading.
+        // Recover the triangle's three world-space vertex
+        // positions from the GAS metadata.
+        const OptixTraversableHandle gas      = optixGetGASTraversableHandle();
+        const unsigned int prim_idx           = optixGetPrimitiveIndex();
+        const unsigned int sbt_gas_idx        = optixGetSbtGASIndex();
+        float3 verts[3];
+        optixGetTriangleVertexData(gas, prim_idx, sbt_gas_idx,
+                                   /*time=*/0.0f, verts);
 
-    // Same encoding as the CUDA path's normal-as-colour shade:
-    // 0.5 * n + 0.5 maps [-1, 1] -> [0, 1].
-    Vec3 color{0.5f * n.x + 0.5f,
-               0.5f * n.y + 0.5f,
-               0.5f * n.z + 0.5f};
+        // Geometric normal = normalize(cross(v1 - v0, v2 - v0)).
+        const float3 e1 = make_float3(verts[1].x - verts[0].x,
+                                      verts[1].y - verts[0].y,
+                                      verts[1].z - verts[0].z);
+        const float3 e2 = make_float3(verts[2].x - verts[0].x,
+                                      verts[2].y - verts[0].y,
+                                      verts[2].z - verts[0].z);
+        float3 n = make_float3(e1.y * e2.z - e1.z * e2.y,
+                               e1.z * e2.x - e1.x * e2.z,
+                               e1.x * e2.y - e1.y * e2.x);
+        const float len2 = n.x * n.x + n.y * n.y + n.z * n.z;
+        const float inv  = (len2 > 0.0f) ? rsqrtf(len2) : 0.0f;
+        n.x *= inv; n.y *= inv; n.z *= inv;
+
+        // Same encoding as the CUDA path's normal-as-colour
+        // shade: 0.5 * n + 0.5 maps [-1, 1] -> [0, 1].
+        color.x = 0.5f * n.x + 0.5f;
+        color.y = 0.5f * n.y + 0.5f;
+        color.z = 0.5f * n.z + 0.5f;
+    }
 
     // Stage 17A.5: Doppler colour shift + searchlight beaming
     // applied to the base shade. The ray direction passed to
@@ -243,6 +271,7 @@ extern "C" __global__ void __closesthit__radiance() {
     // `optixGetWorldRayDirection()` is the photon's direction
     // in the scene frame - the same input
     // `k_sphere_relativistic` feeds into `dopplerFactor`.
+    // Composes uniformly on top of either shading mode above.
     const float3 dir = optixGetWorldRayDirection();
     const Vec3   dir_v{dir.x, dir.y, dir.z};
     color = apply_doppler_and_searchlight(color, dir_v);

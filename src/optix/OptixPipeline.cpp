@@ -454,6 +454,52 @@ void OptixPipeline::reset() noexcept {
     launch_params_size_ = 0;
 }
 
+OptixPipelineResult
+OptixPipeline::set_hit_material(
+    const rr::material::MaterialParams& params,
+    int shading_mode) noexcept {
+    OptixPipelineResult r;
+    if (!valid()) {
+        r.error_message =
+            "OptixPipeline::set_hit_material: pipeline is not "
+            "valid; call create() first and check the return.";
+        return r;
+    }
+
+    // Compute the in-buffer offset of the hit-group record's
+    // `data` field. Layout in `sbt_record_buf_` is:
+    //   [raygen][miss][hitgroup_record]
+    // and inside `hitgroup_record`:
+    //   [header bytes ... offsetof(HitGroupSbtRecord, data) ... HitGroupData]
+    // Use `offsetof` rather than `OPTIX_SBT_RECORD_HEADER_SIZE`
+    // so any alignment padding the compiler inserts is honored.
+    constexpr std::size_t kRaygenSize    = sizeof(RaygenSbtRecord);
+    constexpr std::size_t kMissSize      = sizeof(MissSbtRecord);
+    constexpr std::size_t kDataOffset    =
+        offsetof(HitGroupSbtRecord, data);
+    constexpr std::size_t kDataBytes     = sizeof(HitGroupData);
+
+    HitGroupData host_data{};
+    host_data.params       = params;
+    host_data.shading_mode = shading_mode;
+
+    char* dst = static_cast<char*>(sbt_record_buf_)
+              + kRaygenSize + kMissSize + kDataOffset;
+
+    const ::cudaError_t e = ::cudaMemcpy(
+        dst, &host_data, kDataBytes, cudaMemcpyHostToDevice);
+    if (e != cudaSuccess) {
+        r.error_message =
+            std::string("OptixPipeline::set_hit_material: "
+                        "cudaMemcpy(HitGroupData) failed: ")
+          + ::cudaGetErrorString(e);
+        return r;
+    }
+
+    r.ok = true;
+    return r;
+}
+
 #else   // RELATIVITYRENDER_OPTIX_SDK_FOUND
 
 OptixPipelineResult OptixPipeline::create(OptixBackend& /*backend*/) {
@@ -478,6 +524,19 @@ void OptixPipeline::reset() noexcept {
     sbt_descriptor_     = nullptr;
     launch_params_      = nullptr;
     launch_params_size_ = 0;
+}
+
+OptixPipelineResult
+OptixPipeline::set_hit_material(
+    const rr::material::MaterialParams& /*params*/,
+    int /*shading_mode*/) noexcept {
+    OptixPipelineResult r;
+    r.error_message =
+        "OptixPipeline::set_hit_material requires the OptiX "
+        "SDK; rebuild with -DRR_ENABLE_OPTIX=ON and pass "
+        "-DOPTIX_ROOT=/path/to/optix-sdk so the SBT records "
+        "exist. The CUDA path is unaffected.";
+    return r;
 }
 
 #endif  // RELATIVITYRENDER_OPTIX_SDK_FOUND

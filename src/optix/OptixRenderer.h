@@ -148,6 +148,29 @@ public:
     [[nodiscard]] static Result render_mesh_scene(
         const rr::scene::Scene& scene,
         int width, int height) noexcept;
+
+    // Stage 20G material-scene render. Same single-mesh
+    // selection + GAS-build path as `render_mesh_scene`,
+    // but additionally:
+    // - Looks up the picked mesh's material via
+    //   `picked->material_id` in `scene.materials`. If
+    //   `material_id < 0` or out of range, falls back to a
+    //   default-constructed `MaterialParams` (baseColor =
+    //   light grey, emission = 0).
+    // - Calls `OptixPipeline::set_hit_material(mat, 1)`
+    //   after `pipeline.create()`, so the closest-hit emits
+    //   `baseColor + emissionColor * emissionStrength`
+    //   instead of normal-as-color.
+    //
+    // The Stage 17A.5 Doppler / searchlight stack still
+    // composes on top of the material output (identity at
+    // |beta| = 0, default observer); no path tracing; no
+    // textures (Stage 20G rules).
+    //
+    // Same audit-host fallback semantics as render_test.
+    [[nodiscard]] static Result render_material_scene(
+        const rr::scene::Scene& scene,
+        int width, int height) noexcept;
 };
 
 }  // namespace rr::optix
