@@ -23,3 +23,11 @@
 - Normal (per-pixel shading normal) — sourced from the Stage 14 `AOVType::Normal` buffer.
 - All three come from the Stage 14 AOV pipeline (`rr::renderer::GpuAOVBuffer`), populated by the renderer's AOV-aware launch (`CudaRenderer::render_scene_with_aovs` for the CUDA path; the Stage 20N `OptixRenderer::render_aovs` for the OptiX path).
 - All three are mandatory: missing any of them is a denoiser configuration error, not a degraded mode.
+
+## Optional inputs
+
+- Depth (per-pixel hit distance) — already produced by the Stage 14 `AOVType::Depth` buffer; reserved for a future denoiser variant that consumes a depth guide.
+- Motion vectors (per-pixel screen-space delta to previous frame) — not produced by any current AOV; would require a new `AOVType::Motion` plus per-frame camera/scene state for temporal denoising.
+- Neither is required for the v1.0 implementation; the OptiX HDR model used today (`OPTIX_DENOISER_MODEL_KIND_HDR`) consumes only the three mandatory inputs.
+- Adding either input is purely additive: new AOV slot, no changes to the Beauty / Albedo / Normal contract.
+- Temporal denoising (which would need motion vectors) is explicitly out of scope for v1.0.
