@@ -21326,6 +21326,168 @@ its contract.
   ctest 6/6 from the post-
   Stage-20 baseline.
 
+## Stage 21B.1 — denoiser files
+
+**Scope of this slice (Stage 21B.1;
+master order #24, "Denoising"):
+reset `src/optix/OptixDenoiser.{h,cpp}`
+to a minimal class skeleton.
+Per the user's rules: "no
+OptiX calls yet", "no
+functionality", "must compile
+with OptiX OFF". The file pair
+shrinks from 596 / 300 lines
+(Stage 19B.1..19C.3 SDK-found
+branch + audit-host fallback)
+to 91 / 95 lines (audit-host
+fallback shape only, no
+`<optix.h>` include anywhere).
+Subsequent Stage 21B sub-stages
+re-add the SDK wiring method-
+by-method per the Stage 21A
+plan.**
+
+### What ships
+
+- `src/optix/OptixDenoiser.h`
+  rewritten as a 91-line class
+  skeleton:
+    - `Inputs` struct
+      (beauty / albedo / normal
+      device pointers + width /
+      height + beauty
+      components).
+    - `Output` struct (device /
+      width / height).
+    - default constructor +
+      destructor + move ops
+      (copy deleted).
+    - `initialize`, `set_inputs`,
+      `invoke`, `shutdown`
+      method declarations.
+    - getters: `is_initialized`,
+      `inputs_set`, `input_width`,
+      `input_height`,
+      `denoiser_handle`,
+      `last_error`.
+    - private members for state.
+    - **No** `<optix.h>` include.
+- `src/optix/OptixDenoiser.cpp`
+  rewritten as a 95-line stub:
+    - destructor calls
+      `shutdown()`.
+    - move-ctor / move-assign
+      transfer state and reset
+      the moved-from instance.
+    - `initialize`,
+      `set_inputs`, and
+      `invoke` all populate
+      `last_error_` with the
+      documented "not
+      implemented in Stage
+      21B.1" message and
+      return `false`.
+    - `shutdown` resets every
+      private member to its
+      default-constructed
+      state (no-op when
+      already empty).
+    - **No** `<optix.h>`
+      include; **no** SDK
+      function calls anywhere;
+      **no** functionality.
+- This `BUILD_PLAN.md`
+  slice-closing entry.
+
+### Recovery of prior implementation
+
+The previous Stage 19B.1..19C.3
+implementation (596 lines of
+`OptixDenoiser.cpp` plus 300
+lines of `OptixDenoiser.h`,
+including the SDK-found branch
+that wired
+`optixDenoiserCreate`,
+`optixDenoiserComputeMemoryResources`,
+`optixDenoiserSetup`, and
+`optixDenoiserInvoke`) is
+preserved in git history. To
+read it:
+
+```
+git show 0445c47:src/optix/OptixDenoiser.h
+git show 0445c47:src/optix/OptixDenoiser.cpp
+```
+
+Subsequent Stage 21B sub-stages
+will re-add the SDK wiring
+method-by-method following the
+Stage 21A plan; the prior
+implementation is the reference
+for shape but not a literal
+template (the new minimal plan
+has a slightly tighter contract).
+
+### Backward compatibility
+
+- `src/main.cpp`'s
+  `denoise_aov_buffers_to_ppm`
+  consumer is **unchanged**: it
+  still calls
+  `denoiser.initialize`,
+  `denoiser.set_inputs`,
+  `denoiser.invoke`. These
+  methods now return `false`
+  with the "not implemented in
+  Stage 21B.1" message; the
+  consumer's existing Stage
+  19C.3 noisy-Beauty fallback
+  path activates per Stage
+  21A.7 contract. The user-
+  facing behaviour on a real
+  OptiX-SDK host is now: render
+  succeeds, denoiser step
+  fails with the documented
+  message, `output/denoised.ppm`
+  contains the noisy Beauty
+  AOV (per Stage 21A.7's
+  failure-behavior rule).
+- `--render-denoise` and
+  `--render-aovs --denoise`
+  CLI surfaces still exist
+  and exit 0 (they take the
+  fallback path).
+- The CUDA renderer is
+  byte-identical (the slice
+  touches only
+  `src/optix/OptixDenoiser.{h,cpp}`).
+
+### Verified at the build
+
+- `cmake -S . -B build_off
+  -DRR_ENABLE_CUDA=OFF
+  -DRR_ENABLE_OPTIX=OFF`:
+  clean build; ctest 6/6
+  green.
+- `cmake -S . -B build_on_audit
+  -DRR_ENABLE_CUDA=OFF
+  -DRR_ENABLE_OPTIX=ON`
+  (audit host, no SDK):
+  clean build; ctest 7/7
+  green.
+- `git diff --stat src/optix/
+  OptixDenoiser.h src/optix/
+  OptixDenoiser.cpp`: -769
+  / +39 lines (the SDK-found
+  branch is fully removed;
+  only the minimal wrapper
+  shape remains).
+- `grep -n "optix.h\|<optix"
+  src/optix/OptixDenoiser.h
+  src/optix/OptixDenoiser.cpp`:
+  zero hits (no SDK include
+  anywhere).
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
