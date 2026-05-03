@@ -16603,6 +16603,165 @@ remain byte-identical.
   M15-landed); not part of 20A's
   acceptance criteria.
 
+## Stage 20B — OptiX launch params
+
+**Scope of this slice (Stage 20B;
+master order #17, "OptiX upgrade
+path"): grow `src/optix/OptixLaunchParams.h`
+with the two missing fields the
+prompt's spec asks for —
+`accum_buffer` (progressive-
+accumulation buffer pointer) and
+`sample_index` (per-launch sample
+counter). The five other spec
+fields (framebuffer, width,
+height, camera data, relativity
+params, traversable handle
+placeholder) were already in the
+POD from Stages 17A.3–17A.5; the
+slice keeps them untouched and
+adds the two new fields as
+defaulted placeholders so existing
+OptiX rendering programs continue
+to produce byte-identical output.**
+
+### What ships
+
+- `src/optix/OptixLaunchParams.h`:
+  add a new "Stage 20B progressive
+  accumulation" field group at the
+  end of the `OptixLaunchParams`
+  struct (after the Stage 17A.5
+  observer / params group):
+    - `float* accum_buffer = nullptr;`
+      — Rgba32F (4 floats / pixel),
+      channel-interleaved row-major
+      top-left origin. Layout
+      identical to
+      `rr::renderer::AccumulationBuffer`
+      so the OptiX path can share an
+      `AccumulationBuffer` instance
+      with the CUDA path eventually.
+    - `std::uint32_t sample_index = 0;`
+      — matches the CUDA path
+      tracer's `unsigned int
+      sample_index` argument signature
+      (`src/cuda/CudaPathTracer.cu`
+      lines 151 / 161 / 239 / 276).
+  Header preamble updated with a
+  Stage 20B paragraph describing
+  the placeholder semantics
+  (`accum_buffer == nullptr` ->
+  raygen ignores both fields and
+  writes `framebuffer` directly,
+  preserving 17A.3-17A.5 byte-
+  identical pixel output).
+- `CMakeLists.txt`: banner /
+  `DESCRIPTION` bumped from
+  "Stage 20A: OptiX compile
+  baseline verified" to "Stage
+  20B: OptiX launch params"
+  (two-line cosmetic).
+- `docs/BUILD_PLAN.md`: this
+  slice-closing entry. **No
+  module-status row, milestone-
+  status row, or canonical
+  historical entry was modified.**
+
+### Field-by-field cross-reference against the prompt's spec
+
+| Spec field                        | Status in this slice | Source                                    |
+|-----------------------------------|----------------------|-------------------------------------------|
+| framebuffer pointer               | already present      | `framebuffer` (Stage 17A.3, line 49)      |
+| width / height                    | already present      | `width` / `height` (Stage 17A.3, lines 50–51) |
+| camera data                       | already present      | `camera` (Stage 17A.4, line 64)           |
+| relativity params                 | already present      | `observer` + `params` (Stage 17A.5, lines 81–82) |
+| accumulation buffer pointer       | **added**            | `accum_buffer` (Stage 20B, line 117)      |
+| sample index                      | **added**            | `sample_index` (Stage 20B, line 118)      |
+| traversable handle placeholder    | already present      | `scene_handle` (Stage 17A.4, line 70)     |
+
+### Hard-rule audit
+
+- No rendering yet - **yes**. The
+  slice changes only data layout in
+  a header. `git diff --stat
+  src/optix/` shows only
+  `OptixLaunchParams.h` modified.
+  `OptixPrograms.cu`,
+  `OptixPipeline.cpp`,
+  `OptixRenderer.cpp`,
+  `OptixBackend.cpp`,
+  `OptixAccel.cpp`,
+  `OptixDenoiser.cpp`,
+  `OptixSBT.h` byte-identical pre-
+  /post-slice.
+- No SBT yet - **yes**. The Shader
+  Binding Table type / instance is
+  not touched. `OptixSBT.h` byte-
+  identical.
+- Must compile - **yes**, both
+  configurations:
+    - OFF (no flags): clean build;
+      ctest 6/6 green.
+    - ON (`-DRR_ENABLE_OPTIX=ON`,
+      no SDK on this host): clean
+      build via the audit-host
+      fallback; ctest 6/6 green.
+- Backwards-compatible default
+  semantics - **yes**.
+  `accum_buffer` defaults to
+  `nullptr` and `sample_index`
+  defaults to `0`. Existing OptiX
+  rendering programs do not read
+  these fields; on a real OptiX-SDK
+  host the rendered pixels for
+  `--render-optix-test`,
+  `--render-optix-triangle`,
+  `--render-optix-relativity`,
+  `--render-denoise` would be
+  byte-identical pre-/post-slice
+  (none of those handlers populate
+  the new fields, so the launch-
+  params bytes for those launches
+  carry the documented defaults).
+
+### Why no status table is touched
+
+Module #6 (OptiX Backend) and
+milestone M15 (OptiX Backend
+Upgrade Path) both remain at
+"partial implementation". The
+launch-params POD growing two
+placeholder fields does not
+change the system's behaviour at
+runtime; the project-wide visual-
+validation gate is still in place;
+the real-hardware promotion gate
+is unchanged. Status verdicts in
+MODULE_MAP and BUILD_PLAN remain
+byte-identical.
+
+### Verified at the build
+
+- `cmake -S . -B build` (audit
+  host, no CUDA, no OptiX SDK):
+  banner reports "Stage 20B:
+  OptiX launch params"; clean
+  build; ctest 6/6 green.
+- `cmake -S . -B /tmp/rr-20b-on
+  -DRR_ENABLE_OPTIX=ON` (audit
+  host, no SDK located): non-
+  blocking SDK-not-found warning
+  per Stage 12B.4; rr_optix
+  STATIC compiles via the two-
+  layer audit-host fallback;
+  ctest 6/6 green.
+- `git grep -n 'accum_buffer\|
+  sample_index' src/optix/`
+  returns matches only inside
+  `OptixLaunchParams.h` (no
+  consumer added in this slice).
+
 ## Next stage
 
 When prompted, the natural follow-ups are:

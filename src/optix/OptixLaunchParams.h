@@ -5,9 +5,9 @@
 
 #include <cstdint>
 
-// Stage 17A.3 / 17A.4 / 17A.5 OptiX launch-parameters POD per
-// `docs/OPTIX_BACKEND_PLAN.md` §23. The struct is shared by host
-// and device code: the host (`OptixPipeline`) populates an
+// Stage 17A.3 / 17A.4 / 17A.5 / 20B OptiX launch-parameters POD
+// per `docs/OPTIX_BACKEND_PLAN.md` §23. The struct is shared by
+// host and device code: the host (`OptixPipeline`) populates an
 // instance, copies it to a device-resident buffer, and passes the
 // device pointer through `optixLaunch`'s `pipelineParams`
 // argument; the device (`OptixPrograms.cu`) reads it from the
@@ -29,13 +29,32 @@
 //   the way `k_sphere_relativistic` and `k_render_scene` do in
 //   the CUDA path.
 //
+// Stage 20B adds two placeholder fields for the eventual
+// progressive-accumulation integration:
+// - `accum_buffer`: device-side Rgba32F (4 floats / pixel)
+//   accumulator buffer pointer. Layout matches
+//   `rr::renderer::AccumulationBuffer::device_ptr()` so the
+//   OptiX path can share an `AccumulationBuffer` instance with
+//   the CUDA path eventually. Default `nullptr` means "no
+//   accumulation; raygen writes the framebuffer directly" —
+//   the Stage 17A.3-17A.5 raygen / closest-hit / miss programs
+//   ignore this field and continue to write `framebuffer`
+//   directly, byte-for-byte.
+// - `sample_index`: per-launch sample counter (matches the
+//   CUDA path tracer's `unsigned int sample_index` argument
+//   in `CudaPathTracer.cu`). Default `0` means "first sample"
+//   so RNG seeding stays deterministic for the no-progressive
+//   path. Existing programs do not consume this field; it is
+//   reserved for the path-tracer-through-OptiX wiring slice.
+//
 // At |beta| = 0 every relativistic helper is identity, so a
 // caller that does not need the relativity pipeline (e.g.
 // `render_triangle`) leaves the new fields default-constructed
 // and gets the Stage 17A.4 behaviour byte-for-byte.
 //
-// Stage 17A.5 still NO RNG state, NO AOV pointers, NO bounce
-// loop; subsequent 17A+ sub-stages grow the POD as needed.
+// Stage 20B still NO RNG state on the POD itself, NO AOV
+// pointers, NO bounce loop, NO SBT changes; subsequent
+// sub-stages grow the POD as the integration lands.
 //
 // Header is host-friendly: pulls in `camera/CameraRay.h` (which
 // is RR_HD-safe) and `relativity/RelativityParams.h` (a host /
@@ -80,6 +99,23 @@ struct OptixLaunchParams {
     // velocity.
     rr::relativity::Observer         observer{};
     rr::relativity::RelativityParams params{};
+
+    // ---- Stage 20B progressive accumulation (placeholders) ----
+    //
+    // Layout identical to `rr::renderer::AccumulationBuffer`:
+    // `width * height` pixels, 4 floats / pixel (Rgba32F),
+    // channel-interleaved row-major top-left origin. When
+    // `accum_buffer == nullptr` the OptiX raygen ignores both
+    // fields and writes `framebuffer` directly (Stage 17A.3-
+    // 17A.5 behaviour, byte-for-byte). When non-null, the
+    // (yet-to-be-written) progressive raygen will accumulate
+    // each sample's contribution into `accum_buffer` and use
+    // `sample_index` for RNG seeding. The fields are wired
+    // through the launch-params POD now so the integration
+    // slice (Stage 20C+ / OptiX path-tracer wiring) does not
+    // need to grow the POD again.
+    float*        accum_buffer = nullptr;  // Rgba32F, 4 floats / pixel
+    std::uint32_t sample_index = 0;        // first sample = 0
 };
 
 }  // namespace rr::optix
