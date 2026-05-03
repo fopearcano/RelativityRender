@@ -47,3 +47,11 @@
 - Linear-space float radiance in, linear-space float radiance out, then float-to-uint8 clamped on save (same `Image::save_ppm` path the raw renders use).
 - The raw `output/aov_beauty.ppm` (pre-denoise Beauty) coexists alongside `output/denoised.ppm` so before/after comparison is always possible.
 - On any denoiser-side failure the dispatcher writes the noisy Beauty AOV to `output/denoised.ppm` as a fallback so the file always exists when the renderer succeeded.
+
+## Failure behavior
+
+- If the denoiser fails for any reason (init, set-inputs, invoke, sync, download), keep the noisy Beauty AOV — it was already produced and is the user's render result.
+- Log a single warning line describing the failure cause so the user knows the denoise pass was skipped.
+- The renderer must not crash, abort, or exit non-zero solely because the denoiser failed: render success and denoise success are decoupled.
+- The fallback artifact written to `output/denoised.ppm` is the noisy Beauty AOV (per Stage 21A.6); the user always gets a file at the documented path.
+- Repeated denoiser failures are not retried within a single render; the dispatcher takes the fallback path on the first error.
