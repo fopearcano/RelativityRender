@@ -21075,6 +21075,63 @@ new minimal plan.
   ctest 6/6 from the post-
   Stage-20 baseline.
 
+## Stage 21A.7 — denoiser failure behavior (planning)
+
+**Scope of this slice (Stage 21A.7;
+master order #24, "Denoising"):
+append a five-bullet "Failure
+behavior" section to
+`docs/DENOISER_PLAN.md`. Pins
+the noisy-Beauty-keep contract
+on any denoiser-side error,
+mandates a single warning log
+line describing the cause,
+declares the renderer must not
+crash / abort / exit non-zero
+solely because the denoiser
+failed (render success and
+denoise success are decoupled),
+restates the
+`output/denoised.ppm` fallback
+artifact contract from Stage
+21A.6, and records that
+repeated denoiser failures are
+not retried within a single
+render. NO implementation; NO
+source changes.**
+
+### What ships
+
+- `docs/DENOISER_PLAN.md` extended
+  with a single `## Failure
+  behavior` section (five
+  bullets).
+- This `BUILD_PLAN.md`
+  slice-closing entry.
+
+### Backward compatibility
+
+Documentation-only slice. The
+existing OptiX denoiser
+implementation (Stage 19B.1..
+19C.3) — which already
+implements the noisy-fallback /
+warning-log / never-crash
+contract via the Stage 19C.3
+fallback path in
+`denoise_aov_buffers_to_ppm` — is
+unaffected; this entry simply
+restates the contract in the
+new minimal plan.
+
+### Verified at the build
+
+- Documentation-only; no build
+  configuration touched. The
+  audit-host OFF build remains
+  ctest 6/6 from the post-
+  Stage-20 baseline.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
