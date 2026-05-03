@@ -66,6 +66,7 @@ bool set_action(CommandLine::Action& current, CommandLine::Action target,
                 "--render-optix-direct-lighting / "
                 "--render-optix-shadow-test / "
                 "--render-optix-textured-material / "
+                "--render-optix-aovs / "
                 "--render-denoise / "
                 "--render-demo)";
         return false;
@@ -375,6 +376,17 @@ CommandLine::ParseResult CommandLine::parse(int argc, char** argv) {
                 r.action = Action::Error;
                 return r;
             }
+        } else if (a == "--render-optix-aovs") {
+            // Stage 20N: OptiX AOV render. Mirrors the CUDA
+            // --render-aovs shape: takes NO scene argument
+            // (the dispatcher builds a procedural multi-light
+            // scene inline) and writes the six AOVs to
+            // output/optix_aov_*.ppm.
+            if (!set_action(r.action, Action::RenderOptixAovs,
+                            r.error_message)) {
+                r.action = Action::Error;
+                return r;
+            }
         } else if (a == "--render-denoise") {
             if (!set_action(r.action, Action::RenderDenoise,
                             r.error_message)) {
@@ -479,6 +491,7 @@ CommandLine::ParseResult CommandLine::parse(int argc, char** argv) {
      || r.action == Action::RenderOptixDirectLighting
      || r.action == Action::RenderOptixShadowTest
      || r.action == Action::RenderOptixTexturedMaterial
+     || r.action == Action::RenderOptixAovs
      || r.action == Action::RenderDenoise) {
         if (auto err = r.config.validate(); !err.empty()) {
             r.action        = Action::Error;
@@ -776,6 +789,25 @@ std::string CommandLine::usage(std::string_view argv0) {
                                   "sampling. No advanced filtering.\n"
        << "                        Default output "
                                   "output/optix_textured_material.ppm.\n"
+       << "                        Same OptiX requirements as above.\n"
+       << "  --render-optix-aovs   Stage 20N OptiX AOV render. Builds a "
+                                  "small procedural multi-light\n"
+       << "                        mesh-scene inline (mirrors the CUDA "
+                                  "--render-aovs surface), allocates\n"
+       << "                        six per-pixel device buffers, "
+                                  "threads them through OptixLaunchParams,\n"
+       << "                        and runs the existing direct-lighting "
+                                  "closest-hit; the raygen / miss /\n"
+       << "                        closest-hit programs write Beauty / "
+                                  "Normal / Depth / Albedo /\n"
+       << "                        DopplerFactor / SearchlightFactor. "
+                                  "Outputs:\n"
+       << "                        output/optix_aov_beauty.ppm, "
+                                  "output/optix_aov_normal.ppm,\n"
+       << "                        output/optix_aov_depth.ppm, "
+                                  "output/optix_aov_albedo.ppm,\n"
+       << "                        output/optix_aov_doppler.ppm, "
+                                  "output/optix_aov_searchlight.ppm.\n"
        << "                        Same OptiX requirements as above.\n"
        << "  --render-denoise      Stage 19B.3 OptiX denoiser end-to-end "
                                   "fixture. Builds a small\n"

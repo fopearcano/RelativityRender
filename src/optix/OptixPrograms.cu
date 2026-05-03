@@ -217,6 +217,24 @@ extern "C" __global__ void __raygen__pinhole() {
     fb[pix + 1] = rgb.y;
     fb[pix + 2] = rgb.z;
     fb[pix + 3] = 1.0f;
+
+    // Stage 20N AOVs: write the relativistic per-pixel
+    // factors when the AOV buffers are populated. D is the
+    // raygen-cached value (same one fed into the trace's
+    // payload register 3); D^4 is `searchlightFactor(D)`.
+    // Beauty / Normal / Depth / Albedo are written in the
+    // closest-hit / miss programs, since they're hit-vs-miss
+    // dependent.
+    {
+        const int pix_idx_1 = y * W + x;
+        if (optixLaunchParams.aov_doppler_factor != nullptr) {
+            optixLaunchParams.aov_doppler_factor[pix_idx_1] = D;
+        }
+        if (optixLaunchParams.aov_searchlight_factor != nullptr) {
+            optixLaunchParams.aov_searchlight_factor[pix_idx_1] =
+                rr::relativity::searchlightFactor(D);
+        }
+    }
 }
 
 // ---- miss --------------------------------------------------------
@@ -245,9 +263,43 @@ extern "C" __global__ void __miss__radiance() {
     // |beta| = 0 the helper is identity so the Stage 17A.4
     // sky matches byte-for-byte.
     const float D = read_payload_doppler();
-    color = apply_doppler_and_searchlight_with_D(color, D);
+    Vec3 color_shifted = apply_doppler_and_searchlight_with_D(color, D);
 
-    set_payload_rgb(color.x, color.y, color.z);
+    set_payload_rgb(color_shifted.x, color_shifted.y, color_shifted.z);
+
+    // Stage 20N AOVs (miss side). Beauty = post-relativistic
+    // sky color; Normal = (0,0,0); Depth = 0; Albedo = pre-
+    // relativistic sky color. Mirrors the CUDA k_render_scene
+    // miss-side AOV writes.
+    {
+        const uint3 idx_aov = optixGetLaunchIndex();
+        const int   x_aov   = static_cast<int>(idx_aov.x);
+        const int   y_aov   = static_cast<int>(idx_aov.y);
+        const int   W_aov   = optixLaunchParams.width;
+        const int   pix_idx_1 = y_aov * W_aov + x_aov;
+        const int   pix_idx_3 = pix_idx_1 * 3;
+
+        if (optixLaunchParams.aov_beauty != nullptr) {
+            optixLaunchParams.aov_beauty[pix_idx_3 + 0] = color_shifted.x;
+            optixLaunchParams.aov_beauty[pix_idx_3 + 1] = color_shifted.y;
+            optixLaunchParams.aov_beauty[pix_idx_3 + 2] = color_shifted.z;
+        }
+        if (optixLaunchParams.aov_normal != nullptr) {
+            optixLaunchParams.aov_normal[pix_idx_3 + 0] = 0.0f;
+            optixLaunchParams.aov_normal[pix_idx_3 + 1] = 0.0f;
+            optixLaunchParams.aov_normal[pix_idx_3 + 2] = 0.0f;
+        }
+        if (optixLaunchParams.aov_depth != nullptr) {
+            optixLaunchParams.aov_depth[pix_idx_1] = 0.0f;
+        }
+        if (optixLaunchParams.aov_albedo != nullptr) {
+            // Pre-relativistic sky color (no Doppler shift)
+            // matches the "albedo before lighting" semantic.
+            optixLaunchParams.aov_albedo[pix_idx_3 + 0] = color.x;
+            optixLaunchParams.aov_albedo[pix_idx_3 + 1] = color.y;
+            optixLaunchParams.aov_albedo[pix_idx_3 + 2] = color.z;
+        }
+    }
 }
 
 // ---- miss (shadow) ----------------------------------------------
@@ -487,6 +539,47 @@ extern "C" __global__ void __closesthit__radiance() {
         color.x = albedo.x * (direct.x + ambient.x) + emission.x;
         color.y = albedo.y * (direct.y + ambient.y) + emission.y;
         color.z = albedo.z * (direct.z + ambient.z) + emission.z;
+
+        // Stage 20N AOVs (hit side, geometry/material passes).
+        // Beauty is written below after the Doppler+searchlight
+        // shift; Normal/Depth/Albedo are pre-relativistic and
+        // don't depend on D, so they're written here using
+        // values already on hand. Mirrors the CUDA
+        // k_render_scene write semantics:
+        //   normal: 0.5 * n + 0.5 (encoded for direct PPM view)
+        //   depth:  1 / (1 + t)   (closer surfaces = brighter)
+        //   albedo: raw baseColor
+        {
+            const uint3 idx_aov = optixGetLaunchIndex();
+            const int   x_aov   = static_cast<int>(idx_aov.x);
+            const int   y_aov   = static_cast<int>(idx_aov.y);
+            const int   W_aov   = optixLaunchParams.width;
+            const int   pix_idx_1 = y_aov * W_aov + x_aov;
+            const int   pix_idx_3 = pix_idx_1 * 3;
+
+            if (optixLaunchParams.aov_normal != nullptr) {
+                optixLaunchParams.aov_normal[pix_idx_3 + 0] =
+                    0.5f * normal.x + 0.5f;
+                optixLaunchParams.aov_normal[pix_idx_3 + 1] =
+                    0.5f * normal.y + 0.5f;
+                optixLaunchParams.aov_normal[pix_idx_3 + 2] =
+                    0.5f * normal.z + 0.5f;
+            }
+            if (optixLaunchParams.aov_depth != nullptr) {
+                // t_hit = optixGetRayTmax() (distance from
+                // ray origin to hit). Encoded as 1/(1+t) so
+                // values are bounded in [0, 1] for direct
+                // PPM viewing.
+                const float t_hit = optixGetRayTmax();
+                optixLaunchParams.aov_depth[pix_idx_1] =
+                    1.0f / (1.0f + t_hit);
+            }
+            if (optixLaunchParams.aov_albedo != nullptr) {
+                optixLaunchParams.aov_albedo[pix_idx_3 + 0] = albedo.x;
+                optixLaunchParams.aov_albedo[pix_idx_3 + 1] = albedo.y;
+                optixLaunchParams.aov_albedo[pix_idx_3 + 2] = albedo.z;
+            }
+        }
     } else if (hg != nullptr && hg->shading_mode == 1) {
         // Material flat shading: baseColor + emissionColor *
         // emissionStrength. Stage 20M: when the material has
@@ -580,6 +673,22 @@ extern "C" __global__ void __closesthit__radiance() {
     color = apply_doppler_and_searchlight_with_D(color, D);
 
     set_payload_rgb(color.x, color.y, color.z);
+
+    // Stage 20N AOVs (hit side, Beauty pass). Beauty stores
+    // the post-Doppler+searchlight lit colour; it's the same
+    // value the framebuffer receives after the raygen reads
+    // the payload, so the Beauty AOV matches the displayed
+    // image pixel-for-pixel.
+    if (optixLaunchParams.aov_beauty != nullptr) {
+        const uint3 idx_aov = optixGetLaunchIndex();
+        const int   x_aov   = static_cast<int>(idx_aov.x);
+        const int   y_aov   = static_cast<int>(idx_aov.y);
+        const int   W_aov   = optixLaunchParams.width;
+        const int   pix_idx_3 = (y_aov * W_aov + x_aov) * 3;
+        optixLaunchParams.aov_beauty[pix_idx_3 + 0] = color.x;
+        optixLaunchParams.aov_beauty[pix_idx_3 + 1] = color.y;
+        optixLaunchParams.aov_beauty[pix_idx_3 + 2] = color.z;
+    }
 }
 
 // =================================================================

@@ -1,5 +1,9 @@
 #include "optix/OptixRenderer.h"
 
+#include "lighting/Light.h"          // Stage 20N: complete type for
+                                     // `std::vector<Light>&` in both
+                                     // SDK-found impls and audit-host
+                                     // stubs.
 #include "optix/OptixAccel.h"
 #include "optix/OptixBackend.h"
 #include "optix/OptixPipeline.h"
@@ -2369,6 +2373,310 @@ OptixRenderer::render_textured_material(
     return r;
 }
 
+OptixRenderer::AovResult
+OptixRenderer::render_aovs(
+    const rr::scene::Scene& scene,
+    const std::vector<rr::lighting::Light>& lights,
+    int width, int height) noexcept {
+    AovResult R;
+
+    if (width <= 0 || height <= 0) {
+        R.message = "OptixRenderer::render_aovs: invalid dimensions";
+        return R;
+    }
+
+    const rr::geometry::Mesh* picked = nullptr;
+    for (const auto& sm : scene.meshes) {
+        if (!sm.object.visible) continue;
+        if (sm.geometry.empty()) continue;
+        picked = &sm.geometry;
+        break;
+    }
+    if (picked == nullptr) {
+        R.message = "render_aovs: scene contains no visible non-empty mesh.";
+        return R;
+    }
+
+    rr::material::MaterialParams material_params{};
+    if (picked->material_id >= 0
+     && static_cast<std::size_t>(picked->material_id) < scene.materials.size()) {
+        material_params = scene.materials[picked->material_id].params;
+    }
+
+    OptixBackend backend;
+    if (!backend.initialize()) {
+        R.message = "render_aovs: backend init failed: "
+                  + backend.last_error();
+        return R;
+    }
+
+    OptixPipeline pipeline;
+    {
+        OptixPipelineOptions opts;
+        opts.path_tracer = false;
+        const auto pr = pipeline.create(backend, opts);
+        if (!pr.ok) {
+            R.message = "render_aovs: " + pr.error_message;
+            return R;
+        }
+    }
+    {
+        const auto pr = pipeline.set_hit_material(
+            material_params, /*shading_mode=*/2);
+        if (!pr.ok) {
+            R.message = "render_aovs: " + pr.error_message;
+            return R;
+        }
+    }
+
+    // Position extraction + index upload (Stage 20F shape).
+    std::vector<float> flat_positions;
+    flat_positions.reserve(picked->vertices.size() * 3u);
+    for (const auto& v : picked->vertices) {
+        flat_positions.push_back(v.position.x);
+        flat_positions.push_back(v.position.y);
+        flat_positions.push_back(v.position.z);
+    }
+
+    const std::size_t n_vertices  = picked->vertices.size();
+    const std::size_t n_triangles = picked->triangles.size();
+
+    // Track all device allocations for unified cleanup.
+    std::vector<void*> device_allocs;
+    auto cleanup = [&]() {
+        for (auto* p : device_allocs) {
+            if (p) ::cudaFree(p);
+        }
+        device_allocs.clear();
+    };
+
+    void* d_positions = nullptr;
+    {
+        const std::size_t bytes = flat_positions.size() * sizeof(float);
+        if (::cudaMalloc(&d_positions, bytes) != cudaSuccess) {
+            R.message = "render_aovs: cudaMalloc(positions) failed";
+            return R;
+        }
+        device_allocs.push_back(d_positions);
+        if (::cudaMemcpy(d_positions, flat_positions.data(), bytes,
+                         cudaMemcpyHostToDevice) != cudaSuccess) {
+            cleanup();
+            R.message = "render_aovs: cudaMemcpy(positions) failed";
+            return R;
+        }
+    }
+    void* d_indices = nullptr;
+    {
+        const std::size_t bytes =
+            n_triangles * sizeof(rr::geometry::Triangle);
+        if (::cudaMalloc(&d_indices, bytes) != cudaSuccess) {
+            cleanup();
+            R.message = "render_aovs: cudaMalloc(indices) failed";
+            return R;
+        }
+        device_allocs.push_back(d_indices);
+        if (::cudaMemcpy(d_indices, picked->triangles.data(), bytes,
+                         cudaMemcpyHostToDevice) != cudaSuccess) {
+            cleanup();
+            R.message = "render_aovs: cudaMemcpy(indices) failed";
+            return R;
+        }
+    }
+
+    BuildGasResult gas_result;
+    {
+        MeshGasInput gi{};
+        gi.device_vertices = d_positions;
+        gi.vertex_count    = n_vertices;
+        gi.device_indices  = d_indices;
+        gi.triangle_count  = n_triangles;
+        gas_result = build_mesh_gas(backend, gi);
+        if (!gas_result.ok) {
+            cleanup();
+            R.message = "render_aovs: " + gas_result.error_message;
+            return R;
+        }
+    }
+
+    // Lights upload (Stage 20K shape).
+    void* d_lights = nullptr;
+    const int light_count = static_cast<int>(lights.size());
+    if (light_count > 0) {
+        const std::size_t bytes = lights.size() * sizeof(rr::lighting::Light);
+        if (::cudaMalloc(&d_lights, bytes) != cudaSuccess) {
+            cleanup();
+            R.message = "render_aovs: cudaMalloc(lights) failed";
+            return R;
+        }
+        device_allocs.push_back(d_lights);
+        if (::cudaMemcpy(d_lights, lights.data(), bytes,
+                         cudaMemcpyHostToDevice) != cudaSuccess) {
+            cleanup();
+            R.message = "render_aovs: cudaMemcpy(lights) failed";
+            return R;
+        }
+    }
+
+    rr::camera::Camera camera = scene.camera;
+    camera.set_aspect(static_cast<float>(width)
+                    / static_cast<float>(height));
+    const rr::camera::GpuCamera gpu_cam = camera.to_gpu();
+
+    // Allocate the framebuffer + the six per-AOV device buffers.
+    // Component counts mirror `rr::renderer::aov_component_count`:
+    //   beauty / normal / albedo : 3 floats / pixel
+    //   depth / doppler_factor / searchlight_factor : 1 float / pixel
+    const std::size_t pixel_count =
+        static_cast<std::size_t>(width)
+      * static_cast<std::size_t>(height);
+    const std::size_t framebuffer_floats = pixel_count * 4u;
+    const std::size_t aov3_floats        = pixel_count * 3u;
+    const std::size_t aov1_floats        = pixel_count;
+
+    auto alloc_aov = [&](std::size_t floats, void*& out) -> bool {
+        if (::cudaMalloc(&out, floats * sizeof(float)) != cudaSuccess) {
+            return false;
+        }
+        device_allocs.push_back(out);
+        return true;
+    };
+
+    void* d_framebuffer = nullptr;
+    void* d_aov_beauty  = nullptr;
+    void* d_aov_normal  = nullptr;
+    void* d_aov_depth   = nullptr;
+    void* d_aov_albedo  = nullptr;
+    void* d_aov_doppler = nullptr;
+    void* d_aov_search  = nullptr;
+    if (!alloc_aov(framebuffer_floats, d_framebuffer)
+     || !alloc_aov(aov3_floats,        d_aov_beauty)
+     || !alloc_aov(aov3_floats,        d_aov_normal)
+     || !alloc_aov(aov1_floats,        d_aov_depth)
+     || !alloc_aov(aov3_floats,        d_aov_albedo)
+     || !alloc_aov(aov1_floats,        d_aov_doppler)
+     || !alloc_aov(aov1_floats,        d_aov_search)) {
+        cleanup();
+        R.message = "render_aovs: cudaMalloc(framebuffer / AOV buffers) failed";
+        return R;
+    }
+
+    // Stage 14A.3 / CUDA --render-aovs precedent: set a non-
+    // zero observer velocity so the DopplerFactor /
+    // SearchlightFactor AOVs show visible variation across the
+    // framebuffer rather than a flat 1.0. beta = 0.5 along -Z
+    // mirrors the CUDA dispatcher's choice exactly.
+    rr::relativity::Observer aov_observer;
+    aov_observer.velocity = rr::math::Vec3{0.0f, 0.0f, -0.5f};
+
+    OptixLaunchParams params{};
+    params.framebuffer  = static_cast<float*>(d_framebuffer);
+    params.width        = width;
+    params.height       = height;
+    params.camera       = gpu_cam;
+    params.scene_handle = gas_result.gas.handle();
+    params.observer     = aov_observer;
+    params.lights       =
+        static_cast<const rr::lighting::Light*>(d_lights);
+    params.light_count  = light_count;
+    params.aov_beauty             = static_cast<float*>(d_aov_beauty);
+    params.aov_normal             = static_cast<float*>(d_aov_normal);
+    params.aov_depth              = static_cast<float*>(d_aov_depth);
+    params.aov_albedo             = static_cast<float*>(d_aov_albedo);
+    params.aov_doppler_factor     = static_cast<float*>(d_aov_doppler);
+    params.aov_searchlight_factor = static_cast<float*>(d_aov_search);
+
+    {
+        const ::cudaError_t e = ::cudaMemcpy(
+            pipeline.launch_params_device_ptr(),
+            &params, sizeof(params), cudaMemcpyHostToDevice);
+        if (e != cudaSuccess) {
+            cleanup();
+            R.message = std::string("render_aovs: ")
+                      + "cudaMemcpy(launch params) failed: "
+                      + ::cudaGetErrorString(e);
+            return R;
+        }
+    }
+
+    rr::gpu::GpuTimer timer;
+    {
+        const auto* sbt = static_cast<const ::OptixShaderBindingTable*>(
+            pipeline.shader_binding_table());
+        timer.start();
+        const ::OptixResult res = ::optixLaunch(
+            static_cast<::OptixPipeline>(pipeline.pipeline_handle()),
+            /*stream=*/0,
+            reinterpret_cast<::CUdeviceptr>(pipeline.launch_params_device_ptr()),
+            pipeline.launch_params_size_bytes(),
+            sbt,
+            static_cast<unsigned>(width),
+            static_cast<unsigned>(height),
+            /*depth=*/1u);
+        timer.stop();
+        if (res != OPTIX_SUCCESS) {
+            cleanup();
+            R.message = std::string("render_aovs: optixLaunch failed: ")
+                      + ::optixGetErrorName(res);
+            return R;
+        }
+    }
+    if (::cudaDeviceSynchronize() != cudaSuccess) {
+        cleanup();
+        R.message = "render_aovs: cudaDeviceSynchronize failed";
+        return R;
+    }
+    R.gpu_time_ms = timer.elapsed_ms();
+
+    // Download each AOV. Scalar AOVs (depth, doppler,
+    // searchlight) are downloaded as 1-float-per-pixel and
+    // replicated to RGB for direct PPM viewing — same shape
+    // the CUDA path's `save_aov_to_ppm` helper does on the
+    // host. We do the replication here so the AovResult's
+    // images are all Rgb32F-uniform, ready for `save_ppm`.
+    auto download_3 = [&](void* d_buf,
+                          rr::image::Image& img) -> bool {
+        img = rr::image::Image(width, height,
+                               rr::image::PixelFormat::Rgb32F);
+        return ::cudaMemcpy(img.data(), d_buf,
+                            aov3_floats * sizeof(float),
+                            cudaMemcpyDeviceToHost) == cudaSuccess;
+    };
+    auto download_1_replicate = [&](void* d_buf,
+                                    rr::image::Image& img) -> bool {
+        std::vector<float> scalars(aov1_floats);
+        if (::cudaMemcpy(scalars.data(), d_buf,
+                         aov1_floats * sizeof(float),
+                         cudaMemcpyDeviceToHost) != cudaSuccess) {
+            return false;
+        }
+        img = rr::image::Image(width, height,
+                               rr::image::PixelFormat::Rgb32F);
+        float* dst = img.data();
+        for (std::size_t i = 0; i < aov1_floats; ++i) {
+            dst[i * 3 + 0] = scalars[i];
+            dst[i * 3 + 1] = scalars[i];
+            dst[i * 3 + 2] = scalars[i];
+        }
+        return true;
+    };
+
+    if (!download_3(d_aov_beauty, R.beauty)
+     || !download_3(d_aov_normal, R.normal)
+     || !download_3(d_aov_albedo, R.albedo)
+     || !download_1_replicate(d_aov_depth,   R.depth)
+     || !download_1_replicate(d_aov_doppler, R.doppler_factor)
+     || !download_1_replicate(d_aov_search,  R.searchlight_factor)) {
+        cleanup();
+        R.message = "render_aovs: cudaMemcpy(d->h, AOV buffer) failed";
+        return R;
+    }
+
+    cleanup();
+    R.ok      = true;
+    R.message = "OptiX AOVs render complete.";
+    return R;
+}
+
 #else   // RELATIVITYRENDER_OPTIX_SDK_FOUND
 
 OptixRenderer::Result
@@ -2509,6 +2817,22 @@ OptixRenderer::render_direct_lighting(const rr::scene::Scene& /*scene*/,
     r.message =
         "OptixRenderer::render_direct_lighting requires the OptiX "
         "SDK; rebuild with -DRR_ENABLE_OPTIX=ON and pass "
+        "-DOPTIX_ROOT=/path/to/optix-sdk so <optix.h> is "
+        "available. The CUDA path is unaffected.";
+    return r;
+}
+
+OptixRenderer::AovResult
+OptixRenderer::render_aovs(
+    const rr::scene::Scene& /*scene*/,
+    const std::vector<rr::lighting::Light>& /*lights*/,
+    int /*width*/,
+    int /*height*/) noexcept {
+    AovResult r;
+    r.ok = false;
+    r.message =
+        "OptixRenderer::render_aovs requires the OptiX SDK; "
+        "rebuild with -DRR_ENABLE_OPTIX=ON and pass "
         "-DOPTIX_ROOT=/path/to/optix-sdk so <optix.h> is "
         "available. The CUDA path is unaffected.";
     return r;

@@ -37,6 +37,7 @@
 // (the OptiX render call is still gated on
 // RELATIVITYRENDER_ENABLE_OPTIX inside the dispatcher).
 #include "geometry/Mesh.h"
+#include "lighting/Light.h"            // Stage 20N: needed by --render-optix-aovs dispatcher (audit-host build too)
 #include "material/MaterialTypes.h"
 #include "math/Vec2.h"
 #include "math/Vec3.h"
@@ -1728,6 +1729,153 @@ int run_render_optix_textured_material(const rr::core::Config& cfg) {
                + " (" + std::to_string(cfg.width) + "x"
                + std::to_string(cfg.height) + ", RGBA32F)");
     return 0;
+#endif
+}
+
+// `--render-optix-aovs` dispatch (Stage 20N).
+// Mirrors the CUDA `--render-aovs` dispatcher's surface (no
+// scene argument, fixed AOV output paths). Builds a small
+// procedural multi-light + textured-quad scene inline (the
+// OptiX path is mesh-only, so spheres are intentionally
+// omitted), then calls `OptixRenderer::render_aovs` which
+// allocates the six per-pixel device buffers, threads them
+// through `OptixLaunchParams`, and runs the existing direct-
+// lighting closest-hit. The raygen / closest-hit / miss
+// programs write Beauty / Normal / Depth / Albedo /
+// DopplerFactor / SearchlightFactor.
+//
+// The renderer itself sets the observer velocity to
+// beta = (0, 0, -0.5) so the Doppler / searchlight AOVs
+// show visible variation across the framebuffer (mirrors the
+// CUDA --render-aovs choice exactly).
+//
+// Output paths are fixed (mirrors --render-aovs):
+//   output/optix_aov_beauty.ppm,
+//   output/optix_aov_normal.ppm,
+//   output/optix_aov_depth.ppm,
+//   output/optix_aov_albedo.ppm,
+//   output/optix_aov_doppler.ppm,
+//   output/optix_aov_searchlight.ppm.
+// `--output` is intentionally ignored (mirrors --render-aovs).
+// Requires both `-DRR_ENABLE_OPTIX=ON` and a host with the CUDA
+// Toolkit + OptiX SDK installed; the audit-host fallback returns
+// the documented "requires OptiX" error.
+int run_render_optix_aovs(const rr::core::Config& cfg) {
+    using rr::core::Logger;
+
+    rr::scene::Scene scene;
+    scene.render_settings.width  = cfg.width;
+    scene.render_settings.height = cfg.height;
+    scene.camera.set_aspect(static_cast<float>(cfg.width)
+                          / static_cast<float>(cfg.height));
+
+    // Single neutral diffuse material for the quad. The OptiX
+    // direct-lighting branch evaluates albedo * (direct +
+    // ambient) + emission; a mid-grey baseColor lets every
+    // light's contribution show through clearly across the
+    // Beauty + Albedo AOVs.
+    rr::material::MaterialParams neutral_params{};
+    neutral_params.baseColor = rr::math::Vec3{0.65f, 0.65f, 0.65f};
+    scene.materials.push_back({0, "neutral", neutral_params});
+
+    // Single front-facing quad mesh (positions / normals / UVs).
+    // Same shape as the CUDA --render-aovs dispatcher's quad.
+    rr::geometry::Mesh quad;
+    quad.vertices.push_back({rr::math::Vec3{-3.0f, -3.0f, -6.0f},
+                             rr::math::Vec3{0.0f, 0.0f, 1.0f},
+                             rr::math::Vec2{0.0f, 0.0f}});
+    quad.vertices.push_back({rr::math::Vec3{ 3.0f, -3.0f, -6.0f},
+                             rr::math::Vec3{0.0f, 0.0f, 1.0f},
+                             rr::math::Vec2{1.0f, 0.0f}});
+    quad.vertices.push_back({rr::math::Vec3{ 3.0f,  3.0f, -6.0f},
+                             rr::math::Vec3{0.0f, 0.0f, 1.0f},
+                             rr::math::Vec2{1.0f, 1.0f}});
+    quad.vertices.push_back({rr::math::Vec3{-3.0f,  3.0f, -6.0f},
+                             rr::math::Vec3{0.0f, 0.0f, 1.0f},
+                             rr::math::Vec2{0.0f, 1.0f}});
+    quad.triangles.push_back({0, 1, 2});
+    quad.triangles.push_back({0, 2, 3});
+    quad.material_id = 0;
+
+    rr::scene::SceneMesh smesh;
+    smesh.object.name = "aov-quad";
+    smesh.geometry    = std::move(quad);
+    scene.meshes.push_back(std::move(smesh));
+
+    // Three lights matching the CUDA --render-aovs dispatcher:
+    // directional key, warm point fill, cool environment ambient.
+    std::vector<rr::lighting::Light> lights;
+    lights.push_back(rr::lighting::make_directional_light(
+        rr::math::Vec3{-0.4f, -0.7f, -0.6f},
+        rr::math::Vec3{1.0f, 0.95f, 0.85f},
+        /*intensity=*/0.9f));
+    lights.push_back(rr::lighting::make_point_light(
+        rr::math::Vec3{2.0f, 1.5f, -2.5f},
+        rr::math::Vec3{1.0f, 0.85f, 0.6f},
+        /*intensity=*/30.0f));
+    lights.push_back(rr::lighting::make_environment_light(
+        rr::math::Vec3{0.55f, 0.65f, 0.85f},
+        /*intensity=*/0.25f));
+
+#ifndef RELATIVITYRENDER_ENABLE_OPTIX
+    Logger::error("--render-optix-aovs requires OptiX. Rebuild "
+                  "with -DRR_ENABLE_OPTIX=ON on a "
+                  "host with the CUDA Toolkit + OptiX SDK "
+                  "installed (also pass -DOPTIX_ROOT=/path/to/"
+                  "optix-sdk).");
+    return 1;
+#else
+    auto r = rr::optix::OptixRenderer::render_aovs(
+        scene, lights, cfg.width, cfg.height);
+    if (!r.ok) {
+        Logger::error("optix aovs render failed: " + r.message);
+        return 1;
+    }
+    log_gpu_timing("render-optix-aovs",
+                   cfg.width, cfg.height, r.gpu_time_ms);
+
+    namespace fs = std::filesystem;
+    auto save_one = [&](const rr::image::Image& img,
+                        const char* path,
+                        const char* label) -> bool {
+        const fs::path p = path;
+        if (p.has_parent_path()) {
+            std::error_code ec;
+            fs::create_directories(p.parent_path(), ec);
+        }
+        if (!img.save_ppm(p)) {
+            Logger::error(std::string("could not write PPM: ") + path);
+            return false;
+        }
+        std::error_code ec;
+        const fs::path abs = fs::absolute(p, ec);
+        Logger::info(std::string("wrote ") + label + ": "
+                   + (ec ? std::string(path) : abs.string())
+                   + " (" + std::to_string(cfg.width) + "x"
+                   + std::to_string(cfg.height) + ", RGB32F)");
+        return true;
+    };
+
+    bool all_ok = true;
+    all_ok &= save_one(r.beauty,
+                       "output/optix_aov_beauty.ppm",
+                       "OptiX AOV beauty");
+    all_ok &= save_one(r.normal,
+                       "output/optix_aov_normal.ppm",
+                       "OptiX AOV normal");
+    all_ok &= save_one(r.depth,
+                       "output/optix_aov_depth.ppm",
+                       "OptiX AOV depth");
+    all_ok &= save_one(r.albedo,
+                       "output/optix_aov_albedo.ppm",
+                       "OptiX AOV albedo");
+    all_ok &= save_one(r.doppler_factor,
+                       "output/optix_aov_doppler.ppm",
+                       "OptiX AOV doppler");
+    all_ok &= save_one(r.searchlight_factor,
+                       "output/optix_aov_searchlight.ppm",
+                       "OptiX AOV searchlight");
+    return all_ok ? 0 : 1;
 #endif
 }
 
@@ -3788,6 +3936,9 @@ int main(int argc, char** argv) {
 
         case CommandLine::Action::RenderOptixTexturedMaterial:
             return run_render_optix_textured_material(result.config);
+
+        case CommandLine::Action::RenderOptixAovs:
+            return run_render_optix_aovs(result.config);
 
         case CommandLine::Action::RenderDenoise:
             return run_render_denoise(result.config);

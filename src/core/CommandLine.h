@@ -385,6 +385,19 @@ public:
         // with texture sampling enabled. Output:
         // output/optix_textured_material.ppm.
         RenderOptixTexturedMaterial,
+        // Stage 20N OptiX AOV render. Same mesh-scene plumbing
+        // as RenderOptixDirectLighting, but additionally
+        // allocates six per-pixel device buffers and threads
+        // them through OptixLaunchParams; the raygen / closest-
+        // hit / miss programs write Beauty / Normal / Depth /
+        // Albedo / DopplerFactor / SearchlightFactor. Outputs:
+        // output/optix_aov_beauty.ppm,
+        // output/optix_aov_normal.ppm,
+        // output/optix_aov_depth.ppm,
+        // output/optix_aov_albedo.ppm,
+        // output/optix_aov_doppler.ppm,
+        // output/optix_aov_searchlight.ppm.
+        RenderOptixAovs,
         RenderDenoise,
         // Stage 19E.2: smallest-meaningful-relativistic-render demo.
         // Single sphere + one diffuse material + one environment

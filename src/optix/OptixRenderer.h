@@ -18,10 +18,11 @@
 // ON` + a located OptiX SDK.
 
 // Forward decls so `render_mesh_scene` / `render_textured_material`
-// can take Scene + ImageTexture references without
-// `OptixRenderer.h` pulling those headers in transitively.
-namespace rr::scene   { struct Scene; }
-namespace rr::texture { class  ImageTexture; }
+// / `render_aovs` can take Scene / ImageTexture / Light references
+// without `OptixRenderer.h` pulling those headers in transitively.
+namespace rr::scene    { struct Scene; }
+namespace rr::texture  { class  ImageTexture; }
+namespace rr::lighting { struct Light; }
 
 namespace rr::optix {
 
@@ -347,6 +348,51 @@ public:
     [[nodiscard]] static Result render_textured_material(
         const rr::scene::Scene& scene,
         const std::vector<rr::texture::ImageTexture>& textures,
+        int width, int height) noexcept;
+
+    // Stage 20N AOV result. Six per-pixel passes packed into
+    // host Images. The renderer owns the allocation; the
+    // caller saves whichever passes it cares about via
+    // `Image::save_ppm` (typically the same six files the
+    // CUDA `--render-aovs` writes).
+    //
+    // Image formats (mirroring `rr::renderer::aov_component_count`):
+    //   beauty / normal / albedo : Rgb32F (3 floats / pixel)
+    //   depth / doppler_factor / searchlight_factor : Rgb32F
+    //     replicated to RGB so the saved PPM is directly
+    //     viewable. (CUDA path uses the host-side
+    //     `save_aov_to_ppm` helper to do the same replication
+    //     when downloading from `GpuAOVBuffer`.)
+    struct AovResult {
+        bool             ok = false;
+        std::string      message;
+        rr::image::Image beauty;
+        rr::image::Image normal;
+        rr::image::Image depth;
+        rr::image::Image albedo;
+        rr::image::Image doppler_factor;
+        rr::image::Image searchlight_factor;
+        float            gpu_time_ms = 0.0f;
+    };
+
+    // Stage 20N: render six AOV passes through the OptiX
+    // direct-lighting closest-hit. Same first-non-empty-mesh
+    // selection + GAS-build path as render_direct_lighting.
+    // The closest-hit / miss / raygen programs write per-pixel
+    // values to six device buffers (one per AOV); this entry
+    // allocates the buffers, threads them through
+    // `OptixLaunchParams`, runs the launch, downloads each
+    // buffer into a host Image, and returns all six in one
+    // `AovResult`.
+    //
+    // `lights` is uploaded the same way as
+    // `render_direct_lighting`; pass an empty vector for
+    // unlit Beauty.
+    //
+    // Same audit-host fallback semantics as render_test.
+    [[nodiscard]] static AovResult render_aovs(
+        const rr::scene::Scene& scene,
+        const std::vector<rr::lighting::Light>& lights,
         int width, int height) noexcept;
 };
 

@@ -20032,6 +20032,282 @@ not change that.
   fallback; clean build;
   ctest 7/7 green.
 
+## Stage 20N — OptiX AOVs
+
+**Scope of this slice (Stage 20N;
+master order #17, "OptiX upgrade
+path"): write the same six AOVs
+the CUDA `--render-aovs` produces
+(Beauty / Normal / Depth / Albedo /
+DopplerFactor / SearchlightFactor)
+through the OptiX raygen + closest-
+hit + miss programs. The launch-
+params POD grows with six device-
+pointer fields (one per AOV); the
+raygen / closest-hit / miss
+programs do per-pixel writes via
+`optixGetLaunchIndex()`. New entry
+`OptixRenderer::render_aovs(scene,
+lights, w, h)` allocates the six
+buffers, threads them through
+`OptixLaunchParams`, runs the
+existing direct-lighting closest-
+hit (Stage 20K), and downloads
+each AOV into a host `Image`. New
+CLI surface `--render-optix-aovs`
+mirrors the CUDA `--render-aovs`
+shape: no scene argument, fixed
+six PPM output paths under
+`output/optix_aov_*.ppm`,
+`--output` ignored. Backward-
+compat preserved at every layer:
+defaults are all-null and every
+write site short-circuits when its
+buffer pointer is null.**
+
+### What ships
+
+- `src/optix/OptixLaunchParams.h`:
+  six new fields. Defaults
+  preserve Stage 20M behaviour
+  byte-for-byte (every AOV write
+  short-circuits when its
+  pointer is null):
+    - `float* aov_beauty = nullptr`
+      — 3 floats / pixel (lit
+      shade post-Doppler /
+      searchlight).
+    - `float* aov_normal = nullptr`
+      — 3 floats / pixel; encoded
+      `0.5 * n + 0.5` for hits,
+      `(0, 0, 0)` for misses.
+    - `float* aov_depth = nullptr`
+      — 1 float / pixel;
+      `1 / (1 + t_hit)` for hits,
+      `0` for misses.
+    - `float* aov_albedo = nullptr`
+      — 3 floats / pixel; raw
+      `params.baseColor` (or env
+      colour pre-Doppler on miss).
+    - `float* aov_doppler_factor
+      = nullptr` — 1 float /
+      pixel; `D` from primary-ray
+      direction (same value for
+      hit + miss in this slice).
+    - `float* aov_searchlight_factor
+      = nullptr` — 1 float /
+      pixel; `D^4`.
+- `src/optix/OptixPrograms.cu`:
+  per-pixel AOV writes wired into
+  three programs:
+    - Raygen: writes
+      `aov_doppler_factor[pix]`
+      = `D` and
+      `aov_searchlight_factor[pix]`
+      = `searchlightFactor(D)` once
+      the primary direction has
+      been computed (covers both
+      hits and misses).
+    - Miss: writes
+      `aov_beauty[pix3]` =
+      `apply_doppler_and_searchlight
+      _with_D(env_color, D)`,
+      `aov_normal[pix3]` = 0,
+      `aov_depth[pix]` = 0, and
+      `aov_albedo[pix3]` =
+      `env_color` (pre-Doppler).
+    - Closest-hit
+      `shading_mode == 2` branch:
+      writes `aov_normal[pix3]` =
+      `0.5 * n + 0.5`,
+      `aov_depth[pix]` =
+      `1 / (1 + t_hit)`,
+      `aov_albedo[pix3]` =
+      `albedo` (pre-Doppler), and
+      finally `aov_beauty[pix3]` =
+      `color` after Doppler /
+      searchlight scaling. Each
+      write is gated on the
+      corresponding launch-params
+      pointer being non-null.
+- `src/optix/OptixRenderer.{h,cpp}`:
+  new `AovResult` struct (6
+  Images + ok / message /
+  gpu_time_ms) and new
+  `render_aovs(scene, lights, w,
+  h)` static method. Same first-
+  non-empty-mesh selection +
+  GAS-build path as Stage 20K's
+  `render_direct_lighting`;
+  additionally allocates one
+  framebuffer + six per-AOV
+  device buffers (3 floats /
+  pixel for beauty / normal /
+  albedo; 1 float / pixel for
+  depth / doppler / searchlight),
+  threads them through
+  `OptixLaunchParams`, runs
+  `optixLaunch`, downloads each
+  AOV. Scalar AOVs are
+  replicated to RGB host-side so
+  the returned Images are all
+  Rgb32F-uniform and directly
+  saveable as PPMs. The renderer
+  itself sets the observer
+  velocity to `beta = (0, 0,
+  -0.5)` so the Doppler /
+  searchlight AOVs show visible
+  variation across the
+  framebuffer (mirrors the CUDA
+  `--render-aovs` choice
+  exactly). Full audit-host
+  stub returns the documented
+  "requires OptiX" error.
+  `lighting/Light.h` now
+  included unconditionally so
+  the audit-host stub sees the
+  complete `Light` type the
+  signature references.
+- `src/core/CommandLine.{h,cpp}`:
+  new `Action::RenderOptixAovs`
+  enumerator + `--render-optix-aovs`
+  parser branch (no `<file>`
+  argument; mirrors CUDA
+  `--render-aovs`). Added to the
+  mutex error message + action
+  validation list. Help text
+  describes the six AOV outputs.
+- `src/main.cpp`: new
+  `run_render_optix_aovs(cfg)`
+  dispatcher that constructs the
+  procedural scene inline (single
+  neutral diffuse material +
+  front-facing quad mesh + three
+  lights — directional key,
+  warm point fill, cool
+  environment ambient — same as
+  CUDA `--render-aovs`),
+  delegates to
+  `OptixRenderer::render_aovs`,
+  and saves the six AOVs to
+  fixed paths
+  (`output/optix_aov_beauty.ppm`,
+  `output/optix_aov_normal.ppm`,
+  `output/optix_aov_depth.ppm`,
+  `output/optix_aov_albedo.ppm`,
+  `output/optix_aov_doppler.ppm`,
+  `output/optix_aov_searchlight.ppm`).
+  `--output` is intentionally
+  ignored (matches the CUDA
+  surface). New action wired
+  into the dispatcher switch
+  next to the other OptiX
+  entries. `lighting/Light.h`
+  lifted unconditional so the
+  scene-build helpers compile on
+  audit hosts too.
+- `CMakeLists.txt`: banner bumped
+  to "Stage 20N: OptiX AOVs".
+- This `BUILD_PLAN.md` slice-
+  closing entry.
+
+### Backward compatibility
+
+- All six new launch-params
+  fields default to `nullptr`.
+  Existing OptiX entries
+  (`render_test`, `render_triangle`,
+  `render_relativity`,
+  `render_raygen`,
+  `render_mesh_scene`,
+  `render_material_scene`,
+  `render_pathtrace*`,
+  `render_direct_lighting`,
+  `render_textured_material`)
+  populate the launch-params POD
+  via aggregate initialisation +
+  field assignments without
+  setting the AOV pointers, so
+  the gates inside raygen /
+  closest-hit / miss skip every
+  AOV write and produce
+  byte-identical output.
+- The radiance closest-hit's AOV
+  writes live inside the
+  `shading_mode == 2` branch
+  (Stage 20K direct lighting);
+  the `shading_mode == 0` (normal-
+  as-color) and `shading_mode ==
+  1` (material-flat / textured)
+  branches are unaffected.
+- The CUDA `--render-aovs` dispatcher
+  is untouched; the OptiX path
+  is purely additive.
+
+### Status (unchanged)
+
+Module #6 (OptiX Backend) and
+the AOV system both remain at
+their existing maturity
+statuses. Wiring AOV writes
+through the OptiX programs
+extends the OptiX path's
+feature reach but does not
+lift the project-wide
+visual-validation gate (no
+frame rendered through the
+OptiX path on a real OptiX-SDK
+host in this branch).
+
+### Verified at the build
+
+- `cmake -S . -B build_off
+  -DRR_ENABLE_CUDA=OFF
+  -DRR_ENABLE_OPTIX=OFF`
+  (audit host): banner shows
+  "Stage 20N: OptiX AOVs";
+  clean build; ctest 6/6
+  green.
+- `./build_off/bin/RelativityRender
+  --render-optix-aovs` (audit
+  host): exits 1 with the
+  documented "--render-optix-aovs
+  requires OptiX. Rebuild with
+  -DRR_ENABLE_OPTIX=ON ..."
+  error per Stage 12B.4 +
+  Stage 17A.3 fallback contract.
+- `./build_off/bin/RelativityRender
+  --help`: the new
+  `--render-optix-aovs` entry
+  appears under the OptiX
+  section with the documented
+  six AOV output paths.
+- `./build_off/bin/RelativityRender
+  --render-optix-aovs
+  --render-optix-test`: parser
+  rejects the combination with
+  the standard "cannot combine
+  action flags" error and the
+  validation list now includes
+  `--render-optix-aovs`.
+- The `RR_ENABLE_OPTIX=ON` build
+  path is structurally
+  verified: the OptiX SDK is
+  not available on the audit
+  host, but the SDK-found
+  branch follows the same
+  shape as Stage 20K
+  `render_direct_lighting` /
+  Stage 20L `render_shadow_test`
+  / Stage 20M
+  `render_textured_material`
+  (which all build green on a
+  CUDA-host with the SDK) and
+  the new entry shares the
+  same backend / pipeline /
+  GAS-build / launch-params
+  / cleanup machinery.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:

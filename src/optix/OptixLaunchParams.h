@@ -215,6 +215,35 @@ struct OptixLaunchParams {
     const rr::geometry::Triangle*        mesh_indices  = nullptr;
     const rr::cuda::DeviceTextureView*   textures      = nullptr;
     std::int32_t                         texture_count = 0;
+
+    // ---- Stage 20N AOV outputs ----
+    //
+    // Six per-pixel device buffers, one per `rr::renderer::AOVType`.
+    // Layout: `width * height * component_count` floats, channel-
+    // interleaved row-major top-left origin (matches the host-side
+    // `rr::renderer::GpuAOVBuffer` contract).
+    // - aov_beauty             : 3 floats / pixel (RGB; lit shade)
+    // - aov_normal             : 3 floats / pixel (encoded
+    //                            `0.5 * n + 0.5` for hits;
+    //                            (0, 0, 0) on miss)
+    // - aov_depth              : 1 float / pixel (`1 / (1 + t)` for
+    //                            hits; 0 on miss)
+    // - aov_albedo             : 3 floats / pixel (material
+    //                            baseColor; env color on miss)
+    // - aov_doppler_factor     : 1 float / pixel (D from primary
+    //                            ray direction; same for hit + miss)
+    // - aov_searchlight_factor : 1 float / pixel (D^4)
+    //
+    // Defaults (all-null) preserve existing-entry behaviour
+    // byte-for-byte: the closest-hit / miss / raygen short-circuit
+    // their AOV writes when the corresponding pointer is null.
+    // Only `--render-optix-aovs` populates these.
+    float* aov_beauty             = nullptr;
+    float* aov_normal             = nullptr;
+    float* aov_depth              = nullptr;
+    float* aov_albedo             = nullptr;
+    float* aov_doppler_factor     = nullptr;
+    float* aov_searchlight_factor = nullptr;
 };
 
 }  // namespace rr::optix
