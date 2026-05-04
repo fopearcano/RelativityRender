@@ -25602,6 +25602,295 @@ dispatcher's downstream
   announcement; quiet
   path preserved).
 
+## Stage 21E.2 — CLI denoise integration
+
+**Scope of this slice (Stage 21E.2;
+master order #24, "Denoising"):
+wire the existing `--denoise`
+modifier flag (Stage 19B.4 +
+Stage 21E.1 announce) to
+actually run the denoiser
+after a successful `--render
+<scene>` invocation. The
+normal render path is
+unchanged: `output/render.ppm`
+(or whatever `--output`
+resolves to) carries the same
+noisy beauty it always did.
+The denoise pass is purely
+additive - when it succeeds,
+an additional
+`output/denoised.ppm` appears
+alongside; when it fails or
+the denoiser is unavailable,
+a single warning line
+surfaces the cause and the
+original render is kept
+untouched. Per the user's
+"do not change normal render
+path" rule: the no-`--denoise`
+output path is byte-identical
+with Stage 21E.1.**
+
+### What ships
+
+- `src/main.cpp`
+  (`run_render_from_scene`
+  body only):
+    - Refactored the existing
+      tail line
+      `return save_image_or_error(...) ? 0 : 1`
+      into
+      `if (!save_image_or_error(...))
+      return 1;` so the new
+      denoise block can run
+      after the render save
+      succeeds.
+    - New denoise block
+      gated by
+      `if (cfg.denoise_enabled)`
+      with an inner
+      `#ifdef RELATIVITYRENDER_ENABLE_OPTIX`:
+        - **ON branch**:
+          allocates three
+          `GpuAOVBuffer`
+          instances (Beauty /
+          Albedo / Normal),
+          runs
+          `CudaRenderer::render_scene_with_aovs`
+          on the already-
+          uploaded `GpuScene`,
+          initialises
+          `OptixBackend` +
+          `OptixDenoiser`,
+          builds an
+          `OptixDenoiser::Inputs`
+          from the AOV
+          device pointers,
+          and calls
+          `denoise_and_save_ppm(
+          denoiser, inputs,
+          "output/denoised.ppm")`.
+        - **OFF branch**:
+          emits
+          `Logger::warning(
+          "--denoise:
+          denoiser unavailable
+          on this build
+          (requires
+          -DRR_ENABLE_OPTIX=ON);
+          keeping original
+          render at
+          <out_path>")`.
+    - Every failure inside
+      the ON branch (AOV
+      resize / AOV-render /
+      backend init /
+      denoiser init /
+      `denoise_and_save_ppm`
+      result) takes the
+      "warning + return 0"
+      path. The normal
+      render already
+      succeeded; the
+      denoise pass failure
+      never propagates as a
+      run-render error.
+- This `BUILD_PLAN.md`
+  slice-closing entry.
+
+### Why re-render with AOVs
+
+The standard
+`CudaRenderer::render_scene`
+path does NOT produce Beauty
++ Albedo + Normal AOV device
+buffers - it produces only
+the final framebuffer. The
+denoiser needs all three
+(Stage 21A.3 contract
+enforced by
+`validateDenoiserInputs`).
+
+The simplest
+"don't-change-normal-path"
+implementation is the one
+this slice ships: render
+twice when `--denoise` is
+set, once for the user's
+PPM (`output/render.ppm`)
+via `render_scene`, then
+again with AOVs via
+`render_scene_with_aovs`
+on the same uploaded
+`GpuScene`. The two passes
+share the GPU upload (no
+host-side re-parse), so the
+overhead is one extra GPU
+launch per denoised
+render.
+
+A future polish slice can
+share a single AOV-aware
+launch between the two
+artifacts (saving Beauty
+as `output/render.ppm`
+directly from
+`render_scene_with_aovs`'s
+output), but that would
+change the bytes in
+`output/render.ppm` for
+denoised renders. Per the
+user's "do not change
+normal render path" rule,
+this slice intentionally
+takes the wasteful-but-
+identical path.
+
+### Behaviour matrix
+
+| Scenario                       | `output/render.ppm`            | `output/denoised.ppm` |
+|--------------------------------|--------------------------------|-----------------------|
+| `--render` (no `--denoise`)    | written; unchanged from prior  | not written           |
+|                                | Stages                         |                       |
+| `--render --denoise`,          | written (unchanged)            | written (denoised     |
+| OptiX SDK present + denoise    |                                | radiance)             |
+| succeeds                       |                                |                       |
+| `--render --denoise`,          | written (unchanged)            | written (noisy        |
+| OptiX SDK present + denoise    |                                | Beauty fallback per   |
+| fails                          |                                | Stage 21D.5)          |
+| `--render --denoise`,          | written (unchanged)            | NOT written; warning  |
+| OptiX disabled at build time   |                                | logged (per user rule)|
+| `--render --denoise`, OptiX    | written (unchanged)            | NOT written; warning  |
+| init / AOV setup fails         |                                | logged                |
+| `--render --denoise`, no       | NOT written; existing audit-   | NOT written           |
+| CUDA at build time             | host CUDA error                |                       |
+
+### Master rule compliance
+
+- **No CPU per-pixel work**:
+  the AOV-aware render runs
+  on the GPU
+  (`render_scene_with_aovs`'s
+  CUDA kernel); the denoise
+  runs on the GPU
+  (`optixDenoiserInvoke`'s
+  CUDA kernels). The host
+  only orchestrates +
+  downloads + saves.
+- **Renderer not broken
+  by denoiser failure**:
+  every denoise-side
+  failure path warns +
+  returns 0 (the normal
+  render's success
+  return). Per the
+  user's rule "If
+  denoiser unavailable,
+  log warning and keep
+  original render".
+- **No change to normal
+  render path**: the
+  `--render` invocation
+  without `--denoise`
+  produces byte-identical
+  output. The new code is
+  conditional on
+  `cfg.denoise_enabled`.
+
+### What does NOT ship
+
+- No new public API on
+  `OptixDenoiser` or
+  `CudaRenderer`.
+- No new CLI flag (the
+  existing `--denoise`
+  modifier is what's
+  wired).
+- No change to the
+  legacy
+  `--render-aovs --denoise`
+  path (still uses
+  `denoise_aov_buffers_to_ppm`)
+  or the new
+  `--render-optix-denoise`
+  path (still uses
+  `denoise_and_save_ppm`
+  directly).
+
+### Backward compatibility
+
+- `--render <scene>`
+  without `--denoise` is
+  byte-identical with
+  Stage 21E.1.
+- `--render <scene>
+  --denoise` previously
+  emitted only the Stage
+  21E.1 announcement and
+  saved `output/render.ppm`;
+  now it ALSO produces
+  `output/denoised.ppm`
+  on a CUDA + OptiX-SDK
+  host (or warns + skips
+  on lesser hosts).
+- The CUDA renderer is
+  byte-identical for the
+  no-`--denoise` path
+  (the slice touches only
+  `src/main.cpp`'s
+  `run_render_from_scene`
+  body).
+
+### Verified at the build
+
+- `cmake -S . -B build_off
+  -DRR_ENABLE_CUDA=OFF
+  -DRR_ENABLE_OPTIX=OFF`
+  (audit host): clean
+  build; ctest 6/6 green.
+- `cmake -S . -B build_on_audit
+  -DRR_ENABLE_CUDA=OFF
+  -DRR_ENABLE_OPTIX=ON`
+  (audit host, no SDK):
+  clean build; ctest 7/7
+  green. The new denoise
+  block is nested inside
+  the existing
+  `#ifndef RR_HAS_CUDA`
+  gate, so it does not
+  compile in either
+  audit-host build (no
+  CUDA on either).
+- `./build_off/bin/RelativityRender
+  --render
+  scenes/test_full_scene.rrscene
+  --output output/render.ppm
+  --denoise`: emits the
+  Stage 21E.1 announcement,
+  then hits the existing
+  audit-host CUDA fallback
+  ("requires CUDA"). No
+  crash; the denoise block
+  is unreachable when
+  CUDA is missing.
+- The CUDA-host end-to-end
+  path
+  (`render_scene` save ->
+  `render_scene_with_aovs`
+  -> `OptixDenoiser::denoise`
+  -> `denoise_and_save_ppm`
+  -> `output/denoised.ppm`)
+  is structurally in place
+  but cannot be
+  empirically verified on
+  this audit host (no CUDA
+  + no OptiX SDK).
+  Producing the actual
+  denoised PPM is deferred
+  to a CUDA + OptiX-SDK
+  host run.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:

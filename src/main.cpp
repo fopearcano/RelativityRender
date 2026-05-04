@@ -773,8 +773,109 @@ int run_render_from_scene(const rr::core::Config& cfg) {
                + std::to_string(width) + "x" + std::to_string(height)
                + " (from render_settings)");
 
-    return save_image_or_error(r.image, out_path, "GPU scene-from-file",
-                               width, height) ? 0 : 1;
+    if (!save_image_or_error(r.image, out_path, "GPU scene-from-file",
+                             width, height)) {
+        return 1;
+    }
+
+    // Stage 21E.2: optional denoise pass triggered by the
+    // `--denoise` modifier flag (Stage 19B.4 +
+    // Stage 21E.1 announce). The normal render path above
+    // is unchanged: `output/render.ppm` (or whatever
+    // `--output` resolved to) carries the same noisy beauty
+    // it always did. The denoise pass is purely additive -
+    // when it succeeds, an additional `output/denoised.ppm`
+    // appears alongside; when it fails, a single warning
+    // line surfaces the cause and the original render is
+    // kept untouched.
+    //
+    // The denoiser needs Beauty / Albedo / Normal AOVs the
+    // standard `CudaRenderer::render_scene` path does not
+    // produce. We re-render the same scene through the
+    // AOV-aware kernel (`render_scene_with_aovs`) on the
+    // already-uploaded `GpuScene`, initialise the OptiX
+    // backend + denoiser, and hand the buffers to the
+    // existing `denoise_and_save_ppm` helper (Stage 21D.4 +
+    // 21D.5). The helper carries its own noisy-Beauty
+    // fallback per the Stage 21A.7 contract; this block
+    // only handles the OUTSIDE-the-helper failure paths
+    // (AOV resize / AOV-render / backend / denoiser init
+    // failures) by warning + returning 0.
+    if (cfg.denoise_enabled) {
+#ifdef RELATIVITYRENDER_ENABLE_OPTIX
+        rr::renderer::GpuAOVBuffer beauty_buf(
+            rr::renderer::AOV::make_beauty());
+        rr::renderer::GpuAOVBuffer normal_buf(
+            rr::renderer::AOV::make_normal());
+        rr::renderer::GpuAOVBuffer albedo_buf(
+            rr::renderer::AOV::make_albedo());
+        if (!beauty_buf.resize(width, height) ||
+            !normal_buf.resize(width, height) ||
+            !albedo_buf.resize(width, height)) {
+            Logger::warning("--denoise: AOV buffer allocation "
+                            "failed; keeping original render at "
+                          + out_path);
+            return 0;
+        }
+
+        rr::cuda::CudaRenderer::AOVTargets targets;
+        targets.beauty = beauty_buf.device_ptr();
+        targets.normal = normal_buf.device_ptr();
+        targets.albedo = albedo_buf.device_ptr();
+
+        auto aov_r = rr::cuda::CudaRenderer::render_scene_with_aovs(
+            gpu_scene, width, height, targets);
+        if (!aov_r.ok) {
+            Logger::warning("--denoise: AOV render failed: "
+                          + aov_r.message
+                          + "; keeping original render at "
+                          + out_path);
+            return 0;
+        }
+
+        rr::optix::OptixBackend backend;
+        if (!backend.initialize()) {
+            Logger::warning("--denoise: OptixBackend init "
+                            "failed: " + backend.last_error()
+                          + "; keeping original render at "
+                          + out_path);
+            return 0;
+        }
+        rr::optix::OptixDenoiser denoiser;
+        if (!denoiser.initialize(backend)) {
+            Logger::warning("--denoise: OptixDenoiser init "
+                            "failed: " + denoiser.last_error()
+                          + "; keeping original render at "
+                          + out_path);
+            return 0;
+        }
+
+        rr::optix::OptixDenoiser::Inputs inputs;
+        inputs.beauty_device     = beauty_buf.device_ptr();
+        inputs.beauty_components = 3;
+        inputs.albedo_device     = albedo_buf.device_ptr();
+        inputs.normal_device     = normal_buf.device_ptr();
+        inputs.width             = width;
+        inputs.height            = height;
+
+        if (!denoise_and_save_ppm(denoiser, inputs,
+                                  "output/denoised.ppm")) {
+            Logger::warning("--denoise: failed to save denoised "
+                            "output; keeping original render at "
+                          + out_path);
+            // Helper has already populated `last_error_` /
+            // logged its own warning where appropriate; we
+            // still exit 0 because the standard render
+            // succeeded.
+        }
+#else
+        Logger::warning("--denoise: denoiser unavailable on this "
+                        "build (requires -DRR_ENABLE_OPTIX=ON); "
+                        "keeping original render at " + out_path);
+#endif
+    }
+
+    return 0;
 #endif
 }
 
