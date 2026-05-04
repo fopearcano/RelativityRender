@@ -131,6 +131,16 @@ void OptixDenoiser::shutdown() noexcept {
     input_beauty_components_ = 0;
     state_size_              = 0;
     scratch_size_            = 0;
+
+    // Stage 21B.7: free state + scratch device buffers.
+    // GpuBuffer's destructor will also free them, but
+    // the explicit reset here keeps lifetime symmetric
+    // with `set_inputs`'s allocate calls and ensures
+    // re-using the OptixDenoiser via a second
+    // `initialize -> set_inputs` cycle starts from
+    // empty buffers.
+    state_buffer_.reset();
+    scratch_buffer_.reset();
 }
 
 #ifdef RELATIVITYRENDER_ENABLE_OPTIX
@@ -291,13 +301,44 @@ bool OptixDenoiser::set_inputs(const Inputs& inputs) noexcept {
         return false;
     }
 
-    // Stage 21B.6: store the queried sizes. NO cudaMalloc is
-    // called here per the user's rules; allocating the state
-    // + scratch buffers is a subsequent sub-stage's
-    // responsibility. The OptixImage2D descriptor triplet is
-    // also not built yet (`input_images_` stays null).
-    state_size_              = sizes.stateSizeInBytes;
-    scratch_size_            = sizes.withoutOverlapScratchSizeInBytes;
+    // Stage 21B.6: snapshot the queried sizes.
+    state_size_   = sizes.stateSizeInBytes;
+    scratch_size_ = sizes.withoutOverlapScratchSizeInBytes;
+
+    // Stage 21B.7: allocate state + scratch device buffers
+    // via the project's `rr::gpu::GpuBuffer` utility (which
+    // forwards to `cudaMalloc` under the hood; see
+    // `src/gpu/GpuBuffer.{h,cpp}`). On failure, free both
+    // sides so the class doesn't keep a partial allocation
+    // around, populate `last_error_`, and return false.
+    if (!state_buffer_.allocate(state_size_)) {
+        state_buffer_.reset();
+        scratch_buffer_.reset();
+        last_error_ = std::string(
+            "OptixDenoiser::set_inputs: failed to allocate "
+            "denoiser state buffer (")
+          + std::to_string(state_size_) + " bytes).";
+        std::fprintf(stderr,
+                     "[OptiX:ERROR] denoiser set_inputs failed: %s\n",
+                     last_error_.c_str());
+        return false;
+    }
+    if (!scratch_buffer_.allocate(scratch_size_)) {
+        state_buffer_.reset();
+        scratch_buffer_.reset();
+        last_error_ = std::string(
+            "OptixDenoiser::set_inputs: failed to allocate "
+            "denoiser scratch buffer (")
+          + std::to_string(scratch_size_) + " bytes).";
+        std::fprintf(stderr,
+                     "[OptiX:ERROR] denoiser set_inputs failed: %s\n",
+                     last_error_.c_str());
+        return false;
+    }
+
+    // The OptixImage2D descriptor triplet is still not built
+    // here (`input_images_` stays null); the descriptor
+    // binding lands in a subsequent sub-stage.
     input_width_             = inputs.width;
     input_height_            = inputs.height;
     input_beauty_components_ = inputs.beauty_components;
@@ -306,8 +347,8 @@ bool OptixDenoiser::set_inputs(const Inputs& inputs) noexcept {
 
     std::fprintf(stderr,
                  "[OptiX:INFO] OptixDenoiser memory resources "
-                 "queried: width=%u height=%u stateSize=%zu "
-                 "scratchSize=%zu (no allocation yet).\n",
+                 "queried + allocated: width=%u height=%u "
+                 "stateSize=%zu scratchSize=%zu.\n",
                  w, h, state_size_, scratch_size_);
     return true;
 }

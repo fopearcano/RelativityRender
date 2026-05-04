@@ -22238,6 +22238,198 @@ sub-stage).**
   empirically verified on
   this audit host (no SDK).
 
+## Stage 21B.7 — denoiser buffer allocation
+
+**Scope of this slice (Stage 21B.7;
+master order #24, "Denoising"):
+allocate the OptiX denoiser's
+state + scratch device buffers
+using the project's existing
+GPU memory utility
+(`rr::gpu::GpuBuffer<std::byte>`).
+Per the user's rules: "allocate
+state buffer / scratch buffer",
+"use existing GPU memory
+utilities", "no denoise yet",
+"must compile". The allocation
+runs inside
+`OptixDenoiser::set_inputs`'s
+SDK_FOUND branch immediately
+after the Stage 21B.6 memory
+query; allocation failures roll
+back the partial state so the
+class never holds a half-
+allocated denoiser. NO
+`optixDenoiserSetup`, NO
+`optixDenoiserInvoke`, NO
+image processing.**
+
+### What ships
+
+- `src/optix/OptixDenoiser.h`:
+    - new `#include "gpu/GpuBuffer.h"`.
+    - two new private members:
+      `rr::gpu::GpuBuffer<std::byte>
+      state_buffer_` and
+      `scratch_buffer_`.
+- `src/optix/OptixDenoiser.cpp`:
+    - `set_inputs` SDK_FOUND
+      branch: after the memory
+      query stores the sizes,
+      now also calls
+      `state_buffer_.allocate(
+      state_size_)` and
+      `scratch_buffer_.allocate(
+      scratch_size_)`. On
+      either failure: resets
+      both buffers, populates
+      `last_error_` with the
+      documented "failed to
+      allocate denoiser state /
+      scratch buffer (N bytes)"
+      message, emits
+      `[OptiX:ERROR] denoiser
+      set_inputs failed: ...`
+      on stderr, returns
+      false.
+    - Success log updated:
+      `[OptiX:INFO]
+      OptixDenoiser memory
+      resources queried +
+      allocated: width=W
+      height=H stateSize=N
+      scratchSize=M.`
+    - `shutdown()` explicitly
+      calls
+      `state_buffer_.reset()`
+      and
+      `scratch_buffer_.reset()`
+      (the destructors would
+      handle this anyway, but
+      the explicit reset keeps
+      lifetime symmetric with
+      `set_inputs`'s allocate
+      calls and lets the
+      same `OptixDenoiser`
+      instance go through a
+      second
+      `initialize -> set_inputs`
+      cycle from a clean
+      state).
+- This `BUILD_PLAN.md`
+  slice-closing entry.
+
+### Why GpuBuffer
+
+The user's task says "use
+existing GPU memory utilities".
+`rr::gpu::GpuBuffer<T>` is the
+project's typed, move-only,
+RAII-owning device buffer
+(`src/gpu/GpuBuffer.{h,cpp}`).
+It forwards to the CUDA
+backend's `cudaMalloc` /
+`cudaFree` under the hood and
+already handles every project
+subsystem's device allocations
+(`GpuScene`, `GpuMesh`,
+`GpuTexture`, `AccumulationBuffer`,
+`GpuAOVBuffer`, etc.). Using
+it here keeps the dependency
+graph clean: the OptiX
+denoiser does not pull in
+`<cuda_runtime.h>` directly;
+the CUDA-vs-no-CUDA
+specialisation lives where it
+already does (`GpuBuffer.cpp`).
+
+`std::byte` is the natural
+element type for raw OptiX-
+managed device memory: the
+SDK treats both buffers as
+opaque byte arrays.
+
+### What does NOT ship
+
+- No
+  `optixDenoiserSetup` (sets
+  per-resolution state by
+  initialising the state
+  buffer); that lands in a
+  subsequent sub-stage.
+- No `OptixImage2D`
+  descriptor triplet
+  construction
+  (`input_images_` stays
+  null).
+- No `optixDenoiserInvoke`,
+  no actual denoise work,
+  no image processing.
+
+### Behaviour matrix
+
+| Build mode               | `set_inputs(inputs)` behaviour                                                |
+|--------------------------|-------------------------------------------------------------------------------|
+| OFF                      | `.cpp` not compiled                                                           |
+| ON, no SDK (audit host)  | Returns `false`; "requires OptiX SDK" stub fires before reaching the          |
+|                          | allocation block. `state_buffer_` / `scratch_buffer_` stay empty.             |
+| ON, SDK found            | Validates inputs; queries memory (Stage 21B.6); allocates state + scratch via |
+|                          | `GpuBuffer.allocate` (Stage 21B.7); stores dimensions; sets `inputs_set_ =    |
+|                          | true`; returns `true`. The `invoke` call still returns `false` until a future |
+|                          | sub-stage adds `optixDenoiserSetup` + `optixDenoiserInvoke`.                  |
+
+### Backward compatibility
+
+- The class' public surface
+  is byte-identical with
+  Stage 21B.6 (no method
+  signatures changed; only
+  two new private members
+  + one new include).
+- `denoise_aov_buffers_to_ppm`
+  in `main.cpp`: behaviour
+  on the audit host is
+  unchanged (the existing
+  `set_inputs` audit-host
+  stub still returns `false`
+  with the "requires SDK"
+  error; consumer takes the
+  Stage 19C.3 noisy-Beauty
+  fallback path).
+- The CUDA renderer is
+  byte-identical (the slice
+  touches only
+  `src/optix/OptixDenoiser.{h,cpp}`).
+
+### Verified at the build
+
+- `cmake -S . -B build_off
+  -DRR_ENABLE_CUDA=OFF
+  -DRR_ENABLE_OPTIX=OFF`
+  (audit host): clean build;
+  ctest 6/6 green.
+- `cmake -S . -B build_on_audit
+  -DRR_ENABLE_CUDA=OFF
+  -DRR_ENABLE_OPTIX=ON`
+  (audit host, no SDK):
+  clean build; ctest 7/7
+  green. The `GpuBuffer`
+  allocation calls compile
+  inside the SDK_FOUND gate;
+  on this host the gate is
+  undefined, so the calls
+  are compiled out and the
+  audit-host stub fires
+  instead.
+- The SDK-found
+  `GpuBuffer.allocate` call
+  path (which forwards to
+  `cudaMalloc`) is
+  structurally in place but
+  cannot be empirically
+  verified on this audit
+  host (no CUDA runtime).
+
 ## Next stage
 
 When prompted, the natural follow-ups are:

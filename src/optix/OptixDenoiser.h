@@ -3,6 +3,8 @@
 #include <cstddef>
 #include <string>
 
+#include "gpu/GpuBuffer.h"  // Stage 21B.7: GpuBuffer<std::byte> for state + scratch
+
 // Stage 21B.1 / 21B.2 - OptixDenoiser wrapper class skeleton.
 //
 // Class is declared unconditionally so consumers can include
@@ -85,6 +87,16 @@ private:
     // No allocation happens in Stage 21B.6 itself.
     std::size_t state_size_              = 0;
     std::size_t scratch_size_            = 0;
+
+    // Stage 21B.7: device-side state + scratch buffers
+    // sized by `set_inputs(...)` per the memory-resource
+    // query. Both buffers are freed automatically by
+    // `GpuBuffer`'s destructor / `shutdown()`'s explicit
+    // `.reset()`. The audit-host fallback never allocates
+    // these (its `set_inputs` stub returns `false` before
+    // reaching the allocation block).
+    rr::gpu::GpuBuffer<std::byte> state_buffer_;
+    rr::gpu::GpuBuffer<std::byte> scratch_buffer_;
 
     std::string last_error_;
 };
