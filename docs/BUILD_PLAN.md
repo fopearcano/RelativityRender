@@ -25295,6 +25295,142 @@ NO C4D.**
   code failure" carve-out
   the user authorised.
 
+## Post-Stage 21D — denoiser invoke audit (docs only)
+
+**Scope of this slice (post-Stage
+21D.6, master order #24,
+"Denoising"): a documentation-
+only audit of the entire Stage
+21D denoiser-invoke arc (6 sub-
+stages). Confirms the
+high-level
+`OptixDenoiser::denoise()` API
+works end-to-end (validate ->
+prepare -> invoke -> sync),
+the host-side
+`denoise_and_save_ppm` helper
+saves to `output/denoised.ppm`,
+the noisy-Beauty fallback
+fires on denoiser failure, the
+`--render-optix-denoise` CLI
+surface is wired, and zero CPU
+per-pixel work happens in the
+denoise pipeline. NO source
+code modified.**
+
+### What ships
+
+- `docs/STAGE_21D_DENOISER_INVOKE_AUDIT.md`:
+  audit document with one
+  section per prompt
+  question (eight in total)
+  plus a summary table and
+  a forward-looking "what
+  lands next" section.
+  Verdicts split into
+  "empirical" (audit host
+  ran the command directly)
+  and "structural" (source
+  / build config / wiring
+  inspected; runtime
+  verification deferred to
+  a CUDA + OptiX-SDK host).
+- This `BUILD_PLAN.md`
+  slice-closing entry.
+
+### Audit verdicts (one-line each)
+
+| # | Question                                      | Verdict             |
+|---|-----------------------------------------------|---------------------|
+| 1 | Does OptiX OFF build still work?              | YES (empirical)     |
+| 2 | Does OptiX ON build work?                     | YES (structural)    |
+| 3 | Does the denoiser invoke function exist?     | YES (structural)    |
+| 4 | Beauty-only mode status                       | WIRED but UNUSED    |
+| 5 | Guided beauty/albedo/normal mode status       | FULLY WIRED         |
+| 6 | `output/denoised.ppm` exists?                 | RUNTIME DEFERRED    |
+| 7 | Failure fallback exists?                      | YES (two layers)    |
+| 8 | No CPU denoising                              | ZERO violations     |
+
+### Stage 21D arc summary
+
+| Sub-stage | Commit    | Slice                                              |
+|-----------|-----------|----------------------------------------------------|
+| 21D.1     | `0eb0c69` | Denoiser invoke shell                              |
+| 21D.2     | `2236f45` | Beauty/guided invoke (real `optixDenoiserInvoke`)  |
+| 21D.3     | `724e2f4` | Guided invoke formalised                           |
+| 21D.4     | `c0b38e4` | Save denoised output (`denoise_and_save_ppm`)      |
+| 21D.5     | `58da922` | Failure fallback (noisy-Beauty in helper)          |
+| 21D.6     | `e4db2a8` | Test output CLI (`--render-optix-denoise`)         |
+
+### Critical findings
+
+- **Two of three
+  post-Stage-20 gaps are
+  now closed.** Gap B
+  (orchestration helper)
+  is satisfied by
+  `denoise_and_save_ppm`
+  (Stage 21D.4 + 21D.5).
+  Gap C (CLI surface) is
+  satisfied by Stage 21D.6.
+  Gap A (durable AOV
+  ownership for the OptiX
+  path's `render_aovs`)
+  remains as a future
+  polish slice.
+- **Beauty-only path is
+  wired but intentionally
+  unused.** The
+  `prepareBeautyOnlyInput`
+  helper exists from Stage
+  21C.3 but the denoiser's
+  init options
+  (`guideAlbedo=1,
+  guideNormal=1`) force the
+  guided path. The user's
+  Stage 21D.2 carve-out
+  ("beauty-only if
+  supported") covers this.
+- **`output/denoised.ppm`
+  is runtime-deferred, not
+  code-failure.** Per the
+  user's Stage 21D.6 rule,
+  the audit-host CLI exits
+  1 with the documented
+  "requires CUDA + OptiX"
+  error; the actual
+  denoised PPM is produced
+  on a CUDA + OptiX-SDK
+  host run.
+
+### Backward compatibility
+
+Documentation-only slice. No
+source / CMake / CLI changes.
+Every Stage 21D.6 behaviour
+is preserved byte-for-byte.
+
+### Verified at the build
+
+- `cmake -S . -B build_off
+  -DRR_ENABLE_CUDA=OFF
+  -DRR_ENABLE_OPTIX=OFF`
+  (audit host): clean build;
+  ctest 6/6 green.
+- `cmake -S . -B build_on_audit
+  -DRR_ENABLE_CUDA=OFF
+  -DRR_ENABLE_OPTIX=ON`
+  (audit host, no SDK):
+  clean build; ctest 7/7
+  green.
+- `./bin/RelativityRender
+  --render-optix-denoise`:
+  exits 1 with the
+  documented "requires
+  CUDA + OptiX" error on
+  both build modes; no
+  crash.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
