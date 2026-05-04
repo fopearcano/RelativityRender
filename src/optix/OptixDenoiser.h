@@ -120,6 +120,40 @@ public:
     [[nodiscard]] bool invoke(const Output& output)     noexcept;
     void               shutdown() noexcept;
 
+    // Stage 21D.1: high-level denoise entry point. Wraps
+    // the initialize -> set_inputs -> invoke pipeline
+    // behind a single public call so consumers do not
+    // need to manage the three-step sequence themselves.
+    //
+    // Stage 21D.1 ships only the shell: the function
+    // checks `isAvailable()`, runs the Stage 21C.5
+    // `validateDenoiserInputs` precondition check, and
+    // returns the documented "shell only, invoke not yet
+    // wired" status when both succeed. The actual
+    // `optixDenoiserInvoke` wiring lands in subsequent
+    // Stage 21D sub-stages.
+    //
+    // Returns `true` once the full pipeline (validate ->
+    // prepare -> invoke -> synchronise) succeeds; until
+    // then the call always returns `false` with
+    // `last_error()` populated to describe which stage of
+    // the pipeline was reached.
+    //
+    // Pre-conditions (will be enforced via
+    // `validateDenoiserInputs` in Stage 21D.1):
+    // - `isAvailable() == true` (denoiser was initialised
+    //   successfully).
+    // - `inputs.beauty_device`,
+    //   `inputs.albedo_device`, and
+    //   `inputs.normal_device` non-null.
+    // - `output.device` non-null.
+    // - `inputs.width / ::height > 0`.
+    // - `output.width == inputs.width` and
+    //   `output.height == inputs.height`.
+    // - `inputs.beauty_components` in `{3, 4}`.
+    [[nodiscard]] bool denoise(const Inputs& inputs,
+                               const Output& output) noexcept;
+
     [[nodiscard]] bool               is_initialized() const noexcept;
     [[nodiscard]] bool               inputs_set()     const noexcept;
     [[nodiscard]] int                input_width()    const noexcept;

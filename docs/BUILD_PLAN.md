@@ -23910,6 +23910,198 @@ is preserved byte-for-byte.
   clean build; ctest 7/7
   green.
 
+## Stage 21D.1 — denoiser invoke shell
+
+**Scope of this slice (Stage 21D.1;
+master order #24, "Denoising"):
+add a high-level `denoise(Inputs,
+Output)` public method to
+`OptixDenoiser`. Stage 21D.1
+ships only the SHELL: the
+function checks
+`isAvailable()`, runs the
+Stage 21C.5
+`validateDenoiserInputs`
+precondition check (with
+`require_guides=true` since
+the denoiser was init'd with
+`guideAlbedo=1, guideNormal=1`
+at Stage 21B.4), and returns
+the documented "shell only,
+invoke not yet wired" status
+when both succeed. Per the
+user's rules: "do not call
+`optixDenoiserInvoke` yet",
+"must compile". Subsequent
+Stage 21D sub-stages will
+populate the body with the
+real invoke + sync pipeline.**
+
+### What ships
+
+- `src/optix/OptixDenoiser.h`:
+  new public method
+  declaration:
+    ```
+    [[nodiscard]] bool
+    denoise(const Inputs& inputs,
+            const Output& output) noexcept;
+    ```
+  Doc-comment block above the
+  declaration describes the
+  pre-conditions (the same
+  list `validateDenoiserInputs`
+  enforces) and the
+  shell-vs-complete contract.
+- `src/optix/OptixDenoiser.cpp`:
+  three-branch implementation
+  matching the established
+  Stage 21B.4 `initialize`
+  split (outer `ENABLE_OPTIX`
+  + inner `OPTIX_SDK_FOUND`):
+    - **ENABLE_OPTIX +
+      SDK_FOUND**: real shell.
+      Calls `isAvailable()`
+      first; on `false`,
+      populates `last_error_`
+      with the "denoiser is
+      not available" message
+      and returns false. Calls
+      `validateDenoiserInputs`
+      next; on validation
+      failure, populates
+      `last_error_` with
+      `"OptixDenoiser::denoise:
+      "` + the validator's
+      message and returns
+      false. On success,
+      populates `last_error_`
+      with the "Stage 21D.1
+      shell only; invoke not
+      yet wired" message and
+      returns false.
+    - **ENABLE_OPTIX without
+      SDK_FOUND** (audit-host
+      fallback): "requires
+      OptiX SDK..." stub.
+    - **OFF**: "OptiX
+      disabled at build
+      time..." stub.
+- This `BUILD_PLAN.md`
+  slice-closing entry.
+
+### Behaviour matrix
+
+| Build mode               | Pre-conditions met         | `denoise(...)` returns                  |
+|--------------------------|----------------------------|------------------------------------------|
+| OFF                      | n/a                        | `false`; "OptiX disabled at build time" |
+| ON, no SDK (audit host)  | n/a                        | `false`; "requires OptiX SDK..."         |
+| ON, SDK found, init fail | `isAvailable() == false`   | `false`; "denoiser is not available"     |
+| ON, SDK found, init ok,  | validator fails            | `false`; `"OptixDenoiser::denoise: " +`  |
+| invalid inputs           |                            | the validator's error                    |
+| ON, SDK found, init ok,  | validator OK               | `false`; "Stage 21D.1 shell only;        |
+| valid inputs             |                            | invoke not yet wired"                    |
+
+The "ON SDK valid" row is the
+shell case the next sub-stage
+populates with the real invoke
++ sync calls. Once that lands,
+the same row will return
+`true` on success.
+
+### Why call validateDenoiserInputs from denoise()
+
+The Stage 21C.5 validator
+(`validateDenoiserInputs`)
+performs precondition checks
+that go beyond what the
+existing `set_inputs(inputs)`
+validates: it additionally
+checks the output buffer
+(non-null, dimensions match
+inputs). That is exactly the
+contract the eventual
+`optixDenoiserInvoke` call
+needs, so running it here
+gives a single clear
+"validation failed at the
+public entry point" error
+rather than discovering the
+problem mid-pipeline. The
+existing `set_inputs` /
+`invoke` validation paths
+remain in place; calling
+`denoise` does not bypass
+them, just front-loads the
+output-buffer checks before
+the SDK calls would otherwise
+run.
+
+### Backward compatibility
+
+- The class' public surface
+  grows by one method
+  (`denoise`); existing
+  methods' signatures and
+  behaviour are byte-
+  identical with Stage 21C.5.
+- No existing consumer calls
+  `denoise` yet; the
+  `denoise_aov_buffers_to_ppm`
+  helper in `src/main.cpp`
+  still uses the
+  `initialize -> set_inputs
+  -> invoke` trio (which
+  still hits the Stage 19C.3
+  noisy-Beauty fallback path
+  on the audit host because
+  invoke returns false).
+  Migration of the consumer
+  to use `denoise` is a
+  future slice's
+  responsibility.
+- The CUDA renderer is
+  byte-identical (the slice
+  touches only
+  `src/optix/OptixDenoiser.{h,cpp}`).
+
+### What does NOT ship
+
+- No `optixDenoiserInvoke`
+  call (per user rule).
+- No
+  `cudaDeviceSynchronize`
+  call.
+- No
+  `OptixDenoiserParams`
+  construction.
+- No render pipeline / CLI /
+  consumer changes.
+
+### Verified at the build
+
+- `cmake -S . -B build_off
+  -DRR_ENABLE_CUDA=OFF
+  -DRR_ENABLE_OPTIX=OFF`
+  (audit host): clean build;
+  ctest 6/6 green.
+- `cmake -S . -B build_on_audit
+  -DRR_ENABLE_CUDA=OFF
+  -DRR_ENABLE_OPTIX=ON`
+  (audit host, no SDK):
+  clean build; ctest 7/7
+  green. The audit-host
+  fallback stub fires; the
+  real shell branch is
+  compiled out.
+- The SDK-found shell
+  branch (calling
+  `validateDenoiserInputs`)
+  is structurally in place
+  but cannot be empirically
+  verified on this audit
+  host (no `<optix.h>`).
+
 ## Next stage
 
 When prompted, the natural follow-ups are:

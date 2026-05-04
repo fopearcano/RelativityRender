@@ -721,6 +721,51 @@ bool OptixDenoiser::invoke(const Output& /*output*/) noexcept {
     return false;
 }
 
+// Stage 21D.1: high-level denoise entry. Shell only -
+// validates inputs + checks availability + reports the
+// documented "invoke not yet wired" status. Actual
+// `optixDenoiserInvoke` wiring lands in subsequent Stage
+// 21D sub-stages.
+#ifdef RELATIVITYRENDER_OPTIX_SDK_FOUND
+
+bool OptixDenoiser::denoise(const Inputs& inputs,
+                            const Output& output) noexcept {
+    if (!isAvailable()) {
+        last_error_ =
+            "OptixDenoiser::denoise: denoiser is not available; "
+            "call initialize(backend) first.";
+        return false;
+    }
+
+    std::string err;
+    if (!validateDenoiserInputs(inputs, output,
+                                /*require_guides=*/true,
+                                err)) {
+        last_error_ = "OptixDenoiser::denoise: " + err;
+        return false;
+    }
+
+    last_error_ =
+        "OptixDenoiser::denoise: invoke not yet wired (Stage 21D.1 "
+        "shell only; inputs validated, optixDenoiserInvoke wiring "
+        "lands in subsequent Stage 21D sub-stages).";
+    return false;
+}
+
+#else  // RELATIVITYRENDER_OPTIX_SDK_FOUND
+
+bool OptixDenoiser::denoise(const Inputs& /*inputs*/,
+                            const Output& /*output*/) noexcept {
+    last_error_ =
+        "OptixDenoiser::denoise requires the OptiX SDK; "
+        "rebuild with -DRR_ENABLE_OPTIX=ON and pass "
+        "-DOPTIX_ROOT=/path/to/optix-sdk so <optix.h> is "
+        "available. The CUDA path is unaffected.";
+    return false;
+}
+
+#endif  // RELATIVITYRENDER_OPTIX_SDK_FOUND
+
 #else  // RELATIVITYRENDER_ENABLE_OPTIX
 
 // ---- OFF branch: OptiX disabled at build time ---------------------
@@ -746,6 +791,14 @@ bool OptixDenoiser::set_inputs(const Inputs& /*inputs*/) noexcept {
 bool OptixDenoiser::invoke(const Output& /*output*/) noexcept {
     last_error_ =
         "OptixDenoiser::invoke: OptiX disabled at build time. "
+        "Rebuild with -DRR_ENABLE_OPTIX=ON to enable the denoiser.";
+    return false;
+}
+
+bool OptixDenoiser::denoise(const Inputs& /*inputs*/,
+                            const Output& /*output*/) noexcept {
+    last_error_ =
+        "OptixDenoiser::denoise: OptiX disabled at build time. "
         "Rebuild with -DRR_ENABLE_OPTIX=ON to enable the denoiser.";
     return false;
 }
