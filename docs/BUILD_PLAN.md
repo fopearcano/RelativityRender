@@ -24805,6 +24805,250 @@ GPU; the CPU only orchestrated
   host (no CUDA + no
   OptiX SDK).
 
+## Stage 21D.5 — denoiser failure fallback
+
+**Scope of this slice (Stage 21D.5;
+master order #24, "Denoising"):
+extend the Stage 21D.4
+`denoise_and_save_ppm` helper
+with a noisy-Beauty fallback
+path. When `denoiser.denoise()`
+fails (init / set_inputs /
+invoke / sync / download
+errors), the helper now logs
+a single warning line, falls
+back to downloading the noisy
+`inputs.beauty_device` AOV
+verbatim, and saves it under
+the same `out_path` so
+`output/denoised.ppm` always
+exists when the renderer
+succeeded. Per the user's
+rules: "log warning, keep
+original noisy beauty output,
+do not crash". The fallback
+mirrors the Stage 19C.3
+pattern in
+`denoise_aov_buffers_to_ppm`
+(legacy), making the new
+helper's failure semantics
+identical to the legacy one.**
+
+### What ships
+
+- `src/main.cpp`
+  (`denoise_and_save_ppm`
+  body only):
+    - new `save_noisy_fallback`
+      lambda inside the
+      function, captured by
+      reference to `inputs`,
+      `out_path`,
+      `output_floats`. On
+      call:
+        1. Logs
+           `Logger::warning(
+           "denoise: <reason>;
+           falling back to
+           noisy Beauty AOV
+           (no denoising
+           applied)")`.
+        2. Allocates a host
+           `Image` matching
+           the bound Beauty
+           layout (Rgb32F or
+           Rgba32F).
+        3. Downloads
+           `inputs.beauty_device`
+           via
+           `rr::gpu::detail::
+           gpu_copy_device_to_host`
+           (single
+           byte-level
+           D->H copy; no
+           per-pixel host
+           loop).
+        4. Saves through
+           `save_image_or_error`
+           with label
+           `"denoised (noisy
+           fallback)"`.
+        5. Returns
+           `save_image_or_error`'s
+           bool (true on
+           successful save;
+           false only if the
+           fallback download
+           or save themselves
+           fail).
+    - The existing
+      `denoiser.denoise(...)`
+      call now forwards
+      `denoiser.last_error()`
+      to
+      `save_noisy_fallback`
+      on failure instead of
+      logging an error and
+      returning false. The
+      consumer behaviour
+      changes: a denoiser-
+      side failure used to
+      surface as a missing
+      output file; now it
+      surfaces as a noisy
+      output file + a
+      warning log line.
+    - The post-`denoise()`
+      download of the
+      denoised buffer now
+      also forwards to
+      `save_noisy_fallback`
+      on failure (cleaner
+      than the previous
+      Stage 21D.4 "return
+      false" path; the
+      noisy fallback is
+      always available
+      because
+      `inputs.beauty_device`
+      is never freed by
+      the helper).
+- This `BUILD_PLAN.md`
+  slice-closing entry.
+
+### Master rule compliance
+
+- **No crash**: every
+  failure path returns a
+  bool; no exceptions, no
+  `std::terminate`, no
+  abort. The lambda's
+  internal failures
+  (download fail, save
+  fail) return false
+  cleanly without
+  attempting recursive
+  fallback.
+- **No CPU per-pixel
+  work**: the fallback
+  download is a single
+  `gpu_copy_device_to_host`
+  call (under the hood,
+  one `cudaMemcpy`); no
+  per-pixel host loop.
+  The `Image::save_ppm`
+  call inside
+  `save_image_or_error`
+  is the standard
+  serialisation path
+  every other render
+  saver uses.
+- **Renderer not broken
+  by denoiser failure**:
+  per the Stage 21A.7
+  contract, the render is
+  considered successful
+  whenever the upstream
+  AOV pipeline produced
+  Beauty / Albedo / Normal;
+  the denoiser is a
+  post-process and its
+  failure should never
+  propagate as a render
+  failure. The new
+  helper's true return on
+  the noisy-fallback path
+  reflects this exactly.
+
+### Behaviour matrix
+
+| Scenario                        | Outcome                                          |
+|---------------------------------|--------------------------------------------------|
+| denoiser.denoise() succeeds     | denoised PPM saved at `out_path`; `[INFO]` log;  |
+|                                 | helper returns true.                             |
+| denoiser.denoise() fails        | warning log; noisy Beauty AOV downloaded +       |
+|                                 | saved at `out_path` with label                   |
+|                                 | "denoised (noisy fallback)"; helper returns true.|
+| denoise() succeeds, download    | warning log; noisy Beauty AOV downloaded +       |
+| of denoised buffer fails        | saved at `out_path`; helper returns true.        |
+| Fallback download fails         | error log; no image saved; helper returns false. |
+| (e.g. CUDA-D->H disabled)       |                                                  |
+| Fallback save fails (e.g.       | error log from `save_image_or_error`; helper    |
+| disk full, permissions)         | returns false.                                   |
+
+### What does NOT ship
+
+- No CLI surface (the
+  helper is callable but
+  no `--render-*` action
+  is wired through it
+  yet; per the running
+  Stage 21D "no CLI
+  integration yet"
+  cadence).
+- No consumer migration.
+  The legacy
+  `denoise_aov_buffers_to_ppm`
+  (used by
+  `--render-denoise` and
+  `--render-aovs --denoise`)
+  already had its own
+  Stage 19C.3 noisy-
+  Beauty fallback; that
+  path is unchanged.
+
+### Backward compatibility
+
+- The class' public surface
+  is byte-identical with
+  Stage 21D.4 (no header
+  changes; only the
+  helper body in main.cpp
+  grew).
+- The legacy
+  `denoise_aov_buffers_to_ppm`
+  helper and every
+  `--render-*` CLI
+  action are byte-
+  identical with Stage
+  21D.4.
+- The CUDA renderer is
+  byte-identical (the slice
+  touches only
+  `src/main.cpp`'s
+  `denoise_and_save_ppm`
+  body).
+
+### Verified at the build
+
+- `cmake -S . -B build_off
+  -DRR_ENABLE_CUDA=OFF
+  -DRR_ENABLE_OPTIX=OFF`
+  (audit host): clean build;
+  ctest 6/6 green. The
+  helper is gated out (the
+  `#if defined(RR_HAS_CUDA)
+  && defined(RELATIVITYRENDER
+  _ENABLE_OPTIX)` block is
+  skipped).
+- `cmake -S . -B build_on_audit
+  -DRR_ENABLE_CUDA=OFF
+  -DRR_ENABLE_OPTIX=ON`
+  (audit host, no SDK):
+  clean build; ctest 7/7
+  green. The helper is
+  also gated out here
+  (RR_HAS_CUDA is
+  undefined on this
+  host).
+- The SDK-found denoise +
+  fallback paths are
+  structurally in place
+  but cannot be
+  empirically verified on
+  this audit host (no
+  CUDA + no OptiX SDK).
+
 ## Next stage
 
 When prompted, the natural follow-ups are:

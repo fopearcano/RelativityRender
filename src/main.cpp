@@ -3760,9 +3760,41 @@ bool denoise_and_save_ppm(
     output.width  = inputs.width;
     output.height = inputs.height;
 
+    // Stage 21D.5 noisy-Beauty fallback. When the denoiser
+    // fails (init / set_inputs / invoke / sync / download
+    // path inside `denoise()`), download the noisy Beauty
+    // AOV instead and save it under the same `out_path` so
+    // the renderer always produces a file at the documented
+    // location (Stage 21A.7 contract). Logs a single warning
+    // line describing the cause; never crashes; never throws.
+    // The fallback download is a single byte-level
+    // `gpu_copy_device_to_host` (no per-pixel host loop).
+    const auto save_noisy_fallback =
+        [&](const std::string& reason) -> bool {
+        Logger::warning("denoise: " + reason
+                      + "; falling back to noisy Beauty AOV "
+                        "(no denoising applied)");
+
+        rr::image::Image img(inputs.width, inputs.height,
+                             (inputs.beauty_components == 4)
+                                 ? rr::image::PixelFormat::Rgba32F
+                                 : rr::image::PixelFormat::Rgb32F);
+
+        const std::size_t bytes = output_floats * sizeof(float);
+        if (!rr::gpu::detail::gpu_copy_device_to_host(
+                img.data(), inputs.beauty_device, bytes)) {
+            Logger::error("denoise: noisy-fallback download failed; "
+                          "no image saved");
+            return false;
+        }
+
+        return save_image_or_error(img, out_path,
+                                   "denoised (noisy fallback)",
+                                   inputs.width, inputs.height);
+    };
+
     if (!denoiser.denoise(inputs, output)) {
-        Logger::error("denoise_and_save_ppm: " + denoiser.last_error());
-        return false;
+        return save_noisy_fallback(denoiser.last_error());
     }
 
     // Download the denoised radiance into a host-side Image.
@@ -3775,9 +3807,8 @@ bool denoise_and_save_ppm(
                              ? rr::image::PixelFormat::Rgba32F
                              : rr::image::PixelFormat::Rgb32F);
     if (!output_buf.download(img.data(), output_floats)) {
-        Logger::error("denoise_and_save_ppm: failed to download "
-                      "denoised output buffer to host.");
-        return false;
+        return save_noisy_fallback(
+            "failed to download denoised output buffer to host");
     }
 
     return save_image_or_error(img, out_path, "denoised",
