@@ -3915,6 +3915,75 @@ bool denoise_and_save_ppm(
     return save_image_or_error(img, out_path, "denoised",
                                inputs.width, inputs.height);
 }
+
+// OptiX Gap A Step 3.2: orchestration-helper SHELL.
+// Per `docs/OPTIX_GAP_A_STEP_3_TASK.md` §1-§5 the final
+// helper will sequence three calls
+// (`OptixRenderer::render_aovs_retain` -> build
+// `OptixDenoiser::Inputs` -> `denoise_and_save_ppm`) so the
+// retained device buffers stay alive across the denoise
+// invocation (Gap A's whole point). Step 3.2 ships only the
+// SHELL: input validation + entry log + a documented "not
+// ready" return. The actual `render_aovs_retain` /
+// `denoise_and_save_ppm` calls land in Step 3.3 per the
+// task doc's §3.
+//
+// Per the user's Step 3.2 rules: this shell does NOT call
+// the OptiX renderer or the denoiser. It validates the
+// pre-conditions documented in the task doc's §4 (the
+// caller's basic input contract) so the next slice's body
+// can rely on them, and it returns `false` so any (future)
+// CLI consumer that calls the shell behaves as if the
+// orchestration is unavailable.
+bool render_optix_aovs_and_denoise_to_ppm(
+        rr::optix::OptixDenoiser&                denoiser,
+        const rr::scene::Scene&                  scene,
+        const std::vector<rr::lighting::Light>&  lights,
+        int                                       width,
+        int                                       height,
+        const std::string&                       out_path
+            = std::string("output/optix_aovs_denoised.ppm")) {
+    using rr::core::Logger;
+    (void)lights;
+    (void)out_path;
+
+    Logger::info("optix-aovs-denoise: helper entered (Stage 3.2 shell)");
+
+    if (!denoiser.isAvailable()) {
+        Logger::error(
+            "optix-aovs-denoise: denoiser is not available; "
+            "call OptixDenoiser::initialize(backend) before "
+            "invoking the helper.");
+        return false;
+    }
+    if (width <= 0 || height <= 0) {
+        Logger::error(
+            "optix-aovs-denoise: invalid dimensions ("
+          + std::to_string(width) + "x"
+          + std::to_string(height) + ").");
+        return false;
+    }
+    bool has_visible_mesh = false;
+    for (const auto& sm : scene.meshes) {
+        if (sm.object.visible && !sm.geometry.empty()) {
+            has_visible_mesh = true;
+            break;
+        }
+    }
+    if (!has_visible_mesh) {
+        Logger::error(
+            "optix-aovs-denoise: scene contains no visible "
+            "non-empty mesh.");
+        return false;
+    }
+
+    Logger::error(
+        "optix-aovs-denoise: helper not ready (Stage 3.2 "
+        "shell only; the full render_aovs_retain -> "
+        "denoise_and_save_ppm sequence lands in Step 3.3 "
+        "per docs/OPTIX_GAP_A_STEP_3_TASK.md).");
+    return false;
+}
 #endif  // RR_HAS_CUDA && RELATIVITYRENDER_ENABLE_OPTIX
 
 // `--render-denoise` dispatch (Stage 19B.3). Builds a small

@@ -28731,6 +28731,223 @@ identical).**
   a CUDA + OptiX-SDK host
   run.
 
+## OptiX Gap A polish — Step 3.2 (helper shell)
+
+**Scope of this slice
+(post-Gap-A2.7 audit
+recommendation): add the
+SHELL of the orchestration
+helper
+`render_optix_aovs_and_denoise_to_ppm`
+in `src/main.cpp` per
+`docs/OPTIX_GAP_A_STEP_3_TASK.md`.
+Per the user's "do not call
+OptiX renderer / do not call
+denoiser" rules: the shell
+validates the documented
+pre-conditions
+(denoiser availability,
+positive dimensions, scene
+has at least one visible
+non-empty mesh), logs entry,
+and returns `false` with the
+documented "not ready"
+message. The full
+`render_aovs_retain` ->
+`denoise_and_save_ppm`
+sequence lands in Step 3.3.**
+
+### What ships
+
+- `src/main.cpp`: new free
+  function
+  `render_optix_aovs_and_denoise_to_ppm(
+  denoiser, scene, lights,
+  width, height, out_path)`
+  inserted right before the
+  closing `#endif // RR_HAS_CUDA
+  && RELATIVITYRENDER_ENABLE_OPTIX`
+  of the existing helper
+  block (so it shares the
+  exact same gating envelope
+  as
+  `denoise_aov_buffers_to_ppm`
+  and `denoise_and_save_ppm`).
+  Body:
+    1. `Logger::info(
+       "optix-aovs-denoise:
+       helper entered (Stage
+       3.2 shell)")` — log
+       entry per the user's
+       rule.
+    2. Validate
+       `denoiser.isAvailable()`;
+       on false: log the
+       documented
+       "denoiser is not
+       available; call
+       OptixDenoiser::initialize"
+       error + return false.
+    3. Validate `width > 0`
+       AND `height > 0`; on
+       failure: log the
+       documented
+       "invalid dimensions
+       (WxH)" error +
+       return false.
+    4. Walk
+       `scene.meshes`,
+       require at least one
+       `sm.object.visible &&
+       !sm.geometry.empty()`;
+       on failure: log
+       "scene contains no
+       visible non-empty
+       mesh" error +
+       return false.
+    5. Log + return false
+       with the documented
+       "Stage 3.2 shell
+       only; the full
+       render_aovs_retain ->
+       denoise_and_save_ppm
+       sequence lands in
+       Step 3.3 per
+       docs/OPTIX_GAP_A_STEP_3_TASK.md"
+       message.
+- This `BUILD_PLAN.md`
+  slice-closing entry.
+
+### What does NOT change
+
+- `OptixRenderer::render_aovs_retain`
+  (Step 2 SDK_FOUND body):
+  byte-identical.
+- `denoise_and_save_ppm`
+  (Stage 21D.4 + 21D.5):
+  byte-identical.
+- `denoise_aov_buffers_to_ppm`
+  (Stage 19B.4): byte-
+  identical.
+- Every existing CLI
+  surface byte-identical
+  (no consumer / dispatcher
+  wiring; the new shell is
+  callable but no CLI
+  reaches it yet — that is
+  Step 3.3 + Step 4
+  territory).
+- `OptixDenoiser`,
+  `OptixRenderer`, the
+  CUDA path, all `tests/`,
+  `CMakeLists.txt`: all
+  byte-identical (only
+  `src/main.cpp` was
+  touched in this slice).
+
+### Behaviour matrix
+
+| Invocation                                  | Outcome                                  |
+|---------------------------------------------|------------------------------------------|
+| `denoiser.isAvailable() == false`           | log "denoiser is not available" +        |
+|                                             | return false                             |
+| `width <= 0` OR `height <= 0`               | log "invalid dimensions (WxH)" +         |
+|                                             | return false                             |
+| Scene has no visible non-empty mesh         | log "scene contains no visible non-empty |
+|                                             | mesh" + return false                     |
+| All pre-conditions OK                       | log entry + log "Stage 3.2 shell only"   |
+|                                             | + return false                           |
+
+NO call to
+`render_aovs_retain` or
+`denoise_and_save_ppm` /
+`OptixDenoiser::denoise` in
+ANY path. Per the user's
+"do not call OptiX renderer
+/ do not call denoiser"
+rules.
+
+### Master rule compliance
+
+- **Do not call OptiX
+  renderer yet**: the new
+  shell does not reference
+  `OptixRenderer::*`.
+- **Do not call denoiser
+  yet**: the shell only
+  reads `denoiser.isAvailable()`
+  (a status query, not a
+  denoise call); no
+  `denoiser.denoise(...)`,
+  no
+  `denoiser.set_inputs(...)`,
+  no
+  `denoiser.invoke(...)`,
+  no
+  `denoise_and_save_ppm(...)`.
+- **Keep CUDA path
+  unchanged**: `git diff`
+  over `src/cuda/`,
+  `src/renderer/`,
+  `src/pathtracer/` shows
+  zero bytes changed.
+- **Keep OptiX OFF build
+  working**: ctest 6/6
+  green on the audit host
+  with `RR_ENABLE_OPTIX=OFF`.
+  The new shell is gated
+  by `#if defined(RR_HAS_CUDA)
+  && defined(RELATIVITYRENDER_ENABLE_OPTIX)`
+  so the OFF build does
+  not see it.
+- **Update BUILD_PLAN**:
+  this entry, per master
+  rule 8.
+
+### Backward compatibility
+
+- The new symbol is
+  callable but no caller
+  exists yet; it does not
+  affect any CLI surface
+  or test until Step 4
+  wires it through a
+  dispatcher.
+- Build configurations
+  (OFF, ON-audit-host,
+  CUDA + OptiX-SDK host)
+  all produce the same
+  ctest baselines they
+  did pre-Step-3.2.
+
+### Verified at the build
+
+- `cmake -S . -B build_off
+  -DRR_ENABLE_CUDA=OFF
+  -DRR_ENABLE_OPTIX=OFF`
+  (audit host): clean
+  build; ctest 6/6 green.
+- `cmake -S . -B build_on_audit
+  -DRR_ENABLE_CUDA=OFF
+  -DRR_ENABLE_OPTIX=ON`
+  (audit host, no SDK):
+  clean build; ctest 7/7
+  green. The new shell
+  compiles cleanly inside
+  the existing
+  `RR_HAS_CUDA && ENABLE_OPTIX`
+  gate when CUDA is
+  present (it is NOT in
+  this audit-host config
+  since `RR_HAS_CUDA` is
+  undefined here, so the
+  shell is not compiled —
+  same shape as the
+  existing `denoise_and_save_ppm`
+  helper; structural
+  verification deferred
+  to a CUDA host).
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
