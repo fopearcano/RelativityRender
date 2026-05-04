@@ -278,8 +278,8 @@ def base_commands() -> list[Command]:
     around it. CUDA-H.4 added the four core CUDA render
     commands per ``docs/CUDA_HOST_VERIFICATION_PLAN.md`` §3.1
     -- §3.4. CUDA-H.5 added the scene-render + texture
-    commands per §3.5 -- §3.6. CUDA-H.6 adds the AOV pass
-    per §3.7:
+    commands per §3.5 -- §3.6. CUDA-H.6 added the AOV pass
+    per §3.7. CUDA-H.7 adds the CUDA path tracer per §3.8:
 
     - ``--render-gradient``               -> ``output/gpu_gradient.ppm``
     - ``--render-rays``                   -> ``output/gpu_camera_rays.ppm``
@@ -297,12 +297,16 @@ def base_commands() -> list[Command]:
     - ``--render-aovs``                   -> six PPMs in one
       invocation (``output/aov_{beauty,normal,depth,albedo,
       doppler,searchlight}.ppm``).
+    - ``--render-pathtrace``              -> two PPMs in one
+      invocation (``output/pathtrace_spp_1.ppm`` +
+      ``output/pathtrace_spp_16.ppm``). CUDA path tracer; no
+      OptiX requirement; no denoiser.
 
     Each entry carries the expected output paths in
     ``Command.expected_outputs``; the runner verifies file
     existence + ``size > 0`` after the command completes
     (CUDA-H.4 contract). Future CUDA-H.x slices add the
-    pathtrace + OptiX commands.
+    OptiX commands.
     """
 
     return [
@@ -366,6 +370,21 @@ def base_commands() -> list[Command]:
                 Path("output/aov_albedo.ppm"),
                 Path("output/aov_doppler.ppm"),
                 Path("output/aov_searchlight.ppm"),
+            ],
+        ),
+        Command(
+            name="render-pathtrace",
+            # `--render-pathtrace` requires a scene-file
+            # argument (per src/core/CommandLine.cpp); pass the
+            # standard multi-light fixture scene the CUDA path
+            # tracer was authored against.
+            argv=[
+                "--render-pathtrace",
+                "scenes/test_full_scene.rrscene",
+            ],
+            expected_outputs=[
+                Path("output/pathtrace_spp_1.ppm"),
+                Path("output/pathtrace_spp_16.ppm"),
             ],
         ),
     ]

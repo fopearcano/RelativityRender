@@ -27551,6 +27551,241 @@ commands failed.
   CUDA_HOST_VERIFICATION_PLAN
   formalises.
 
+## CUDA-H.7 — path tracing checks
+
+**Scope of this slice
+(post-CUDA-H.6 AOV checks):
+extend the runner's
+`base_commands()` catalogue
+with the CUDA path tracer per
+`docs/CUDA_HOST_VERIFICATION_PLAN.md`
+§3.8. Single CLI invocation
+(`--render-pathtrace
+<scene>`) produces both spp
+variants in one launch; the
+existing CUDA-H.4 file-check
+infrastructure verifies both
+PPMs via the entry's
+`expected_outputs` list. NO
+denoiser; NO OptiX
+requirement (the CUDA-side
+`run_render_pathtrace`
+dispatcher handles the
+launch). NO renderer
+modification; only the
+runner's command catalogue
+grows.**
+
+### What ships
+
+- `tools/verify_cuda_host.py`
+  (`base_commands()` body
+  only):
+    - new `render-pathtrace`
+      command:
+      `--render-pathtrace
+      scenes/test_full_scene.rrscene`.
+      Expected outputs:
+        - `output/pathtrace_spp_1.ppm`
+        - `output/pathtrace_spp_16.ppm`
+- `docs/CUDA_HOST_VERIFICATION_PLAN.md`
+  §3.8 corrected: the
+  original CUDA-H.1 spec
+  omitted the required
+  scene-file argument; the
+  plan now matches the
+  binary's actual CLI
+  contract
+  (`--render-pathtrace
+  <file>`) per
+  `src/core/CommandLine.cpp`
+  + `run_render_pathtrace`
+  in `src/main.cpp`. A note
+  in the plan explains this
+  was a CUDA-H.1 bug
+  corrected during CUDA-H.7
+  via the smoke that
+  exposed the rc=2 "requires
+  a file path" failure.
+- `base_commands()` now
+  returns 10 entries
+  (CUDA-H.4 + H.5 + H.6's
+  9 + H.7's 1); the runner's
+  per-command timeout +
+  file-check infrastructure
+  applies unchanged.
+- This `BUILD_PLAN.md`
+  slice-closing entry.
+
+### Smoke results (audit host, no CUDA)
+
+```
+$ python3 tools/verify_cuda_host.py --skip-build \
+      --build-dir build_off
+build   : skipped (--skip-build)
+binary  : build_off/bin/RelativityRender
+commands: 10
+  [OK]   device-info (0.00s)
+  [FAIL] render-gradient (0.00s)
+  [FAIL] render-camera-rays (0.00s)
+  [FAIL] render-sphere (0.00s)
+  [FAIL] render-relativistic (0.00s)
+  [FAIL] render-scene-spheres (0.00s)
+  [FAIL] render-texture-sample-test (0.00s)
+  [FAIL] render-textured-material (0.00s)
+  [FAIL] render-aovs (0.00s)
+  [FAIL] render-pathtrace (0.05s)
+totals: 9 fail, 1 pass
+
+device-info analysis:
+  cuda_device_present : False
+  no_critical_errors  : True
+exit=1
+```
+
+The new `render-pathtrace`
+row reaches the dispatcher
+(load + RR_HAS_CUDA gate),
+loads the scene file
+successfully (the audit
+host has the .rrscene
+parser; ~50ms for the
+load), then hits the
+documented
+"--render-pathtrace
+requires CUDA" error from
+`run_render_pathtrace`'s
+`#ifndef RR_HAS_CUDA`
+branch. Returncode 1 (was
+returncode 2 before the
+scene-file fix); no hangs;
+no timeout fires.
+
+### CUDA-H.1 bug found + fixed
+
+The original CUDA-H.1 spec
+listed the pathtrace command
+as `--render-pathtrace`
+(no arguments). The binary's
+parser actually requires
+`--render-pathtrace <file>`
+(see
+`src/core/CommandLine.cpp:167`
++ the dispatcher's "requires
+a file path" early-out at
+`run_render_pathtrace`'s
+top). The first CUDA-H.7
+smoke exposed this as
+rc=2 instead of the
+expected rc=1; the runner
+was updated to pass
+`scenes/test_full_scene.rrscene`,
+and the plan was corrected
+to match. A note in the
+plan flags the change so
+future readers don't
+assume the binary's
+behaviour changed.
+
+This is exactly the kind
+of contract drift the
+verification plan was
+designed to surface; the
+runner caught it before
+any CUDA-host operator
+ran the documented
+command and got a
+confusing "requires a
+file path" error.
+
+### Master rule compliance
+
+- **No renderer
+  modification**: only the
+  runner's
+  `base_commands()` body +
+  the verification plan §3.8
+  doc + this BUILD_PLAN
+  entry touched. No `src/`
+  modification.
+- **No denoiser**: the new
+  command does NOT pass
+  `--denoise`; the CUDA
+  path tracer runs
+  unmodified.
+- **No OptiX requirement**:
+  the new command uses
+  `--render-pathtrace`
+  (CUDA path), NOT
+  `--render-optix-pathtrace`.
+  The runner's CUDA-host
+  smoke does not require
+  the OptiX SDK.
+- **Use existing CLI
+  only**: `--render-pathtrace`
+  was wired in Stage
+  11C; the runner treats
+  it as black-box.
+- **Respect timeouts**:
+  the existing CUDA-H.3
+  per-command timeout
+  honours the new
+  command.
+
+### Backward compatibility
+
+- The runner's argparse
+  surface is byte-
+  identical with CUDA-H.6.
+- All prior CUDA-H.x
+  command entries are
+  byte-identical with
+  their prior shape; only
+  one new entry appended.
+- The `CUDA_HOST_VERIFICATION_PLAN.md`
+  §3.8 update is a
+  bug-fix (CLI now
+  matches binary
+  contract); the surrounding
+  sections + PASS/REPAIR
+  criteria are unchanged.
+- The existing OFF +
+  ON-audit-host ctest
+  baselines (6/6 + 7/7)
+  are unchanged because
+  no C++ source was
+  modified.
+
+### Verified at the build
+
+- `python3 -c "import ast;
+  ast.parse(open('tools/
+  verify_cuda_host.py').read())"`:
+  syntax check passes.
+- `--skip-build` smoke on
+  the OFF build (above)
+  exits 1 with 9 fail +
+  1 pass; rc=1 (correct)
+  for `render-pathtrace`
+  after the scene-file
+  fix; no hangs.
+- The actual CUDA-host
+  smoke (10 commands all
+  pass with all PPMs > 0
+  bytes; both spp PPMs
+  produced in one
+  `--render-pathtrace
+  <scene>` invocation) is
+  structurally in place
+  but cannot be
+  empirically verified on
+  this audit host (no
+  nvcc) — exactly the
+  runtime-deferred
+  posture the
+  CUDA_HOST_VERIFICATION_PLAN
+  formalises.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:

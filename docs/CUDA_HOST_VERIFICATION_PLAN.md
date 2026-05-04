@@ -229,8 +229,13 @@ backward-cone dim).
 ### 3.8 Pathtrace (spp 1, spp 16)
 
 ```
-build/bin/RelativityRender --render-pathtrace
+build/bin/RelativityRender --render-pathtrace \
+    scenes/test_full_scene.rrscene
 ```
+
+Note: `--render-pathtrace` requires a scene-file argument
+(per `src/core/CommandLine.cpp`; the original CUDA-H.1
+spec omitted this and was corrected during CUDA-H.7).
 
 Expected files (the dispatcher writes both spp variants
 in one invocation):
