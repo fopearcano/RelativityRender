@@ -31835,6 +31835,253 @@ NO kernel touches.**
   plan resolves to
   the cited file.
 
+## PT-P.2 — path-tracer polish step 1 task (docs only)
+
+**Scope of this slice
+(post-PT-P.1 plan
+complete): produce the
+fully-self-contained
+task definition for
+the first PT-P.x
+implementation slice.
+Mirrors the
+GAP-A2.x
+("Identify Step 2 ...
+PASS Criteria")
+cadence applied
+during the OptiX Gap
+A polish arc, and the
+TEX-P.x cadence (a
+plan slice followed
+by a task slice
+followed by an
+implementation
+slice). NO source
+changes; NO new CLI
+flags; NO kernel
+touches.**
+
+### What ships
+
+- `docs/PATH_TRACER_POLISH_STEP_1_TASK.md`
+  (NEW). Five
+  sections:
+    - **§1 Exact
+      first polish
+      item.** Names
+      the task
+      "Accumulation
+      reset
+      correctness",
+      points to
+      `PATH_TRACER_POLISH_PLAN.md`
+      §4.2 + §5 as
+      the source,
+      and breaks the
+      task into three
+      concrete
+      sub-changes:
+      §1.1 doc-only
+      ordering note
+      on
+      `AccumulationBuffer::reset()`,
+      §1.2 no-op
+      fast path on
+      `resize()`, and
+      §1.3 a new
+      `resize(64,64)`
+      twice test.
+      Doc-only choice
+      (a) is
+      explicitly
+      recommended for
+      §1.1 because
+      the existing
+      ordering is
+      already correct
+      and changing
+      it risks a
+      subtle
+      regression
+      contrary to
+      the polish's
+      purpose.
+    - **§2 Files
+      likely
+      involved.** A
+      five-row table
+      listing the
+      minimum set:
+      `src/renderer/AccumulationBuffer.cpp`
+      (the only
+      source file),
+      a new or
+      extended test
+      file, the
+      `CMakeLists.txt`
+      addition only
+      if the
+      implementer
+      picks the
+      new-ctest-
+      binary path,
+      and the
+      slice-closing
+      `docs/BUILD_PLAN.md`
+      entry.
+    - **§3 What
+      must not be
+      touched.** Six
+      sub-sections of
+      explicit
+      no-touch
+      invariants:
+      kernel /
+      launcher code
+      (CUDA + OptiX),
+      every existing
+      path-tracer
+      PPM output
+      (byte-identical
+      pixel data),
+      the CLI
+      surface,
+      `PathTraceConfig`
+      (no new
+      fields), the
+      `AccumulationBuffer`
+      public API,
+      and other
+      audits / plans
+      (no edits to
+      Stage 11 audit,
+      Stage 20 OptiX
+      audit, or
+      CUDA-host
+      verification
+      audit).
+    - **§4 PASS
+      criteria.**
+      Seven concrete
+      gates: build
+      green on both
+      audit-host
+      configs, ctest
+      green (with
+      the new test),
+      source-diff
+      size cap (~6
+      net new lines
+      in
+      AccumulationBuffer.cpp;
+      ~15 in tests/),
+      no-touch
+      invariants
+      enforceable
+      by `git diff`,
+      audit-host
+      behavioural
+      smoke (the
+      `--render-
+      pathtrace`
+      "requires CUDA"
+      fallback +
+      the TEX-P.6
+      fixture's
+      three-case
+      logs both
+      remain
+      byte-identical),
+      a slice-closing
+      `BUILD_PLAN.md`
+      entry that
+      references this
+      task file +
+      §4.2 of the
+      plan, and
+      master rule
+      compliance.
+    - **§5 Out-of-
+      scope.**
+      Explicitly
+      defers
+      PATH_TRACER_POLISH_PLAN.md
+      §4.{1,3,4,5,6,7}
+      to their own
+      future task
+      definitions.
+- This `BUILD_PLAN.md`
+  slice-closing entry.
+
+### What does NOT change
+
+- All PT-P.1
+  artefacts:
+  byte-identical
+  (`PATH_TRACER_POLISH_PLAN.md`
+  is unchanged;
+  this slice only
+  ADDS the task
+  doc).
+- Every path-tracer
+  source file:
+  byte-identical.
+- Build configs:
+  byte-identical.
+  ctest remains 6/6
+  OFF and 7/7 ON-
+  audit-host with
+  no rebuild
+  needed.
+- The TEX-P.x +
+  CUDA-H.x +
+  OptiX Gap A
+  polish arcs:
+  untouched.
+  PT-P.x continues
+  in parallel.
+
+### Master rule compliance
+
+- **Build
+  incrementally /
+  every step
+  compilable**:
+  docs-only slice;
+  build is
+  trivially
+  preserved.
+- **Update
+  BUILD_PLAN**:
+  this entry, per
+  master rule 8.
+
+### Verified at the build
+
+- `cmake --build
+  build` + `cmake
+  --build build-ON`
+  were already green
+  at the end of
+  PT-P.1 and remain
+  green; PT-P.2
+  changed no
+  build-relevant
+  files. ctest 6/6
+  OFF and 7/7 ON
+  re-confirmed with
+  no work needed.
+- Cross-checked the
+  task doc's source
+  citations against
+  `src/renderer/AccumulationBuffer.{h,cpp}`;
+  the verbatim
+  `reset()` body
+  quoted in §1.1 of
+  the task matches
+  the current source
+  byte-for-byte.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
