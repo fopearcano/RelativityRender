@@ -31379,6 +31379,229 @@ flag.**
   scenes regression-
   free).
 
+## TEX-P.7 — texture polish audit (docs only)
+
+**Scope of this slice
+(post-TEX-P.6 fixture
+landed): write the
+end-of-arc audit at
+`docs/TEXTURE_POLISH_AUDIT.md`
+that walks the seven
+prompt checks and
+records each as PASS /
+REPAIR / DEFERRED.
+Documentation only;
+zero source changes;
+zero build effect.**
+
+### What ships
+
+- `docs/TEXTURE_POLISH_AUDIT.md`
+  (NEW). Sections:
+    - **§0 Method.**
+      Records the
+      auditor (Claude
+      Code, audit host)
+      and the verdict
+      legend (PASS /
+      REPAIR / DEFERRED).
+    - **§1 Texture ID
+      validation.**
+      Verifies
+      `validate_material_texture_ids`
+      exists at
+      `src/scene/Scene.h:173`
+      / `Scene.cpp:21`
+      and is wired into
+      both
+      `run_render_optix_textured_material`
+      (TEX-P.2) and
+      `run_scene_info`
+      (TEX-P.6). Verdict
+      PASS.
+    - **§2 GPU invalid
+      texture fallback.**
+      Verifies
+      `kInvalidTextureFallback`
+      constant +
+      six-class defended
+      input matrix in
+      `sampleTextureNearest`.
+      Verdict DEFERRED on
+      runtime, PASS on
+      source contract
+      (audit host
+      type-checks via
+      transitive include
+      from
+      `tests/optix_tests.cpp`).
+    - **§3 UV policy.**
+      Confirms
+      clamp-to-edge is
+      committed in
+      `docs/TEXTURE_SYSTEM.md`
+      §1, that the
+      sampler header
+      points to it, and
+      that single-source
+      enforcement (one
+      `RR_HD inline`
+      helper) means both
+      backends inherit
+      it automatically.
+      Verdict PASS.
+    - **§4 Material
+      texture flag
+      validation.**
+      Verifies the three
+      cases are
+      enumerated in the
+      validator
+      (`Scene.cpp:30-44`),
+      its doc-comment
+      (`Scene.h:120-171`),
+      both kernel-side
+      gates
+      (`CudaTestKernel.cu`,
+      `OptixPrograms.cu`),
+      and the operator-
+      facing doc
+      (`TEXTURE_SYSTEM.md`
+      §2). Verdict PASS.
+    - **§5 Texture test
+      scene.** Verifies
+      the fixture, the
+      loader extension,
+      and the format-doc
+      updates. Tabulates
+      the four
+      materials' flag /
+      id values and the
+      expected case
+      assignment.
+      Verdict PASS.
+    - **§6 CPU texture
+      sampling
+      violations.** A
+      `grep -rn
+      'sampleTextureNearest('`
+      sweep finds three
+      actual call sites
+      (all `.cu` files;
+      CUDA / OptiX
+      kernels) and seven
+      doc / header
+      mentions (zero
+      `.cpp` callers).
+      Verdict PASS — zero
+      violations.
+    - **§7 Runtime
+      validation
+      status.** Per-slice
+      table mapping
+      TEX-P.{1..6} to
+      audit-host status
+      and CUDA-host
+      status. Two
+      DEFERRED rows
+      (NaN-UV, unknown-
+      format-byte
+      defences) require
+      a CUDA host;
+      everything else
+      is PASS.
+    - **§8 Summary
+      verdict + next
+      step.** Recommends
+      a future
+      CUDA-host
+      verification
+      run for the two
+      `DEFERRED`
+      runtime
+      guarantees.
+- This `BUILD_PLAN.md`
+  slice-closing entry.
+
+### What does NOT change
+
+- All TEX-P.{1..6}
+  source artefacts:
+  byte-identical
+  (TEX-P.7 is a
+  documentation
+  audit; it touches
+  no `.cu`, `.cpp`,
+  `.h`, `.cuh`,
+  `.rrscene`, or
+  `cmake` file).
+- Build configs: byte-
+  identical. ctest
+  remains 6/6 OFF and
+  7/7 ON-audit-host
+  with no rebuild
+  needed (the new
+  doc is not part of
+  any build target).
+- All other docs:
+  TEX-P.7 only ADDS
+  `TEXTURE_POLISH_AUDIT.md`;
+  no edits to
+  `TEXTURE_SYSTEM.md`,
+  `RRSCENE_FORMAT.md`,
+  or
+  `TEXTURE_POLISH_PLAN.md`.
+
+### Master rule compliance
+
+- **Build
+  incrementally /
+  every step
+  compilable**: docs-
+  only slice, build is
+  trivially preserved.
+- **No CPU per-pixel
+  work**: §6 of the
+  audit doc actively
+  verifies this rule
+  is upheld.
+- **Update
+  BUILD_PLAN**: this
+  entry, per master
+  rule 8.
+
+### Verified at the build
+
+- `cmake --build build`
+  + `cmake --build
+  build-ON` were
+  already green at the
+  end of TEX-P.6 and
+  remain green;
+  TEX-P.7 changed no
+  build-relevant
+  files. ctest 6/6
+  OFF and 7/7 ON
+  re-confirmed with
+  no work needed.
+- The audit-host
+  smoke
+  `./build/bin/RelativityRender
+  --scene-info
+  scenes/test_textured_material.rrscene`
+  was re-run as
+  preparation for
+  the audit and
+  produced the
+  expected log
+  sequence (1 Case 1
+  info + 2 Case 3
+  warnings;
+  `fixups applied: 2`).
+  Recorded under §1
+  / §4 / §5 / §7 of
+  the audit doc.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
