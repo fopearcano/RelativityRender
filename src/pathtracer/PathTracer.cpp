@@ -29,6 +29,24 @@ PathTraceResult PathTracer::render(const rr::gpu::GpuScene& scene,
         result.message = "samples_per_pixel must be > 0";
         return result;
     }
+    // PT-P.9 soft upper cap. Callers asking for absurdly large
+    // spp budgets get a single warning + clamp to
+    // `kSamplesPerPixelCap` rather than a launcher loop that
+    // issues that many kernel launches. Mirrors the PT-P.6
+    // max-bounces clamp shape. Behaviour for
+    // `samples_per_pixel in [1, kSamplesPerPixelCap]` is
+    // byte-identical with the pre-PT-P.9 path tracer.
+    int effective_samples_per_pixel = cfg.samples_per_pixel;
+    if (effective_samples_per_pixel > kSamplesPerPixelCap) {
+        rr::core::Logger::warning(
+            "PathTraceConfig::samples_per_pixel=" +
+            std::to_string(cfg.samples_per_pixel) +
+            " exceeds the recommended cap of " +
+            std::to_string(kSamplesPerPixelCap) +
+            "; clamping. Set explicitly via the dispatcher CLI "
+            "when very long sample budgets are needed.");
+        effective_samples_per_pixel = kSamplesPerPixelCap;
+    }
     if (cfg.max_bounces < 0) {
         result.message = "max_bounces must be >= 0";
         return result;
@@ -94,7 +112,7 @@ PathTraceResult PathTracer::render(const rr::gpu::GpuScene& scene,
     // boundary rather than per-pixel work.
     rr::gpu::GpuTimer timer;
     timer.start();
-    for (int s = 0; s < cfg.samples_per_pixel; ++s) {
+    for (int s = 0; s < effective_samples_per_pixel; ++s) {
         if (!rr::cuda::launch_pathtrace_sample(
                 sample.device_ptr(), width, height,
                 scene,

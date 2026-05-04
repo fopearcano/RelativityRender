@@ -34402,6 +34402,518 @@ touches.**
   byte-for-byte
   post-PT-P.6.
 
+## PT-P.9 — sample-count cap (impl)
+
+**Scope of this slice
+(post-PT-P.8 task
+definition complete):
+ship the third
+`PATH_TRACER_POLISH_PLAN.md`
+implementation slice
+exactly as specified
+by
+`docs/PATH_TRACER_POLISH_SAMPLE_COUNT_CAP_TASK.md`
+— a soft upper cap on
+`PathTraceConfig::samples_per_pixel`
+with a
+`Logger::warning` +
+clamp shape mirroring
+PT-P.6's
+`max_bounces`
+treatment. NO kernel
+touches; NO new CLI
+flags; byte-identical
+for every caller
+passing
+`samples_per_pixel in
+[1,
+kSamplesPerPixelCap]`.**
+
+### What ships
+
+- `src/pathtracer/PathTracer.h`
+  (modified):
+    - **New
+      `inline constexpr
+      int
+      kSamplesPerPixelCap
+      = 4096`** added
+      directly below
+      the existing
+      `kMaxBouncesCap
+      = 32` constant
+      (PT-P.6). The
+      doc-comment
+      describes the
+      cap as a
+      SUGGESTION (4096
+      samples produce
+      a substantially
+      deeper
+      integration than
+      the default 16;
+      the cap exists
+      primarily to
+      catch typos at
+      scene-authoring
+      time, e.g. a
+      fat-finger error
+      of 10000
+      instead of
+      1000) and notes
+      that the two
+      constants live
+      as a pair so
+      future readers
+      see them
+      together.
+- `src/pathtracer/PathTracer.cpp`
+  (modified):
+    - **PT-P.9 warn-
+      and-clamp branch**
+      inserted between
+      the existing
+      `cfg.samples_per_pixel
+      <= 0` rejection
+      (lines 28-31) and
+      the `cfg.max_bounces
+      < 0` rejection
+      (the PT-P.6
+      block remains
+      below the new
+      one, byte-
+      identical).
+      Shape:
+        - Initialise
+          `int
+          effective_samples_per_pixel
+          =
+          cfg.samples_per_pixel;`.
+        - When
+          `effective_samples_per_pixel
+          >
+          kSamplesPerPixelCap`,
+          emit a single
+          `Logger::warning`
+          line naming
+          the authored
+          value, the
+          cap, and the
+          rationale
+          ("clamping. Set
+          explicitly via
+          the dispatcher
+          CLI when very
+          long sample
+          budgets are
+          needed."). Then
+          assign
+          `effective_samples_per_pixel
+          =
+          kSamplesPerPixelCap;`.
+        - The original
+          `cfg.samples_per_pixel`
+          field is
+          PRESERVED (not
+          mutated); the
+          clamped local
+          shadows it for
+          the launcher
+          loop, mirroring
+          PT-P.6's
+          `effective_max_bounces`
+          shape.
+    - **Use-site
+      replacement**
+      at the host
+      launcher loop's
+      bound (was
+      line 97; the
+      PT-P.9 insertion
+      pushes it down
+      a few lines):
+      `for (int s =
+      0; s <
+      cfg.samples_per_pixel;
+      ++s)` becomes
+      `for (int s =
+      0; s <
+      effective_samples_per_pixel;
+      ++s)`. All other
+      `cfg.*` reads
+      in the function
+      are untouched
+      (seed,
+      environment_color,
+      environment_intensity,
+      and the PT-P.6
+      `effective_max_bounces`
+      use in the
+      launcher arg).
+    - The
+      `<string>` /
+      `core/Logger.h`
+      includes were
+      already added
+      by PT-P.6 (commit
+      `dfaa199`); no
+      new include
+      directive is
+      required.
+- This `BUILD_PLAN.md`
+  slice-closing entry.
+
+### What does NOT change
+
+- `src/cuda/` —
+  zero bytes
+  changed.
+- `src/optix/` —
+  zero bytes
+  changed.
+- `src/renderer/`
+  — zero bytes
+  changed (the
+  PT-P.3
+  AccumulationBuffer
+  polish remains
+  settled).
+- `src/main.cpp` —
+  zero bytes
+  changed.
+- `src/core/CommandLine.{h,cpp}`
+  — zero bytes
+  changed.
+- `src/io/` —
+  zero bytes
+  changed.
+- All `*.rrscene`
+  files under
+  `scenes/` — zero
+  bytes changed.
+- All `tests/*.cpp`
+  files — zero
+  bytes changed
+  (the slice
+  ships no new
+  test per the
+  task §3.1's
+  recommendation,
+  mirroring
+  PT-P.6's
+  "verifiable by
+  code inspection"
+  precedent that
+  PT-P.7 cleared
+  with zero
+  REPAIR items).
+- `tools/verify_cuda_host.py`
+  — zero bytes
+  changed.
+- `PathTraceConfig`
+  struct fields:
+  byte-identical
+  (no new fields,
+  no default
+  changes). Only
+  the new
+  `kSamplesPerPixelCap`
+  free constant
+  is added.
+- The PT-P.6
+  `effective_max_bounces`
+  block:
+  byte-identical
+  (PT-P.9 inserts
+  ABOVE it, not
+  inside it).
+- The
+  `cfg.environment_intensity
+  < 0.0f` rejection:
+  byte-identical.
+- All
+  PT-P.{1..8}
+  artefacts
+  (plan, audits,
+  task briefs):
+  byte-identical.
+
+### Diff size deviation note
+
+The PT-P.8 task's
+§5.3 source-diff
+size cap set
+`PathTracer.cpp` at
+~10-12 added /
+~0-1 deleted. This
+slice ships 20
+added / 1 deleted.
+The deviation is
+entirely doc-comment
+text + the multi-
+line `Logger::warning`
+string concatenation
+(same pattern PT-P.6
+flagged): the PT-P.9
+doc-comment block
+above the warn-and-
+clamp is 6 lines,
+the `Logger::warning`
+call body is 7 lines
+(broken across lines
+for the long warning
+text), the LOGIC is
+exactly 5 lines (1
+init, 1 branch, 1
+clamp assignment, 2
+braces) + 1 line for
+the use-site
+replacement (- the
+`cfg.samples_per_pixel`
+line; + the
+`effective_samples_per_pixel`
+line).
+
+The `PathTracer.h`
+side ships 13 added
+vs the task's
+~5-10 cap. The
+deviation breaks
+down as 11 doc-
+comment lines + 1
+line for the
+`inline constexpr`
+declaration + 1
+blank line. As with
+PT-P.6, trimming
+the doc-comment
+would defeat the
+polish's
+explanatory
+purpose; the
+deviation is
+flagged here per
+the PT-P.3 / PT-P.6
+precedent.
+
+### Behaviour matrix
+
+| Scenario                                                | Pre-PT-P.9                                    | PT-P.9                                        |
+|---------------------------------------------------------|-----------------------------------------------|-----------------------------------------------|
+| Default `samples_per_pixel = 16`                        | 16-sample render                              | byte-identical (16 <= 4096)                    |
+| `--render-pathtrace` dispatcher's hard-coded {1, 16}    | spp=1 + spp=16 PPMs                           | byte-identical                                 |
+| Caller passes `samples_per_pixel = 1024`                | 1024-sample render                            | byte-identical                                 |
+| Caller passes `samples_per_pixel = 4096`                | 4096-sample render                            | byte-identical (within bounds)                 |
+| Caller passes `samples_per_pixel = 4097` or 100000      | run as authored                               | one warn line; clamped to 4096; PPM = the     |
+|                                                         |                                               | scene's 4096-sample render. The clamp does    |
+|                                                         |                                               | NOT mutate `cfg`; only the launcher loop      |
+|                                                         |                                               | bound.                                         |
+| Caller passes `samples_per_pixel = 0` or negative       | rejected (existing diagnostic at lines 28-31) | byte-identical (rejection runs FIRST; clamp   |
+|                                                         |                                               | unreachable).                                  |
+| `--render-pathtrace <scene>` on audit host              | "requires CUDA" fallback, exit 1              | byte-identical fallback                       |
+| `--render-pathtrace` on CUDA host                       | spp=1 + spp=16 PPMs                           | byte-identical (every dispatcher uses default |
+|                                                         |                                               | or 1 + 16; clamp never fires)                  |
+| `--render-optix-pathtrace` on SDK host                  | OptiX path-trace PPMs                         | byte-identical (OptiX dispatcher reads its    |
+|                                                         |                                               | own spp; PT-P.9 host clamp does not reach     |
+|                                                         |                                               | the OptiX raygen)                              |
+
+### Master rule compliance
+
+- **Build
+  incrementally /
+  every step
+  compilable**:
+  both audit-host
+  configs green
+  (build 7/7 OFF,
+  build-ON 8/8).
+- **No CPU per-pixel
+  work**: the polish
+  touches host-side
+  validation only;
+  zero changes in
+  the per-pixel
+  computation
+  graph. The
+  PT-P.7 audit's
+  §6 grep sweeps
+  remain valid
+  post-slice
+  without re-
+  running.
+- **Modify maximum
+  2 source files**:
+  the slice modifies
+  exactly two
+  files
+  (`src/pathtracer/PathTracer.h`
+  +
+  `src/pathtracer/PathTracer.cpp`);
+  the PT-P.8 task
+  §3 explicitly
+  authorises this
+  pair.
+- **No broad
+  refactor / no
+  new rendering
+  modes / no
+  C4D / no
+  server / no
+  UI / no node
+  editor**: zero
+  matches.
+- **Follow
+  existing warn-
+  and-clamp
+  pattern from
+  PT-P.6 if
+  present**: the
+  PT-P.9 branch
+  is structurally
+  identical to
+  PT-P.6's
+  `effective_max_bounces`
+  block — same
+  init / branch /
+  warn / clamp
+  shape, same
+  field-shadowing
+  approach, same
+  cap-as-named-
+  constant
+  pattern.
+- **Keep CUDA path
+  behaviour
+  stable**: hot-
+  path code
+  unchanged;
+  `pathtrace_spp_*.ppm`
+  on a CUDA host
+  remains
+  byte-identical
+  for every
+  dispatcher's
+  authored spp
+  values (1 +
+  16; both far
+  below the cap).
+- **Keep OptiX OFF
+  build working**:
+  `build` config
+  green; ctest
+  7/7.
+- **Update
+  BUILD_PLAN**:
+  this entry, per
+  master rule 8.
+
+### Verified at the build
+
+- `cmake --build
+  build` (audit
+  host,
+  RR_ENABLE_CUDA=OFF,
+  RR_ENABLE_OPTIX=OFF):
+  clean build,
+  zero new
+  warnings; ctest
+  7/7 green
+  (count
+  unchanged from
+  PT-P.6 — no
+  new ctest
+  binary).
+- `cmake --build
+  build-ON`
+  (audit host,
+  RR_ENABLE_CUDA=OFF,
+  RR_ENABLE_OPTIX=ON):
+  clean build,
+  zero new
+  warnings; ctest
+  8/8 green.
+- `./build-ON/bin/RelativityRender
+  --render-pathtrace
+  scenes/test_full_scene.rrscene`
+  on the audit
+  host: emits the
+  documented
+  "requires
+  CUDA" fallback
+  byte-identically
+  with the
+  pre-PT-P.9
+  baseline. The
+  scene's default
+  `samples_per_pixel`
+  (16) is well
+  within the cap;
+  no
+  `Logger::warning`
+  fires from the
+  PT-P.9 clamp.
+  Exit 1; no
+  kernel crash.
+- `./build/bin/RelativityRender
+  --scene-info
+  scenes/test_textured_material.rrscene`:
+  emits the
+  TEX-P.6
+  fixture's
+  expected log
+  sequence (one
+  Case 1 info +
+  two Case 3
+  warnings;
+  `fixups
+  applied: 2`).
+  Confirms zero
+  PT-P.9 ripple
+  onto the
+  texture
+  validator.
+- `git diff --
+  src/cuda/
+  src/optix/
+  src/renderer/
+  src/main.cpp
+  src/core/
+  src/io/
+  scenes/ tests/
+  tools/verify_cuda_host.py
+  | wc -l` => 0
+  bytes (no-touch
+  invariants
+  verified).
+- The clamp's
+  warning + clamp
+  paths are
+  reachable by
+  constructing a
+  `PathTraceConfig
+  cfg{};
+  cfg.samples_per_pixel
+  = 5000;` and
+  calling
+  `render(...)`;
+  not exercised
+  here to avoid
+  modifying the
+  existing
+  dispatcher's
+  authored spp
+  values. A
+  future test
+  (or a new CLI
+  modifier) can
+  exercise the
+  warning line
+  end-to-end on
+  a CUDA host —
+  the same
+  posture
+  PT-P.6 took.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:

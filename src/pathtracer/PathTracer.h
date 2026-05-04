@@ -23,6 +23,19 @@ namespace rr::pathtracer {
 // `OPTIX_PIPELINE_MAX_TRACE_DEPTH` constraint surface.
 inline constexpr int kMaxBouncesCap = 32;
 
+// PT-P.9 soft cap on `PathTraceConfig::samples_per_pixel`.
+// Callers asking for an absurdly large sample budget (e.g. a
+// fat-finger error of 10000 instead of 1000) get a single
+// `Logger::warning` line from `PathTracer::render` and their spp
+// count clamped down to this value. The cap is a SUGGESTION
+// (4096 samples produce a substantially deeper integration than
+// the default 16; the cap exists primarily to catch typos at
+// scene-authoring time, not to encode a hard ABI limit). Lives
+// alongside `kMaxBouncesCap` so the two host-side
+// `PathTraceConfig` validation prelude limits are searchable as
+// a pair.
+inline constexpr int kSamplesPerPixelCap = 4096;
+
 // Configuration for one path-trace render. All fields have sensible
 // defaults so callers can default-construct and only override what
 // they need; the path tracer is "minimal" by design (master rule
