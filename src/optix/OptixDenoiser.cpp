@@ -52,6 +52,122 @@
 
 namespace rr::optix {
 
+#ifdef RELATIVITYRENDER_OPTIX_SDK_FOUND
+
+// ---- Stage 21C.2: AOV -> OptixImage2D descriptor helpers
+//
+// File-static helpers that map a `OptixDenoiser::Inputs` /
+// `OptixDenoiser::Output` POD into the `::OptixImage2D`
+// descriptor the SDK expects. Each helper is pure (no
+// global state, no allocation, no side effects); the
+// caller passes the AOV and gets back a value-typed
+// descriptor that can be slotted into a `::OptixImage2D[3]`
+// for the input layer or used directly as the output
+// descriptor.
+//
+// Layout contract (matches the Stage 21A.3 / 21A.4 plan +
+// the Stage 21C.1 struct doc-comments):
+//
+//   - Beauty: linear-RGB radiance, FLOAT3 (3 floats /
+//     pixel) or FLOAT4 (4 floats / pixel) depending on
+//     `beauty_components`. The OptiX denoiser maps each
+//     to `OPTIX_PIXEL_FORMAT_FLOAT3` /
+//     `OPTIX_PIXEL_FORMAT_FLOAT4` respectively.
+//   - Albedo: linear-RGB base colour, FLOAT3 (always 3
+//     floats / pixel; the renderer's `AOVType::Albedo`
+//     buffer layout).
+//   - Normal: encoded shading normal, FLOAT3 (always 3
+//     floats / pixel; encoded `0.5 n + 0.5` per the AOV
+//     pipeline convention).
+//   - Output: same component count as the bound Beauty
+//     input (`beauty_components`); FLOAT3 or FLOAT4
+//     accordingly.
+//
+// Stage 21C.2 only ships the helpers; the Stage 21C.x
+// implementation that wires them into `set_inputs()` /
+// `invoke()` lands in subsequent sub-stages. The
+// `[[maybe_unused]]` attributes silence the "function
+// declared but not used" warnings under stricter compiler
+// flags until the wiring lands.
+namespace {
+
+constexpr unsigned int kFloat3Bytes = 3u * sizeof(float);
+constexpr unsigned int kFloat4Bytes = 4u * sizeof(float);
+
+[[maybe_unused]] ::OptixImage2D
+make_beauty_image(const OptixDenoiser::Inputs& inputs) noexcept {
+    const unsigned int pixel_bytes =
+        (inputs.beauty_components == 4) ? kFloat4Bytes : kFloat3Bytes;
+    const ::OptixPixelFormat fmt =
+        (inputs.beauty_components == 4)
+            ? OPTIX_PIXEL_FORMAT_FLOAT4
+            : OPTIX_PIXEL_FORMAT_FLOAT3;
+
+    ::OptixImage2D img{};
+    img.data = reinterpret_cast<::CUdeviceptr>(
+        const_cast<float*>(inputs.beauty_device));
+    img.width              = static_cast<unsigned int>(inputs.width);
+    img.height             = static_cast<unsigned int>(inputs.height);
+    img.rowStrideInBytes   = static_cast<unsigned int>(inputs.width)
+                           * pixel_bytes;
+    img.pixelStrideInBytes = pixel_bytes;
+    img.format             = fmt;
+    return img;
+}
+
+[[maybe_unused]] ::OptixImage2D
+make_albedo_image(const OptixDenoiser::Inputs& inputs) noexcept {
+    ::OptixImage2D img{};
+    img.data = reinterpret_cast<::CUdeviceptr>(
+        const_cast<float*>(inputs.albedo_device));
+    img.width              = static_cast<unsigned int>(inputs.width);
+    img.height             = static_cast<unsigned int>(inputs.height);
+    img.rowStrideInBytes   = static_cast<unsigned int>(inputs.width)
+                           * kFloat3Bytes;
+    img.pixelStrideInBytes = kFloat3Bytes;
+    img.format             = OPTIX_PIXEL_FORMAT_FLOAT3;
+    return img;
+}
+
+[[maybe_unused]] ::OptixImage2D
+make_normal_image(const OptixDenoiser::Inputs& inputs) noexcept {
+    ::OptixImage2D img{};
+    img.data = reinterpret_cast<::CUdeviceptr>(
+        const_cast<float*>(inputs.normal_device));
+    img.width              = static_cast<unsigned int>(inputs.width);
+    img.height             = static_cast<unsigned int>(inputs.height);
+    img.rowStrideInBytes   = static_cast<unsigned int>(inputs.width)
+                           * kFloat3Bytes;
+    img.pixelStrideInBytes = kFloat3Bytes;
+    img.format             = OPTIX_PIXEL_FORMAT_FLOAT3;
+    return img;
+}
+
+[[maybe_unused]] ::OptixImage2D
+make_output_image(const OptixDenoiser::Output& output,
+                  int beauty_components) noexcept {
+    const unsigned int pixel_bytes =
+        (beauty_components == 4) ? kFloat4Bytes : kFloat3Bytes;
+    const ::OptixPixelFormat fmt =
+        (beauty_components == 4)
+            ? OPTIX_PIXEL_FORMAT_FLOAT4
+            : OPTIX_PIXEL_FORMAT_FLOAT3;
+
+    ::OptixImage2D img{};
+    img.data               = reinterpret_cast<::CUdeviceptr>(output.device);
+    img.width              = static_cast<unsigned int>(output.width);
+    img.height             = static_cast<unsigned int>(output.height);
+    img.rowStrideInBytes   = static_cast<unsigned int>(output.width)
+                           * pixel_bytes;
+    img.pixelStrideInBytes = pixel_bytes;
+    img.format             = fmt;
+    return img;
+}
+
+}  // namespace
+
+#endif  // RELATIVITYRENDER_OPTIX_SDK_FOUND
+
 OptixDenoiser::~OptixDenoiser() {
     // Stage 21B.10: every cleanup step lives in
     // `shutdown()`; the destructor is a single delegating

@@ -23066,6 +23066,214 @@ the structs correctly.
   clean build; ctest 7/7
   green.
 
+## Stage 21C.2 — denoiser image-format helpers
+
+**Scope of this slice (Stage 21C.2;
+master order #24, "Denoising"):
+add four file-static helper
+functions in
+`src/optix/OptixDenoiser.cpp`
+that map a `OptixDenoiser::Inputs`
+or `OptixDenoiser::Output` POD
+into a value-typed
+`::OptixImage2D` descriptor for
+the corresponding role
+(beauty / albedo / normal /
+output). Per the user's rules:
+"use OptiX image/layer
+structures where available"
+(`OptixImage2D` is the
+project's first SDK-typed
+descriptor), "no denoiser
+invoke yet", "no render
+pipeline changes", "must
+compile with OptiX ON/OFF".
+The helpers are not yet
+called from anywhere; they're
+declared `[[maybe_unused]]` so
+the OFF / no-SDK builds stay
+warning-free until the next
+sub-stage wires them through
+`set_inputs` / `invoke`.**
+
+### What ships
+
+- `src/optix/OptixDenoiser.cpp`:
+  new file-static (anonymous-
+  namespace inside
+  `rr::optix`) helper block
+  gated by
+  `#ifdef RELATIVITYRENDER_OPTIX_SDK_FOUND`:
+    - `kFloat3Bytes` /
+      `kFloat4Bytes` constants
+      (3 / 4 floats per
+      pixel, in bytes).
+    - `make_beauty_image(
+      const Inputs&)
+      -> ::OptixImage2D`:
+      builds a FLOAT3 or
+      FLOAT4 descriptor from
+      `inputs.beauty_device`
+      / `beauty_components`
+      / `width` / `height`.
+    - `make_albedo_image(
+      const Inputs&)
+      -> ::OptixImage2D`:
+      builds a FLOAT3
+      descriptor from
+      `inputs.albedo_device`
+      / `width` / `height`.
+    - `make_normal_image(
+      const Inputs&)
+      -> ::OptixImage2D`:
+      builds a FLOAT3
+      descriptor from
+      `inputs.normal_device`
+      / `width` / `height`.
+      Encoded `0.5 n + 0.5`
+      layout per the AOV
+      pipeline convention.
+    - `make_output_image(
+      const Output&,
+      int beauty_components)
+      -> ::OptixImage2D`:
+      builds a FLOAT3 or
+      FLOAT4 descriptor from
+      `output.device` /
+      `width` / `height`,
+      sized by
+      `beauty_components`
+      to match the bound
+      Beauty input layout.
+  Each helper is `noexcept`,
+  pure (no globals, no
+  allocation, no side
+  effects), and tagged
+  `[[maybe_unused]]` so the
+  unused warning is silenced
+  until the next sub-stage
+  wires them through
+  `set_inputs` / `invoke`.
+- This `BUILD_PLAN.md`
+  slice-closing entry.
+
+### Layout map
+
+| Helper             | Pixel format                       | Stride / pixel       |
+|--------------------|------------------------------------|----------------------|
+| `make_beauty_image`| `FLOAT3` (default) / `FLOAT4`      | `3 * sizeof(float)` /|
+|                    | (selected via `beauty_components`) | `4 * sizeof(float)`  |
+| `make_albedo_image`| `FLOAT3`                           | `3 * sizeof(float)`  |
+| `make_normal_image`| `FLOAT3`                           | `3 * sizeof(float)`  |
+| `make_output_image`| `FLOAT3` (default) / `FLOAT4`      | matches bound Beauty |
+|                    | (selected via `beauty_components`) |                      |
+
+`rowStrideInBytes` = `width *
+pixelStrideInBytes` for every
+helper. `data` is the raw
+device pointer cast to
+`::CUdeviceptr` (with
+`const_cast<float*>` on the
+`const float*` input fields,
+since `::OptixImage2D::data`
+is non-const).
+
+### Why file-static + anonymous namespace
+
+Two-fold:
+
+1. **Header stays SDK-free.**
+   Putting helpers in the
+   `OptixDenoiser` header
+   would require pulling
+   `<optix.h>` into the
+   public header, breaking
+   the audit-host fallback
+   contract documented in
+   Stage 21B.2.
+2. **Helpers are
+   implementation details.**
+   The Stage 21C arc's
+   eventual
+   `optixDenoiserInvoke`
+   call lives inside
+   `OptixDenoiser::invoke`'s
+   SDK_FOUND branch. The
+   helpers have no
+   meaningful use outside
+   that branch. Keeping
+   them file-static
+   (anonymous namespace)
+   guarantees they don't
+   leak into the linker
+   surface or pollute the
+   `rr::optix` namespace
+   for consumers.
+
+### What does NOT ship
+
+- No `optixDenoiserInvoke`
+  call (per user rule).
+- No `set_inputs` change
+  (helpers are reserved for
+  the next sub-stage).
+- No `OptixDenoiserGuideLayer`
+  or `OptixDenoiserLayer`
+  helper (those bind the
+  individual `OptixImage2D`
+  descriptors into the SDK's
+  invoke-time structs; that's
+  `optixDenoiserInvoke`'s
+  immediate concern).
+- No render pipeline / CLI /
+  consumer changes.
+
+### Backward compatibility
+
+- The class' public surface
+  is byte-identical with
+  Stage 21C.1 (only file-
+  static helpers added in
+  the .cpp; no header
+  change).
+- `denoise_aov_buffers_to_ppm`
+  in `main.cpp` is
+  unchanged. Behaviour on
+  the audit host is
+  unchanged.
+- The CUDA renderer is
+  byte-identical (the slice
+  touches only
+  `src/optix/OptixDenoiser.cpp`).
+
+### Verified at the build
+
+- `cmake -S . -B build_off
+  -DRR_ENABLE_CUDA=OFF
+  -DRR_ENABLE_OPTIX=OFF`
+  (audit host): clean build;
+  ctest 6/6 green.
+- `cmake -S . -B build_on_audit
+  -DRR_ENABLE_CUDA=OFF
+  -DRR_ENABLE_OPTIX=ON`
+  (audit host, no SDK):
+  clean build; ctest 7/7
+  green. The new helper
+  block is inside the
+  SDK_FOUND gate; on this
+  host the gate is
+  undefined, so the helpers
+  are compiled out
+  entirely.
+- Helpers are purely
+  declarative
+  (no SDK calls); their
+  SDK-found behaviour is
+  structurally in place but
+  cannot be empirically
+  verified on this audit
+  host (no `<optix.h>`).
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
