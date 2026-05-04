@@ -22705,6 +22705,110 @@ query.
   clean build; ctest 7/7
   green.
 
+## Stage 21B.10 — denoiser cleanup
+
+**Scope of this slice (Stage 21B.10;
+master order #24, "Denoising"):
+formalize the destructor +
+`shutdown` cleanup contract.
+The actual cleanup work was
+already in place (Stage 21B.4
+added `optixDenoiserDestroy`;
+Stage 21B.7 added
+`state_buffer_.reset()` and
+`scratch_buffer_.reset()`); this
+slice adds (a) a destruction
+log line for parity with the
+Stage 21B.5 init log,
+(b) a doc-comment block above
+`shutdown()` enumerating the
+cleanup steps + invariants,
+and (c) a doc-comment on the
+destructor pointing at the
+shutdown contract. Per the
+user's rules: "destroy
+OptixDenoiser" (already done),
+"free GPU buffers" (already
+done), "must not leak", "must
+not crash".**
+
+### What ships
+
+- `src/optix/OptixDenoiser.cpp`:
+    - new doc-comment block
+      above `shutdown()`
+      describing the three-
+      step cleanup sequence
+      (`optixDenoiserDestroy`
+      → reset scalar/pointer
+      members → reset
+      `GpuBuffer` instances)
+      and the no-leak / no-
+      crash / `noexcept`
+      invariants explicitly.
+    - new
+      `[OptiX:INFO]
+      OptixDenoiser
+      destroyed.` log line
+      after the
+      `optixDenoiserDestroy`
+      call (Stage 21B.5
+      symmetry).
+    - new doc-comment on
+      the destructor
+      pointing at the
+      shutdown contract.
+- This `BUILD_PLAN.md`
+  slice-closing entry.
+
+### Cleanup invariants formalized
+
+| Invariant   | How it is satisfied                                                         |
+|-------------|-----------------------------------------------------------------------------|
+| No leak     | Every allocate has a paired free in `shutdown`. The destructor always       |
+|             | reaches the cleanup path (single delegating call to `shutdown`, which is    |
+|             | `noexcept`). `GpuBuffer`'s destructor also frees the device buffer if       |
+|             | `shutdown` were ever to be skipped.                                         |
+| No crash    | `optixDenoiserDestroy` is null-guarded; `GpuBuffer.reset()` is documented   |
+|             | as safe on empty / moved-from / never-allocated buffers; every member       |
+|             | reset is a trivial scalar / pointer store.                                  |
+| `noexcept`  | `shutdown` is explicitly `noexcept`; the destructor inherits `noexcept`     |
+|             | from its default exception specification. No member type throws on          |
+|             | destruction (`GpuBuffer`'s destructor is `noexcept`).                       |
+| Idempotent  | Repeated `shutdown` calls are safe: members are already null / 0 /          |
+|             | empty after the first call, so the null-guards short-circuit and the       |
+|             | `GpuBuffer` resets are no-ops.                                              |
+
+### Backward compatibility
+
+- The class' public surface
+  is byte-identical with
+  Stage 21B.9 (only doc
+  comments + one new log
+  line; no method signature
+  or struct layout
+  changed).
+- Behaviour on the audit
+  host is unchanged.
+- The CUDA renderer is
+  byte-identical (the slice
+  touches only
+  `src/optix/OptixDenoiser.cpp`).
+
+### Verified at the build
+
+- `cmake -S . -B build_off
+  -DRR_ENABLE_CUDA=OFF
+  -DRR_ENABLE_OPTIX=OFF`
+  (audit host): clean build;
+  ctest 6/6 green.
+- `cmake -S . -B build_on_audit
+  -DRR_ENABLE_CUDA=OFF
+  -DRR_ENABLE_OPTIX=ON`
+  (audit host, no SDK):
+  clean build; ctest 7/7
+  green.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:

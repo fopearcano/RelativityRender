@@ -53,6 +53,13 @@
 namespace rr::optix {
 
 OptixDenoiser::~OptixDenoiser() {
+    // Stage 21B.10: every cleanup step lives in
+    // `shutdown()`; the destructor is a single delegating
+    // call so destruction during stack unwind, after a
+    // failed `initialize` / `set_inputs`, or after an
+    // explicit `shutdown` are all the same code path.
+    // See the doc-comment block above `shutdown` for the
+    // no-leak / no-crash invariants.
     shutdown();
 }
 
@@ -111,15 +118,55 @@ int  OptixDenoiser::input_height()   const noexcept { return input_height_; }
 void* OptixDenoiser::denoiser_handle() const noexcept { return denoiser_; }
 const std::string& OptixDenoiser::last_error() const noexcept { return last_error_; }
 
+// Stage 21B.10 cleanup contract.
+//
+// The destructor delegates to `shutdown()`. `shutdown()`
+// releases every resource the class can hold, in a fixed
+// order:
+//
+//   1. (SDK_FOUND only) `optixDenoiserDestroy` on the
+//      OptiX handle, when non-null. The SDK documents
+//      this call as safe on a non-null handle; we add a
+//      null guard for defensive symmetry. After the call
+//      we log `[OptiX:INFO] OptixDenoiser destroyed.`
+//      matching the Stage 21B.5 init-log pattern.
+//   2. Reset every scalar / pointer member to its
+//      default-constructed state.
+//   3. `state_buffer_.reset()` and
+//      `scratch_buffer_.reset()` to free the device-
+//      side state + scratch buffers (also free
+//      automatically via `GpuBuffer`'s destructor; the
+//      explicit reset keeps the cleanup contract
+//      symmetric with `set_inputs`'s allocate calls).
+//
+// Invariants:
+//
+// - **No leak**: every resource paired with an allocate
+//   has a matching free in `shutdown`. The destructor
+//   always reaches the cleanup path because `shutdown`
+//   is `noexcept` and the destructor body is a single
+//   call to it.
+// - **No crash**: `optixDenoiserDestroy` is null-guarded;
+//   `GpuBuffer.reset()` is documented as safe on an
+//   empty / moved-from / never-allocated buffer; every
+//   member assignment is a trivial store. Calling
+//   `shutdown()` repeatedly (or after a failed
+//   `initialize()` / `set_inputs()`) is a documented
+//   no-op.
+// - **`noexcept`**: the destructor inherits `noexcept`
+//   from `~OptixDenoiser()`'s default exception
+//   specification (no member type throws on destruction;
+//   `GpuBuffer`'s destructor is `noexcept`); `shutdown`
+//   is explicitly `noexcept`.
 void OptixDenoiser::shutdown() noexcept {
 #ifdef RELATIVITYRENDER_OPTIX_SDK_FOUND
     // Stage 21B.4: paired with `optixDenoiserCreate` in
-    // `initialize()`. Best-effort destroy on a non-null
-    // handle; the SDK guarantees this is safe. The audit-
-    // host fallback (no SDK) never produces a non-null
-    // handle so this block has no effect there.
+    // `initialize()`. Stage 21B.10: log the destruction
+    // for parity with the init log added in Stage 21B.5.
     if (denoiser_ != nullptr) {
         ::optixDenoiserDestroy(static_cast<::OptixDenoiser>(denoiser_));
+        std::fprintf(stderr,
+                     "[OptiX:INFO] OptixDenoiser destroyed.\n");
     }
 #endif
     initialized_             = false;
