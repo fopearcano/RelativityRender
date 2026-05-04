@@ -236,6 +236,93 @@ prepareGuidedInput(const OptixDenoiser::Inputs&  inputs,
     return out;
 }
 
+// Stage 21C.5: validate a denoiser `Inputs` + `Output` pair
+// before it is fed to the eventual `optixDenoiserInvoke`
+// call. Returns `true` on success; on failure returns
+// `false` and writes the documented error message to
+// `error_out`. The function never throws and never touches
+// the GPU - it is purely a host-side precondition check
+// that lets `invoke()` short-circuit before launching any
+// SDK / CUDA work.
+//
+// `require_guides == true` enforces the additional
+// Albedo + Normal requirements that the HDR model with
+// `guideAlbedo = 1` / `guideNormal = 1` (Stage 21B.4)
+// needs. `require_guides == false` is for the eventual
+// beauty-only path (post-21A.9-v1 scope; reserved).
+//
+// Checks performed:
+//
+// 1. `inputs.width  > 0`
+// 2. `inputs.height > 0`
+// 3. `inputs.beauty_device != nullptr`
+// 4. `output.device != nullptr`
+// 5. `output.width  == inputs.width`  (output dims match
+//    Beauty input)
+// 6. `output.height == inputs.height`
+// 7. `inputs.beauty_components` in `{3, 4}`
+// 8. (when `require_guides`) `inputs.albedo_device !=
+//    nullptr` AND `inputs.normal_device != nullptr`
+//
+// The dimensional consistency between Albedo / Normal and
+// Beauty is implicit in the `Inputs` struct (single
+// `width` / `height` shared across all three buffers per
+// Stage 21C.1's documented contract); the renderer's AOV
+// pipeline guarantees this when populating the struct.
+// Future invariants (e.g. component-count mismatches,
+// stride checks for non-tightly-packed buffers) can be
+// added as separate checks without altering the existing
+// ones.
+[[maybe_unused]] bool
+validateDenoiserInputs(const OptixDenoiser::Inputs&  inputs,
+                       const OptixDenoiser::Output&  output,
+                       bool                          require_guides,
+                       std::string&                  error_out) noexcept {
+    if (inputs.width <= 0 || inputs.height <= 0) {
+        error_out =
+            "OptixDenoiser inputs invalid: width and height must be "
+            "positive.";
+        return false;
+    }
+    if (inputs.beauty_device == nullptr) {
+        error_out =
+            "OptixDenoiser inputs invalid: beauty_device must be "
+            "non-null.";
+        return false;
+    }
+    if (output.device == nullptr) {
+        error_out =
+            "OptixDenoiser inputs invalid: output.device must be "
+            "non-null.";
+        return false;
+    }
+    if (output.width != inputs.width || output.height != inputs.height) {
+        error_out =
+            "OptixDenoiser inputs invalid: output dimensions must "
+            "match the Beauty input dimensions.";
+        return false;
+    }
+    if (inputs.beauty_components != 3 && inputs.beauty_components != 4) {
+        error_out =
+            "OptixDenoiser inputs invalid: beauty_components must "
+            "be 3 (FLOAT3) or 4 (FLOAT4).";
+        return false;
+    }
+    if (require_guides) {
+        if (inputs.albedo_device == nullptr
+         || inputs.normal_device == nullptr) {
+            error_out =
+                "OptixDenoiser inputs invalid: albedo_device and "
+                "normal_device must both be non-null when guide "
+                "layers are required (HDR denoiser with "
+                "guideAlbedo=1, guideNormal=1).";
+            return false;
+        }
+    }
+    error_out.clear();
+    return true;
+}
+
 }  // namespace
 
 #endif  // RELATIVITYRENDER_OPTIX_SDK_FOUND

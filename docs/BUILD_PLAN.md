@@ -23627,6 +23627,165 @@ public surface.
   this audit host (no
   `<optix.h>`).
 
+## Stage 21C.5 — denoiser input validation
+
+**Scope of this slice (Stage 21C.5;
+master order #24, "Denoising"):
+add a `validateDenoiserInputs`
+file-static helper that checks
+all five preconditions the
+user listed (positive
+dimensions, non-null beauty,
+non-null output, dimension
+match between inputs/output,
+non-null albedo + normal when
+guides required). The helper
+returns `bool` and writes a
+documented error string to a
+caller-supplied
+`std::string& error_out` on
+failure. Per the user's rules:
+"no denoiser invoke yet",
+"must compile". The helper is
+`[[maybe_unused]]` until the
+next sub-stage wires it into
+`invoke()`.**
+
+### What ships
+
+- `src/optix/OptixDenoiser.cpp`:
+  new file-static helper
+  inside the existing Stage
+  21C.2 anonymous namespace
+  (still gated by `#ifdef
+  RELATIVITYRENDER_OPTIX_SDK_FOUND`):
+    ```
+    [[maybe_unused]] bool
+    validateDenoiserInputs(
+        const OptixDenoiser::Inputs&  inputs,
+        const OptixDenoiser::Output&  output,
+        bool                          require_guides,
+        std::string&                  error_out) noexcept;
+    ```
+  Performs eight precondition
+  checks in order, returning
+  `false` + populating
+  `error_out` on the first
+  failure:
+    1. `inputs.width  > 0`
+    2. `inputs.height > 0`
+    3. `inputs.beauty_device
+       != nullptr`
+    4. `output.device !=
+       nullptr`
+    5. `output.width  ==
+       inputs.width` (output
+       dims match Beauty
+       input)
+    6. `output.height ==
+       inputs.height`
+    7. `inputs.beauty_components`
+       in `{3, 4}`
+    8. (when
+       `require_guides`)
+       `inputs.albedo_device
+       != nullptr` AND
+       `inputs.normal_device
+       != nullptr`.
+  `noexcept`, never touches
+  the GPU, never throws.
+  `[[maybe_unused]]` until
+  the next sub-stage wires
+  it.
+- This `BUILD_PLAN.md`
+  slice-closing entry.
+
+### Mapping to user's required checks
+
+| User's check                        | Validator step       |
+|-------------------------------------|----------------------|
+| `width > 0`                         | step 1               |
+| `height > 0`                        | step 2               |
+| beauty buffer exists                | step 3 + step 4      |
+|   (beauty input + output)           |                      |
+| output buffer exists                | step 4               |
+| albedo / normal dims match when used| step 5 + step 6 +    |
+|                                     | step 8               |
+
+The `Inputs` struct carries a
+single `width` / `height`
+shared across all three input
+buffers (beauty + albedo +
+normal) per the Stage 21C.1
+documented contract; the
+renderer's AOV pipeline
+guarantees this when populating
+the struct, so explicit per-
+buffer dimension checks are
+not required. Steps 5 + 6
+guarantee the output matches.
+Step 8 ensures the guide
+buffers are populated.
+
+### What does NOT ship
+
+- No `optixDenoiserInvoke`
+  call (per user rule).
+- No `set_inputs` change
+  (validator is reserved
+  for the next sub-stage).
+- No render pipeline / CLI /
+  consumer changes.
+
+### Backward compatibility
+
+- The class' public surface
+  is byte-identical with
+  Stage 21C.4 (only one new
+  file-static helper added
+  in the .cpp's anonymous
+  namespace; no header
+  change).
+- `denoise_aov_buffers_to_ppm`
+  in `main.cpp` is
+  unchanged. Behaviour on
+  the audit host is
+  unchanged.
+- The CUDA renderer is
+  byte-identical (the slice
+  touches only
+  `src/optix/OptixDenoiser.cpp`).
+
+### Verified at the build
+
+- `cmake -S . -B build_off
+  -DRR_ENABLE_CUDA=OFF
+  -DRR_ENABLE_OPTIX=OFF`
+  (audit host): clean build;
+  ctest 6/6 green.
+- `cmake -S . -B build_on_audit
+  -DRR_ENABLE_CUDA=OFF
+  -DRR_ENABLE_OPTIX=ON`
+  (audit host, no SDK):
+  clean build; ctest 7/7
+  green. The validator is
+  inside the SDK_FOUND
+  gate; on this host the
+  gate is undefined, so
+  the helper is compiled
+  out entirely.
+- The validator is a pure
+  host-side check (no SDK
+  calls, no GPU access),
+  so its SDK-found behaviour
+  is identical to the audit-
+  host build's stub
+  behaviour (the validator
+  just isn't compiled in
+  the audit-host case
+  because of the SDK_FOUND
+  gate).
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
