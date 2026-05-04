@@ -33580,6 +33580,417 @@ OptiX precedent.
   end-to-end on a
   CUDA host.
 
+## PT-P.7 — path-tracer polish audit (docs only)
+
+**Scope of this slice
+(post-PT-P.6
+implementation
+complete): write the
+arc-end audit at
+`docs/PATH_TRACER_POLISH_AUDIT.md`
+that walks the seven
+prompt checks and
+records each as PASS
+/ REPAIR / BLOCKED.
+Mirrors the TEX-P.7
+texture-polish audit's
+shape applied to the
+end of the path-tracer
+polish arc (after two
+of seven plan items
+shipped). Documentation
+only; zero source
+changes; zero build
+effect.**
+
+### What ships
+
+- `docs/PATH_TRACER_POLISH_AUDIT.md`
+  (NEW). Eight
+  sections (the
+  seven prompt
+  checks + a
+  verdict summary):
+    - **§1 Which
+      polish items
+      were
+      implemented.**
+      Seven-row table
+      listing each
+      `PATH_TRACER_POLISH_PLAN.md`
+      §4.x item with
+      its status:
+      §4.2 / PT-P.3
+      shipped
+      (`b4d73eb`),
+      §4.3 / PT-P.6
+      shipped
+      (`dfaa199`),
+      §4.{1,4,5,6,7}
+      DEFERRED.
+      Sub-sections
+      §1.1 / §1.2
+      tabulate the
+      source +
+      test + build-
+      system changes
+      per slice; §1.3
+      lists the six
+      documentation
+      artefacts the
+      arc produced.
+      §1.4 records
+      the total
+      `git diff
+      bb12904~1..dfaa199`
+      stat:
+      production-code
+      delta is **3
+      files, 52
+      added, 1
+      deleted**.
+    - **§2 Build
+      status.** PASS.
+      Both audit-host
+      configs green
+      (build 7/7,
+      build-ON 8/8);
+      ctest count grew
+      from 6/6 OFF
+      pre-arc to 7/7
+      OFF after
+      PT-P.3's
+      `renderer_tests`
+      binary. Zero
+      new compiler
+      warnings under
+      `-Wall -Wextra
+      -Wpedantic`.
+    - **§3 CUDA path
+      status.**
+      Structurally
+      PASS;
+      empirically
+      BLOCKED. §3.1
+      records `git
+      diff
+      bb12904~1..dfaa199
+      -- src/cuda/`
+      = 0 bytes;
+      §3.2 explains
+      the host-side
+      semantics
+      (PT-P.3 fast
+      path collapses
+      to the same
+      `launch_accum_clear`
+      cudaMemset;
+      PT-P.6 clamp
+      doesn't fire
+      under any
+      current
+      dispatcher);
+      §3.3 records
+      the audit-host
+      `--render-pathtrace`
+      fallback
+      smoke; §3.4
+      confirms zero
+      regression in
+      the other ten
+      CUDA
+      dispatchers
+      via the
+      `tools/verify_cuda_host.py`
+      diff being
+      0 bytes.
+    - **§4 OptiX
+      path status.**
+      Structurally
+      PASS;
+      empirically
+      BLOCKED. `git
+      diff
+      bb12904~1..dfaa199
+      -- src/optix/`
+      = 0 bytes.
+      Notes that the
+      PT-P.6 clamp
+      lives in the
+      CUDA-path
+      `PathTracer::render`
+      orchestration;
+      the OptiX raygen
+      reads its own
+      bounce budget
+      and is
+      unaffected.
+      The
+      `AccumulationBuffer`
+      fast path
+      benefits the
+      OptiX-side
+      `render_pathtrace_progressive`
+      re-render case
+      too (cycle
+      savings, no
+      observable PPM
+      change).
+    - **§5 Runtime-
+      deferred
+      status.**
+      BLOCKED on the
+      same six PPMs
+      the PT-P.4
+      step-1 audit
+      enumerated.
+      §5.1 records
+      two additional
+      operator-side
+      checks (PT-P.3
+      fast-path
+      timing on a
+      warm process;
+      PT-P.6 warn-
+      line emission
+      via a
+      manually-
+      constructed
+      `PathTraceConfig`
+      with
+      `max_bounces =
+      100`). §5.2
+      confirms zero
+      runner update
+      needed.
+    - **§6 CPU
+      path-tracing
+      violations.**
+      PASS — zero
+      violations.
+      Re-runs the
+      Stage-11 audit's
+      three grep
+      sweeps (per-
+      pixel
+      for-loops, spp
+      launcher loop,
+      host-side
+      intersection)
+      and records the
+      same baseline
+      matches Stage
+      11 + PT-P.4
+      recorded:
+      one `for (int
+      s = 0; s <
+      cfg.samples_per_pixel;
+      ++s)` in
+      `PathTracer.cpp:97`
+      (line moved
+      from 78 due to
+      PT-P.6's
+      insertion above
+      it; same
+      sample-frame
+      granularity
+      classification),
+      one
+      `intersect_triangle`
+      doc-comment in
+      `Hit.h:30`.
+      Zero new
+      violations from
+      either PT-P.3
+      or PT-P.6.
+    - **§7
+      Recommended
+      next safe
+      stage.** Five
+      remaining plan
+      items
+      sequenced:
+      §4.6 (sample-
+      count cap;
+      reuses PT-P.6's
+      pattern, ~10
+      lines), §4.4
+      (env-fallback
+      doc + log,
+      ~5 lines),
+      §4.5 (emission
+      handling
+      kernel branch),
+      §4.1 (RNG
+      stability;
+      changes every
+      PPM byte-
+      exactly), §4.7
+      (firefly clamp;
+      touches both
+      backends).
+      Alternative
+      paths: trigger
+      the CUDA-host
+      verification
+      run that flips
+      the §5
+      BLOCKED rows
+      to PASS, or
+      pivot to a
+      different
+      master-order
+      item.
+    - **§8 Verdict
+      summary.**
+      Overall PASS.
+      Six-row summary
+      table (PASS,
+      PASS, PASS-
+      structural-/-
+      BLOCKED-
+      empirical, same,
+      BLOCKED, PASS).
+      Zero REPAIR
+      items across
+      the entire arc.
+      The polish arc
+      is "suspended"
+      (not closed):
+      five of seven
+      plan items
+      remain
+      available; the
+      next concrete
+      slice (when the
+      operator
+      chooses to
+      continue) is
+      PT-P.8 task
+      definition for
+      §4.6.
+- This `BUILD_PLAN.md`
+  slice-closing entry.
+
+### What does NOT change
+
+- All PT-P.{1..6}
+  artefacts:
+  byte-identical
+  (PT-P.7 is a
+  documentation
+  audit; it touches
+  no `.cu`, `.cpp`,
+  `.h`, `.cuh`,
+  `.rrscene`,
+  `cmake`, or
+  `tests/` file).
+- Build configs:
+  byte-identical.
+  ctest remains
+  7/7 OFF and 8/8
+  ON-audit-host
+  with no rebuild
+  needed (the new
+  doc is not part
+  of any build
+  target).
+- All other docs:
+  PT-P.7 only ADDS
+  `PATH_TRACER_POLISH_AUDIT.md`;
+  no edits to
+  `PATH_TRACER_POLISH_PLAN.md`,
+  the four
+  `PATH_TRACER_POLISH_STEP_*_*.md`
+  files, the
+  TEX-P.x arc, or
+  the CUDA-H.x
+  arc.
+
+### Master rule compliance
+
+- **Build
+  incrementally /
+  every step
+  compilable**:
+  docs-only slice;
+  build is
+  trivially
+  preserved.
+- **No CPU
+  per-pixel work**:
+  §6 of the audit
+  doc actively
+  re-verifies this
+  rule is upheld
+  post-PT-P.6.
+- **Update
+  BUILD_PLAN**:
+  this entry, per
+  master rule 8.
+
+### Verified at the build
+
+- `cmake --build
+  build` (audit
+  host,
+  RR_ENABLE_CUDA=OFF,
+  RR_ENABLE_OPTIX=OFF):
+  re-built cleanly
+  during the audit;
+  ctest 7/7 green.
+- `cmake --build
+  build-ON` (audit
+  host,
+  RR_ENABLE_CUDA=OFF,
+  RR_ENABLE_OPTIX=ON):
+  re-built cleanly;
+  ctest 8/8 green.
+- `./build-ON/bin/RelativityRender
+  --render-pathtrace
+  scenes/test_full_scene.rrscene`:
+  emits the
+  documented
+  "requires CUDA"
+  audit-host
+  fallback;
+  byte-identical
+  with the
+  pre-PT-P.1
+  baseline.
+  Recorded under
+  §3.3 of the
+  audit doc.
+- `./build/bin/RelativityRender
+  --scene-info
+  scenes/test_textured_material.rrscene`:
+  emits the
+  TEX-P.6 fixture's
+  expected log
+  sequence (1
+  Case 1 info +
+  2 Case 3
+  warnings;
+  `fixups
+  applied: 2`).
+  Confirms zero
+  PT-P.x ripple
+  onto the texture
+  validator.
+- `git diff
+  bb12904~1..dfaa199
+  -- src/cuda/
+  src/optix/
+  src/main.cpp
+  src/core/
+  scenes/
+  tools/verify_cuda_host.py
+  | wc -l` => 0
+  bytes (no-touch
+  invariants
+  verified across
+  the entire arc).
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
