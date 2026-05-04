@@ -4121,6 +4121,17 @@ int main(int argc, char** argv) {
 
     const auto result = CommandLine::parse(argc, argv);
 
+    // Stage 21E.1: announce whether the --denoise modifier
+    // was requested. Logged once per invocation, only when
+    // the flag is set, so the standard quiet path (no
+    // `--denoise`) emits no extra log line. Per-action
+    // dispatchers consume `result.config.denoise_enabled`
+    // separately to decide whether to actually run the
+    // denoiser; this slice only prints the request state.
+    if (result.config.denoise_enabled) {
+        Logger::info("denoise: requested via --denoise flag");
+    }
+
     switch (result.action) {
         case CommandLine::Action::Help:
             std::cout << CommandLine::usage(argv[0]);

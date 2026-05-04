@@ -25431,6 +25431,177 @@ is preserved byte-for-byte.
   both build modes; no
   crash.
 
+## Stage 21E.1 — CLI denoise flag (announce)
+
+**Scope of this slice (Stage 21E.1;
+master order #24, "Denoising"):
+add a one-line announcement
+log when the existing
+`--denoise` modifier flag is
+set. Per the user's three
+required behaviours: "parse
+flag" (already wired by Stage
+19B.4), "store in config /
+render settings" (already on
+`Config::denoise_enabled`
+since Stage 19B.4), "print
+whether denoise is requested"
+(NEW). The new log line emits
+once per CLI invocation,
+right after parse but before
+action dispatch, only when
+the flag is set. Per the
+user's "do not run denoiser
+yet" rule: the log line is
+purely informational; no
+denoiser is invoked solely
+because the announcement
+fired.**
+
+### What ships
+
+- `src/main.cpp`: new
+  log-line in `main()`
+  immediately after
+  `CommandLine::parse(...)`
+  succeeds, before the
+  action-dispatch switch:
+    ```
+    if (result.config.denoise_enabled) {
+        Logger::info("denoise: requested via --denoise flag");
+    }
+    ```
+  Doc-comment block above
+  describes the slice
+  contract: announcement
+  fires once per
+  invocation, only when
+  the flag is set; the
+  per-action dispatchers
+  consume `denoise_enabled`
+  separately to decide
+  whether to actually run
+  the denoiser.
+- This `BUILD_PLAN.md`
+  slice-closing entry.
+
+### Why the existing infrastructure was sufficient
+
+The `--denoise` modifier flag
+predates Stage 21E.1 by a
+significant margin:
+
+- **Stage 19B.4** added the
+  parser branch
+  (`src/core/CommandLine.cpp:409`),
+  the `Config::denoise_enabled`
+  bit
+  (`src/core/Config.h:22`),
+  and the help-text entry
+  (`src/core/CommandLine.cpp:855`).
+- **Stage 19B.4 / 19C.3**
+  consumes the bit inside
+  `run_render_aovs(...)`'s
+  body: when set, the
+  function additionally
+  invokes the OptiX
+  denoiser on the AOV
+  buffers it just rendered
+  and saves
+  `output/denoised.ppm`.
+
+Stage 21E.1's contribution
+is the missing third user
+requirement ("print whether
+denoise is requested"). The
+announcement makes the
+current request state
+visible at run time, so
+operators reading log output
+can confirm the flag was
+seen by the parser without
+waiting for the per-action
+dispatcher's downstream
+"denoised: ..." log line.
+
+### Behaviour matrix
+
+| CLI                                         | Announcement log                              |
+|---------------------------------------------|-----------------------------------------------|
+| `--denoise --version`                       | `[INFO] denoise: requested via --denoise flag`|
+| `--version`                                 | (silent; no extra log)                        |
+| `--denoise --render-aovs`                   | announcement before the action dispatch logs  |
+| `--denoise --render-optix-denoise`          | announcement before the action dispatch logs  |
+| `--render-aovs` (no --denoise)              | (silent; quiet path preserved)                |
+
+### What does NOT ship
+
+- No denoiser invocation
+  triggered by the
+  announcement (per user
+  rule "do not run
+  denoiser yet"; the
+  per-action dispatchers
+  still own the actual
+  denoise call paths).
+- No CLI surface change.
+- No `Config` /
+  `RenderSettings` field
+  change. The existing
+  `denoise_enabled` bit
+  is sufficient.
+
+### Backward compatibility
+
+- The `--denoise` flag's
+  parsing, storage, and
+  consumer behaviour are
+  byte-identical with
+  Stage 19B.4. Any
+  existing CLI invocation
+  that relied on the
+  flag continues to work
+  the same way.
+- The new announcement
+  log line is emitted
+  only when the flag is
+  set, so the standard
+  quiet path (no
+  `--denoise`) is
+  unaffected.
+- The CUDA renderer is
+  byte-identical (the slice
+  touches only
+  `src/main.cpp`).
+- The OptiX path is
+  byte-identical (no
+  `OptixDenoiser` change).
+
+### Verified at the build
+
+- `cmake -S . -B build_off
+  -DRR_ENABLE_CUDA=OFF
+  -DRR_ENABLE_OPTIX=OFF`
+  (audit host): clean
+  build; ctest 6/6 green.
+- `cmake -S . -B build_on_audit
+  -DRR_ENABLE_CUDA=OFF
+  -DRR_ENABLE_OPTIX=ON`
+  (audit host, no SDK):
+  clean build; ctest 7/7
+  green.
+- `./build_off/bin/RelativityRender
+  --denoise --version`:
+  emits `[INFO] denoise:
+  requested via --denoise
+  flag` followed by the
+  version line.
+- `./build_off/bin/RelativityRender
+  --version`: emits ONLY
+  the version line (no
+  announcement; quiet
+  path preserved).
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
