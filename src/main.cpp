@@ -1812,6 +1812,17 @@ int run_render_optix_textured_material(const rr::core::Config& cfg) {
         textures.push_back(std::move(tex0));
     }
 
+    // TEX-P.2: validate every material's texture-id reference
+    // against the texture array we are about to upload, so any
+    // out-of-range `baseColorTextureId` (e.g. someone edits the
+    // inline scene above to point at texture 7 with only one
+    // texture) is logged once on the host and downgraded to flat
+    // baseColor before the GPU sees the material POD. The kernel-
+    // side range check still catches mismatches that slip past
+    // the host (defence in depth) but no longer silently.
+    (void) rr::scene::validate_material_texture_ids(
+        scene.materials, textures.size());
+
 #ifndef RELATIVITYRENDER_ENABLE_OPTIX
     Logger::error("--render-optix-textured-material requires OptiX. "
                   "Rebuild with -DRR_ENABLE_OPTIX="

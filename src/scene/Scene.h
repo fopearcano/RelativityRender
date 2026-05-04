@@ -117,4 +117,36 @@ struct Scene {
     void clear();
 };
 
+// TEX-P.2: validate every material's `useBaseColorTexture` /
+// `baseColorTextureId` pair against the supplied texture-array
+// count. For each material whose `useBaseColorTexture == true`
+// but `baseColorTextureId` is OUTSIDE `[0, texture_count)`:
+//
+//   1. Emit a `rr::core::Logger::warning(...)` line that names
+//      the offending material (id + name) and the bad index.
+//   2. Set the material's `useBaseColorTexture = false` so the
+//      kernel-side gate (CUDA + OptiX both check the same trio
+//      of conditions) safely falls back to flat
+//      `params.baseColor`. The bad `baseColorTextureId` is
+//      preserved on the POD; it is just no longer consulted.
+//
+// Returns the number of fixups applied. Defence-in-depth on
+// top of the kernel's existing range check (`CudaTestKernel.cu`
+// + `OptixPrograms.cu` both validate the id at hit time and
+// silently fall back); the host-side validator gives the
+// operator a warning log so they can fix the authored material.
+//
+// Caller protocol: invoke after constructing / loading the
+// scene + textures BUT before any GPU upload, so the kernel
+// never sees an out-of-range id. Safe to call repeatedly
+// (idempotent — the second call sees the post-fixup state and
+// reports zero new fixups).
+//
+// `texture_count == 0` is a valid input: every material with
+// `useBaseColorTexture == true` becomes a fixup since no id is
+// in range.
+[[nodiscard]] int validate_material_texture_ids(
+    std::vector<SceneMaterial>& materials,
+    std::size_t                  texture_count);
+
 }

@@ -29770,6 +29770,277 @@ behaviour.**
   empirically verified
   on this audit host.
 
+## TEX-P.2 — texture id validation
+
+**Scope of this slice
+(post-TEX-P.1 plan
+complete): add a tiny host-
+side validator that walks
+a scene's materials list
+once and clamps any
+out-of-range
+`baseColorTextureId` BEFORE
+the materials reach the
+GPU. The kernel-side range
+check
+(`CudaTestKernel.cu`
++ `OptixPrograms.cu`
+both gate on
+`useBaseColorTexture &&
+id >= 0 && id <
+texture_count` at hit
+time) is unchanged; this
+slice is defence-in-depth
+that adds the missing
+operator-visible warning
+log so a misauthored
+material does not just
+silently render flat.
+NOT a renderer-wide
+refactor; one validator
+function + one demo
+caller.**
+
+### What ships
+
+- `src/scene/Scene.h`:
+    - New free function
+      forward declaration:
+      `[[nodiscard]] int
+      validate_material_texture_ids(
+      std::vector<SceneMaterial>&
+      materials,
+      std::size_t
+      texture_count);`.
+      Doc-comment block
+      describes contract:
+      for each material
+      whose
+      `useBaseColorTexture
+      == true` AND
+      `baseColorTextureId`
+      is OUTSIDE
+      `[0, texture_count)`,
+      emit
+      `Logger::warning`
+      naming the offending
+      material (id + name)
+      and the bad index,
+      then set
+      `useBaseColorTexture
+      = false` so the
+      kernel-side gate
+      safely falls back to
+      `params.baseColor`.
+      Returns the number
+      of fixups applied.
+      Idempotent (a second
+      call sees the post-
+      fixup state and
+      returns 0).
+      `texture_count == 0`
+      is a valid input
+      (every material with
+      `useBaseColorTexture
+      == true` becomes a
+      fixup).
+- `src/scene/Scene.cpp`:
+    - Implementation that
+      walks `materials` in
+      a single pass. Skips
+      materials with
+      `useBaseColorTexture
+      == false`. For each
+      out-of-range id,
+      builds the
+      diagnostic string
+      with the material's
+      name + id + the bad
+      texture id + the
+      array bound, calls
+      `rr::core::Logger::warning`,
+      clears
+      `useBaseColorTexture`,
+      and increments the
+      fix counter. Returns
+      the counter.
+    - New `#include
+      "core/Logger.h"` +
+      `#include <string>`
+      to get
+      `Logger::warning`
+      and
+      `std::to_string`.
+- `src/main.cpp`:
+    - One demo caller:
+      `run_render_optix_textured_material`
+      (the smallest
+      dispatcher whose
+      inline scene already
+      has a textured
+      material + its
+      backing texture
+      array). Inserts
+      `(void)
+      rr::scene::validate_material_texture_ids(
+      scene.materials,
+      textures.size());`
+      between the texture
+      array's construction
+      and the
+      `RELATIVITYRENDER_ENABLE_OPTIX`
+      branch so BOTH the
+      audit-host fallback
+      AND the SDK-present
+      branch run the
+      validator. The
+      return is
+      intentionally
+      discarded: the
+      dispatcher's exit
+      code is unchanged;
+      the warning log is
+      the user-visible
+      signal.
+- This `BUILD_PLAN.md`
+  slice-closing entry.
+
+### What does NOT change
+
+- Every other dispatcher
+  (`run_render_textured_material`,
+  `run_render_optix_aovs`,
+  `run_render_optix_pathtrace`,
+  the `--render` /
+  `--render-aovs` CUDA
+  paths, ...): no
+  validator call wired
+  in. The next slice
+  (TEX-P.5 test-scene
+  coverage / a future
+  TEX-P.x rollout) can
+  thread it through
+  more dispatchers when
+  the value is needed.
+- `MaterialParams`:
+  byte-identical (same
+  POD; same defaults).
+- Kernel-side check:
+  byte-identical
+  (`CudaTestKernel.cu`,
+  `OptixPrograms.cu`).
+  The host validator
+  runs BEFORE upload;
+  the kernel still
+  range-checks at hit
+  time as defence in
+  depth.
+- `.rrscene` parser:
+  unchanged. The v1
+  scene format does not
+  yet author per-
+  material texture ids,
+  so the validator
+  currently sees zero
+  fixups in
+  `--render-optix-aovs`
+  and the path-tracer
+  scene-file
+  dispatchers.
+- CUDA / GPU upload
+  paths
+  (`GpuScene::upload_materials`,
+  `GpuScene::upload_textures`,
+  `OptixBackend::upload_*`):
+  zero bytes changed.
+
+### Behaviour matrix for `run_render_optix_textured_material`
+
+| Inline scene id  | Texture array size | Validator action            | Render outcome                        |
+|------------------|--------------------|-----------------------------|---------------------------------------|
+| 0 (in range)     | 1                  | No fixup, no warning.       | Quad samples texture 0 as before.     |
+| 7 (manually      | 1                  | One fixup; warning names    | Quad falls back to `baseColor`        |
+| edited           |                    | the material + bad id;      | (kernel sees                          |
+| out-of-range)    |                    | `useBaseColorTexture`       | `useBaseColorTexture == false`).      |
+|                  |                    | cleared.                    | Exit code unchanged.                  |
+| -1 (sentinel)    | any                | One fixup; warning names    | Same as above.                        |
+|                  |                    | the bad id (-1 < 0).        |                                       |
+| 0 (in range)     | 0 (no textures     | One fixup since 0 ∉ [0, 0). | Same as above.                        |
+|                  | uploaded)          |                             |                                       |
+
+### Master rule compliance
+
+- **Do not change normal
+  render path**: zero
+  bytes changed in
+  `src/cuda/`,
+  `src/renderer/`,
+  `src/pathtracer/`,
+  `src/optix/`. Only
+  authoring-side
+  validation in
+  `src/scene/` + one
+  inline call in
+  `src/main.cpp`.
+- **No CPU per-pixel
+  work**: validator runs
+  once over the
+  materials list at
+  scene-build time
+  (O(materials)); zero
+  per-pixel cost.
+- **Compiles**: both
+  audit-host configs
+  green (see Verified
+  at the build below).
+- **Update BUILD_PLAN**:
+  this entry, per master
+  rule 8.
+
+### Verified at the build
+
+- `cmake --build build`
+  (audit host,
+  RR_ENABLE_CUDA=OFF):
+  clean build; ctest
+  6/6 green.
+- `cmake --build
+  build-ON` (audit host,
+  RR_ENABLE_CUDA=OFF +
+  RR_ENABLE_OPTIX=ON):
+  clean build; ctest
+  7/7 green.
+- `./build-ON/bin/RelativityRender
+  --render-optix-textured-material
+  --width 16 --height 16`
+  on the audit host:
+  validator runs (no
+  warning, since the
+  inline scene's
+  material 0 references
+  texture 0 within
+  `[0, 1)`), then the
+  existing audit-host
+  fallback emits the
+  documented "OptiX
+  SDK required" error.
+  Exit 1; no crash;
+  validator path
+  exercised on the
+  happy case.
+- The warning-path
+  cases in the
+  behaviour matrix are
+  reachable by editing
+  the inline
+  `textured_params.baseColorTextureId`
+  to an out-of-range
+  value; not exercised
+  here to keep the
+  dispatcher's renderer
+  output stable on real
+  CUDA + SDK hosts.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
