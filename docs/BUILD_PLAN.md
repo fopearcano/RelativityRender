@@ -27192,6 +27192,202 @@ short-circuit.
   CUDA_HOST_VERIFICATION_PLAN
   formalises.
 
+## CUDA-H.5 — scene & texture checks
+
+**Scope of this slice
+(post-CUDA-H.4 core render
+checks): extend the runner's
+`base_commands()` catalogue
+with the three CUDA-H.5
+commands per
+`docs/CUDA_HOST_VERIFICATION_PLAN.md`
+§3.5 -- §3.6. No renderer
+source changes; no new
+runner argparse flags; only
+the command catalogue grows.
+The existing CUDA-H.4 file-
+existence + `size > 0`
+verification handles the
+new entries automatically
+via their declared
+`expected_outputs`.**
+
+### What ships
+
+- `tools/verify_cuda_host.py`
+  (`base_commands()` body
+  only):
+    - new `render-scene-spheres`
+      command:
+      `--render
+      scenes/test_spheres.rrscene
+      --output
+      output/render.ppm`
+      (matches the
+      verification plan's
+      §3.5 literal CLI
+      shape; the
+      `--output` argument
+      is redundant with
+      `run_render`'s default
+      but kept explicit for
+      clarity). Expected
+      output:
+      `output/render.ppm`.
+    - new
+      `render-texture-sample-test`
+      command:
+      `--render-texture-sample-test`.
+      Expected output:
+      `output/gpu_texture_sample_test.ppm`.
+    - new
+      `render-textured-material`
+      command:
+      `--render-textured-material`.
+      Expected output:
+      `output/gpu_textured_material.ppm`.
+- `base_commands()` now
+  returns 8 entries
+  (CUDA-H.4's 5 + CUDA-H.5's
+  3); the runner's per-
+  command timeout +
+  file-check infrastructure
+  applies unchanged.
+- This `BUILD_PLAN.md`
+  slice-closing entry.
+
+### Smoke results (audit host, no CUDA)
+
+```
+$ python3 tools/verify_cuda_host.py --skip-build \
+      --build-dir build_off
+build   : skipped (--skip-build)
+binary  : build_off/bin/RelativityRender
+commands: 8
+  [OK]   device-info (0.00s)
+  [FAIL] render-gradient (0.00s)
+  [FAIL] render-camera-rays (0.00s)
+  [FAIL] render-sphere (0.00s)
+  [FAIL] render-relativistic (0.00s)
+  [FAIL] render-scene-spheres (0.00s)
+  [FAIL] render-texture-sample-test (0.00s)
+  [FAIL] render-textured-material (0.00s)
+totals: 7 fail, 1 pass
+
+device-info analysis:
+  cuda_device_present : False
+  no_critical_errors  : True
+exit=1
+```
+
+Each render command's stderr
+carries the documented
+"requires CUDA" error from
+the matching dispatcher:
+
+- `--render-scene-spheres`:
+  hits `run_render` ->
+  `run_render_from_scene`'s
+  `#ifndef RR_HAS_CUDA`
+  branch ("--render-from-scene
+  requires CUDA").
+- `--render-texture-sample-test`:
+  hits `run_render_texture_sample_test`'s
+  CUDA-required fallback.
+- `--render-textured-material`:
+  hits `run_render_textured_material`'s
+  CUDA-required fallback.
+
+All durations < 0.01s
+(early-exit on missing
+CUDA); no hangs; runner
+exits 1 because seven
+commands failed.
+
+### Master rule compliance
+
+- **No renderer code
+  changes**: only the
+  `base_commands()` body
+  in
+  `tools/verify_cuda_host.py`
+  + this BUILD_PLAN entry
+  touched. No `src/`
+  modification; no new
+  CLI surface invented.
+- **Use existing CLI
+  only**: every command
+  in the new entries
+  uses CLI flags that
+  already exist on the
+  RelativityRender
+  binary
+  (`--render`,
+  `--output`,
+  `--render-texture-sample-test`,
+  `--render-textured-material`).
+  No new `--render-*`
+  surfaces are
+  introduced; the runner
+  treats the CLI as
+  black-box.
+- **Respect timeouts**:
+  the existing CUDA-H.3
+  per-command timeout
+  honours every render
+  command in the new
+  catalogue.
+- **No `--server`**:
+  none of the three new
+  commands invokes
+  `--server`.
+
+### Backward compatibility
+
+- The runner's argparse
+  surface is byte-
+  identical with CUDA-H.4.
+- The CUDA-H.2 / H.3 /
+  H.4 commands' Command
+  entries are byte-
+  identical with their
+  prior shape; only three
+  new entries appended.
+- `--skip-build`,
+  `--device-info`
+  parsing, build-phase
+  semantics: all
+  unchanged.
+- The existing OFF +
+  ON-audit-host ctest
+  baselines (6/6 + 7/7)
+  are unchanged because
+  no C++ source was
+  modified.
+
+### Verified at the build
+
+- `python3 -c "import ast;
+  ast.parse(open('tools/
+  verify_cuda_host.py').read())"`:
+  syntax check passes.
+- `--skip-build` smoke on
+  the OFF build (above)
+  exits 1 with 7 fail +
+  1 pass; no hangs.
+- The actual CUDA-host
+  smoke (8 commands all
+  pass with PPMs > 0
+  bytes) is structurally
+  in place but cannot be
+  empirically verified on
+  this audit host (no
+  nvcc) — exactly the
+  runtime-deferred
+  posture the
+  CUDA_HOST_VERIFICATION_PLAN
+  formalises.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:

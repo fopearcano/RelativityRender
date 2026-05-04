@@ -275,21 +275,30 @@ def base_commands() -> list[Command]:
 
     CUDA-H.2 shipped just ``--device-info`` (the fast smoke).
     CUDA-H.3 added the build phase + device-info analyzer
-    around it. CUDA-H.4 adds the four core CUDA render
+    around it. CUDA-H.4 added the four core CUDA render
     commands per ``docs/CUDA_HOST_VERIFICATION_PLAN.md`` §3.1
-    -- §3.4:
+    -- §3.4. CUDA-H.5 adds the scene-render + texture
+    commands per §3.5 -- §3.6:
 
-    - ``--render-gradient`` -> ``output/gpu_gradient.ppm``
-    - ``--render-rays``     -> ``output/gpu_camera_rays.ppm``
-    - ``--render-sphere``   -> ``output/gpu_sphere.ppm``
-    - ``--render-relativistic`` -> four PPMs at fixed beta
+    - ``--render-gradient``               -> ``output/gpu_gradient.ppm``
+    - ``--render-rays``                   -> ``output/gpu_camera_rays.ppm``
+    - ``--render-sphere``                 -> ``output/gpu_sphere.ppm``
+    - ``--render-relativistic``           -> four PPMs at fixed beta
       values (``output/sphere_beta_{000,025,075,095}.ppm``).
+    - ``--render scenes/test_spheres.rrscene
+       --output output/render.ppm``      -> ``output/render.ppm``
+      (per the verification plan's literal CLI shape; the
+      `--output` argument is redundant with `run_render`'s
+      "output/render.ppm" default but kept explicit for
+      clarity).
+    - ``--render-texture-sample-test``    -> ``output/gpu_texture_sample_test.ppm``
+    - ``--render-textured-material``      -> ``output/gpu_textured_material.ppm``
 
     Each entry carries the expected output paths in
     ``Command.expected_outputs``; the runner verifies file
     existence + ``size > 0`` after the command completes
     (CUDA-H.4 contract). Future CUDA-H.x slices add the
-    scene-render / texture / AOV / pathtrace commands.
+    AOV / pathtrace commands.
     """
 
     return [
@@ -317,6 +326,30 @@ def base_commands() -> list[Command]:
                 Path("output/sphere_beta_025.ppm"),
                 Path("output/sphere_beta_075.ppm"),
                 Path("output/sphere_beta_095.ppm"),
+            ],
+        ),
+        Command(
+            name="render-scene-spheres",
+            argv=[
+                "--render",
+                "scenes/test_spheres.rrscene",
+                "--output",
+                "output/render.ppm",
+            ],
+            expected_outputs=[Path("output/render.ppm")],
+        ),
+        Command(
+            name="render-texture-sample-test",
+            argv=["--render-texture-sample-test"],
+            expected_outputs=[
+                Path("output/gpu_texture_sample_test.ppm"),
+            ],
+        ),
+        Command(
+            name="render-textured-material",
+            argv=["--render-textured-material"],
+            expected_outputs=[
+                Path("output/gpu_textured_material.ppm"),
             ],
         ),
     ]
