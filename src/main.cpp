@@ -3916,25 +3916,21 @@ bool denoise_and_save_ppm(
                                inputs.width, inputs.height);
 }
 
-// OptiX Gap A Step 3.2: orchestration-helper SHELL.
-// Per `docs/OPTIX_GAP_A_STEP_3_TASK.md` §1-§5 the final
-// helper will sequence three calls
-// (`OptixRenderer::render_aovs_retain` -> build
-// `OptixDenoiser::Inputs` -> `denoise_and_save_ppm`) so the
-// retained device buffers stay alive across the denoise
-// invocation (Gap A's whole point). Step 3.2 ships only the
-// SHELL: input validation + entry log + a documented "not
-// ready" return. The actual `render_aovs_retain` /
-// `denoise_and_save_ppm` calls land in Step 3.3 per the
-// task doc's §3.
-//
-// Per the user's Step 3.2 rules: this shell does NOT call
-// the OptiX renderer or the denoiser. It validates the
-// pre-conditions documented in the task doc's §4 (the
-// caller's basic input contract) so the next slice's body
-// can rely on them, and it returns `false` so any (future)
-// CLI consumer that calls the shell behaves as if the
-// orchestration is unavailable.
+// OptiX Gap A Step 3.2 / 3.3: orchestration-helper
+// (partial). Step 3.2 shipped the SHELL (input validation +
+// entry log + "not ready" return). Step 3.3 wires the
+// first of the three sequenced calls from
+// `docs/OPTIX_GAP_A_STEP_3_TASK.md` §3:
+// `OptixRenderer::render_aovs_retain` (Step-2 surface). The
+// helper now allocates + retains the three AOV device
+// buffers (Beauty / Albedo / Normal) but does NOT yet
+// invoke the denoiser - that lands in Step 3.4. Per the
+// user's "do not call denoiser yet" rule, the helper logs
+// the render outcome + returns `false` with the documented
+// "denoiser call deferred to Step 3.4" status when the
+// render succeeds, so any (future) CLI consumer that calls
+// the helper sees the same `false`-not-ready return as in
+// Step 3.2.
 bool render_optix_aovs_and_denoise_to_ppm(
         rr::optix::OptixDenoiser&                denoiser,
         const rr::scene::Scene&                  scene,
@@ -3944,10 +3940,9 @@ bool render_optix_aovs_and_denoise_to_ppm(
         const std::string&                       out_path
             = std::string("output/optix_aovs_denoised.ppm")) {
     using rr::core::Logger;
-    (void)lights;
     (void)out_path;
 
-    Logger::info("optix-aovs-denoise: helper entered (Stage 3.2 shell)");
+    Logger::info("optix-aovs-denoise: helper entered (Step 3.3)");
 
     if (!denoiser.isAvailable()) {
         Logger::error(
@@ -3977,10 +3972,62 @@ bool render_optix_aovs_and_denoise_to_ppm(
         return false;
     }
 
+    // Step 3.3: run `render_aovs_retain` to populate the
+    // three retained AOV device buffers. The
+    // `AovRetainedBuffers` POD owns the buffers via
+    // `GpuBuffer<float>`; staying in scope through the
+    // (future) Step-3.4 denoise call keeps Gap A's RAII
+    // lifetime intact.
+    auto retained = rr::optix::OptixRenderer::render_aovs_retain(
+        scene, lights, width, height);
+    if (!retained.ok) {
+        Logger::error(
+            "optix-aovs-denoise: render_aovs_retain failed: "
+          + retained.message);
+        return false;
+    }
+
+    // Validate the retained struct's invariants per the
+    // Step 2 contract (`docs/OPTIX_GAP_A_STEP_2_TASK.md`
+    // §6 success row): the three GpuBuffer<float>
+    // instances are non-empty + carry width*height*3 floats
+    // each. A successful `render_aovs_retain` is
+    // documented to populate all three; the explicit check
+    // here is defensive (catches any future Step-2 body
+    // regression that returns `ok=true` without buffers).
+    const std::size_t expected_floats =
+        static_cast<std::size_t>(width)
+      * static_cast<std::size_t>(height)
+      * 3u;
+    if (retained.beauty_device.size() != expected_floats
+     || retained.albedo_device.size() != expected_floats
+     || retained.normal_device.size() != expected_floats) {
+        Logger::error(
+            "optix-aovs-denoise: retained AOV buffer sizes "
+            "do not match width*height*3; render_aovs_retain "
+            "produced a half-populated result.");
+        return false;
+    }
+    if (retained.beauty_device.device_ptr() == nullptr
+     || retained.albedo_device.device_ptr() == nullptr
+     || retained.normal_device.device_ptr() == nullptr) {
+        Logger::error(
+            "optix-aovs-denoise: retained AOV device "
+            "pointers are null even though "
+            "render_aovs_retain reported ok=true.");
+        return false;
+    }
+
+    Logger::info(
+        "optix-aovs-denoise: render_aovs_retain complete ("
+      + std::to_string(width) + "x" + std::to_string(height)
+      + ", " + std::to_string(retained.gpu_time_ms)
+      + "ms); denoiser call deferred to Step 3.4.");
+
     Logger::error(
-        "optix-aovs-denoise: helper not ready (Stage 3.2 "
-        "shell only; the full render_aovs_retain -> "
-        "denoise_and_save_ppm sequence lands in Step 3.3 "
+        "optix-aovs-denoise: helper not ready (Step 3.3 "
+        "stops after render_aovs_retain; the "
+        "denoise_and_save_ppm call lands in Step 3.4 "
         "per docs/OPTIX_GAP_A_STEP_3_TASK.md).");
     return false;
 }

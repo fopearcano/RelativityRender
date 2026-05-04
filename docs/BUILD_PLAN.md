@@ -28948,6 +28948,256 @@ rules.
   verification deferred
   to a CUDA host).
 
+## OptiX Gap A polish — Step 3.3 (retained AOV render call)
+
+**Scope of this slice
+(post-Step-3.2 helper shell):
+extend
+`render_optix_aovs_and_denoise_to_ppm`
+in `src/main.cpp` with the
+first of the three sequenced
+calls from
+`docs/OPTIX_GAP_A_STEP_3_TASK.md`
+§3:
+`OptixRenderer::render_aovs_retain`
+(Step-2 surface). The helper
+now allocates + retains the
+three AOV device buffers
+(Beauty / Albedo / Normal),
+validates them, and on
+success logs the timing +
+returns `false` with the
+documented "denoiser call
+deferred to Step 3.4" status.
+Per the user's "do not call
+denoiser yet" rule, no
+denoiser call is added here.**
+
+### What ships
+
+- `src/main.cpp`
+  (`render_optix_aovs_and_denoise_to_ppm`
+  body only):
+    - Removed the
+      `(void)lights;`
+      stub (lights is now
+      consumed by
+      `render_aovs_retain`).
+    - The Step-3.2
+      validation block
+      (denoiser
+      availability /
+      dimensions / scene
+      has visible mesh) is
+      preserved byte-
+      identical, then
+      followed by:
+        1. **`render_aovs_retain`
+           call**: invokes the
+           Step-2 SDK_FOUND
+           surface with the
+           caller's `scene` /
+           `lights` / `width` /
+           `height`. On
+           `retained.ok ==
+           false`: logs
+           `Logger::error(
+           "optix-aovs-denoise:
+           render_aovs_retain
+           failed: " +
+           retained.message)`
+           and returns false.
+        2. **Defensive buffer-
+           size check**:
+           verifies each of
+           the three
+           `GpuBuffer<float>`
+           instances has
+           `size() == width *
+           height * 3u`.
+           Catches any future
+           Step-2 body
+           regression that
+           returns `ok=true`
+           with half-populated
+           buffers.
+        3. **Defensive non-null
+           check**: verifies
+           each `device_ptr()`
+           is non-null. Same
+           rationale.
+        4. **Success log**:
+           `Logger::info(
+           "optix-aovs-denoise:
+           render_aovs_retain
+           complete (WxH,
+           Tms); denoiser
+           call deferred to
+           Step 3.4.")`.
+        5. **Final return**:
+           updated message to
+           `"helper not ready
+           (Step 3.3 stops
+           after
+           render_aovs_retain;
+           the
+           denoise_and_save_ppm
+           call lands in Step
+           3.4 ...)"`. Returns
+           false.
+- This `BUILD_PLAN.md`
+  slice-closing entry.
+
+### What does NOT change
+
+- `OptixRenderer::render_aovs_retain`
+  (Step 2 SDK_FOUND body):
+  byte-identical.
+- `OptixDenoiser::*` (no
+  denoiser call added):
+  byte-identical.
+- `denoise_and_save_ppm`
+  (Stage 21D.4 + 21D.5):
+  byte-identical.
+- `denoise_aov_buffers_to_ppm`
+  (Stage 19B.4):
+  byte-identical.
+- Every existing CLI
+  surface byte-identical
+  (no consumer / dispatcher
+  wiring; the new helper
+  remains callable but no
+  CLI reaches it yet —
+  Step 4 owns that).
+- `OptixRenderer.h`,
+  `OptixDenoiser.{h,cpp}`,
+  the CUDA path, all
+  `tests/`, `CMakeLists.txt`:
+  all byte-identical (only
+  `src/main.cpp` was
+  touched).
+
+### Behaviour matrix
+
+| Scenario                                    | Outcome                                  |
+|---------------------------------------------|------------------------------------------|
+| `denoiser.isAvailable() == false`           | log "denoiser is not available" + return |
+|                                             | false (Step 3.2 path; unchanged)         |
+| `width <= 0` OR `height <= 0`               | log "invalid dimensions" + return false  |
+|                                             | (Step 3.2 path; unchanged)               |
+| Scene has no visible non-empty mesh         | log "scene contains no visible non-empty |
+|                                             | mesh" + return false (Step 3.2 path)     |
+| `render_aovs_retain` returns                | log "render_aovs_retain failed: <msg>" + |
+| `ok=false`                                  | return false                             |
+| Retained buffer size != width*height*3      | log defensive size-mismatch error +      |
+|                                             | return false                             |
+| Retained device pointer is null             | log defensive null-pointer error +       |
+|                                             | return false                             |
+| All checks OK                               | log "render_aovs_retain complete (WxH,   |
+|                                             | Tms); denoiser call deferred to Step     |
+|                                             | 3.4." + log "helper not ready (Step 3.3  |
+|                                             | stops after render_aovs_retain; ...)" +  |
+|                                             | return false                             |
+
+NO call to `OptixDenoiser::*`
+or `denoise_and_save_ppm`
+in ANY path — per the
+user's "do not call denoiser
+yet" rule.
+
+### Master rule compliance
+
+- **Do not call denoiser
+  yet**: no
+  `denoiser.denoise(...)`,
+  `denoiser.set_inputs(...)`,
+  `denoiser.invoke(...)`,
+  `denoiser.shutdown()`,
+  or
+  `denoise_and_save_ppm(...)`
+  call. The only
+  `denoiser` interaction
+  is `denoiser.isAvailable()`
+  (status query, unchanged
+  from Step 3.2).
+- **No unrelated
+  refactors**: only the
+  helper body changed; no
+  other function was
+  touched. Existing
+  helpers + dispatchers
+  are byte-identical.
+- **Keep OptiX OFF build
+  working**: ctest 6/6
+  green on the audit host
+  with `RR_ENABLE_OPTIX=OFF`.
+  The helper is gated by
+  `#if defined(RR_HAS_CUDA)
+  && defined(RELATIVITYRENDER_ENABLE_OPTIX)`
+  and is not compiled in
+  OFF mode.
+
+### Backward compatibility
+
+- The helper is callable
+  but no caller exists
+  yet. Behaviour change
+  for direct callers
+  (none today): the
+  function no longer
+  marks `lights` as
+  `(void)`-discarded; it
+  forwards to
+  `render_aovs_retain`.
+- Build configurations
+  (OFF, ON-audit-host,
+  CUDA + OptiX-SDK host)
+  all produce the same
+  ctest baselines they
+  did pre-Step-3.3.
+- The CUDA-H.9
+  verification report on
+  the audit host is
+  byte-identical (only
+  the `Tree state` hash
+  line varies per the
+  CUDA-H.9 spec).
+
+### Verified at the build
+
+- `cmake -S . -B build_off
+  -DRR_ENABLE_CUDA=OFF
+  -DRR_ENABLE_OPTIX=OFF`
+  (audit host): clean
+  build; ctest 6/6 green.
+- `cmake -S . -B build_on_audit
+  -DRR_ENABLE_CUDA=OFF
+  -DRR_ENABLE_OPTIX=ON`
+  (audit host, no SDK):
+  clean build; ctest 7/7
+  green. The new
+  `render_aovs_retain`
+  call sits inside the
+  existing `RR_HAS_CUDA &&
+  ENABLE_OPTIX` gate;
+  `RR_HAS_CUDA` is
+  undefined here, so the
+  helper still does not
+  compile in this audit-
+  host configuration —
+  same as Step 3.2.
+- The actual SDK-found
+  call path (helper ->
+  `render_aovs_retain` ->
+  retained
+  `GpuBuffer<float>`
+  instances) is
+  structurally in place
+  but cannot be
+  empirically verified on
+  this audit host (no
+  CUDA + no OptiX SDK).
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
