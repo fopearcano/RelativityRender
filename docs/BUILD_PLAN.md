@@ -22430,6 +22430,162 @@ opaque byte arrays.
   verified on this audit
   host (no CUDA runtime).
 
+## Stage 21B.8 — denoiser setup
+
+**Scope of this slice (Stage 21B.8;
+master order #24, "Denoising"):
+call `optixDenoiserSetup`
+immediately after the Stage
+21B.7 buffer allocation in
+`OptixDenoiser::set_inputs`'s
+SDK_FOUND branch. The setup
+call initialises the per-
+resolution state buffer for
+the bound dimensions and
+binds the scratch buffer for
+subsequent
+`optixDenoiserInvoke` calls.
+Per the user's rules: "call
+optixDenoiserSetup", "provide
+image width/height + buffers",
+"no invoke yet". The call uses
+the default CUDA stream
+(`stream=0`) so it is
+synchronous from the host's
+perspective. Allocation +
+setup are now atomic from the
+caller's perspective: any
+failure rolls back both
+buffers so the class never
+holds a half-set-up
+denoiser.**
+
+### What ships
+
+- `src/optix/OptixDenoiser.cpp`
+  (SDK_FOUND `set_inputs`
+  branch only):
+    - new
+      `optixDenoiserSetup`
+      call after the
+      `state_buffer_.allocate`
+      / `scratch_buffer_.allocate`
+      pair. Arguments:
+        - `denoiser` — the
+          handle stored by
+          `initialize`.
+        - `stream` = 0
+          (default stream;
+          synchronous-from-
+          host).
+        - `outputWidth`,
+          `outputHeight` =
+          the validated
+          `inputs.width`,
+          `inputs.height`.
+        - `stateBuffer`,
+          `stateSizeInBytes`
+          = the Stage 21B.7
+          `state_buffer_`
+          `device_ptr` cast to
+          `CUdeviceptr` +
+          `state_size_`.
+        - `scratchBuffer`,
+          `scratchSizeInBytes`
+          = the Stage 21B.7
+          `scratch_buffer_`
+          `device_ptr` cast to
+          `CUdeviceptr` +
+          `scratch_size_`.
+    - On failure: resets
+      both buffers,
+      populates `last_error_`
+      with `"optixDenoiserSetup
+      failed: " +
+      ::optixGetErrorName(res)`,
+      emits the standard
+      `[OptiX:ERROR] denoiser
+      set_inputs failed:
+      ...` line on stderr,
+      returns false.
+    - Success log updated:
+      `[OptiX:INFO]
+      OptixDenoiser setup
+      complete: width=W
+      height=H stateSize=N
+      scratchSize=M.`
+- This `BUILD_PLAN.md`
+  slice-closing entry.
+
+### What does NOT ship
+
+- No `OptixImage2D`
+  descriptor triplet
+  construction
+  (`input_images_` stays
+  null).
+- No `optixDenoiserInvoke`,
+  no actual denoise work,
+  no image processing of
+  any kind.
+
+### Behaviour matrix
+
+| Build mode               | `set_inputs(inputs)` behaviour                                                |
+|--------------------------|-------------------------------------------------------------------------------|
+| OFF                      | `.cpp` not compiled                                                           |
+| ON, no SDK (audit host)  | Returns `false`; "requires OptiX SDK" stub fires before reaching the          |
+|                          | allocation / setup block.                                                     |
+| ON, SDK found            | Validates inputs; queries memory; allocates state + scratch; calls            |
+|                          | `optixDenoiserSetup`; sets `inputs_set_ = true`; returns `true`. The          |
+|                          | `invoke` call still returns "not implemented in Stage 21B.1" until a future   |
+|                          | sub-stage.                                                                    |
+
+### Backward compatibility
+
+- The class' public surface
+  is byte-identical with
+  Stage 21B.7 (no method
+  signatures changed; no
+  new members).
+- Behaviour on the audit
+  host is unchanged
+  (`set_inputs` audit-host
+  stub still returns `false`;
+  consumer keeps the Stage
+  19C.3 noisy-Beauty
+  fallback path).
+- The CUDA renderer is
+  byte-identical (the slice
+  touches only
+  `src/optix/OptixDenoiser.cpp`).
+
+### Verified at the build
+
+- `cmake -S . -B build_off
+  -DRR_ENABLE_CUDA=OFF
+  -DRR_ENABLE_OPTIX=OFF`
+  (audit host): clean build;
+  ctest 6/6 green.
+- `cmake -S . -B build_on_audit
+  -DRR_ENABLE_CUDA=OFF
+  -DRR_ENABLE_OPTIX=ON`
+  (audit host, no SDK):
+  clean build; ctest 7/7
+  green. The new
+  `optixDenoiserSetup`
+  call compiles inside the
+  SDK_FOUND gate; on this
+  host the gate is
+  undefined, so the call
+  is compiled out.
+- The SDK-found
+  `optixDenoiserSetup`
+  call path is structurally
+  in place but cannot be
+  empirically verified on
+  this audit host (no SDK).
+
 ## Next stage
 
 When prompted, the natural follow-ups are:

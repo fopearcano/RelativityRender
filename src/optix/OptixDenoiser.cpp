@@ -336,6 +336,34 @@ bool OptixDenoiser::set_inputs(const Inputs& inputs) noexcept {
         return false;
     }
 
+    // Stage 21B.8: per-resolution setup. Initialises the
+    // state buffer for the bound dimensions; the scratch
+    // buffer is also bound here so subsequent
+    // `optixDenoiserInvoke` calls can use it. Default
+    // stream (0) keeps the call synchronous from the
+    // host's perspective. No invoke happens here.
+    {
+        const ::OptixResult res = ::optixDenoiserSetup(
+            denoiser,
+            /*stream=*/0,
+            w, h,
+            reinterpret_cast<::CUdeviceptr>(state_buffer_.device_ptr()),
+            state_size_,
+            reinterpret_cast<::CUdeviceptr>(scratch_buffer_.device_ptr()),
+            scratch_size_);
+        if (res != OPTIX_SUCCESS) {
+            state_buffer_.reset();
+            scratch_buffer_.reset();
+            last_error_ =
+                std::string("optixDenoiserSetup failed: ")
+              + ::optixGetErrorName(res);
+            std::fprintf(stderr,
+                         "[OptiX:ERROR] denoiser set_inputs failed: %s\n",
+                         last_error_.c_str());
+            return false;
+        }
+    }
+
     // The OptixImage2D descriptor triplet is still not built
     // here (`input_images_` stays null); the descriptor
     // binding lands in a subsequent sub-stage.
@@ -346,9 +374,8 @@ bool OptixDenoiser::set_inputs(const Inputs& inputs) noexcept {
     last_error_.clear();
 
     std::fprintf(stderr,
-                 "[OptiX:INFO] OptixDenoiser memory resources "
-                 "queried + allocated: width=%u height=%u "
-                 "stateSize=%zu scratchSize=%zu.\n",
+                 "[OptiX:INFO] OptixDenoiser setup complete: "
+                 "width=%u height=%u stateSize=%zu scratchSize=%zu.\n",
                  w, h, state_size_, scratch_size_);
     return true;
 }
