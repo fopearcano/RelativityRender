@@ -27786,6 +27786,287 @@ file path" error.
   CUDA_HOST_VERIFICATION_PLAN
   formalises.
 
+## CUDA-H.8 — OptiX checks
+
+**Scope of this slice
+(post-CUDA-H.7 path-tracing
+checks): populate the runner's
+`optix_commands()` catalogue
+with the three OptiX entries
+the user called out (raygen /
+triangle / pathtrace) and add
+a "skipped" status so the
+OptiX entries appear in the
+summary as SKIPPED when the
+operator did NOT pass
+`--optix`. Per the user's
+"must not fail when OptiX is
+OFF" rule: skipped entries
+do NOT count as failures
+for the runner's exit code.
+NO renderer modification;
+only the runner's command
+catalogue + status semantics
+grow.**
+
+### What ships
+
+- `tools/verify_cuda_host.py`:
+    - `CommandResult.status`
+      gains a fifth value
+      `"skipped"`. Skipped
+      results are treated
+      as non-failures for
+      exit-code purposes;
+      the docstring
+      enumerates this
+      explicitly.
+    - `optix_commands()`
+      now returns three
+      entries (was empty
+      since CUDA-H.2):
+        - `render-optix-raygen`
+          (`--render-optix-raygen`)
+          ->
+          `output/optix_raygen.ppm`.
+        - `render-optix-triangle`
+          (`--render-optix-triangle`)
+          ->
+          `output/optix_triangle.ppm`.
+        - `render-optix-pathtrace`
+          (`--render-optix-pathtrace
+          scenes/test_full_scene.rrscene`,
+          mirroring the
+          CUDA-H.7
+          scene-file fix
+          since the OptiX
+          path tracer's
+          dispatcher carries
+          the same
+          file-required
+          contract per
+          `src/core/CommandLine.cpp:321`)
+          -> two PPMs in
+          one invocation
+          (`output/optix_pathtrace_spp1.ppm`
+          +
+          `output/optix_pathtrace_spp16.ppm`).
+    - `make_skipped_results(
+      commands, reason)`:
+      new helper that
+      synthesises a
+      ``status="skipped"``
+      `CommandResult` per
+      command, with the
+      reason recorded in
+      `stderr`. Used by
+      `main()` when
+      `--optix` is not
+      set so the OptiX
+      commands still
+      surface in the
+      summary as SKIPPED.
+    - `main()` updated:
+      when `args.optix` is
+      true, the OptiX
+      commands are appended
+      to the run list as
+      before. When false,
+      `make_skipped_results`
+      synthesises a SKIPPED
+      result for each
+      OptiX command and
+      they're appended
+      after the executed
+      commands. A
+      `[SKIP]` per-command
+      line and a "skipping
+      N OptiX command(s)"
+      header note both
+      appear in stdout.
+    - Exit-code
+      computation:
+      `overall_pass` is
+      true when every
+      result is `"pass"`
+      OR `"skipped"`
+      (was: only `"pass"`
+      counted). Skipped
+      OptiX entries no
+      longer mask CUDA
+      failures, but they
+      also don't add to
+      the failure count.
+- This `BUILD_PLAN.md`
+  slice-closing entry.
+
+### Smoke results (audit host, no CUDA + no OptiX SDK)
+
+**Without `--optix`:**
+
+```
+$ python3 tools/verify_cuda_host.py --skip-build \
+      --build-dir build_off
+binary  : build_off/bin/RelativityRender
+commands: 10 (skipping 3 OptiX command(s) -- pass --optix to include)
+  [OK]   device-info (0.00s)
+  [FAIL] render-gradient (0.00s)
+  ...
+  [FAIL] render-pathtrace (0.00s)
+  [SKIP] render-optix-raygen (skipped: --optix not set)
+  [SKIP] render-optix-triangle (skipped: --optix not set)
+  [SKIP] render-optix-pathtrace (skipped: --optix not set)
+totals: 9 fail, 1 pass, 3 skipped
+exit=1
+```
+
+The exit code is 1 (some
+CUDA commands failed) but
+the three OptiX entries
+contribute 0 to the failure
+count. They appear in the
+summary table with status
+`SKIPPED` and a `-` in the
+`rc` column.
+
+**With `--optix`:**
+
+```
+$ python3 tools/verify_cuda_host.py --skip-build \
+      --build-dir build_off --optix
+commands: 13
+  [OK]   device-info (0.00s)
+  ...
+  [FAIL] render-optix-raygen (0.00s)
+  [FAIL] render-optix-triangle (0.00s)
+  [FAIL] render-optix-pathtrace (0.00s)
+totals: 12 fail, 1 pass
+exit=1
+```
+
+The three OptiX commands
+run and each fails with the
+documented
+"`--render-optix-* requires
+OptiX. Rebuild with
+-DRR_ENABLE_OPTIX=ON ...`"
+error. No SKIPPED entries
+appear because the user
+explicitly opted in.
+
+### Master rule compliance
+
+- **Must not fail when
+  OptiX is OFF**: confirmed
+  by the smoke. Without
+  `--optix`, the three
+  OptiX commands are
+  marked SKIPPED and do
+  NOT count as failures.
+  The runner's exit code
+  is determined entirely
+  by the CUDA commands'
+  pass/fail state; the
+  presence or absence of
+  `--optix` does not
+  change which non-OptiX
+  commands fail.
+- **No renderer
+  modification**: only
+  `tools/verify_cuda_host.py`
+  + this BUILD_PLAN entry
+  touched. No `src/`
+  modification.
+- **Use existing CLI
+  only**: every flag
+  (`--render-optix-raygen`,
+  `--render-optix-triangle`,
+  `--render-optix-pathtrace`)
+  was already wired in
+  Stage 20C / 20E / 20I.
+  The runner treats them
+  as black-box.
+- **Respect timeouts**:
+  the existing CUDA-H.3
+  per-command timeout
+  honours every OptiX
+  command in the new
+  catalogue.
+- **No `--server`**:
+  none of the new
+  commands invokes
+  `--server`.
+
+### Backward compatibility
+
+- The runner's argparse
+  surface is byte-
+  identical with CUDA-H.7
+  (`--optix` already
+  existed since CUDA-H.2).
+- All prior CUDA-H.x
+  command entries are
+  byte-identical with
+  their prior shape; only
+  three new OptiX entries
+  appended via
+  `optix_commands()`.
+- Pre-CUDA-H.8 behaviour
+  with `--optix` off was
+  "OptiX commands silently
+  omitted from the
+  summary"; post-CUDA-H.8
+  they appear as SKIPPED.
+  Operator-visible
+  semantics are stronger
+  (more informative); no
+  prior CI / scripted
+  consumer existed that
+  could regress.
+- The existing OFF +
+  ON-audit-host ctest
+  baselines (6/6 + 7/7)
+  are unchanged because
+  no C++ source was
+  modified.
+
+### Verified at the build
+
+- `python3 -c "import ast;
+  ast.parse(open('tools/
+  verify_cuda_host.py').read())"`:
+  syntax check passes.
+- `--skip-build` smoke
+  without `--optix`
+  (above): exit 1; 3
+  SKIPPED entries
+  reported; CUDA
+  commands fail as
+  expected.
+- `--skip-build --optix`
+  smoke (above): exit 1;
+  no SKIPPED entries; all
+  three OptiX commands
+  run + fail with the
+  documented "requires
+  OptiX" error.
+- The actual CUDA + OptiX-
+  SDK host smoke (13
+  commands all pass with
+  all PPMs > 0 bytes when
+  `--optix` is set on a
+  host that has both
+  CUDA + OptiX SDK) is
+  structurally in place
+  but cannot be
+  empirically verified on
+  this audit host (no
+  nvcc, no OptiX SDK) —
+  exactly the runtime-
+  deferred posture the
+  CUDA_HOST_VERIFICATION_PLAN
+  formalises.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:

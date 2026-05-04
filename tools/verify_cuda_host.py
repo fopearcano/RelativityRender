@@ -106,6 +106,12 @@ class CommandResult:
     - ``"timeout"``: process exceeded the per-command timeout.
     - ``"error"``: runner-side failure (binary missing, OS
       error).
+    - ``"skipped"``: command was deliberately not executed
+      (e.g. an OptiX entry when ``--optix`` is not set).
+      CUDA-H.8 surfaces these in the summary so the operator
+      sees what would have been verified if the relevant
+      build flag had been enabled. Skipped commands do NOT
+      count as failures for the runner's exit code.
 
     ``stdout`` / ``stderr`` are captured strings (decoded UTF-8
     with ``errors="replace"`` so malformed bytes never blow up
@@ -391,16 +397,76 @@ def base_commands() -> list[Command]:
 
 
 def optix_commands() -> list[Command]:
-    """OptiX command set — empty in the CUDA-H.2 skeleton.
+    """OptiX command set per CUDA-H.8.
 
-    Future slices add commands per
-    ``docs/CUDA_HOST_VERIFICATION_PLAN.md`` §4. Each entry
-    will list its expected output PPMs in
-    ``Command.expected_outputs`` so the runner can verify file
-    existence + non-emptiness after the command exits.
+    CUDA-H.2 left this as an empty placeholder. CUDA-H.8
+    populates it with the three OptiX entries the user
+    specifically called out (raygen, triangle, pathtrace).
+    Other OptiX commands listed in the verification plan §4
+    (test, relativity, mesh / material / lighting / shadow,
+    textured, AOVs, denoise) are deferred to future slices
+    if the operator wants them.
+
+    The runner only RUNS these when ``--optix`` is set; when
+    not set, ``main()`` substitutes a SKIPPED ``CommandResult``
+    for each via ``make_skipped_results(...)`` so the
+    operator still sees what would have been verified.
     """
 
-    return []
+    return [
+        Command(
+            name="render-optix-raygen",
+            argv=["--render-optix-raygen"],
+            expected_outputs=[Path("output/optix_raygen.ppm")],
+        ),
+        Command(
+            name="render-optix-triangle",
+            argv=["--render-optix-triangle"],
+            expected_outputs=[Path("output/optix_triangle.ppm")],
+        ),
+        Command(
+            name="render-optix-pathtrace",
+            # `--render-optix-pathtrace` requires a scene-file
+            # argument (per src/core/CommandLine.cpp:321; same
+            # contract as the CUDA-side `--render-pathtrace`).
+            argv=[
+                "--render-optix-pathtrace",
+                "scenes/test_full_scene.rrscene",
+            ],
+            expected_outputs=[
+                Path("output/optix_pathtrace_spp1.ppm"),
+                Path("output/optix_pathtrace_spp16.ppm"),
+            ],
+        ),
+    ]
+
+
+def make_skipped_results(
+    commands: list[Command],
+    reason: str,
+) -> list[CommandResult]:
+    """Synthesize a SKIPPED CommandResult per command.
+
+    Used by main() when ``--optix`` is not set: the OptiX
+    commands are still surfaced in the summary so the
+    operator sees them as SKIPPED, with the reason recorded
+    in ``stderr`` for clarity. Skipped results do NOT count
+    as failures (per CUDA-H.8 "Must not fail when OptiX is
+    OFF").
+    """
+
+    return [
+        CommandResult(
+            name=cmd.name,
+            argv=list(cmd.argv),
+            status="skipped",
+            returncode=None,
+            duration_s=0.0,
+            stdout="",
+            stderr=f"[runner] skipped: {reason}",
+        )
+        for cmd in commands
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -791,17 +857,34 @@ def main(argv: list[str] | None = None) -> int:
 
     # ---- Render command catalogue -------------------------
     commands = base_commands()
+    optix_cmds = optix_commands()
+    skipped_optix: list[CommandResult] = []
     if args.optix:
-        commands += optix_commands()
+        commands += optix_cmds
+    elif optix_cmds:
+        # CUDA-H.8: when --optix is not set, surface the OptiX
+        # commands in the summary as SKIPPED with a reason
+        # recorded. They do NOT count as failures (per the
+        # "Must not fail when OptiX is OFF" rule).
+        skipped_optix = make_skipped_results(
+            optix_cmds,
+            reason="--optix flag not set",
+        )
 
     if not commands:
         print("no render commands configured; exiting after build",
               file=sys.stderr)
+        all_results.extend(skipped_optix)
         print_summary(all_results)
-        return 0 if all(r.status == "pass" for r in all_results) else 1
+        return 0 if all(
+            r.status in ("pass", "skipped") for r in all_results
+        ) else 1
 
     print(f"binary  : {binary}")
-    print(f"commands: {len(commands)}")
+    print(f"commands: {len(commands)} (skipping {len(skipped_optix)} "
+          f"OptiX command(s) — pass --optix to include)"
+          if skipped_optix
+          else f"commands: {len(commands)}")
     cmd_results = _run_command_list(
         binary=binary,
         commands=commands,
@@ -809,6 +892,13 @@ def main(argv: list[str] | None = None) -> int:
         halt_on_failure=False,
     )
     all_results.extend(cmd_results)
+    # Append the skipped OptiX entries AFTER the run results so
+    # the summary table has the executed commands first, then
+    # the deliberately-skipped ones at the bottom.
+    if skipped_optix:
+        for sr in skipped_optix:
+            print(f"  [SKIP] {sr.name} (skipped: --optix not set)")
+        all_results.extend(skipped_optix)
 
     # ---- Device-info output analysis ----------------------
     # CUDA-H.3 records two boolean signals in memory; no file
@@ -828,7 +918,11 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  cuda_device_present : {signals.cuda_device_present}")
         print(f"  no_critical_errors  : {signals.no_critical_errors}")
 
-    overall_pass = all(r.status == "pass" for r in all_results)
+    # Per CUDA-H.8: "skipped" is NOT a failure. Exit 0 when
+    # every result is either "pass" or "skipped".
+    overall_pass = all(
+        r.status in ("pass", "skipped") for r in all_results
+    )
     return 0 if overall_pass else 1
 
 
