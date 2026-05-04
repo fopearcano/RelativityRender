@@ -694,6 +694,21 @@ if(RR_BUILD_TESTS)
     rr_apply_warnings(demo_tests)
     add_test(NAME demo_tests COMMAND demo_tests)
 
+    # renderer_tests (PT-P.3) covers `AccumulationBuffer`'s host-side
+    # state machine on the cold paths the PT-P.3 polish slice
+    # tightened: default state, resize(0,0) collapses to default, and
+    # resize(W,H) called twice with the same dimensions leaves the
+    # buffer in a 0-sample state. The class's public API is the only
+    # surface exercised; no kernel launches are required, so the test
+    # runs on the audit-host build (where GpuBuffer::allocate without
+    # CUDA returns false and the resize hits the failed-allocate path)
+    # and on a CUDA-host build (where the no-op fast path collapses to
+    # a single launch_accum_clear call) without modification.
+    add_executable(renderer_tests tests/renderer_tests.cpp)
+    target_link_libraries(renderer_tests PRIVATE rr_renderer)
+    rr_apply_warnings(renderer_tests)
+    add_test(NAME renderer_tests COMMAND renderer_tests)
+
     # optix_tests (Stage 20D) covers the OptiX backend's host-
     # side surface: OptixBackend lifecycle (initialize / shutdown
     # / device_context / last_error), OptixGas default + move +

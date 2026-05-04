@@ -35,6 +35,19 @@ bool AccumulationBuffer::resize(int width, int height) {
     const std::size_t float_count =
         static_cast<std::size_t>(width) * height * kFloatsPerPixel;
 
+    // PT-P.3 fast path: when called with the existing dimensions
+    // AND a buffer of the matching size, skip the reallocate and
+    // forward straight to `reset()`. Saves a `cudaFree +
+    // cudaMalloc + cudaMemset` round trip on the common
+    // "render the same scene twice" path. The external contract
+    // is identical to the slow path: width/height/samples_count
+    // all end up in the same post-resize state.
+    if (width == width_ && height == height_
+     && device_.size() == float_count) {
+        samples_ = 0;
+        return reset();
+    }
+
     if (!device_.allocate(float_count)) {
         // GpuBuffer::allocate handles the "no backend / OOM"
         // path by leaving itself empty; mirror that here so the
@@ -56,6 +69,13 @@ bool AccumulationBuffer::resize(int width, int height) {
 
 bool AccumulationBuffer::reset() {
     if (!valid()) return false;
+    // PT-P.3: zero `samples_` BEFORE the launcher call. The
+    // existing ordering is already correct (the assignment runs
+    // unconditionally above the `RR_HAS_CUDA` branch), but the
+    // doc-comment makes the invariant explicit so a future
+    // refactor that moves the assignment to "after a successful
+    // launch" cannot regress the host-only build into a
+    // "samples > 0 but not actually cleared" state.
     samples_ = 0;
 #ifdef RR_HAS_CUDA
     return rr::cuda::launch_accum_clear(device_.device_ptr(),

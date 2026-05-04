@@ -32082,6 +32082,429 @@ touches.**
   the current source
   byte-for-byte.
 
+## PT-P.3 — accumulation reset correctness (impl)
+
+**Scope of this slice
+(post-PT-P.2 task
+definition complete):
+ship the first
+`PATH_TRACER_POLISH_PLAN.md`
+implementation slice
+exactly as specified
+by
+`docs/PATH_TRACER_POLISH_STEP_1_TASK.md`.
+Two host-side
+cleanups on
+`rr::renderer::AccumulationBuffer`'s
+cold paths plus a new
+ctest binary that
+exercises the
+post-conditions. No
+kernel touches; no
+CLI flags; no
+dispatcher changes;
+byte-identical
+rendered output for
+every existing
+render.**
+
+### What ships
+
+- `src/renderer/AccumulationBuffer.cpp`
+  (modified):
+    - **§1.1 doc-only
+      ordering note**
+      added above the
+      existing
+      `samples_ = 0;`
+      assignment in
+      `reset()`. The
+      existing ordering
+      is already
+      correct (the
+      assignment runs
+      unconditionally
+      above the
+      `RR_HAS_CUDA`
+      branch); the
+      doc-comment makes
+      the invariant
+      explicit so a
+      future refactor
+      cannot regress
+      the host-only
+      build into a
+      "samples > 0 but
+      not actually
+      cleared" state.
+      ZERO logic
+      change.
+    - **§1.2 no-op
+      fast path**
+      added to
+      `resize(w, h)`.
+      When called with
+      `w == width_ &&
+      h == height_ &&
+      device_.size()
+      == float_count`,
+      sets `samples_
+      = 0` and forwards
+      to `reset()`,
+      skipping the
+      `device_.allocate`
+      reallocate. The
+      external contract
+      is identical to
+      the slow path;
+      the optimisation
+      is the
+      `cudaFree +
+      cudaMalloc +
+      cudaMemset`
+      round trip on
+      the "render the
+      same scene
+      twice" path.
+- `tests/renderer_tests.cpp`
+  (NEW): three host-
+  only test cases
+  using the same
+  `RR_CHECK` macro
+  + counter pattern
+  the existing
+  ctest binaries use
+  (`gpu_tests.cpp`
+  precedent):
+    - `test_default_state`:
+      a default-
+      constructed
+      `AccumulationBuffer`
+      has `width() ==
+      0`,
+      `height() == 0`,
+      `samples_count()
+      == 0`, and
+      `valid() ==
+      false`.
+    - `test_resize_zero_dimensions_returns_to_default`:
+      `resize(0, 0)`
+      collapses any
+      buffer back to
+      the default
+      state and
+      returns false.
+    - `test_resize_same_dimensions_twice_keeps_zero_samples`:
+      PT-P.3 §1.3.
+      Calls
+      `resize(64, 64)`
+      twice. Asserts
+      `samples_count()
+      == 0` after the
+      second call and
+      that
+      width/height
+      are either
+      `(64, 64)` (the
+      CUDA-host happy
+      path) or
+      `(0, 0)` (the
+      audit-host
+      failed-allocate
+      path). The
+      tolerance keeps
+      the test
+      stable on every
+      build config
+      while still
+      asserting the
+      PT-P.3
+      invariant
+      (zero-samples
+      after re-resize).
+- `CMakeLists.txt`
+  (modified): new
+  `add_executable(renderer_tests
+  tests/renderer_tests.cpp)`
+  block matching the
+  `pathtracer_tests` /
+  `gpu_tests` /
+  `relativity_tests`
+  /  `demo_tests`
+  pattern. Links
+  PRIVATE against
+  `rr_renderer`.
+  ~15 lines.
+- This `BUILD_PLAN.md`
+  slice-closing entry.
+
+### What does NOT change
+
+- `src/cuda/` —
+  zero bytes
+  changed.
+- `src/optix/` —
+  zero bytes
+  changed.
+- `src/pathtracer/`
+  — zero bytes
+  changed.
+- `src/main.cpp` —
+  zero bytes
+  changed.
+- `src/core/CommandLine.{h,cpp}`
+  — zero bytes
+  changed.
+- All `*.rrscene`
+  files under
+  `scenes/` — zero
+  bytes changed.
+- `src/renderer/AccumulationBuffer.h`
+  — zero bytes
+  changed (the
+  public API is
+  byte-identical;
+  PT-P.3 only
+  edits the .cpp
+  body).
+- `PathTraceConfig`
+  — byte-identical
+  (no new fields;
+  the §4.7 firefly-
+  clamp placeholder
+  is a separate
+  future slice).
+- All TEX-P.x +
+  PT-P.{1,2}
+  artefacts:
+  byte-identical.
+
+### Diff size deviation note
+
+The PT-P.2 task's §4.3
+"source-diff size
+cap" set
+`AccumulationBuffer.cpp`
+at <= 12 added /
+<= 4 deleted. This
+slice ships 20 added
+/ 0 deleted. The
+deviation is entirely
+doc-comment text:
+the §1.1 doc-comment
+is 7 lines (the body
+of the "doc-only
+choice" the task
+recommended), the
+§1.2 fast-path
+doc-comment is 7
+lines explaining the
+optimisation, and
+the actual fast-path
+LOGIC is exactly 4
+lines. Per the task
+("Anything larger
+should be flagged in
+the slice's
+BUILD_PLAN entry as
+a deviation from the
+plan"), this entry
+is the flag. The
+deviation reflects
+the task's own
+emphasis on the
+doc-only nature of
+§1.1; trimming the
+doc-comment would
+defeat the polish's
+purpose, which is
+to make the
+ordering invariant
+explicit.
+
+### Behaviour matrix
+
+| Scenario                                                | Pre-PT-P.3                                    | PT-P.3                                        |
+|---------------------------------------------------------|-----------------------------------------------|-----------------------------------------------|
+| `--render-pathtrace <scene>` on CUDA host               | spp=1 + spp=16 PPMs produced, byte-identical  | byte-identical with pre-PT-P.3                |
+| `--render-pathtrace <scene>` on audit host              | "requires CUDA" fallback, exit 1              | byte-identical fallback                       |
+| `--render-optix-pathtrace <scene>` on SDK host          | OptiX path-trace PPMs                         | byte-identical                                |
+| First render of a scene (cold buffer)                   | resize -> allocate -> memset -> render        | unchanged (slow path executes)                |
+| Re-render same scene at same resolution                 | resize -> free -> alloc -> memset -> render   | resize -> reset -> memset -> render           |
+|                                                         |                                               | (saves cudaFree + cudaMalloc round trip)      |
+| Re-render at a different resolution                     | resize -> free -> alloc -> memset -> render   | unchanged (slow path executes; size mismatch) |
+| `reset()` on a host-only build                          | returns false; samples_ already 0             | byte-identical (doc-only change at this site) |
+
+### Master rule compliance
+
+- **Build
+  incrementally /
+  every step
+  compilable**:
+  both audit-host
+  configs green
+  (build 7/7,
+  build-ON 8/8).
+- **No CPU per-pixel
+  work**: the
+  polish touches
+  cold-path host-
+  side state only
+  (`AccumulationBuffer::resize`
+  /  `reset`); zero
+  changes in the
+  per-pixel
+  computation
+  graph.
+- **Modify maximum
+  2 source files
+  unless the task
+  doc explicitly
+  says otherwise**:
+  the task doc
+  §2's
+  "Files likely
+  involved" table
+  explicitly
+  authorises
+  `src/renderer/AccumulationBuffer.cpp`
+  + a new test
+  file +
+  `CMakeLists.txt`
+  for the new
+  ctest binary.
+  This slice
+  modifies exactly
+  those three
+  files (plus the
+  documentation
+  entry here);
+  the source-file
+  count
+  (`.cpp`s with
+  changes) is 1.
+- **No broad
+  refactor / no
+  new rendering
+  modes / no C4D
+  / no server /
+  no UI / no node
+  editor**: zero
+  matches.
+- **Keep CUDA path
+  behaviour
+  stable**: the
+  cold-path fast
+  path collapses
+  to the same end
+  state; on the
+  hot path
+  (`accumulate_sample`
+  /
+  `resolve_to_image`)
+  zero changes.
+  `pathtrace_spp_*.ppm`
+  on a CUDA host
+  remains
+  byte-identical
+  (verifiable by
+  pixel-diffing
+  pre/post-slice
+  PPMs once a
+  CUDA-host run
+  is performed).
+- **Keep OptiX
+  OFF build
+  working**:
+  build 7/7 ctest
+  green.
+- **Update
+  BUILD_PLAN**:
+  this entry, per
+  master rule 8.
+
+### Verified at the build
+
+- `cmake -S . -B
+  build` (audit
+  host,
+  RR_ENABLE_CUDA=OFF,
+  RR_ENABLE_OPTIX=OFF):
+  configure +
+  clean build,
+  zero new
+  warnings; ctest
+  7/7 green
+  (count grows
+  from 6/6 to
+  7/7; the new
+  test is
+  `renderer_tests`).
+- `cmake -S . -B
+  build-ON
+  -DRR_ENABLE_OPTIX=ON`
+  (audit host):
+  configure +
+  clean build,
+  zero new
+  warnings; ctest
+  8/8 green
+  (count grows
+  from 7/7 to
+  8/8).
+- `./build-ON/bin/RelativityRender
+  --render-pathtrace
+  scenes/test_full_scene.rrscene`
+  on the audit
+  host: emits the
+  documented
+  "--render-pathtrace
+  requires CUDA"
+  audit-host
+  fallback. Exit
+  1; no kernel
+  crash;
+  byte-identical
+  with the
+  pre-PT-P.3
+  baseline.
+- `./build/bin/RelativityRender
+  --scene-info
+  scenes/test_textured_material.rrscene`:
+  emits the
+  TEX-P.6
+  fixture's
+  expected log
+  sequence (one
+  Case 1 info +
+  two Case 3
+  warnings;
+  `fixups
+  applied: 2`).
+  Confirms zero
+  PT-P.3 ripple
+  onto the
+  texture
+  validator.
+- `git diff
+  --stat`: 35
+  net new lines
+  across 3 files
+  (`src/renderer/AccumulationBuffer.cpp`
+  +20,
+  `tests/renderer_tests.cpp`
+  +new file,
+  `CMakeLists.txt`
+  +15). Matches
+  the task's
+  expected diff
+  shape modulo
+  the flagged
+  doc-comment
+  deviation
+  documented
+  above.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
