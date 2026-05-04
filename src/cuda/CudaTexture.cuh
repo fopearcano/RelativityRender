@@ -66,6 +66,19 @@ struct DeviceTextureView {
     return v.pixels != nullptr && v.width > 0 && v.height > 0;
 }
 
+// Magenta `(1, 0, 1)` is the universal "invalid texture sample"
+// fallback. Anywhere the sampler cannot safely produce a real
+// texel value it returns this colour so the failure shows up
+// unmistakably in the framebuffer rather than silently corrupting
+// neighbouring pixels. Material-aware call sites (e.g.
+// `CudaTestKernel.cu`, `OptixPrograms.cu`) gate around the
+// sampler at hit time and substitute `params.baseColor` instead
+// of letting the magenta surface — TEX-P.3 deliberately keeps the
+// sampler-level fallback distinct so a sampler invoked with a
+// genuinely broken view (caller forgot the kernel-side gate)
+// still cannot crash the GPU.
+inline constexpr rr::math::Vec3 kInvalidTextureFallback{1.0f, 0.0f, 1.0f};
+
 // Nearest-neighbor sampling with clamp-to-edge UV addressing.
 //
 // `uv` is in `[0, 1] x [0, 1]` with origin at the top-left texel
@@ -83,20 +96,41 @@ struct DeviceTextureView {
 // Alpha is dropped (validation kernel writes opaque output;
 // alpha-aware callers can bypass this helper).
 //
-// Safe fallback: if `device_texture_view_valid(view)` is false
-// (null pixels OR non-positive dimensions) the function returns
-// `(1, 0, 1)` magenta. The kernel never crashes; the output
-// pixel reflects the failure visually.
+// TEX-P.3 GPU safety contract. Every input that could otherwise
+// crash the GPU or read out-of-bounds is converted into a
+// fallback colour return:
+//   1. `view.pixels == nullptr`             -> fallback
+//   2. `view.width  <= 0` (incl. negative)  -> fallback
+//   3. `view.height <= 0` (incl. negative)  -> fallback
+//   4. `uv.x` or `uv.y` is NaN              -> treated as 0
+//   5. `uv.x` or `uv.y` is +/-inf           -> clamped to [0, 1]
+//   6. `view.format` is not a declared      -> fallback
+//      `ImageTextureFormat` value
+// The texel index produced by the clamp + quantise step is
+// always in `[0, width*height)` provided checks 1-3 hold, so the
+// pointer arithmetic in the format branches cannot read past the
+// owning buffer (assuming the upload path sized the buffer for
+// `width * height * stride(format)` bytes — which is an upstream
+// invariant that `GpuTexture::upload_from` already enforces).
 [[nodiscard]] RR_HD inline rr::math::Vec3 sampleTextureNearest(
         const DeviceTextureView& view,
         rr::math::Vec2           uv) noexcept {
+    // Guard 1-3: pointer + dimension validity. Folded into one
+    // helper so the contract is a single boolean test.
     if (!device_texture_view_valid(view)) {
-        return rr::math::Vec3{1.0f, 0.0f, 1.0f};
+        return kInvalidTextureFallback;
     }
 
-    // Clamp-to-edge in UV space, then quantize to a texel index.
-    const float u_clamped = rr::math::clamp(uv.x, 0.0f, 1.0f);
-    const float v_clamped = rr::math::clamp(uv.y, 0.0f, 1.0f);
+    // Guard 4-5: NaN UV would propagate through `clamp` and turn
+    // `static_cast<int>(NaN * width)` into undefined behaviour
+    // (no defined integer mapping for NaN). Replace NaN with 0
+    // before the clamp; +/-inf is handled correctly by `clamp`
+    // (-inf < 0 -> returns 0; 1 < +inf -> returns 1) so it
+    // needs no special case.
+    const float u_in   = (uv.x == uv.x) ? uv.x : 0.0f;
+    const float v_in   = (uv.y == uv.y) ? uv.y : 0.0f;
+    const float u_clamped = rr::math::clamp(u_in, 0.0f, 1.0f);
+    const float v_clamped = rr::math::clamp(v_in, 0.0f, 1.0f);
 
     int tx = static_cast<int>(u_clamped * static_cast<float>(view.width));
     int ty = static_cast<int>(v_clamped * static_cast<float>(view.height));
@@ -112,24 +146,36 @@ struct DeviceTextureView {
         static_cast<std::size_t>(ty) * static_cast<std::size_t>(view.width)
       + static_cast<std::size_t>(tx);
 
-    if (view.format == rr::texture::ImageTextureFormat::Rgba32F) {
-        // 16 bytes / texel = 4 floats.
-        const float* fp = reinterpret_cast<const float*>(view.pixels)
-                        + texel_index * 4u;
-        return rr::math::Vec3{fp[0], fp[1], fp[2]};
-    }
-
-    // Default branch covers `Rgba8`, the only other declared
-    // format today. 4 bytes / texel; each channel byte maps
-    // `[0, 255]` -> `[0, 1]`.
-    const unsigned char* bp = reinterpret_cast<const unsigned char*>(view.pixels)
+    // Guard 6: explicit format dispatch. The default arm catches
+    // any future / corrupted enum value rather than letting it
+    // fall through and misinterpret the pixel bytes.
+    switch (view.format) {
+        case rr::texture::ImageTextureFormat::Rgba32F: {
+            // 16 bytes / texel = 4 floats.
+            const float* fp = reinterpret_cast<const float*>(view.pixels)
                             + texel_index * 4u;
-    constexpr float kInv255 = 1.0f / 255.0f;
-    return rr::math::Vec3{
-        static_cast<float>(bp[0]) * kInv255,
-        static_cast<float>(bp[1]) * kInv255,
-        static_cast<float>(bp[2]) * kInv255
-    };
+            return rr::math::Vec3{fp[0], fp[1], fp[2]};
+        }
+        case rr::texture::ImageTextureFormat::Rgba8: {
+            // 4 bytes / texel; each channel byte maps
+            // `[0, 255]` -> `[0, 1]`.
+            const unsigned char* bp =
+                reinterpret_cast<const unsigned char*>(view.pixels)
+              + texel_index * 4u;
+            constexpr float kInv255 = 1.0f / 255.0f;
+            return rr::math::Vec3{
+                static_cast<float>(bp[0]) * kInv255,
+                static_cast<float>(bp[1]) * kInv255,
+                static_cast<float>(bp[2]) * kInv255
+            };
+        }
+    }
+    // Unknown / corrupted format value: fall through to fallback
+    // rather than guess a stride. Reachable in practice only if
+    // the upload path or the launch params carry a bogus enum
+    // byte; both contracts are stricter than that today, so this
+    // arm is defence in depth.
+    return kInvalidTextureFallback;
 }
 
 }  // namespace rr::cuda

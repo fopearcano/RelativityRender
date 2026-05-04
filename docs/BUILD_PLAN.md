@@ -30041,6 +30041,337 @@ caller.**
   output stable on real
   CUDA + SDK hosts.
 
+## TEX-P.3 — GPU invalid-texture fallback
+
+**Scope of this slice
+(post-TEX-P.2 host-side
+validator complete):
+tighten the GPU-side
+nearest-neighbour sampler
+`rr::cuda::sampleTextureNearest`
+so every input that could
+otherwise crash the GPU
+or read out-of-bounds
+turns into a fallback-colour
+return instead. The kernel
+call sites that already
+gate on
+`useBaseColorTexture` AND
+`baseColorTextureId` AND
+the texture-array bound
+(CudaTestKernel.cu,
+OptixPrograms.cu) are
+unchanged; this slice is
+defence-in-depth INSIDE
+the sampler so a caller
+that forgets a guard, OR
+a launch params POD that
+arrives with a corrupted
+field, still cannot fault
+the kernel.**
+
+### What ships
+
+- `src/cuda/CudaTexture.cuh`:
+    - **New named fallback
+      constant**
+      `inline constexpr
+      rr::math::Vec3
+      kInvalidTextureFallback{1, 0, 1}`
+      replaces the
+      previously-inline
+      magenta literal. Same
+      colour; the constant
+      makes the
+      "sampler-level
+      fallback is magenta"
+      contract searchable
+      and lets future
+      slices override it
+      without touching
+      every return site.
+      Doc-comment notes the
+      relationship to
+      material-aware call
+      sites (which gate
+      around the sampler
+      and substitute
+      `params.baseColor`
+      so the magenta never
+      surfaces in correctly-
+      authored scenes).
+    - **`sampleTextureNearest`
+      contract section
+      added** to the
+      function header.
+      Lists the six
+      defended classes of
+      invalid input:
+        1. `pixels ==
+           nullptr`
+        2. `width  <= 0`
+           (incl. negative)
+        3. `height <= 0`
+           (incl. negative)
+        4. `uv.x` / `uv.y`
+           is NaN
+        5. `uv.x` / `uv.y`
+           is +/-inf
+        6. `format` is not
+           a declared
+           `ImageTextureFormat`
+           value
+      Documents that the
+      texel index is in
+      `[0, width*height)`
+      so the pointer
+      arithmetic in the
+      format branches
+      never reads past the
+      owning buffer
+      provided
+      `GpuTexture::upload_from`
+      sized the buffer for
+      `width * height *
+      stride(format)`
+      bytes (an upstream
+      invariant).
+    - **Body change 1 —
+      NaN-UV guard**: the
+      `clamp` call alone
+      cannot tame a NaN
+      UV (NaN compares
+      false against both
+      bounds, so `clamp`
+      passes it through;
+      `static_cast<int>(NaN
+      * width)` is then
+      undefined behaviour
+      on the GPU).
+      Replaced with a
+      one-line NaN test
+      (`x == x` is the
+      canonical
+      header-only NaN
+      check) that
+      substitutes 0 for a
+      NaN before clamping;
+      `+/-inf` is left to
+      `clamp` (which
+      already collapses
+      it to 0 / 1 via the
+      `<` comparisons).
+    - **Body change 2 —
+      explicit format
+      switch**: the
+      previous `if (Rgba32F)
+      ... else (Rgba8)`
+      structure silently
+      reinterpreted any
+      unknown enum value
+      as `Rgba8`. Replaced
+      with a `switch`
+      whose `Rgba32F` /
+      `Rgba8` arms are
+      byte-identical with
+      the old code AND a
+      post-switch fall-
+      through that returns
+      `kInvalidTextureFallback`.
+      Reachable in practice
+      only if a launch
+      params or texture
+      view carries a bogus
+      enum byte; the upload
+      path stays the only
+      authoritative writer
+      so this arm is
+      defence in depth.
+    - The existing
+      `device_texture_view_valid`
+      helper is unchanged
+      (already covers
+      checks 1-3); the new
+      NaN guard and format
+      switch live INSIDE
+      `sampleTextureNearest`
+      because they depend
+      on per-call inputs
+      (UV) and per-view
+      state (format) that
+      the view-valid
+      helper does not see.
+- This `BUILD_PLAN.md`
+  slice-closing entry.
+
+### What does NOT change
+
+- `DeviceTextureView` POD:
+  byte-identical (same
+  fields, same
+  defaults, same layout).
+  No new metadata; the
+  upload path is
+  unchanged.
+- Kernel call sites
+  (`CudaTestKernel.cu:401-409`,
+  `OptixPrograms.cu:595-626`):
+  byte-identical. Both
+  still gate on
+  `useBaseColorTexture
+  && id >= 0 && id <
+  texture_count &&
+  textures != nullptr`
+  before invoking the
+  sampler. The TEX-P.3
+  changes only affect
+  what happens AFTER a
+  caller invokes the
+  sampler; a caller that
+  keeps the existing
+  guard never sees
+  any TEX-P.3-only
+  behavioural difference
+  for valid inputs.
+- `GpuTexture::upload_from`,
+  `GpuScene::upload_textures`,
+  `OptixBackend::upload_textures`:
+  zero bytes changed.
+  The buffer-size
+  contract (
+  `width * height *
+  stride(format)` bytes)
+  remains the
+  authoritative
+  invariant the sampler
+  relies on; TEX-P.3 does
+  not weaken or
+  duplicate it.
+- `--render-texture-sample-test`,
+  `--render-textured-material`,
+  `--render-optix-textured-material`,
+  `--render-optix-aovs`,
+  `--render-optix-pathtrace`,
+  every other dispatcher:
+  byte-identical PPM
+  output for valid
+  textures (the sampler's
+  fast path is
+  unchanged in the happy
+  case).
+- The host-side
+  validator
+  `validate_material_texture_ids`
+  (TEX-P.2): unchanged.
+  TEX-P.2 catches bad
+  ids at scene-build
+  time + emits a
+  warning log; TEX-P.3
+  catches anything that
+  slips past at
+  sampler-call time.
+
+### Behaviour matrix for `sampleTextureNearest`
+
+| Input class                 | Previous behaviour     | TEX-P.3 behaviour                |
+|-----------------------------|------------------------|----------------------------------|
+| Valid view, finite UV in    | Texel value (Rgba8 or  | Byte-identical texel value       |
+| `[0, 1]`                    | Rgba32F)               | (no change).                     |
+| Valid view, finite UV       | Texel value at clamped | Byte-identical clamped texel     |
+| outside `[0, 1]` (incl.     | UV (clamp-to-edge)     | (no change).                     |
+| -inf, +inf via `clamp`      |                        |                                  |
+| collapse)                   |                        |                                  |
+| Valid view, NaN UV          | UB:                    | NaN -> 0, then clamp -> texel    |
+|                             | `static_cast<int>(NaN  | at the top-left corner.          |
+|                             | * width)` is           | No UB, no crash.                 |
+|                             | undefined.             |                                  |
+| `pixels == nullptr`         | `kInvalidTextureFallback` | `kInvalidTextureFallback`     |
+|                             | (magenta).             | (magenta) - unchanged.           |
+| `width <= 0` or             | `kInvalidTextureFallback` | `kInvalidTextureFallback`     |
+| `height <= 0`               | (magenta).             | (magenta) - unchanged.           |
+| `format` is an unknown /    | Reinterpreted as       | `kInvalidTextureFallback`        |
+| corrupted enum byte         | Rgba8 (4 bytes / texel; | (magenta). No silent             |
+|                             | could OOB-read if the   | misinterpretation of the         |
+|                             | actual stride was      | pixel bytes.                     |
+|                             | larger).               |                                  |
+
+### Master rule compliance
+
+- **Do not change normal
+  valid-texture behaviour**:
+  the four happy-path
+  rows of the matrix
+  above are byte-
+  identical with the
+  pre-TEX-P.3 sampler.
+- **No CPU rendering /
+  no CPU texture
+  sampling**: zero new
+  CPU sampling paths;
+  `sampleTextureNearest`
+  remains the single
+  `RR_HD inline` sampler
+  used by both CUDA
+  kernels and OptiX
+  programs. The audit-
+  host build still
+  type-checks the header
+  via
+  `tests/optix_tests.cpp`'s
+  unconditional include
+  of `OptixLaunchParams.h`,
+  which transitively
+  pulls
+  `cuda/CudaTexture.cuh`
+  - so the host build
+  exercises the
+  templated paths even
+  with `RR_ENABLE_CUDA=OFF`.
+- **Compiles**: both
+  audit-host configs
+  green (see Verified
+  at the build below).
+- **Update BUILD_PLAN**:
+  this entry, per
+  master rule 8.
+
+### Verified at the build
+
+- `cmake --build build`
+  (audit host,
+  RR_ENABLE_CUDA=OFF,
+  RR_ENABLE_OPTIX=OFF):
+  clean build; ctest
+  6/6 green.
+- `cmake --build
+  build-ON` (audit host,
+  RR_ENABLE_CUDA=OFF,
+  RR_ENABLE_OPTIX=ON):
+  clean build; ctest
+  7/7 green. The header
+  change is type-checked
+  via
+  `tests/optix_tests.cpp`'s
+  transitive include
+  through
+  `OptixLaunchParams.h`.
+- The runtime-behaviour
+  rows of the matrix
+  (NaN UV, unknown
+  format) are reachable
+  only with a CUDA
+  device. They cannot
+  be empirically
+  verified on this
+  audit host; the
+  type-checked compile
+  + the constant-folded
+  `clamp` /
+  `kInvalidTextureFallback`
+  paths are the
+  guarantees this slice
+  is shipping.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
