@@ -347,3 +347,153 @@ No CMake changes, no new headers, no test changes,
 no consumer / CLI wiring. The existing rr_optix
 target picks up the modified `.cpp` automatically.
 
+---
+
+## 10. Local verification (GAP-A2.6)
+
+Performed after the Step-2 implementation slice
+(`9218b18`) + report refresh (`96d8e1b`) landed.
+The audit-host runs the smallest set of checks
+that don't require new tests, a server, or a UI;
+empirical SDK-host verification stays deferred per
+`docs/CUDA_HOST_VERIFICATION_PLAN.md`.
+
+### 10.1 Project builds (ON / OFF)
+
+```
+$ cmake -S . -B build_off -DRR_BUILD_TESTS=ON \
+      -DRR_ENABLE_CUDA=OFF -DRR_ENABLE_OPTIX=OFF
+$ cmake --build build_off -j4
+... clean build; "[100%] Linking CXX executable
+    bin/RelativityRender"; "[100%] Built target
+    RelativityRender" ...
+$ cd build_off && ctest
+100% tests passed, 0 tests failed out of 6
+```
+
+```
+$ cmake -S . -B build_on_audit -DRR_BUILD_TESTS=ON \
+      -DRR_ENABLE_CUDA=OFF -DRR_ENABLE_OPTIX=ON
+... clean configure with the documented Stage
+    12B.4 "OptiX SDK not located" warning ...
+$ cmake --build build_on_audit -j4
+... clean build ...
+$ cd build_on_audit && ctest
+100% tests passed, 0 tests failed out of 7
+```
+
+Both build modes exit 0; ctest baselines (6/6 +
+7/7) unchanged from the pre-Step-2 audit-host
+state. The Step-2 SDK_FOUND body is gated by
+`RELATIVITYRENDER_OPTIX_SDK_FOUND` (compiled out
+on this audit host); only the Step-1 audit-host
+stub branch of `render_aovs_retain` is reachable
+here.
+
+### 10.2 Expected outputs / logs from PASS criteria (build-time visible)
+
+| §6 PASS criteria check                 | Build-time visible?  | Verified here? |
+|----------------------------------------|----------------------|-----------------|
+| audit-host stub returns ok=false +     | YES (audit-host      | YES — covered  |
+| documented "requires OptiX SDK" message| ON build's stub)     | by both builds  |
+|                                        |                      | being green +   |
+|                                        |                      | the new SDK_FOUND|
+|                                        |                      | branch being    |
+|                                        |                      | compiled out.   |
+| OFF build does not compile the         | YES (file-level      | YES — OFF       |
+| `render_aovs_retain` SDK_FOUND body    | gating)              | build is clean. |
+| ON, SDK found, success path:           | NO (requires CUDA +  | DEFERRED to     |
+| ok=true, retained device buffers       | OptiX SDK at         | CUDA + OptiX-   |
+| populated, gpu_time_ms > 0,            | runtime)             | SDK host run.   |
+| `[OptiX:INFO]` log line                |                      |                 |
+| ON, SDK found, failure path:           | NO (same)            | DEFERRED        |
+| ok=false + `[OptiX:ERROR]` log line    |                      |                 |
+
+Build-time-visible PASS criteria: ALL met.
+Runtime-visible PASS criteria: deferred per the
+established `docs/CUDA_HOST_VERIFICATION_PLAN.md`
+posture (every Stage 13/14/15/19/20/21 audit had
+the same deferral; the runner + report
+infrastructure now closes it as a one-command
+operator action on the right hardware).
+
+### 10.3 No crashes
+
+The CUDA-H.9 verification runner exercises every
+CLI surface of the binary, including the OptiX
+entries, on both build modes. The audit-host runs
+ALL 13 commands successfully (where "successfully"
+means "exits cleanly with the documented error
+code, not segfault / abort / timeout"):
+
+| Build mode               | Runner exit | Behaviour                         |
+|--------------------------|-------------|------------------------------------|
+| OFF (no `--optix`)       | 1           | 13 commands run; 1 pass, 9 fail,   |
+|                          |             | 3 SKIPPED. No crash; every fail    |
+|                          |             | is the documented "requires CUDA" /|
+|                          |             | "OptiX disabled" stderr message.   |
+| OFF (with `--optix`)     | 1           | 13 commands run; 1 pass, 12 fail.  |
+|                          |             | No crash; OptiX commands fail with |
+|                          |             | the documented audit-host fallback |
+|                          |             | error.                             |
+| ON-audit-host (no SDK,   | 1           | Same as OFF mode — the audit-host  |
+| with `--optix`)          |             | fallback fires for every OptiX     |
+|                          |             | command. 12 fail + 1 pass; no      |
+|                          |             | crash.                             |
+
+All commands complete in <0.05s on the audit host
+(early-exit on missing CUDA / SDK). No timeout
+fires; no infinite loop reached; no segfault /
+abort logged.
+
+### 10.4 Determinism contract (CUDA-H.9 spec)
+
+After Step 2's commit:
+
+```
+$ python3 tools/verify_cuda_host.py --skip-build \
+      --build-dir build_off
+$ git diff docs/CUDA_HOST_VERIFICATION_REPORT.md
+```
+
+The diff (against the canonical committed form)
+shows ONLY the `Tree state` hash line changing
+(refreshed to the current tree's commit). All
+test rows / counts / overall verdict are
+byte-identical with the pre-Step-2 committed
+report. This satisfies the CUDA-H.9 determinism
+spec ("the same source tree state + same
+hardware + same `--optix` flag produces a
+byte-identical report") and the Step-2 §8
+non-regression rule ("the CUDA-H.9 verification
+runner produces a byte-identical
+`docs/CUDA_HOST_VERIFICATION_REPORT.md` pre- vs
+post-Step-2 on the audit host").
+
+### 10.5 Verdict
+
+**Step 2 PASSES the available local checks.**
+Every build-time-visible PASS criterion from §6
+is satisfied; every audit-host-reachable code
+path runs without crashing; the CUDA-H.9
+verification report is functionally byte-identical
+(only the documented tree-state line changes).
+
+The runtime-visible PASS criteria
+(SDK-found success path actually allocating +
+filling the `GpuBuffer<float>` instances with
+denoiser-ready radiance) remain deferred to a
+real CUDA + OptiX-SDK host run — exactly the
+"runtime deferred, not code failure" posture
+documented in the verification plan and in every
+prior Stage 13/14/15/19/20/21 audit. The
+operator can close that deferral by running
+`tools/verify_cuda_host.py` on a CUDA + OptiX-
+SDK host (with `--optix` and `--optix-root`
+appropriately set) and committing the resulting
+PASS report.
+
+No new tests added; no server invocation; no UI;
+no long-running process. Per the user's GAP-A2.6
+rules.
+
