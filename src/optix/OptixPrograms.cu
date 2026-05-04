@@ -589,6 +589,22 @@ extern "C" __global__ void __closesthit__radiance() {
         // buffers, sample the texture at the interpolated UV
         // instead of using the flat `params.baseColor`. The
         // emission term is unchanged.
+        //
+        // TEX-P.5 cases (mirrors `docs/TEXTURE_SYSTEM.md` §2 and
+        // `validate_material_texture_ids` in
+        // `src/scene/Scene.h`); identical contract to the CUDA
+        // gate in `CudaTestKernel.cu`:
+        //   Case 1 - flag OFF: `useBaseColorTexture == false`
+        //            short-circuits; `base` keeps its initial
+        //            `params.baseColor` value.
+        //   Case 2 - flag ON, id in range, all launch-params
+        //            pointers non-null: gate passes; sampler is
+        //            invoked.
+        //   Case 3 - flag ON, id out of range OR a launch-params
+        //            pointer null: gate fails; `base` keeps the
+        //            flat `params.baseColor`. The host-side
+        //            validator should already have cleared the
+        //            flag for the out-of-range subset.
         Vec3 base{hg->params.baseColor.x,
                   hg->params.baseColor.y,
                   hg->params.baseColor.z};

@@ -117,34 +117,59 @@ struct Scene {
     void clear();
 };
 
-// TEX-P.2: validate every material's `useBaseColorTexture` /
-// `baseColorTextureId` pair against the supplied texture-array
-// count. For each material whose `useBaseColorTexture == true`
-// but `baseColorTextureId` is OUTSIDE `[0, texture_count)`:
+// TEX-P.2 + TEX-P.5: validate every material's
+// `useBaseColorTexture` / `baseColorTextureId` pair against the
+// supplied texture-array count. Three cases — one for each
+// possible state of the flag/id pair — are handled explicitly
+// (mirrors `docs/TEXTURE_SYSTEM.md` §2 and the kernel-side
+// gate in `src/cuda/CudaTestKernel.cu` +
+// `src/optix/OptixPrograms.cu`):
 //
-//   1. Emit a `rr::core::Logger::warning(...)` line that names
-//      the offending material (id + name) and the bad index.
-//   2. Set the material's `useBaseColorTexture = false` so the
-//      kernel-side gate (CUDA + OptiX both check the same trio
-//      of conditions) safely falls back to flat
-//      `params.baseColor`. The bad `baseColorTextureId` is
-//      preserved on the POD; it is just no longer consulted.
+//   Case 1 — flag OFF (TEX-P.5 audit):
+//     `useBaseColorTexture == false`. The kernel-side gate
+//     short-circuits on the flag and uses flat
+//     `params.baseColor`; `baseColorTextureId` is therefore
+//     ignored. If the id is nonetheless set (`>= 0`) emit a
+//     `Logger::info` line so the operator can find the
+//     dangling assignment. State is NOT modified — the artist
+//     may intend to toggle the flag back later.
 //
-// Returns the number of fixups applied. Defence-in-depth on
-// top of the kernel's existing range check (`CudaTestKernel.cu`
-// + `OptixPrograms.cu` both validate the id at hit time and
+//   Case 2 — flag ON, id in range (happy path):
+//     `useBaseColorTexture == true` AND
+//     `baseColorTextureId in [0, texture_count)`. No log, no
+//     state change; the kernel will sample the texture.
+//
+//   Case 3 — flag ON, id out of range (TEX-P.2 fixup):
+//     `useBaseColorTexture == true` AND `baseColorTextureId`
+//     is OUTSIDE `[0, texture_count)`. Emit a
+//     `Logger::warning` naming the offending material
+//     (id + name) and the bad index, then set
+//     `useBaseColorTexture = false` so the kernel-side gate
+//     falls back to flat `params.baseColor` on every
+//     subsequent frame. The bad `baseColorTextureId` is
+//     preserved on the POD; it is just no longer consulted.
+//     This is what counts as a "fixup".
+//
+// Returns the number of Case 3 fixups applied. Case 1 info
+// notes are NOT counted (they describe an artist decision, not
+// a state correction). Defence-in-depth on top of the
+// kernel's existing range check (`CudaTestKernel.cu` +
+// `OptixPrograms.cu` both validate the id at hit time and
 // silently fall back); the host-side validator gives the
-// operator a warning log so they can fix the authored material.
+// operator a warning / info log so they can find the
+// authoring issue.
 //
 // Caller protocol: invoke after constructing / loading the
 // scene + textures BUT before any GPU upload, so the kernel
 // never sees an out-of-range id. Safe to call repeatedly
 // (idempotent — the second call sees the post-fixup state and
-// reports zero new fixups).
+// reports zero new fixups; Case 1 info notes re-emit on
+// every call, which is the intended behaviour for a non-
+// state-mutating audit).
 //
 // `texture_count == 0` is a valid input: every material with
-// `useBaseColorTexture == true` becomes a fixup since no id is
-// in range.
+// `useBaseColorTexture == true` becomes a Case 3 fixup since no
+// id is in range.
 [[nodiscard]] int validate_material_texture_ids(
     std::vector<SceneMaterial>& materials,
     std::size_t                  texture_count);

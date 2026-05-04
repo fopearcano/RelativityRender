@@ -126,15 +126,53 @@ where a caller invokes the sampler with a genuinely broken
 view despite the gate, which is now defended against rather
 than silently fatal.
 
+### Three material flag/id cases (TEX-P.5)
+
+The `useBaseColorTexture` flag and `baseColorTextureId`
+integer combine into three artist-meaningful cases. Each row
+gives the case's gate behaviour, the kernel result, and the
+host-side validator action:
+
+| `useBaseColorTexture` | `baseColorTextureId`            | Kernel-side gate          | Result                                   | Host validator                                       |
+|-----------------------|---------------------------------|---------------------------|------------------------------------------|------------------------------------------------------|
+| `false`               | any value                       | Short-circuits on flag    | Flat `baseColor` (Case 1).               | `Logger::info` if `id >= 0` (dangling id audit);     |
+|                       |                                 | (id never evaluated)      |                                          | state NOT modified.                                  |
+| `true`                | `[0, texture_count)`            | Full gate passes          | Sampled texel (Case 2).                  | No-op (happy path).                                  |
+| `true`                | `< 0` OR `>= texture_count`     | Range-check fails         | Flat `baseColor` (Case 3).               | `Logger::warning` + clears the flag (counted as a    |
+|                       |                                 |                           |                                          | "fixup" in the validator's return value).            |
+
+Case ordering matches the validator's source comments at
+`src/scene/Scene.cpp:validate_material_texture_ids` and the
+kernel-side comments at `src/cuda/CudaTestKernel.cu` +
+`src/optix/OptixPrograms.cu`.
+
+Two corollaries:
+
+- **Case 1 is intentional and silent at the kernel.** An
+  artist who sets `baseColorTextureId = 5` but leaves
+  `useBaseColorTexture = false` ships a flat-baseColor
+  material; the kernel never reads the id, so there is no
+  per-frame cost. The validator emits an info-level note
+  (not a warning) so the artist can find the dangling
+  assignment if they intended to enable the texture.
+- **Case 3 is rare in production**: the host validator
+  clears the flag on the first call, so any subsequent
+  re-render hits Case 1 instead. The kernel-side range
+  check is therefore defence-in-depth that fires only when
+  a caller skipped validation OR when a render uses a
+  scene that was constructed entirely inline (no
+  `validate_material_texture_ids` call).
+
 ### Host-side validators (defence in depth)
 
 TEX-P.2 added `rr::scene::validate_material_texture_ids`
 (`src/scene/Scene.h`) which runs at scene-build / scene-load
 time and clears `useBaseColorTexture` (with a
 `Logger::warning` line) for any material whose
-`baseColorTextureId` is outside `[0, texture_count)`. This
-gives the operator a visible warning log; the kernel-time
-gate is the safety net.
+`baseColorTextureId` is outside `[0, texture_count)`. TEX-P.5
+extends the same validator with the Case 1 info-note pass
+(no state mutation). This gives the operator a visible
+warning + info log; the kernel-time gate is the safety net.
 
 ---
 
@@ -227,10 +265,15 @@ FAIL outcomes per `docs/CUDA_HOST_VERIFICATION_PLAN.md`.
 
 ## 6. Change log
 
-- TEX-P.4 (this slice): created the doc; commits the
-  renderer to clamp-to-edge as the v1 UV policy; documents
-  the TEX-P.3 invalid-texture fallback contract; lists
-  future-work deferrals.
+- TEX-P.5: extended `validate_material_texture_ids` with the
+  Case 1 (flag-OFF) info-note audit, added TEX-P.5 references
+  to both kernel-side gate comments
+  (`CudaTestKernel.cu`, `OptixPrograms.cu`), and added §2's
+  three-case flag/id table to make the rule unambiguous.
+- TEX-P.4: created this doc; committed the renderer to
+  clamp-to-edge as the v1 UV policy; documented the TEX-P.3
+  invalid-texture fallback contract; listed future-work
+  deferrals.
 - TEX-P.3: GPU sampler safety hardening (NaN-UV guard +
   explicit format default arm).
 - TEX-P.2: host-side `validate_material_texture_ids`

@@ -30644,6 +30644,378 @@ visible.**
   texture renders is
   trivially preserved.
 
+## TEX-P.5 — material texture flag validation
+
+**Scope of this slice
+(post-TEX-P.4 UV-policy
+spec complete): make
+the three artist-
+meaningful states of
+the
+`useBaseColorTexture`
+/ `baseColorTextureId`
+material pair
+unambiguous. Extend the
+existing host-side
+validator
+`validate_material_texture_ids`
+(TEX-P.2) with the
+flag-OFF audit pass
+(Case 1: dangling
+texture id with the
+flag disabled) — emits
+`Logger::info` without
+mutating state, so the
+artist can find the
+dangling id and
+re-enable the flag if
+intended. Case 2
+(happy path) and
+Case 3 (out-of-range
+id with the flag on,
+the original TEX-P.2
+fixup) keep their
+existing
+behaviour. Add TEX-P.5
+reference comments at
+both kernel-side
+gate sites
+(`CudaTestKernel.cu`,
+`OptixPrograms.cu`) so
+the rule is locally
+documented next to
+the code that
+enforces it. Surface
+the three-case table
+in
+`docs/TEXTURE_SYSTEM.md`
+§2 so the operator-
+facing doc matches.
+NO renderer-wide
+refactor; NO change to
+the GPU sampling path;
+NO new CLI flag.**
+
+### What ships
+
+- `src/scene/Scene.cpp`
+  (`validate_material_texture_ids`):
+    - **Case 1 audit
+      added** before the
+      flag-ON branch.
+      When
+      `useBaseColorTexture
+      == false` AND
+      `baseColorTextureId
+      >= 0`, emit a
+      `Logger::info` line
+      naming the
+      material (id +
+      name) and the
+      dangling
+      texture id. State
+      is NOT modified
+      (the artist may be
+      drafting and toggle
+      the flag back on
+      later); the case
+      is also NOT counted
+      in the function's
+      return value (only
+      Case 3 fixups are).
+    - Case 3 path
+      (out-of-range id
+      with flag on):
+      byte-identical with
+      TEX-P.2.
+      `Logger::warning`
+      + clear flag +
+      increment fix
+      count.
+    - Case 2 path
+      (in-range id with
+      flag on):
+      byte-identical
+      no-op.
+    - Source comments
+      now name the three
+      cases inline
+      (`// Case 1`, etc.)
+      so a reader can
+      locate each rule
+      without consulting
+      the doc.
+- `src/scene/Scene.h`
+  (`validate_material_texture_ids`
+  doc-comment block):
+    - **Rewritten** to
+      enumerate all
+      three cases with
+      one paragraph each
+      (Case 1 audit,
+      Case 2 happy path,
+      Case 3 fixup).
+      Re-states the
+      contract that only
+      Case 3 fixups are
+      counted in the
+      return value, and
+      that Case 1 info
+      notes re-emit on
+      every call (the
+      audit is non-state-
+      mutating by
+      design).
+- `src/cuda/CudaTestKernel.cu`
+  (the four-condition
+  texture gate at
+  line ~401):
+    - **TEX-P.5 case
+      breakdown comment**
+      added above the
+      gate. Names the
+      three cases and
+      maps each to the
+      gate's branch.
+      Notes that
+      reaching Case 3
+      with `flag == true`
+      indicates a caller
+      that skipped the
+      host-side
+      validator (the gate
+      still falls back
+      safely; the comment
+      makes the
+      defence-in-depth
+      relationship
+      explicit).
+- `src/optix/OptixPrograms.cu`
+  (the six-condition
+  texture gate at
+  line ~595):
+    - **TEX-P.5 case
+      breakdown comment**
+      added above the
+      gate, mirroring
+      the CUDA-side
+      comment. Notes the
+      additional gate
+      conditions
+      (`mesh_uvs`,
+      `mesh_indices` non-
+      null) that the
+      OptiX path requires
+      on top of the
+      shared trio so the
+      Case 3 description
+      is precise about
+      what counts as
+      "out of range" on
+      this backend.
+- `docs/TEXTURE_SYSTEM.md`
+  §2 (Invalid texture
+  fallback behaviour):
+    - **New "Three
+      material flag/id
+      cases (TEX-P.5)"
+      sub-section** with
+      a 3-row table
+      mapping each case
+      to its kernel-side
+      gate behaviour,
+      kernel result, and
+      host-validator
+      action. Two
+      corollaries below
+      the table: Case 1
+      is intentional and
+      silent at the
+      kernel; Case 3 is
+      rare in production
+      (the validator
+      clears the flag on
+      first call, so
+      subsequent re-
+      renders hit Case
+      1 instead).
+    - The **change log**
+      entry for TEX-P.5
+      added at the top
+      of §6.
+- This `BUILD_PLAN.md`
+  slice-closing entry.
+
+### What does NOT change
+
+- `MaterialParams` POD:
+  byte-identical (same
+  fields, same
+  defaults).
+- `rr::cuda::sampleTextureNearest`:
+  byte-identical with
+  TEX-P.4. The GPU
+  sampling path is
+  untouched per the
+  master rule "GPU
+  sampling remains
+  GPU-side".
+- The four-condition
+  CUDA gate and the
+  six-condition OptiX
+  gate: byte-identical
+  CONDITIONS; only the
+  comments above them
+  change. PPM output
+  for any valid texture
+  scene is bitwise
+  unchanged.
+- The
+  `validate_material_texture_ids`
+  RETURN value
+  semantics: still
+  "number of Case 3
+  fixups". A caller
+  that only consumes
+  the return value
+  cannot tell that
+  Case 1 audit was
+  added.
+- The host-side
+  validator's existing
+  Case 3 warning text:
+  byte-identical (so
+  any test harness
+  that grep-matches
+  the warning still
+  works).
+- Demo wire-in at
+  `run_render_optix_textured_material`
+  (TEX-P.2): unchanged.
+  Now exercises Case 2
+  (happy path) and the
+  full Case 1 / Case 3
+  paths only when an
+  operator manually
+  edits the inline
+  scene.
+- `docs/TEXTURE_POLISH_PLAN.md`
+  §3.4 (material
+  texture-flag
+  validation): the
+  polish item is now
+  fully shipped (TEX-
+  P.2 covered Case 3
+  via Rule 1 of the
+  plan; TEX-P.5
+  covers Case 1 via
+  Rule 2 of the plan;
+  Rule 3 was always
+  redundant with
+  Case 3). The plan
+  doc is left as
+  archival history.
+
+### Behaviour matrix for `validate_material_texture_ids`
+
+| Material state                                           | Pre-TEX-P.5 behaviour                  | TEX-P.5 behaviour                                          |
+|----------------------------------------------------------|----------------------------------------|------------------------------------------------------------|
+| `useBaseColorTexture = false`, any id                    | Skipped silently. State unchanged.     | If `id >= 0`: `Logger::info` audit log, state              |
+|                                                          |                                        | unchanged. If `id == -1`: silent (the sentinel default     |
+|                                                          |                                        | is not flagged).                                           |
+| `useBaseColorTexture = true`, `id ∈ [0, texture_count)`  | Skipped silently. State unchanged.     | Byte-identical: skipped silently.                          |
+| `useBaseColorTexture = true`, `id < 0` OR                | `Logger::warning`, clear flag,         | Byte-identical: `Logger::warning`, clear flag, ++fix.      |
+| `id >= texture_count`                                    | ++fix.                                 |                                                            |
+
+### Master rule compliance
+
+- **No material
+  graph**: zero new
+  abstractions or node
+  types. The validator
+  remains a single free
+  function; the gates
+  remain inline `if`
+  statements.
+- **No renderer-wide
+  refactor**: only one
+  function body
+  changes
+  (`validate_material_texture_ids`),
+  one header doc-
+  comment grows, two
+  kernel-side gates
+  gain a comment
+  block, and one
+  doc-section gains a
+  table. No new files,
+  no new CLI flags,
+  no new types.
+- **GPU sampling
+  remains GPU-side**:
+  the sampler
+  (`rr::cuda::sampleTextureNearest`)
+  is untouched and the
+  kernel call sites
+  retain their gate
+  conditions
+  unchanged.
+- **Compiles**: both
+  audit-host configs
+  green (see Verified
+  at the build below).
+- **Update BUILD_PLAN**:
+  this entry, per
+  master rule 8.
+
+### Verified at the build
+
+- `cmake --build build`
+  (audit host,
+  RR_ENABLE_CUDA=OFF,
+  RR_ENABLE_OPTIX=OFF):
+  clean build; ctest
+  6/6 green.
+- `cmake --build
+  build-ON` (audit host,
+  RR_ENABLE_CUDA=OFF,
+  RR_ENABLE_OPTIX=ON):
+  clean build; ctest
+  7/7 green.
+- `./build-ON/bin/RelativityRender
+  --render-optix-textured-material
+  --width 16 --height 16`
+  on the audit host:
+  validator runs
+  through Case 2 (no
+  log), then the
+  existing audit-host
+  fallback emits the
+  documented "OptiX
+  SDK required" error.
+  Exit 1; no crash; no
+  spurious info or
+  warning lines from
+  the validator
+  (confirms Case 2 is
+  silent).
+- The Case 1 (info-
+  log) and Case 3
+  (warning + fixup)
+  paths are reachable
+  by editing the
+  inline
+  `textured_params.useBaseColorTexture`
+  / `.baseColorTextureId`
+  assignment in
+  `run_render_optix_textured_material`;
+  not exercised here
+  to keep the
+  dispatcher's
+  authored output
+  stable on real CUDA
+  + SDK hosts.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:

@@ -398,6 +398,21 @@ __global__ void k_render_scene(float* pixels, int width, int height,
             // `sampleTextureNearest` - a kernel-level guard keeps
             // the failure mode "use baseColor" rather than "render
             // magenta", which is gentler for authoring mistakes.
+            //
+            // TEX-P.5 cases (mirrors `docs/TEXTURE_SYSTEM.md` §2 and
+            // `validate_material_texture_ids` in `src/scene/Scene.h`):
+            //   Case 1 - flag OFF: `useBaseColorTexture == false`
+            //            short-circuits the gate; `baseColorTextureId`
+            //            is never evaluated and the else-branch's
+            //            flat baseColor is used.
+            //   Case 2 - flag ON, id in range: full gate passes;
+            //            sampler is invoked.
+            //   Case 3 - flag ON, id out of range: gate fails on the
+            //            range check; flat baseColor is used. The
+            //            host-side validator should have already
+            //            cleared the flag + emitted a warning, so
+            //            reaching this branch with `flag == true`
+            //            indicates a caller that skipped validation.
             if (mat.useBaseColorTexture
              && mat.baseColorTextureId >= 0
              && mat.baseColorTextureId < scene.texture_count
