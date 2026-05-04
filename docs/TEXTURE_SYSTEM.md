@@ -265,6 +265,15 @@ FAIL outcomes per `docs/CUDA_HOST_VERIFICATION_PLAN.md`.
 
 ## 6. Change log
 
+- TEX-P.6: added `scenes/test_textured_material.rrscene`
+  fixture (four materials covering Cases 1 / 2-collapse-to-3
+  / no-binding / 3) + minimal `.rrscene` loader support for
+  `use_base_color_texture` (bool) and `base_color_texture_id`
+  (int). The `--scene-info` dispatcher now runs
+  `validate_material_texture_ids` post-load so the three
+  cases fire visibly when the fixture is loaded. The
+  `textures` top-level scene key is still reserved for a
+  future slice (no inline pixel-data loading yet).
 - TEX-P.5: extended `validate_material_texture_ids` with the
   Case 1 (flag-OFF) info-note audit, added TEX-P.5 references
   to both kernel-side gate comments

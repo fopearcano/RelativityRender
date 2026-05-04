@@ -31016,6 +31016,369 @@ NO new CLI flag.**
   stable on real CUDA
   + SDK hosts.
 
+## TEX-P.6 — texture test scene
+
+**Scope of this slice
+(post-TEX-P.5 three-
+case rule complete):
+add a `.rrscene`
+fixture that exercises
+the three flag/id
+cases of
+`validate_material_texture_ids`
+at scene-load time +
+the minimal loader
+support to read the
+`use_base_color_texture`
+/ `base_color_texture_id`
+material fields.
+Per `docs/TEXTURE_SYSTEM.md`
+§4, the v1.0.0
+`.rrscene` format
+does NOT yet load
+texture pixel data;
+the `textures`
+top-level key remains
+reserved for a future
+slice. As a
+consequence, every
+`use_base_color_texture
+= true` material in
+the fixture lands in
+Case 3 against the
+empty textures array
+(warning + flag
+cleared). The fixture
+still serves its
+purpose: all three
+validator branches
+fire visibly when the
+file is loaded
+through `--scene-info`.
+NO renderer behaviour
+change for scenes
+that omit the new
+fields; NO new CLI
+flag.**
+
+### What ships
+
+- `scenes/test_textured_material.rrscene`
+  (NEW): the TEX-P.6
+  fixture. Four
+  materials:
+    - `id=0
+      "textured-quad-material"`:
+      flag ON, id 0
+      (Case 2 candidate;
+      collapses to Case
+      3 today).
+    - `id=1
+      "flat-untextured"`:
+      neither field
+      authored (defaults
+      kick in, validator
+      silent).
+    - `id=2
+      "dangling-texture-id"`:
+      flag OFF, id 7
+      (Case 1 audit:
+      info log, state
+      preserved).
+    - `id=3
+      "out-of-range-texture"`:
+      flag ON, id 99
+      (Case 3: warning
+      + flag cleared
+      + fixup counted).
+  Each material entry
+  carries a `"//"`
+  comment string
+  documenting which
+  case it exercises
+  so a future
+  contributor reading
+  the fixture
+  immediately sees
+  intent.
+- `src/io/SceneLoader.cpp`
+  (`apply_material`):
+    - **Two new optional
+      field reads**:
+      `use_base_color_texture`
+      (canonical) or
+      `useBaseColorTexture`
+      (camelCase shorthand)
+      -> bool;
+      `base_color_texture_id`
+      or
+      `baseColorTextureId`
+      -> int. Both fields
+      use the existing
+      `to_bool` /
+      `to_int` helpers and
+      the existing
+      `find_or` snake-/
+      camel-case
+      alternation
+      pattern.
+    - When absent, the
+      `MaterialParams`
+      defaults
+      (`useBaseColorTexture
+      = false`,
+      `baseColorTextureId
+      = -1`) remain
+      unchanged, so
+      every existing
+      scene file under
+      `scenes/` parses
+      byte-identically.
+    - Range-checking
+      `base_color_texture_id`
+      against the
+      eventual textures
+      array is
+      explicitly NOT done
+      here (the textures
+      array is loaded
+      separately and may
+      not be available
+      at this point);
+      the host-side
+      validator
+      `validate_material_texture_ids`
+      handles the range
+      check at scene-
+      build time.
+- `src/main.cpp`
+  (`run_scene_info`):
+    - **Material block
+      gains two output
+      lines** under the
+      first material's
+      details:
+      `useBaseColorTex`
+      (bool) and
+      `baseColorTexId`
+      (int) so the
+      operator can
+      confirm the
+      loader read the
+      fields correctly
+      from a fixture.
+    - **Validator
+      invocation added
+      at the end of the
+      dispatcher**:
+      `validate_material_texture_ids(scene.materials,
+      texture_count=0)`
+      runs after the
+      summary so the
+      three flag/id
+      cases fire
+      visibly. The
+      dispatcher prints
+      the fixup count
+      under a new
+      `texture validator:`
+      sub-block. The
+      `result` local
+      changed from
+      `const auto` to
+      plain `auto` so
+      the validator can
+      take a mutable
+      reference to
+      `scene.materials`.
+- `docs/RRSCENE_FORMAT.md`
+  §7 (materials):
+    - **Materials field
+      table extended**
+      with the two new
+      keys
+      (`use_base_color_texture`
+      bool; `base_color_texture_id`
+      int).
+    - **§7.1 shorthand
+      table extended**
+      with the
+      camelCase
+      synonyms.
+    - **New "TEX-P.6
+      status notes"
+      sub-section**
+      documenting that
+      texture pixel
+      data is NOT yet
+      loaded, every
+      authored
+      `use_base_color_texture
+      = true` material
+      becomes a Case 3
+      fixup against the
+      empty textures
+      array, and
+      `--scene-info`
+      runs the
+      validator after
+      load.
+- `docs/TEXTURE_SYSTEM.md`
+  §6 (Change log):
+    - **TEX-P.6 entry
+      added** at the top
+      summarising the
+      fixture, the
+      loader extension,
+      and the
+      `--scene-info`
+      validator
+      invocation.
+- This `BUILD_PLAN.md`
+  slice-closing entry.
+
+### What does NOT change
+
+- `MaterialParams` POD:
+  byte-identical
+  (TEX-P.6 only
+  populates fields
+  that already
+  existed).
+- The host-side
+  validator
+  `validate_material_texture_ids`:
+  byte-identical
+  with TEX-P.5.
+- The kernel-side
+  texture gates
+  (`CudaTestKernel.cu`,
+  `OptixPrograms.cu`):
+  byte-identical with
+  TEX-P.5.
+- The GPU sampler
+  (`rr::cuda::sampleTextureNearest`):
+  byte-identical with
+  TEX-P.4.
+- Existing scenes
+  under `scenes/`:
+  byte-identical
+  parser output (no
+  Case 1 / Case 3
+  warnings emitted on
+  any of them; see
+  Verified at the
+  build).
+- The `textures`
+  top-level scene
+  key: still NOT
+  parsed; this remains
+  a deliberate
+  deferral
+  (`docs/TEXTURE_SYSTEM.md`
+  §4) for a future
+  slice.
+
+### Behaviour matrix for `--scene-info`
+
+| Scene                               | Validator output                                                | fixups | Existing fields output       |
+|-------------------------------------|-----------------------------------------------------------------|--------|------------------------------|
+| `scenes/test_camera.rrscene`        | (none — zero materials)                                         | 0      | byte-identical with pre-P.6  |
+| `scenes/test_full_scene.rrscene`    | (none — five materials, no texture binding)                     | 0      | byte-identical               |
+| `scenes/test_materials.rrscene`     | (none — three materials, no texture binding)                    | 0      | byte-identical               |
+| `scenes/test_spheres.rrscene`       | (none — three materials, no texture binding)                    | 0      | byte-identical               |
+| `scenes/test_textured_material.rrscene` | One Case 1 info log + two Case 3 warnings                   | 2      | new `useBaseColorTex` /      |
+| (TEX-P.6 fixture)                   |                                                                 |        | `baseColorTexId` lines for   |
+|                                     |                                                                 |        | the first material           |
+
+### Master rule compliance
+
+- **No renderer
+  behaviour changes
+  unless required for
+  scene loading
+  correctness**: the
+  loader extension is
+  exactly that — the
+  pre-P.6 loader
+  silently dropped
+  the two texture
+  fields, which is a
+  loading defect for
+  textured materials.
+  The `--scene-info`
+  validator
+  invocation makes the
+  loaded scene's
+  texture-binding
+  state visible (no
+  render side
+  effect; idempotent).
+- **Must not break
+  existing scenes**:
+  every scene under
+  `scenes/` produces
+  byte-identical
+  parser output and
+  the validator
+  reports zero fixups
+  on each (see
+  Verified at the
+  build).
+- **No C4D / no UI**:
+  zero touches to
+  Cinema 4D bridge or
+  any UI module.
+- **Compiles**: both
+  audit-host configs
+  green.
+- **Update BUILD_PLAN**:
+  this entry, per
+  master rule 8.
+
+### Verified at the build
+
+- `cmake --build build`
+  (audit host,
+  RR_ENABLE_CUDA=OFF,
+  RR_ENABLE_OPTIX=OFF):
+  clean build; ctest
+  6/6 green.
+- `cmake --build
+  build-ON` (audit host,
+  RR_ENABLE_CUDA=OFF,
+  RR_ENABLE_OPTIX=ON):
+  clean build; ctest
+  7/7 green.
+- `./build/bin/RelativityRender
+  --scene-info
+  scenes/test_textured_material.rrscene`:
+  loads cleanly, prints
+  the four-material
+  block (with new
+  `useBaseColorTex` /
+  `baseColorTexId`
+  lines on the first
+  material), then
+  emits one Case 1
+  info log + two
+  Case 3 warnings,
+  then prints
+  `texture validator:
+  fixups applied: 2`.
+- `./build/bin/RelativityRender
+  --scene-info <X>`
+  for X in
+  `test_camera`,
+  `test_full_scene`,
+  `test_materials`,
+  `test_spheres`:
+  zero validator
+  warnings, zero
+  fixups (existing
+  scenes regression-
+  free).
+
 ## Next stage
 
 When prompted, the natural follow-ups are:

@@ -454,7 +454,7 @@ int run_scene_info(const rr::core::Config& cfg) {
         return 2;
     }
 
-    const auto result = rr::io::load(cfg.scene_path);
+    auto result = rr::io::load(cfg.scene_path);
     if (!result.ok) {
         std::string msg = "scene load failed: " + result.error_message;
         if (result.error_line > 0) {
@@ -540,6 +540,14 @@ int run_scene_info(const rr::core::Config& cfg) {
                    + std::to_string(m.params.metallic));
         Logger::info("      specular        : "
                    + std::to_string(m.params.specular));
+        // TEX-P.6: surface the texture-binding fields so an
+        // operator running --scene-info can confirm the loader
+        // parsed them correctly (otherwise textured materials
+        // round-trip through the loader silently).
+        Logger::info("      useBaseColorTex : "
+                   + fmt_bool(m.params.useBaseColorTexture));
+        Logger::info("      baseColorTexId  : "
+                   + std::to_string(m.params.baseColorTextureId));
     }
 
     const auto& sph = result.scene.spheres;
@@ -611,6 +619,20 @@ int run_scene_info(const rr::core::Config& cfg) {
                        + fmt_vec3(l.data.direction));
         }
     }
+
+    // TEX-P.6: run the host-side material/texture validator
+    // against the freshly-loaded scene so the operator sees the
+    // three flag/id cases (TEXTURE_SYSTEM.md §2) fire on demand.
+    // `.rrscene` v1.0.0 does NOT yet load texture pixel data, so
+    // `texture_count` is always 0 here; any material with
+    // `useBaseColorTexture == true` therefore lands in Case 3 and
+    // gets fixed up. This is informational (no render side effect)
+    // and idempotent (re-running --scene-info on the same file
+    // re-prints the post-fixup state and reports 0 new fixups).
+    const int fixups = rr::scene::validate_material_texture_ids(
+        result.scene.materials, /*texture_count=*/0u);
+    Logger::info("  texture validator:");
+    Logger::info("    fixups applied    : " + std::to_string(fixups));
     return 0;
 }
 

@@ -298,17 +298,24 @@ where `params` is an `rr::material::MaterialParams`.
 ]
 ```
 
-| Key                 | Type   | Required? | Default                  | Validation                  |
-|---------------------|--------|:---------:|--------------------------|-----------------------------|
-| `id`                | int    | **yes**   | —                        | `>= 0`; unique within array |
-| `name`              | string | no        | `""`                     | UTF-8                       |
-| `base_color`        | Vec3   | no        | `[0.8, 0.8, 0.8]`        | each component `>= 0`       |
-| `emission_color`    | Vec3   | no        | `[0, 0, 0]`              | each component `>= 0`       |
-| `emission_strength` | float  | no        | `0.0`                    | `>= 0`                      |
-| `roughness`         | float  | no        | `0.5`                    | in `[0, 1]`                 |
-| `metallic`          | float  | no        | `0.0`                    | in `[0, 1]`                 |
-| `specular`          | float  | no        | `0.5`                    | in `[0, 1]`                 |
-| `transmission`      | float  | no        | `0.0`                    | in `[0, 1]` (PLACEHOLDER)   |
+| Key                       | Type   | Required? | Default                  | Validation                  |
+|---------------------------|--------|:---------:|--------------------------|-----------------------------|
+| `id`                      | int    | **yes**   | —                        | `>= 0`; unique within array |
+| `name`                    | string | no        | `""`                     | UTF-8                       |
+| `base_color`              | Vec3   | no        | `[0.8, 0.8, 0.8]`        | each component `>= 0`       |
+| `emission_color`          | Vec3   | no        | `[0, 0, 0]`              | each component `>= 0`       |
+| `emission_strength`       | float  | no        | `0.0`                    | `>= 0`                      |
+| `roughness`               | float  | no        | `0.5`                    | in `[0, 1]`                 |
+| `metallic`                | float  | no        | `0.0`                    | in `[0, 1]`                 |
+| `specular`                | float  | no        | `0.5`                    | in `[0, 1]`                 |
+| `transmission`            | float  | no        | `0.0`                    | in `[0, 1]` (PLACEHOLDER)   |
+| `use_base_color_texture`  | bool   | no        | `false`                  | TEX-P.6                     |
+| `base_color_texture_id`   | int    | no        | `-1`                     | any int; `-1` = no texture; |
+|                           |        |           |                          | range vs `textures` array   |
+|                           |        |           |                          | is checked at scene-build   |
+|                           |        |           |                          | time by                     |
+|                           |        |           |                          | `validate_material_texture_ids` |
+|                           |        |           |                          | (TEX-P.5)                   |
 
 **Index convention**: `id` is the lookup key. The parser MAY also
 treat the array's positional index as the material's stable id when
@@ -329,11 +336,13 @@ rule that "the parser converts JSON `base_color` → C++
 result is the same; the parser still does not allow conflicting
 duplicates of the same logical field within one material.
 
-| Canonical (snake_case) | Accepted shorthand (camelCase) |
-|------------------------|--------------------------------|
-| `base_color`           | `baseColor`                    |
-| `emission_color`       | `emissionColor`                |
-| `emission_strength`    | `emissionStrength`             |
+| Canonical (snake_case)    | Accepted shorthand (camelCase) |
+|---------------------------|--------------------------------|
+| `base_color`              | `baseColor`                    |
+| `emission_color`          | `emissionColor`                |
+| `emission_strength`       | `emissionStrength`             |
+| `use_base_color_texture`  | `useBaseColorTexture`          |
+| `base_color_texture_id`   | `baseColorTextureId`           |
 
 The single-word fields (`id`, `name`, `roughness`, `metallic`,
 `specular`, `transmission`) have no shorthand; their canonical
@@ -348,6 +357,27 @@ Stage 10B.5 status notes:
   authored in the file is parsed by the JSON layer but never
   consulted by the schema mapper - this is a v1.0 parser
   rounding out incrementally, not §14 forward compatibility.
+
+TEX-P.6 status notes:
+
+- The `use_base_color_texture` / `base_color_texture_id` pair
+  ships in TEX-P.6 to give scene fixtures a stable handle on
+  the texture-binding contract documented in
+  `docs/TEXTURE_SYSTEM.md` §2 (the three flag/id cases). The
+  loader does NOT yet load texture pixel data — the v1.0.0
+  `textures` top-level key is reserved for a future slice. As
+  a consequence, every scene loaded today has an empty
+  `textures` array; the host-side validator
+  `validate_material_texture_ids` therefore treats every
+  authored `use_base_color_texture = true` material as a
+  Case 3 fixup (warning + flag cleared) and every
+  authored `base_color_texture_id` with `use_base_color_texture
+  = false` as a Case 1 audit (info log; state preserved).
+  The `--scene-info` dispatcher runs the validator after
+  loading so the cases fire visibly.
+- A future slice will load inline texture pixel data, after
+  which Case 2 (flag ON, id in range) will start passing the
+  validator silently.
 
 Tools that emit `.rrscene` files MUST emit canonical snake_case.
 

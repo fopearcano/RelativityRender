@@ -974,6 +974,34 @@ bool apply_material(const JsonValue& obj,
     if (!read_unit_scalar("metallic",  p.metallic))  return false;
     if (!read_unit_scalar("specular",  p.specular))  return false;
 
+    // TEX-P.6: use_base_color_texture / useBaseColorTexture (bool,
+    // default false) + base_color_texture_id / baseColorTextureId
+    // (int, default -1). Both are optional; absent fields leave
+    // the `MaterialParams` defaults intact, so existing scenes
+    // without texture bindings parse byte-identically. The
+    // host-side validator (`validate_material_texture_ids`)
+    // resolves the three flag/id cases per `TEXTURE_SYSTEM.md` §2
+    // once the loader returns. The texture-array bound is not
+    // known here (textures are loaded by callers post-parse), so
+    // the loader does NOT range-check the id; it accepts any
+    // integer including the `-1` sentinel.
+    if (const auto* v =
+            obj.find_or("use_base_color_texture", "useBaseColorTexture")) {
+        const std::string field =
+            std::string(entry_label) + ".use_base_color_texture";
+        if (!to_bool(*v, p.useBaseColorTexture, err, field.c_str())) {
+            return false;
+        }
+    }
+    if (const auto* v =
+            obj.find_or("base_color_texture_id", "baseColorTextureId")) {
+        const std::string field =
+            std::string(entry_label) + ".base_color_texture_id";
+        if (!to_int(*v, p.baseColorTextureId, err, field.c_str())) {
+            return false;
+        }
+    }
+
     return true;
 }
 
