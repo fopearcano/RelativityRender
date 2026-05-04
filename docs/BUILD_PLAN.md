@@ -34914,6 +34914,379 @@ precedent.
   posture
   PT-P.6 took.
 
+## PT-P.10 — sample-count cap audit (docs only)
+
+**Scope of this slice
+(post-PT-P.9
+implementation
+complete): write the
+arc-end audit at
+`docs/PATH_TRACER_POLISH_SAMPLE_COUNT_CAP_AUDIT.md`
+that walks the nine
+prompt checks and
+records each as PASS
+/ REPAIR / BLOCKED.
+Mirrors PT-P.4
+(step-1 audit) and
+PT-P.7 (path-tracer
+arc audit) shapes
+applied to PT-P.9's
+single-polish slice.
+Documentation only;
+zero source changes;
+zero build effect.**
+
+### What ships
+
+- `docs/PATH_TRACER_POLISH_SAMPLE_COUNT_CAP_AUDIT.md`
+  (NEW). Nine
+  sections + a
+  verdict + a
+  recommended next
+  step:
+    - **§1 Sample-
+      count
+      validation
+      exists.** PASS.
+      Cites three
+      source
+      locations: the
+      `kSamplesPerPixelCap
+      = 4096`
+      constant in
+      `PathTracer.h:36`
+      next to the
+      PT-P.6
+      `kMaxBouncesCap`,
+      the validation
+      prelude branch
+      at
+      `PathTracer.cpp:32-49`,
+      and the
+      use-site at
+      `PathTracer.cpp:115`
+      where the
+      launcher loop's
+      bound was
+      replaced. Notes
+      that `cfg.samples_per_pixel`
+      is preserved
+      on the POD
+      (the clamp
+      shadows it for
+      the loop, not
+      mutates it).
+    - **§2 Invalid
+      sample counts
+      rejected /
+      clamped.**
+      PASS. Two-row
+      table mapping
+      the two
+      invalid-input
+      classes
+      (zero-or-
+      negative,
+      excessive) to
+      their two
+      branches; notes
+      that the
+      lower-bound
+      rejection runs
+      FIRST in the
+      prelude order,
+      so a malicious
+      caller cannot
+      bypass it.
+    - **§3 Excessive
+      sample counts
+      capped.** PASS.
+      Four-row
+      boundary table
+      (4095 / 4096 /
+      4097 / 100000)
+      confirming the
+      `>` (strict
+      greater-than)
+      comparison
+      passes
+      `samples_per_pixel
+      == cap` through
+      unchanged.
+    - **§4 Warning
+      / log behaviour
+      exists.** PASS.
+      Documents the
+      three pieces of
+      the warning text
+      (authored value
+      sourced from
+      `cfg`, cap
+      sourced from
+      `kSamplesPerPixelCap`,
+      clamp-action
+      message) and
+      notes the shape
+      mirrors the
+      PT-P.6
+      `max_bounces`
+      warning
+      verbatim — same
+      idiom across
+      both clamps.
+    - **§5 Existing
+      valid behaviour
+      unchanged.**
+      PASS. Three
+      sub-checks:
+      §5.1 source-
+      diff containment
+      (`git diff` over
+      every other
+      directory = 0
+      bytes), §5.2
+      branch
+      arithmetic
+      (`effective_samples_per_pixel
+      == cfg.samples_per_pixel`
+      when within the
+      cap; loop bound
+      iteration count
+      unchanged), §5.3
+      empirical smoke
+      (`--render-pathtrace`
+      "requires CUDA"
+      fallback +
+      `--scene-info`
+      TEX-P.6 fixture
+      both byte-
+      identical).
+    - **§6 Build
+      status.** PASS.
+      Both audit-host
+      configs green
+      (build 7/7,
+      build-ON 8/8;
+      counts unchanged
+      from PT-P.6).
+    - **§7 CPU
+      path-tracing
+      violations.**
+      ZERO. Re-runs
+      the Stage-11
+      audit's three
+      grep sweeps and
+      records the
+      same baseline
+      matches; the
+      spp-loop grep
+      now needs an
+      `effective_samples`
+      alternation
+      (the loop
+      bound's
+      expression
+      changed but
+      shape unchanged
+      — same single
+      sample-frame-
+      granularity
+      iteration the
+      Stage 11 audit
+      classified).
+    - **§8 Runtime-
+      deferred
+      status.**
+      BLOCKED on the
+      same six PPM
+      artefacts every
+      prior path-
+      tracer audit
+      enumerated.
+      Notes two
+      additional
+      operator-side
+      checks for a
+      future CUDA
+      host: PT-P.9
+      warn-line
+      emission +
+      PT-P.9 byte-
+      identity at
+      the cap
+      boundary
+      (rendering
+      `samples_per_pixel
+      = 4096` and
+      5000 should
+      produce
+      bit-identical
+      PPMs). Confirms
+      `tools/verify_cuda_host.py`
+      diff = 0 bytes.
+    - **§9 Verdict.**
+      Overall PASS.
+      Eight-row
+      summary table
+      (PASS, PASS,
+      PASS, PASS,
+      PASS, PASS,
+      PASS — zero
+      violations,
+      BLOCKED). Zero
+      REPAIR items.
+      Records that
+      the
+      PT-P.{5..10}
+      sub-arc
+      together
+      establishes a
+      uniform
+      "`PathTraceConfig`
+      validation
+      prelude" idiom
+      that future
+      fields can
+      drop into.
+    - **Recommended
+      next step.**
+      §4.4
+      environment
+      fallback
+      clarity (the
+      smallest
+      remaining item;
+      ~5 lines of
+      doc-comment +
+      dispatcher
+      info-log
+      addition).
+      Alternatives:
+      §4.5 emission
+      handling,
+      §4.1 RNG
+      stability, §4.7
+      firefly clamp
+      placeholder, or
+      a CUDA-host
+      verification
+      run.
+- This `BUILD_PLAN.md`
+  slice-closing
+  entry.
+
+### What does NOT change
+
+- All
+  PT-P.{1..9}
+  artefacts:
+  byte-identical
+  (PT-P.10 is a
+  documentation
+  audit; it touches
+  no `.cu`,
+  `.cpp`, `.h`,
+  `.cuh`,
+  `.rrscene`,
+  `cmake`, or
+  `tests/` file).
+- Build configs:
+  byte-identical.
+  ctest remains
+  7/7 OFF and
+  8/8 ON-audit-
+  host with no
+  rebuild needed
+  (the new doc
+  is not part
+  of any build
+  target).
+- All other
+  docs: PT-P.10
+  only ADDS
+  `PATH_TRACER_POLISH_SAMPLE_COUNT_CAP_AUDIT.md`;
+  no edits to
+  `PATH_TRACER_POLISH_PLAN.md`,
+  `PATH_TRACER_POLISH_SAMPLE_COUNT_CAP_TASK.md`,
+  the four
+  earlier
+  PT-P.x task /
+  audit docs,
+  the TEX-P.x
+  arc, or the
+  CUDA-H.x arc.
+
+### Master rule compliance
+
+- **Build
+  incrementally /
+  every step
+  compilable**:
+  docs-only slice;
+  build is
+  trivially
+  preserved.
+- **No CPU
+  per-pixel work**:
+  §7 of the audit
+  doc actively
+  re-verifies this
+  rule is upheld
+  post-PT-P.9.
+- **Update
+  BUILD_PLAN**:
+  this entry, per
+  master rule 8.
+
+### Verified at the build
+
+- `cmake --build
+  build` (audit
+  host,
+  RR_ENABLE_CUDA=OFF,
+  RR_ENABLE_OPTIX=OFF):
+  re-built cleanly
+  during the
+  audit; ctest 7/7
+  green.
+- `cmake --build
+  build-ON` (audit
+  host,
+  RR_ENABLE_CUDA=OFF,
+  RR_ENABLE_OPTIX=ON):
+  re-built cleanly;
+  ctest 8/8 green.
+- `./build-ON/bin/RelativityRender
+  --render-pathtrace
+  scenes/test_full_scene.rrscene`:
+  emits the
+  documented
+  "requires CUDA"
+  audit-host
+  fallback;
+  byte-identical
+  with the
+  pre-PT-P.9
+  baseline.
+  Recorded under
+  §5.3 of the
+  audit doc.
+- `./build/bin/RelativityRender
+  --scene-info
+  scenes/test_textured_material.rrscene`:
+  emits the
+  TEX-P.6
+  fixture's
+  expected log
+  sequence (1
+  Case 1 info +
+  2 Case 3
+  warnings;
+  `fixups
+  applied: 2`).
+  Recorded under
+  §5.3.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
