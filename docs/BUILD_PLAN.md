@@ -35723,6 +35723,560 @@ touches.**
   byte-for-byte
   post-PT-P.9.
 
+## PT-P.12 — environment fallback clarity (impl)
+
+**Scope of this slice
+(post-PT-P.11 task
+definition complete):
+ship the fourth
+`PATH_TRACER_POLISH_PLAN.md`
+implementation slice
+exactly as specified
+by
+`docs/PATH_TRACER_POLISH_ENV_FALLBACK_TASK.md`
+— pure clarity work
+on the path tracer's
+environment fallback.
+A doc-comment
+extension on
+`PathTraceConfig::environment_intensity`
+naming the `== 0.0f`
+special case + an
+operator rationale,
+plus a single new
+`Logger::info` line
+in
+`run_render_pathtrace`'s
+post-render block
+echoing both
+environment fields.
+ZERO kernel touches;
+ZERO behavioural
+change; the smallest
+PT-P.x slice to
+date.**
+
+### What ships
+
+- `src/pathtracer/PathTracer.h`
+  (modified):
+    - **PT-P.12 doc-
+      comment
+      paragraph**
+      appended to the
+      existing
+      `environment_color`
+      / `environment_intensity`
+      block. Names
+      the
+      `environment_intensity
+      == 0.0f`
+      special case,
+      describes the
+      visual outcome
+      ("fully black
+      background for
+      missed rays"),
+      and notes the
+      authoring
+      rationale (use
+      it when
+      explicit
+      emissive
+      surfaces /
+      lights make
+      ambient
+      unwanted).
+      Adds an
+      explicit note
+      that the
+      kernel's
+      multiply-and-
+      add is
+      unconditional
+      — no `if
+      (env_intensity
+      > 0)` short-
+      circuit
+      exists; the
+      zero-valued
+      add is the
+      contract,
+      not a
+      special case.
+- `src/main.cpp`
+  (modified):
+    - **`fmt_vec3`
+      lambda**
+      redefined
+      locally inside
+      `run_render_pathtrace`'s
+      spp loop.
+      Mirrors the
+      same lambda
+      `run_scene_info`
+      uses
+      (`src/main.cpp:471-475`)
+      verbatim so
+      both
+      dispatchers
+      print Vec3
+      values in the
+      identical
+      `[x, y, z]`
+      format. The
+      brief noted
+      that
+      `fmt_vec3` is
+      a lambda local
+      to
+      `run_scene_info`
+      rather than a
+      free function;
+      redefining it
+      locally was
+      the
+      lowest-friction
+      way to keep
+      the visual
+      idiom
+      consistent
+      across
+      dispatchers.
+    - **One new
+      `Logger::info`
+      line** added
+      between the
+      existing
+      `pathtrace        : ...`
+      line and the
+      `save_image_or_error`
+      call. Format:
+      `environment      :
+      [x, y, z] *
+      i`.  Always
+      emits — no
+      special-casing
+      for default
+      values; the
+      operator wants
+      to confirm
+      what the
+      kernel sees
+      on every
+      miss.
+- This `BUILD_PLAN.md`
+  slice-closing
+  entry.
+
+### What does NOT change
+
+- `src/cuda/` —
+  zero bytes
+  changed. The
+  miss handler's
+  `env_color *
+  env_intensity`
+  multiplication
+  is correct
+  as-is; no
+  `if
+  (env_intensity
+  > 0)`
+  short-circuit
+  introduced
+  because the
+  existing math
+  already
+  collapses to a
+  no-op when
+  `env_intensity
+  == 0`.
+- `src/optix/` —
+  zero bytes
+  changed. The
+  OptiX raygen
+  / miss /
+  closest-hit
+  programs are
+  unchanged.
+- `src/renderer/`
+  — zero bytes
+  changed.
+- `src/pathtracer/PathTracer.cpp`
+  — zero bytes
+  changed. The
+  validation
+  prelude
+  (PT-P.6 / PT-P.9
+  clamps + the
+  lower-bound /
+  negative
+  rejections) is
+  byte-identical;
+  the function
+  body reads
+  `cfg.environment_color`
+  / `cfg.environment_intensity`
+  once each in
+  the existing
+  CUDA-only
+  branch.
+- `src/core/CommandLine.{h,cpp}`
+  — zero bytes
+  changed. No
+  new CLI flag.
+- `src/io/` —
+  zero bytes
+  changed.
+- `src/scene/`,
+  `src/material/`,
+  `src/lighting/`
+  — zero bytes
+  changed.
+- All `*.rrscene`
+  files under
+  `scenes/` —
+  zero bytes
+  changed.
+- All
+  `tests/*.cpp`
+  files — zero
+  bytes changed
+  (the slice
+  ships no new
+  test per the
+  task §3.1).
+- `tools/verify_cuda_host.py`
+  — zero bytes
+  changed.
+- `CMakeLists.txt`
+  — zero bytes
+  changed.
+- `PathTraceConfig`
+  field set:
+  byte-identical
+  (no new
+  fields, no
+  default
+  changes).
+- The four
+  existing
+  `Logger::info`
+  lines in
+  `run_render_pathtrace`'s
+  post-render
+  block: byte-
+  identical.
+  The new
+  `environment      : ...`
+  line is
+  INSERTED;
+  nothing
+  reformatted.
+- All
+  PT-P.{1..11}
+  artefacts
+  (plan, audits,
+  task briefs):
+  byte-identical.
+- The OptiX
+  dispatcher
+  `run_render_optix_pathtrace`'s
+  info-log
+  block:
+  byte-identical
+  (out of
+  scope per the
+  task §2.2; a
+  future
+  symmetric
+  polish can
+  match the
+  CUDA shape).
+
+### Behaviour matrix
+
+| Scenario                                                | Pre-PT-P.12                                   | PT-P.12                                       |
+|---------------------------------------------------------|-----------------------------------------------|-----------------------------------------------|
+| Default config, CUDA host                               | 4-line post-render info block                 | 5-line block (new `environment      :` line  |
+|                                                         |                                               | shows defaults: `[0.55, 0.70, 1.00] * 0.30`) |
+| `environment_intensity = 0.0f`, CUDA host               | same 4-line block; black background           | 5-line block; environment line shows         |
+|                                                         | (kernel maths produced zero radiance)         | `[0.55, 0.70, 1.00] * 0.00` confirming the   |
+|                                                         |                                               | zero contribution.                            |
+| Custom environment_color, CUDA host                     | same 4-line block; custom sky                 | 5-line block; environment line echoes the    |
+|                                                         |                                               | authored values.                              |
+| `--render-pathtrace` on audit host                      | "requires CUDA" fallback, exit 1              | byte-identical fallback (the new info-log    |
+|                                                         |                                               | line is unreachable on this branch).         |
+| Pixel data of any rendered PPM                          | as-is                                         | byte-identical (zero kernel changes).         |
+
+### Diff size
+
+- `src/pathtracer/PathTracer.h`:
+  +11 added /
+  0 deleted.
+  Within the
+  task's ~6-10
+  range (1 line
+  over the
+  upper bound;
+  the extra
+  line is the
+  blank line
+  separating
+  the new
+  paragraph
+  from the
+  existing
+  doc-comment;
+  removing it
+  would damage
+  readability).
+- `src/main.cpp`:
+  +12 added /
+  0 deleted.
+  Above the
+  task's ~3-6
+  range; the
+  extra lines
+  are the
+  4-line
+  `fmt_vec3`
+  lambda
+  redefinition
+  (matched to
+  `run_scene_info`'s
+  shape verbatim
+  for visual
+  consistency)
+  + a 4-line
+  `Logger::info`
+  call broken
+  for line
+  length + a
+  3-line
+  doc-comment
+  above the
+  block.
+- TOTAL: 23
+  added across
+  both files
+  vs the task's
+  25-line cap.
+  Within bounds;
+  no deviation
+  flag needed
+  (the PT-P.6 /
+  PT-P.9
+  flagged-
+  deviation
+  precedent does
+  not apply
+  here).
+
+### Master rule compliance
+
+- **Build
+  incrementally /
+  every step
+  compilable**:
+  both audit-host
+  configs green
+  (build 7/7,
+  build-ON 8/8;
+  ctest counts
+  unchanged from
+  PT-P.6 /
+  PT-P.9).
+- **No CPU per-pixel
+  work**: the
+  polish touches
+  cold-path
+  host-side
+  documentation
+  + a single
+  info-log call
+  outside the
+  per-pixel
+  computation
+  graph.
+- **Modify maximum
+  2 source
+  files**: the
+  slice modifies
+  exactly two
+  files
+  (`src/pathtracer/PathTracer.h`
+  +
+  `src/main.cpp`);
+  the PT-P.11
+  task §3
+  explicitly
+  authorises
+  this pair.
+- **No rendering
+  logic changes
+  / no C4D /
+  no server /
+  no UI /
+  no node
+  editor**:
+  zero matches.
+  The kernel-
+  side miss
+  handler is
+  byte-identical
+  with the
+  pre-PT-P.12
+  commit
+  `09cc14a`.
+- **Keep CUDA path
+  behaviour
+  stable**: the
+  per-pixel
+  computation
+  graph is
+  byte-identical;
+  every
+  `pathtrace_spp_*.ppm`
+  on a CUDA
+  host remains
+  bit-for-bit
+  identical
+  pre/post-slice.
+- **Keep OptiX OFF
+  build
+  working**:
+  build config
+  green; ctest
+  7/7.
+- **Update
+  BUILD_PLAN**:
+  this entry,
+  per master
+  rule 8.
+
+### Verified at the build
+
+- `cmake --build
+  build` (audit
+  host,
+  RR_ENABLE_CUDA=OFF,
+  RR_ENABLE_OPTIX=OFF):
+  clean build,
+  zero new
+  warnings;
+  ctest 7/7
+  green.
+- `cmake --build
+  build-ON`
+  (audit host,
+  RR_ENABLE_CUDA=OFF,
+  RR_ENABLE_OPTIX=ON):
+  clean build,
+  zero new
+  warnings;
+  ctest 8/8
+  green.
+- `./build/bin/RelativityRender
+  --render-pathtrace
+  scenes/test_full_scene.rrscene`
+  on the audit
+  host: emits
+  the
+  documented
+  "requires
+  CUDA"
+  audit-host
+  fallback
+  byte-
+  identically
+  with the
+  pre-PT-P.12
+  baseline.
+  The new
+  info-log
+  line is
+  unreachable
+  on the
+  audit-host
+  branch (the
+  dispatcher
+  returns
+  early); the
+  smoke
+  confirms
+  that
+  fallback
+  path is
+  unchanged.
+- `./build/bin/RelativityRender
+  --scene-info
+  scenes/test_textured_material.rrscene`:
+  emits the
+  TEX-P.6
+  fixture's
+  expected log
+  sequence
+  (one Case 1
+  info + two
+  Case 3
+  warnings;
+  `fixups
+  applied: 2`).
+  Confirms
+  zero PT-P.12
+  ripple onto
+  the texture
+  validator.
+- `git diff --
+  src/cuda/
+  src/optix/
+  src/renderer/
+  src/pathtracer/PathTracer.cpp
+  src/core/
+  src/io/
+  src/scene/
+  src/material/
+  src/lighting/
+  scenes/
+  tests/
+  tools/verify_cuda_host.py
+  CMakeLists.txt
+  | wc -l` =>
+  0 bytes
+  (no-touch
+  invariants
+  verified).
+- The new
+  info-log
+  line is
+  reachable on
+  a CUDA host
+  by running
+  `--render-pathtrace
+  <scene>` and
+  inspecting
+  the
+  five-line
+  post-render
+  block; the
+  default-
+  config
+  case
+  prints
+  `environment      :
+  [0.550000,
+  0.700000,
+  1.000000] *
+  0.300000`.
+  Empirical
+  end-to-end
+  verification
+  is BLOCKED
+  on a CUDA
+  host run.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:

@@ -63,6 +63,17 @@ struct PathTraceConfig {
     // emitted spectral colour; both are linear-space RGB. Defaults
     // produce a moderate cool sky tint so a scene with no emissive
     // surfaces still produces a visible image.
+    //
+    // PT-P.12: setting `environment_intensity == 0.0f` produces a
+    // fully black background for missed rays — the kernel still
+    // adds `throughput * env` to the radiance on every miss, but
+    // `env` evaluates to `(0, 0, 0)` so the contribution is zero.
+    // Use this when authoring scenes whose only light sources are
+    // emissive surfaces / explicit lights and the operator wants
+    // no background ambient term. The kernel has no `env_intensity
+    // > 0` short-circuit; the multiply-and-add is unconditional,
+    // and the zero-valued add is the documented contract rather
+    // than a special case.
     rr::math::Vec3 environment_color     = {0.55f, 0.70f, 1.00f};
     float          environment_intensity = 0.30f;
 };

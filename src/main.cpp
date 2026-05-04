@@ -2409,6 +2409,18 @@ int run_render_pathtrace(const rr::core::Config& cfg) {
                    + std::to_string(light_pods.size())    + " light(s), "
                    + std::to_string(mesh_to_upload != nullptr ? 1 : 0)
                    + " mesh(es)");
+        // PT-P.12: echo the environment-fallback config so an
+        // operator can confirm what the kernel sees on every miss
+        // without reading source. Format mirrors run_scene_info's
+        // existing `fmt_vec3` lambda for visual consistency.
+        auto fmt_vec3 = [](rr::math::Vec3 v) {
+            return "[" + std::to_string(v.x) + ", "
+                       + std::to_string(v.y) + ", "
+                       + std::to_string(v.z) + "]";
+        };
+        Logger::info(std::string("environment      : ")
+                   + fmt_vec3(pcfg.environment_color) + " * "
+                   + std::to_string(pcfg.environment_intensity));
 
         if (!save_image_or_error(r.image, run.path, run.label,
                                  width, height)) {
