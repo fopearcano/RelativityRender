@@ -33991,6 +33991,417 @@ effect.**
   verified across
   the entire arc).
 
+## PT-P.8 — sample-count cap task definition (docs only)
+
+**Scope of this slice
+(post-PT-P.7 polish
+audit complete):
+re-open the path-
+tracer polish arc
+with the next safe
+implementation
+brief. Per
+`docs/PATH_TRACER_POLISH_AUDIT.md`
+§7's "Recommended
+next safe stage"
+the natural follow-up
+is
+`PATH_TRACER_POLISH_PLAN.md`
+§4.6 (sample-count
+validation): same
+warn-and-clamp shape
+PT-P.6 just shipped
+for `max_bounces`,
+adapted to
+`samples_per_pixel`.
+Mirrors the PT-P.2
+-> PT-P.3 / PT-P.5
+-> PT-P.6 task ->
+implementation
+cadence. NO source
+changes; NO new CLI
+flags; NO kernel
+touches.**
+
+### What ships
+
+- `docs/PATH_TRACER_POLISH_SAMPLE_COUNT_CAP_TASK.md`
+  (NEW). Seven
+  sections + an
+  out-of-scope
+  list:
+    - **§1 Exact
+      issue.** Names
+      the task
+      "Sample-count
+      validation
+      (soft cap)",
+      points to
+      `PATH_TRACER_POLISH_PLAN.md`
+      §4.6 as the
+      source, and
+      gives the
+      single concrete
+      change as a
+      verbatim patch
+      sketch: a new
+      `kSamplesPerPixelCap
+      = 4096`
+      constant in
+      `PathTracer.h`
+      next to the
+      existing
+      `kMaxBouncesCap`,
+      a warn-and-
+      clamp branch
+      in
+      `PathTracer::render`
+      between the
+      existing
+      `samples_per_pixel
+      <= 0`
+      rejection and
+      the
+      `max_bounces
+      < 0`
+      rejection,
+      and one
+      use-site
+      replacement
+      in the host
+      launcher
+      loop's bound.
+      Notes the
+      `<string>` /
+      `Logger.h`
+      includes were
+      already added
+      by PT-P.6 so
+      no new include
+      directive is
+      required.
+    - **§2 Expected
+      behaviour.**
+      Four sub-
+      sections
+      mirroring the
+      prompt's spec
+      bullets:
+      §2.1 invalid
+      counts
+      rejected (the
+      existing `<=
+      0` check;
+      preserved
+      byte-
+      identically),
+      §2.2 excessive
+      counts
+      clamped (the
+      new branch
+      forwards
+      `effective_samples_per_pixel`),
+      §2.3 single
+      `Logger::warning`
+      line per
+      excessive
+      call,
+      §2.4 every
+      caller passing
+      `samples_per_pixel
+      ∈ [1,
+      kSamplesPerPixelCap]`
+      sees byte-
+      identical
+      behaviour
+      (default 16
+      and every
+      dispatcher's
+      hard-coded
+      values 1 + 16
+      are well
+      within the
+      cap).
+    - **§3 Files
+      likely
+      involved.**
+      Three-row
+      table:
+      `src/pathtracer/PathTracer.h`
+      (new
+      constant +
+      doc-comment),
+      `src/pathtracer/PathTracer.cpp`
+      (warn-and-
+      clamp + use-
+      site
+      replacement),
+      `docs/BUILD_PLAN.md`
+      (slice-closing
+      entry). Honours
+      PT-P.3 /
+      PT-P.6's
+      max-2-source-
+      files rule.
+      §3.1 documents
+      the no-new-
+      test
+      recommendation
+      (mirrors
+      PT-P.6's
+      "verifiable by
+      code
+      inspection"
+      verdict that
+      PT-P.7
+      cleared with
+      zero REPAIR
+      items),
+      explains the
+      three grounds
+      (consistency,
+      test-
+      infrastructure
+      friction,
+      code-
+      inspection
+      coverage),
+      and notes that
+      if the
+      implementer
+      disagrees the
+      clean
+      placement is
+      `tests/renderer_tests.cpp`
+      with the
+      PT-P.3
+      disjunction-
+      on-build-
+      config
+      pattern.
+    - **§4 What
+      must not be
+      touched.**
+      Seven sub-
+      sections of
+      explicit
+      no-touch
+      invariants:
+      kernel + launcher
+      code (CUDA +
+      OptiX),
+      renderer-level
+      code
+      (`AccumulationBuffer`),
+      every existing
+      path-tracer
+      PPM
+      byte-identical
+      for valid
+      spp, the CLI
+      surface,
+      `PathTraceConfig`
+      field set,
+      the existing
+      validation
+      prelude
+      semantics
+      (the `<= 0`
+      rejection +
+      the PT-P.6
+      max-bounces
+      block + the
+      env-intensity
+      check are
+      preserved
+      byte-
+      identically),
+      and other
+      audits / plans
+      (`tools/verify_cuda_host.py`,
+      every
+      PT-P.{1..7}
+      doc).
+    - **§5 PASS
+      criteria.**
+      Seven concrete
+      gates: build
+      green on both
+      audit-host
+      configs, ctest
+      7/7 + 8/8
+      (count
+      unchanged from
+      PT-P.6),
+      source-diff
+      size cap
+      (~10-12 net
+      new in
+      PathTracer.cpp;
+      ~5-10 in
+      PathTracer.h),
+      no-touch
+      invariants
+      enforceable
+      by `git diff`,
+      audit-host
+      behavioural
+      smoke
+      (`--render-pathtrace`
+      "requires
+      CUDA"
+      fallback +
+      the TEX-P.6
+      fixture's
+      three-case
+      logs both
+      byte-
+      identical),
+      slice-closing
+      `BUILD_PLAN.md`
+      entry, and
+      master rule
+      compliance.
+    - **§6 Out-of-
+      scope.**
+      Explicitly
+      defers
+      `PATH_TRACER_POLISH_PLAN.md`
+      §4.{1,4,5,7}
+      to their own
+      future task
+      definitions.
+      Re-states the
+      recommended
+      sequence after
+      §4.6 (§4.4 ->
+      §4.5 ->
+      §4.1 -> §4.7).
+    - **§7 Why §4.6
+      is the safest
+      viable next
+      slice.** Five
+      structural
+      reasons mirror
+      PT-P.5's §3
+      analysis: the
+      PT-P.7 audit
+      verdict was
+      clean, the
+      change is
+      host-side
+      only, the
+      pattern is
+      established,
+      the default
+      + every
+      common spp
+      value is
+      unaffected,
+      and PT-P.6 +
+      PT-P.9
+      together
+      establish a
+      "`PathTraceConfig`
+      validation
+      prelude"
+      idiom that
+      future fields
+      (e.g. §4.7's
+      `firefly_clamp`
+      placeholder)
+      can drop
+      into.
+- This `BUILD_PLAN.md`
+  slice-closing
+  entry.
+
+### What does NOT change
+
+- All PT-P.{1..7}
+  artefacts:
+  byte-identical
+  (PT-P.8 is a
+  task definition;
+  it touches no
+  source file).
+- Build configs:
+  byte-identical.
+  ctest remains
+  7/7 OFF and
+  8/8 ON-audit-
+  host with no
+  rebuild needed.
+- All other docs:
+  PT-P.8 only
+  ADDS
+  `PATH_TRACER_POLISH_SAMPLE_COUNT_CAP_TASK.md`;
+  no edits to
+  `PATH_TRACER_POLISH_PLAN.md`,
+  the four
+  earlier
+  PT-P.x task /
+  audit docs,
+  the TEX-P.x
+  arc, or the
+  CUDA-H.x arc.
+
+### Master rule compliance
+
+- **Build
+  incrementally /
+  every step
+  compilable**:
+  docs-only
+  slice; build
+  is trivially
+  preserved.
+- **Update
+  BUILD_PLAN**:
+  this entry,
+  per master
+  rule 8.
+
+### Verified at the build
+
+- `cmake --build
+  build` + `cmake
+  --build
+  build-ON` were
+  already green
+  at the end of
+  PT-P.7 and
+  remain green;
+  PT-P.8 changed
+  no
+  build-relevant
+  files. ctest
+  7/7 OFF and
+  8/8 ON re-
+  confirmed with
+  no work
+  needed.
+- The task doc's
+  source citations
+  (the verbatim
+  `cfg.samples_per_pixel
+  <= 0` check at
+  `PathTracer.cpp:27-30`,
+  the launcher
+  loop bound at
+  line 97, the
+  default `16`
+  in
+  `PathTraceConfig.h`,
+  the existing
+  `kMaxBouncesCap`
+  in
+  `PathTracer.h`)
+  resolve to the
+  current source
+  byte-for-byte
+  post-PT-P.6.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
