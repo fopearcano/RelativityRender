@@ -28067,6 +28067,273 @@ explicitly opted in.
   CUDA_HOST_VERIFICATION_PLAN
   formalises.
 
+## CUDA-H.9 — verification report
+
+**Scope of this slice
+(post-CUDA-H.8 OptiX checks):
+add `write_report(...)` to
+the runner that emits a
+deterministic Markdown report
+after every run. New
+`--report-out PATH` argparse
+flag (default
+`docs/CUDA_HOST_VERIFICATION_REPORT.md`;
+empty string disables report
+emission). Per the user's
+"deterministic output" rule:
+durations and timestamps are
+intentionally omitted from
+the report body so the same
+tree state + same hardware
+produces a byte-identical
+report. Smoked the runner
+once on the audit host to
+generate the actual report
+artifact. NO renderer
+modification.**
+
+### What ships
+
+- `tools/verify_cuda_host.py`:
+    - new `_git_rev_short(
+      repo_root)` helper:
+      runs `git rev-parse
+      --short HEAD` with a
+      bounded 10s timeout;
+      returns the empty
+      string on any
+      failure (git missing,
+      not a repo, etc.).
+      The git rev is the
+      ONLY varying-but-
+      stable identifier
+      that ships in the
+      report body.
+    - new `write_report(
+      out_path, repo_root,
+      binary, args,
+      results, signals)`
+      function: emits a
+      Markdown report with
+      stable section
+      headers (`# CUDA-host
+      Verification Report`
+      / `## Environment` /
+      `## Test results`
+      / `## Summary`).
+      Counts (pass / fail
+      / skipped) are
+      derived from the
+      results list;
+      `overall` is `PASS`
+      iff `fail_count ==
+      0` and `REPAIR`
+      otherwise (skipped
+      doesn't count as
+      failure per
+      CUDA-H.8).
+    - new `--report-out
+      PATH` argparse flag.
+      Default:
+      `docs/CUDA_HOST_VERIFICATION_REPORT.md`.
+      Pass empty string to
+      skip report emission.
+    - `main()` calls
+      `write_report` after
+      the summary table
+      (and before the exit
+      code is returned).
+- `docs/CUDA_HOST_VERIFICATION_REPORT.md`:
+  the actual generated
+  report from the audit
+  host's smoke run. This
+  file is now committed
+  as the canonical
+  verification artifact;
+  future operator runs
+  on a real CUDA + OptiX-
+  SDK host produce a
+  different `overall`
+  (`PASS` instead of the
+  current `REPAIR`)
+  reflecting the
+  hardware reality.
+- This `BUILD_PLAN.md`
+  slice-closing entry.
+
+### Determinism contract
+
+The report is deterministic
+in the following sense:
+**given the same source tree
+state + same hardware + same
+`--optix` flag, two
+consecutive runs produce
+byte-identical reports**.
+
+Verified empirically:
+
+```
+$ python3 tools/verify_cuda_host.py --skip-build --build-dir build_off
+$ cp docs/CUDA_HOST_VERIFICATION_REPORT.md /tmp/report1.md
+$ python3 tools/verify_cuda_host.py --skip-build --build-dir build_off
+$ diff -u /tmp/report1.md docs/CUDA_HOST_VERIFICATION_REPORT.md
+$ echo "diff exit=$?"
+diff exit=0
+```
+
+The report's deterministic
+elements:
+- Section headers (fixed
+  strings).
+- Test names (stable across
+  runs; defined by
+  `base_commands()` +
+  `optix_commands()`).
+- Per-test status (pass /
+  fail / skipped) +
+  returncode (function of
+  the binary's response,
+  which is deterministic
+  for the same tree).
+- Summary counts +
+  overall verdict (function
+  of the per-test results).
+- Git rev (`git rev-parse
+  --short HEAD`; varies
+  only when the operator
+  re-commits between
+  runs).
+
+The report's NON-
+deterministic elements
+(intentionally omitted):
+- Wall-clock timestamps.
+- Per-command durations
+  (nanosecond noise even
+  on identical hardware).
+- Captured stdout / stderr
+  byte streams (line-
+  ending differences,
+  log timestamps inside
+  the renderer's own
+  output).
+
+### Smoke results (audit host, no CUDA, no SDK)
+
+The first run produced the
+shipped
+`docs/CUDA_HOST_VERIFICATION_REPORT.md`:
+
+- **Environment**: binary at
+  `build_off/bin/RelativityRender`,
+  `--optix` off, CUDA GPU
+  not detected, no critical
+  errors from `--device-info`.
+- **Test results**: 13
+  rows. `device-info` PASS
+  (rc 0); 9 CUDA render
+  commands FAIL (each rc
+  1 with the documented
+  "requires CUDA" error);
+  3 OptiX commands SKIPPED
+  (rc `-`, per CUDA-H.8
+  semantics for `--optix`
+  off).
+- **Summary**: pass 1,
+  fail 9, skipped 3,
+  overall **REPAIR**.
+  This is the expected
+  audit-host posture:
+  REPAIR is honest about
+  what the audit host can
+  verify. A future CUDA-
+  host run will produce a
+  PASS report.
+
+The "REPAIR" verdict is NOT
+a regression - it's the
+documented runtime-deferred
+state every Stage 13/14/19/
+20/21 audit predicted.
+The follow-up CUDA-host
+operator runs the verify
+plan + commits the new
+PASS report to close the
+deferral.
+
+### Master rule compliance
+
+- **No renderer
+  modification**: only
+  `tools/verify_cuda_host.py`
+  + the new generated
+  report doc + this
+  BUILD_PLAN entry
+  touched. No `src/`
+  modification.
+- **Deterministic
+  output**: byte-identical
+  across consecutive runs
+  on the same tree state
+  + same hardware.
+  Verified via `diff`
+  above.
+- **Respect timeouts**:
+  the new `_git_rev_short`
+  helper has its own 10s
+  timeout; existing
+  per-command timeouts
+  unchanged.
+
+### Backward compatibility
+
+- The runner's exit-code
+  semantics are byte-
+  identical with CUDA-H.8
+  (skipped is non-failure;
+  pass requires every
+  result is pass or
+  skipped).
+- All prior CUDA-H.x
+  command entries are
+  byte-identical with
+  their prior shape.
+- New `--report-out`
+  flag defaults to a
+  sensible path; setting
+  it to empty disables
+  report emission for
+  callers that only want
+  the live console
+  output.
+- The existing OFF +
+  ON-audit-host ctest
+  baselines (6/6 + 7/7)
+  are unchanged because
+  no C++ source was
+  modified.
+
+### Verified at the build
+
+- `python3 -c "import ast;
+  ast.parse(open('tools/
+  verify_cuda_host.py').read())"`:
+  syntax check passes.
+- Two consecutive
+  `--skip-build` smokes
+  on the OFF build
+  produce a byte-identical
+  report (verified via
+  `diff -u`).
+- Generated report
+  matches the audit-host
+  reality:
+  `overall: REPAIR` with
+  the documented per-
+  command failures and
+  skipped OptiX entries.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:

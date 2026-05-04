@@ -604,6 +604,149 @@ def dump_failure(result: CommandResult) -> None:
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# Report writer (CUDA-H.9)
+# ---------------------------------------------------------------------------
+
+
+def _git_rev_short(repo_root: Path) -> str:
+    """Return the short git rev for ``repo_root``.
+
+    Returns the empty string when ``git`` is unavailable or
+    the repo is in an unexpected state. Bounded by a short
+    timeout so the report writer can never hang.
+    """
+
+    try:
+        completed = subprocess.run(  # noqa: S603, S607
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=str(repo_root),
+            capture_output=True,
+            text=True,
+            timeout=10.0,
+            check=False,
+        )
+        if completed.returncode == 0:
+            return completed.stdout.strip()
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        pass
+    return ""
+
+
+def write_report(
+    out_path: Path,
+    repo_root: Path,
+    binary: Path | None,
+    args: argparse.Namespace,
+    results: list[CommandResult],
+    signals: "DeviceInfoSignals | None",
+) -> None:
+    """Emit the deterministic verification report.
+
+    Per the CUDA-H.9 contract:
+
+    - Stable section headers (Environment / Results / Summary).
+    - Deterministic content: pass/fail decisions are a
+      function of the tree state + hardware; durations and
+      timestamps are intentionally omitted because they vary
+      across runs even on the same hardware.
+    - Markdown formatted; safe to commit.
+
+    The report is overwritten on each run; ``out_path``'s
+    parent directory is created if missing.
+    """
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    git_rev = _git_rev_short(repo_root)
+
+    # Counts are stable: skipped is per-spec, fail/pass/timeout/
+    # error are per the CommandResult.status enum.
+    counts: dict[str, int] = {}
+    for r in results:
+        counts[r.status] = counts.get(r.status, 0) + 1
+    pass_count = counts.get("pass", 0)
+    fail_count = counts.get("fail", 0) + counts.get("timeout", 0) \
+                 + counts.get("error", 0)
+    skipped_count = counts.get("skipped", 0)
+
+    # Per CUDA-H.9: PASS iff every result is "pass" or "skipped".
+    overall = "PASS" if fail_count == 0 else "REPAIR"
+
+    lines: list[str] = []
+    lines.append("# CUDA-host Verification Report")
+    lines.append("")
+    lines.append("Generator: `tools/verify_cuda_host.py` (CUDA-H.9)")
+    lines.append(
+        "Spec: `docs/CUDA_HOST_VERIFICATION_PLAN.md`"
+    )
+    if git_rev:
+        lines.append(f"Tree state: `{git_rev}`")
+    lines.append("")
+
+    # ---- Environment ----------------------------------------
+    lines.append("## Environment")
+    lines.append("")
+    if binary is not None:
+        rel_binary = binary
+        try:
+            rel_binary = binary.relative_to(repo_root)
+        except ValueError:
+            rel_binary = binary
+        lines.append(f"- Binary: `{rel_binary}`")
+    else:
+        lines.append("- Binary: NOT FOUND")
+    lines.append(f"- `--optix`: {'ON' if args.optix else 'off'}")
+    if signals is not None:
+        gpu_state = (
+            "detected" if signals.cuda_device_present
+            else "not detected (CUDA disabled or audit-host)"
+        )
+        lines.append(f"- CUDA GPU: {gpu_state}")
+        lines.append(
+            "- `--device-info`: "
+            f"{'no critical errors' if signals.no_critical_errors else 'errors logged'}"
+        )
+    else:
+        lines.append("- `--device-info`: not run")
+    lines.append("")
+
+    # ---- Results --------------------------------------------
+    lines.append("## Test results")
+    lines.append("")
+    lines.append("| name | status | rc |")
+    lines.append("|------|--------|----|")
+    for r in results:
+        rc = "-" if r.returncode is None else str(r.returncode)
+        lines.append(f"| `{r.name}` | {r.status.upper()} | {rc} |")
+    lines.append("")
+
+    # ---- Summary --------------------------------------------
+    lines.append("## Summary")
+    lines.append("")
+    lines.append(f"- pass    : {pass_count}")
+    lines.append(f"- fail    : {fail_count}")
+    lines.append(f"- skipped : {skipped_count}")
+    lines.append(f"- overall : **{overall}**")
+    lines.append("")
+    if overall == "PASS":
+        lines.append(
+            "Every executed command succeeded; skipped entries "
+            "(if any) were deferred per CUDA-H.8 (`--optix` "
+            "not set)."
+        )
+    else:
+        lines.append(
+            "One or more commands failed. Inspect the runner's "
+            "stderr output for the documented error per command "
+            "and follow the REPAIR criteria in "
+            "`docs/CUDA_HOST_VERIFICATION_PLAN.md` §5."
+        )
+    lines.append("")
+
+    out_path.write_text("\n".join(lines), encoding="utf-8")
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
@@ -704,6 +847,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "'-DOPTIX_ROOT=<path>'). Only used when --optix is "
             "set. Default: leave unset and let cmake auto-"
             "detect / fall through to the audit-host fallback."
+        ),
+    )
+    parser.add_argument(
+        "--report-out",
+        type=Path,
+        default=Path("docs/CUDA_HOST_VERIFICATION_REPORT.md"),
+        help=(
+            "Path (relative to --repo-root) to write the "
+            "deterministic verification report to (CUDA-H.9). "
+            "Default: docs/CUDA_HOST_VERIFICATION_REPORT.md. "
+            "Pass an empty string to skip report generation."
         ),
     )
     return parser.parse_args(argv)
@@ -917,6 +1071,26 @@ def main(argv: list[str] | None = None) -> int:
         print("device-info analysis:")
         print(f"  cuda_device_present : {signals.cuda_device_present}")
         print(f"  no_critical_errors  : {signals.no_critical_errors}")
+
+    # CUDA-H.9: emit the deterministic verification report.
+    # The empty-string sentinel disables report generation
+    # (operators who only want the live console output can
+    # pass `--report-out ''`).
+    report_path_str = str(args.report_out)
+    if report_path_str:
+        report_path = args.report_out
+        if not report_path.is_absolute():
+            report_path = args.repo_root / report_path
+        write_report(
+            out_path=report_path,
+            repo_root=args.repo_root,
+            binary=binary,
+            args=args,
+            results=all_results,
+            signals=signals,
+        )
+        print()
+        print(f"report  : {report_path}")
 
     # Per CUDA-H.8: "skipped" is NOT a failure. Exit 0 when
     # every result is either "pass" or "skipped".
