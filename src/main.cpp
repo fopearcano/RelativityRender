@@ -3916,21 +3916,27 @@ bool denoise_and_save_ppm(
                                inputs.width, inputs.height);
 }
 
-// OptiX Gap A Step 3.2 / 3.3: orchestration-helper
-// (partial). Step 3.2 shipped the SHELL (input validation +
-// entry log + "not ready" return). Step 3.3 wires the
-// first of the three sequenced calls from
-// `docs/OPTIX_GAP_A_STEP_3_TASK.md` §3:
-// `OptixRenderer::render_aovs_retain` (Step-2 surface). The
-// helper now allocates + retains the three AOV device
-// buffers (Beauty / Albedo / Normal) but does NOT yet
-// invoke the denoiser - that lands in Step 3.4. Per the
-// user's "do not call denoiser yet" rule, the helper logs
-// the render outcome + returns `false` with the documented
-// "denoiser call deferred to Step 3.4" status when the
-// render succeeds, so any (future) CLI consumer that calls
-// the helper sees the same `false`-not-ready return as in
-// Step 3.2.
+// OptiX Gap A Step 3.2 / 3.3 / 3.4: orchestration-helper
+// (complete). Step 3.2 shipped the SHELL (input validation
+// + entry log + "not ready" return). Step 3.3 wired
+// `OptixRenderer::render_aovs_retain` (Step-2 surface) so
+// the helper allocates + retains the three AOV device
+// buffers. Step 3.4 wires the denoiser handoff: builds an
+// `OptixDenoiser::Inputs` POD from the retained device
+// pointers and delegates to the existing
+// `denoise_and_save_ppm` (Stage 21D.4 + 21D.5) helper. The
+// retained `AovRetainedBuffers` struct stays in scope
+// across the denoise call so the device buffers remain
+// alive for the entire `optixDenoiserInvoke` invocation -
+// Gap A's whole point.
+//
+// Per `docs/OPTIX_GAP_A_STEP_3_TASK.md` §3 the helper
+// sequences three calls: (1) `render_aovs_retain`, (2)
+// host-side `OptixDenoiser::Inputs` POD construction, (3)
+// `denoise_and_save_ppm`. Step 3.4 closes the sequence;
+// the helper now returns `true` on a successful PPM write
+// (denoised OR noisy-Beauty fallback per Stage 21D.5)
+// and `false` only when no PPM file was produced.
 bool render_optix_aovs_and_denoise_to_ppm(
         rr::optix::OptixDenoiser&                denoiser,
         const rr::scene::Scene&                  scene,
@@ -3940,9 +3946,8 @@ bool render_optix_aovs_and_denoise_to_ppm(
         const std::string&                       out_path
             = std::string("output/optix_aovs_denoised.ppm")) {
     using rr::core::Logger;
-    (void)out_path;
 
-    Logger::info("optix-aovs-denoise: helper entered (Step 3.3)");
+    Logger::info("optix-aovs-denoise: helper entered (Step 3.4)");
 
     if (!denoiser.isAvailable()) {
         Logger::error(
@@ -4022,14 +4027,46 @@ bool render_optix_aovs_and_denoise_to_ppm(
         "optix-aovs-denoise: render_aovs_retain complete ("
       + std::to_string(width) + "x" + std::to_string(height)
       + ", " + std::to_string(retained.gpu_time_ms)
-      + "ms); denoiser call deferred to Step 3.4.");
+      + "ms); handing retained AOVs to denoiser.");
 
-    Logger::error(
-        "optix-aovs-denoise: helper not ready (Step 3.3 "
-        "stops after render_aovs_retain; the "
-        "denoise_and_save_ppm call lands in Step 3.4 "
-        "per docs/OPTIX_GAP_A_STEP_3_TASK.md).");
-    return false;
+    // Step 3.4: build the `OptixDenoiser::Inputs` POD from
+    // the retained device pointers and delegate to
+    // `denoise_and_save_ppm` (Stage 21D.4 + 21D.5). The
+    // existing helper allocates the output device buffer,
+    // calls `OptixDenoiser::denoise(inputs, output)`,
+    // downloads the result, saves the PPM, and on any
+    // denoiser failure runs the Stage 21D.5 noisy-Beauty
+    // fallback (using `inputs.beauty_device` directly). Per
+    // master rules 5/7: every per-pixel byte is produced by
+    // the SDK's CUDA kernels; the host only orchestrates
+    // and saves the final PPM.
+    //
+    // `retained` stays in scope here for the full
+    // `denoise_and_save_ppm` call, so the three
+    // `GpuBuffer<float>` instances inside it keep the
+    // device buffers alive throughout the OptiX denoiser
+    // invocation. After the call returns, `retained` goes
+    // out of scope and `GpuBuffer`'s destructor frees the
+    // buffers - the lifetime contract Gap A was authored
+    // to provide.
+    rr::optix::OptixDenoiser::Inputs inputs;
+    inputs.beauty_device     = retained.beauty_device.device_ptr();
+    inputs.beauty_components = 3;
+    inputs.albedo_device     = retained.albedo_device.device_ptr();
+    inputs.normal_device     = retained.normal_device.device_ptr();
+    inputs.width             = retained.width;
+    inputs.height            = retained.height;
+
+    if (!denoise_and_save_ppm(denoiser, inputs, out_path)) {
+        Logger::error(
+            "optix-aovs-denoise: denoise_and_save_ppm "
+            "failed; no image saved at " + out_path);
+        return false;
+    }
+
+    Logger::info(
+        "optix-aovs-denoise: complete; wrote " + out_path);
+    return true;
 }
 #endif  // RR_HAS_CUDA && RELATIVITYRENDER_ENABLE_OPTIX
 

@@ -29198,6 +29198,286 @@ yet" rule.
   this audit host (no
   CUDA + no OptiX SDK).
 
+## OptiX Gap A polish — Step 3.4 (denoiser handoff)
+
+**Scope of this slice
+(post-Step-3.3 retained-AOV
+render call): close the
+orchestration helper's
+sequence by handing the
+retained Beauty / Albedo /
+Normal device pointers to
+the existing
+`denoise_and_save_ppm`
+(Stage 21D.4 + 21D.5)
+helper. The
+`AovRetainedBuffers` struct
+stays in scope across the
+denoise call so the three
+`GpuBuffer<float>` instances
+keep the device buffers
+alive throughout the
+`optixDenoiserInvoke`
+invocation - exactly the
+lifetime contract Gap A was
+authored to provide. The
+helper now returns `true`
+on a successful PPM write
+(denoised OR Stage 21D.5
+noisy-Beauty fallback) and
+`false` only when no PPM
+file was produced. NO
+consumer / dispatcher
+wiring; that is Step 4.**
+
+### What ships
+
+- `src/main.cpp`
+  (`render_optix_aovs_and_denoise_to_ppm`
+  body only):
+    - Removed the
+      `(void)out_path;` stub
+      (`out_path` is now
+      consumed by
+      `denoise_and_save_ppm`).
+    - Updated the entry log
+      from "(Step 3.3)" to
+      "(Step 3.4)".
+    - Updated the
+      render_aovs_retain
+      success log: replaced
+      the trailing
+      "denoiser call
+      deferred to Step 3.4"
+      with "handing retained
+      AOVs to denoiser"
+      (the deferral is
+      now closed).
+    - Replaced the Step-3.3
+      "stops after
+      render_aovs_retain"
+      return-false block
+      with the actual
+      denoiser handoff:
+        1. **Build
+           `OptixDenoiser::Inputs`
+           POD**: assigns
+           `inputs.beauty_device`,
+           `inputs.albedo_device`,
+           `inputs.normal_device`
+           from the retained
+           `GpuBuffer<float>`
+           instances'
+           `device_ptr()`,
+           plus
+           `beauty_components=3`,
+           `width =
+           retained.width`,
+           `height =
+           retained.height`.
+        2. **Call
+           `denoise_and_save_ppm(
+           denoiser, inputs,
+           out_path)`**: the
+           existing helper
+           allocates the
+           output device
+           buffer, calls
+           `OptixDenoiser::denoise(
+           inputs, output)`,
+           downloads the
+           result, saves the
+           PPM. On any
+           denoiser failure
+           the Stage 21D.5
+           noisy-Beauty
+           fallback fires
+           inside the helper.
+        3. **Return path**:
+           if
+           `denoise_and_save_ppm`
+           returns false,
+           log the error and
+           return false. On
+           success, log
+           `Logger::info(
+           "optix-aovs-denoise:
+           complete; wrote " +
+           out_path)` and
+           return true.
+- This `BUILD_PLAN.md`
+  slice-closing entry.
+
+### What does NOT change
+
+- `OptixRenderer::render_aovs_retain`
+  (Step 2 SDK_FOUND body):
+  byte-identical.
+- `OptixDenoiser::denoise`
+  (Stage 21D.1..21D.3):
+  byte-identical.
+- `denoise_and_save_ppm`
+  (Stage 21D.4 + 21D.5):
+  byte-identical.
+- `denoise_aov_buffers_to_ppm`
+  (Stage 19B.4):
+  byte-identical.
+- Every existing CLI
+  surface byte-identical
+  (no consumer / dispatcher
+  wiring; the helper
+  remains callable but no
+  CLI reaches it yet —
+  Step 4 owns that).
+- `OptixRenderer.h`,
+  `OptixDenoiser.{h,cpp}`,
+  the CUDA path, all
+  `tests/`, `CMakeLists.txt`:
+  all byte-identical.
+
+### Behaviour matrix
+
+| Scenario                                    | Outcome                                  |
+|---------------------------------------------|------------------------------------------|
+| Step 3.2/3.3 pre-conditions fail            | unchanged: log + return false (no PPM)   |
+| `render_aovs_retain` returns ok=false       | unchanged: log + return false (no PPM)   |
+| Retained buffer size / pointer fails        | unchanged: defensive log + return false  |
+| `render_aovs_retain` ok, denoise succeeds   | log "complete; wrote <path>"; PPM at     |
+|                                             | `out_path` carries denoised radiance;    |
+|                                             | helper returns true                      |
+| `render_aovs_retain` ok, denoise fails      | log "complete; wrote <path>"; PPM at     |
+| (e.g., SDK invoke / sync error inside       | `out_path` carries the noisy Beauty AOV  |
+| `denoise_and_save_ppm`)                     | (Stage 21D.5 fallback fired inside       |
+|                                             | `denoise_and_save_ppm`); helper returns  |
+|                                             | true                                     |
+| `denoise_and_save_ppm` itself returns       | log "denoise_and_save_ppm failed; no     |
+| false (e.g., even the noisy-Beauty          | image saved at <path>"; helper returns   |
+| fallback's download / save failed)          | false                                    |
+
+### Master rule compliance
+
+- **CPU must not denoise
+  or alter pixels**:
+  the helper does not
+  iterate per-pixel; it
+  only builds the
+  `Inputs` POD (six field
+  assignments) and
+  delegates to
+  `denoise_and_save_ppm`,
+  which performs the
+  GPU `optixDenoiserInvoke`
+  + a single
+  `cudaMemcpy(D->H)` for
+  download. No per-pixel
+  CPU work in either the
+  helper or the
+  delegate's body.
+- **CPU may orchestrate
+  and save only**: the
+  helper orchestrates
+  (allocate device output
+  via `GpuBuffer<float>`
+  inside
+  `denoise_and_save_ppm`,
+  call denoise, download,
+  save) without altering
+  any pixel. The
+  `Image::save_ppm` clamp
+  is display-format
+  conversion (float ->
+  uint8), the same path
+  every other `--render-*`
+  saver uses.
+- **Keep CUDA path
+  unchanged**:
+  `git diff` over
+  `src/cuda/`,
+  `src/renderer/`,
+  `src/pathtracer/` shows
+  zero bytes changed.
+- **Keep OptiX OFF build
+  working**: ctest 6/6
+  green on the audit
+  host with
+  `RR_ENABLE_OPTIX=OFF`.
+  The helper is gated
+  inside the existing
+  `RR_HAS_CUDA &&
+  RELATIVITYRENDER_ENABLE_OPTIX`
+  block; OFF builds do
+  not see it.
+- **Update BUILD_PLAN**:
+  this entry, per master
+  rule 8.
+
+### Backward compatibility
+
+- The helper is callable
+  but no caller exists
+  yet. Behaviour change
+  for direct callers
+  (none today): the
+  helper's return value
+  semantics now match
+  `denoise_and_save_ppm`
+  (true on PPM written,
+  false on no-PPM).
+- Build configurations
+  (OFF, ON-audit-host,
+  CUDA + OptiX-SDK host)
+  all produce the same
+  ctest baselines they
+  did pre-Step-3.4.
+- The CUDA-H.9
+  verification report on
+  the audit host is
+  byte-identical (only
+  the `Tree state` hash
+  line varies per the
+  CUDA-H.9 spec).
+
+### Verified at the build
+
+- `cmake -S . -B build_off
+  -DRR_ENABLE_CUDA=OFF
+  -DRR_ENABLE_OPTIX=OFF`
+  (audit host): clean
+  build; ctest 6/6 green.
+- `cmake -S . -B build_on_audit
+  -DRR_ENABLE_CUDA=OFF
+  -DRR_ENABLE_OPTIX=ON`
+  (audit host, no SDK):
+  clean build; ctest 7/7
+  green. The new
+  `denoise_and_save_ppm`
+  call sits inside the
+  existing `RR_HAS_CUDA &&
+  ENABLE_OPTIX` gate;
+  `RR_HAS_CUDA` is
+  undefined here, so the
+  helper still does not
+  compile in this audit-
+  host configuration —
+  same as Step 3.2 +
+  3.3. Structural
+  verification deferred
+  to a CUDA host.
+- The actual SDK-found
+  end-to-end path
+  (helper ->
+  `render_aovs_retain` ->
+  build inputs POD ->
+  `denoise_and_save_ppm`
+  -> `optixDenoiserInvoke`
+  -> download + save PPM
+  to `out_path`) is
+  structurally in place
+  but cannot be
+  empirically verified on
+  this audit host (no
+  CUDA + no OptiX SDK).
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
