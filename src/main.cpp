@@ -3686,6 +3686,103 @@ bool denoise_aov_buffers_to_ppm(
 
     return save_image_or_error(img, out_path, "denoised", width, height);
 }
+
+// Stage 21D.4: end-to-end orchestration helper for the new
+// high-level `OptixDenoiser::denoise(Inputs, Output)` API
+// (Stage 21D.1..21D.3). Allocates a device-side output
+// buffer sized to width * height * beauty_components floats,
+// calls `denoiser.denoise(inputs, output)` to fill it on the
+// GPU, downloads the result via `GpuBuffer::download`, and
+// saves the host-side image to PPM via the established
+// `save_image_or_error` helper.
+//
+// Master rule compliance:
+// - The denoise step itself runs entirely on the GPU
+//   (`optixDenoiserInvoke` + the SDK's CUDA kernels). The
+//   host orchestration here only allocates the device
+//   output buffer, calls `denoise()`, downloads bytes via
+//   `cudaMemcpy(D->H)`, and writes the PPM. No per-pixel
+//   work on the CPU.
+// - Per the rules: "CPU may download/save only", "CPU must
+//   not denoise or modify pixels". The download is a single
+//   `cudaMemcpy` (no per-pixel transformation); the save
+//   serialises the float framebuffer through `Image::save_ppm`
+//   without modifying pixels.
+//
+// Default `out_path` matches the Stage 21A.6 contract
+// (`output/denoised.ppm`); callers can override per the
+// standard `--output` convention. The function does not
+// wire to any CLI surface in this slice (per Stage 21D.x's
+// "no CLI integration yet" rule); the existing
+// `--render-denoise` and `--render-aovs --denoise` paths
+// still flow through the legacy
+// `denoise_aov_buffers_to_ppm` helper above.
+bool denoise_and_save_ppm(
+        rr::optix::OptixDenoiser&                denoiser,
+        const rr::optix::OptixDenoiser::Inputs&  inputs,
+        const std::string&                       out_path
+            = std::string("output/denoised.ppm")) {
+    using rr::core::Logger;
+
+    if (inputs.width <= 0 || inputs.height <= 0) {
+        Logger::error("denoise_and_save_ppm: invalid dimensions ("
+                    + std::to_string(inputs.width) + "x"
+                    + std::to_string(inputs.height) + ").");
+        return false;
+    }
+    if (inputs.beauty_components != 3 && inputs.beauty_components != 4) {
+        Logger::error("denoise_and_save_ppm: beauty_components must be "
+                      "3 (FLOAT3) or 4 (FLOAT4); got "
+                    + std::to_string(inputs.beauty_components));
+        return false;
+    }
+
+    // Allocate the device-side output buffer the denoiser
+    // will write into. `width * height * beauty_components`
+    // floats per Stage 21A.6 / Stage 21C.1 contract.
+    const std::size_t pixel_count =
+        static_cast<std::size_t>(inputs.width)
+      * static_cast<std::size_t>(inputs.height);
+    const std::size_t output_floats =
+        pixel_count * static_cast<std::size_t>(inputs.beauty_components);
+
+    rr::gpu::GpuBuffer<float> output_buf;
+    if (!output_buf.allocate(output_floats)) {
+        Logger::error("denoise_and_save_ppm: failed to allocate "
+                      "device output buffer ("
+                    + std::to_string(output_floats * sizeof(float))
+                    + " bytes).");
+        return false;
+    }
+
+    rr::optix::OptixDenoiser::Output output{};
+    output.device = output_buf.device_ptr();
+    output.width  = inputs.width;
+    output.height = inputs.height;
+
+    if (!denoiser.denoise(inputs, output)) {
+        Logger::error("denoise_and_save_ppm: " + denoiser.last_error());
+        return false;
+    }
+
+    // Download the denoised radiance into a host-side Image.
+    // Layout matches `output_floats`; the format is RGB32F
+    // for FLOAT3 / RGBA32F for FLOAT4 - both are direct
+    // serialisations to PPM via `Image::save_ppm`'s
+    // float-to-uint8 clamp.
+    rr::image::Image img(inputs.width, inputs.height,
+                         (inputs.beauty_components == 4)
+                             ? rr::image::PixelFormat::Rgba32F
+                             : rr::image::PixelFormat::Rgb32F);
+    if (!output_buf.download(img.data(), output_floats)) {
+        Logger::error("denoise_and_save_ppm: failed to download "
+                      "denoised output buffer to host.");
+        return false;
+    }
+
+    return save_image_or_error(img, out_path, "denoised",
+                               inputs.width, inputs.height);
+}
 #endif  // RR_HAS_CUDA && RELATIVITYRENDER_ENABLE_OPTIX
 
 // `--render-denoise` dispatch (Stage 19B.3). Builds a small

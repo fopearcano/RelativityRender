@@ -24558,6 +24558,253 @@ guided, not beauty-only.
   verified on this audit
   host (no SDK).
 
+## Stage 21D.4 — save denoised output
+
+**Scope of this slice (Stage 21D.4;
+master order #24, "Denoising"):
+add the host-side download +
+PPM save path that pairs with
+the new
+`OptixDenoiser::denoise(Inputs,
+Output)` API. New free function
+`denoise_and_save_ppm(denoiser,
+inputs, out_path)` in
+`src/main.cpp` allocates a
+device-side output buffer,
+calls `denoise()`, downloads
+the result via `GpuBuffer::
+download`, and saves the
+host-side image to PPM via
+the existing `save_image_or_error`
+helper. Per the user's rules:
+"CPU may download/save only",
+"CPU must not denoise or
+modify pixels", "must
+compile". The function exists
+for future CLI wiring; this
+slice does NOT attach it to
+any `--render-*` action (the
+running "no CLI integration
+yet" cadence from Stage
+21D.1..21D.3).**
+
+### What ships
+
+- `src/main.cpp`: new free
+  function
+  `denoise_and_save_ppm`
+  inserted right after the
+  existing
+  `denoise_aov_buffers_to_ppm`
+  helper, inside the same
+  `#if defined(RR_HAS_CUDA) &&
+  defined(RELATIVITYRENDER_ENABLE_OPTIX)`
+  block:
+    ```
+    bool denoise_and_save_ppm(
+        rr::optix::OptixDenoiser&                denoiser,
+        const rr::optix::OptixDenoiser::Inputs&  inputs,
+        const std::string&                       out_path
+            = std::string("output/denoised.ppm"));
+    ```
+  Body:
+    1. Validates `inputs.width
+       / ::height > 0` and
+       `inputs.beauty_components`
+       in `{3, 4}` up-front
+       (returns false +
+       Logger::error on
+       failure).
+    2. Allocates a device
+       `GpuBuffer<float>` of
+       `width * height *
+       beauty_components`
+       floats (matches the
+       Stage 21A.6 / 21C.1
+       output contract).
+    3. Builds an
+       `OptixDenoiser::Output`
+       with the device pointer
+       + dimensions, calls
+       `denoiser.denoise(
+       inputs, output)`.
+    4. Downloads the device
+       output buffer to a
+       host `Image` via
+       `GpuBuffer::download`
+       (single
+       `cudaMemcpy(D->H)`;
+       no per-pixel work).
+    5. Saves to PPM via the
+       existing
+       `save_image_or_error`
+       helper. Default path
+       is `output/denoised.ppm`
+       per the Stage 21A.6
+       output contract; the
+       caller can override
+       via the `out_path`
+       argument.
+- This `BUILD_PLAN.md`
+  slice-closing entry.
+
+### Master rule compliance
+
+The user's rules:
+"CPU may download/save only",
+"CPU must not denoise or
+modify pixels". This helper
+satisfies both:
+
+- **Denoise step on the GPU.**
+  The actual denoise runs
+  inside `OptixDenoiser::denoise`,
+  which calls
+  `optixDenoiserInvoke` (the
+  SDK's CUDA kernels do every
+  per-pixel byte). The host
+  only orchestrates.
+- **Download is a single
+  `cudaMemcpy`.** The
+  `GpuBuffer::download` call
+  forwards to
+  `detail::gpu_copy_device_to_host`
+  which is a one-shot byte
+  copy. No per-pixel loop on
+  the host.
+- **Save is a serialisation,
+  not modification.** The
+  `Image::save_ppm` helper
+  reads the host-side float
+  framebuffer and writes
+  PPM bytes through its
+  documented float-to-uint8
+  clamp. The clamp is
+  display-format conversion
+  (linear-radiance to
+  display-encoded uint8),
+  not denoising or pixel
+  modification. The same
+  clamp is used by every
+  other `--render-*` save
+  path in the project.
+
+The master rule `5. No CPU
+ray tracing as production
+path` is preserved: the
+denoise was performed by the
+GPU; the CPU only orchestrated
++ downloaded + serialised.
+
+### Behaviour matrix
+
+| Build mode               | `denoise_and_save_ppm` available? | Behaviour                |
+|--------------------------|-----------------------------------|--------------------------|
+| OFF                      | NO (gated out)                    | Symbol does not exist    |
+| ON, no CUDA (audit host) | NO (gated out via RR_HAS_CUDA)    | Symbol does not exist    |
+| ON, CUDA, no SDK         | YES (gated by ENABLE_OPTIX)       | `denoise()` returns false|
+|                          |                                   | (audit-host fallback);   |
+|                          |                                   | function returns false   |
+|                          |                                   | with the documented       |
+|                          |                                   | "requires SDK" error.    |
+| ON, CUDA, SDK found      | YES                               | denoise -> download ->   |
+|                          |                                   | save; returns true on    |
+|                          |                                   | success.                 |
+
+### What does NOT ship
+
+- No CLI surface. The new
+  function is callable but
+  no `--render-*` action is
+  wired through it yet.
+  The next slice (or a
+  future "post-Stage 20
+  audit Gap C" slice) will
+  add the
+  `--render-optix-denoise`
+  CLI surface.
+- No consumer migration.
+  The existing
+  `denoise_aov_buffers_to_ppm`
+  helper (Stage 19B.4) is
+  unchanged; the
+  `--render-denoise` and
+  `--render-aovs --denoise`
+  CLI paths still flow
+  through it (using the
+  legacy
+  `initialize -> set_inputs
+  -> invoke` trio where
+  `invoke` is the Stage
+  21B.1 stub, so they
+  always take the noisy-
+  Beauty fallback). The
+  audit-host CLI behaviour
+  is unchanged.
+- No durable AOV ownership
+  for the OptiX path's
+  `render_aovs`
+  (post-Stage-20 audit Gap
+  A; prerequisite for an
+  end-to-end OptiX
+  `--render-aovs --denoise`
+  flow).
+
+### Backward compatibility
+
+- The class' public surface
+  is byte-identical with
+  Stage 21D.3
+  (`OptixDenoiser` is
+  unchanged; the helper
+  lives in `main.cpp`).
+- `denoise_aov_buffers_to_ppm`
+  is unchanged.
+- The CUDA renderer is
+  byte-identical (the slice
+  touches only
+  `src/main.cpp`).
+- Existing CLI surfaces
+  (`--render-denoise`,
+  `--render-aovs --denoise`,
+  every other `--render-*`)
+  are unchanged.
+
+### Verified at the build
+
+- `cmake -S . -B build_off
+  -DRR_ENABLE_CUDA=OFF
+  -DRR_ENABLE_OPTIX=OFF`
+  (audit host): clean build;
+  ctest 6/6 green. The new
+  helper is gated out (the
+  full `#if defined(RR_HAS_CUDA)
+  && defined(RELATIVITYRENDER
+  _ENABLE_OPTIX)` block is
+  skipped).
+- `cmake -S . -B build_on_audit
+  -DRR_ENABLE_CUDA=OFF
+  -DRR_ENABLE_OPTIX=ON`
+  (audit host, no SDK):
+  clean build; ctest 7/7
+  green. The new helper is
+  also gated out here
+  (RR_HAS_CUDA is undefined
+  on this host); rr_optix
+  builds via its audit-host
+  fallback for the rest of
+  the denoiser machinery.
+- The SDK-found
+  `denoise_and_save_ppm`
+  call path (which calls
+  `OptixDenoiser::denoise`
+  + downloads + saves) is
+  structurally in place
+  but cannot be empirically
+  verified on this audit
+  host (no CUDA + no
+  OptiX SDK).
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
