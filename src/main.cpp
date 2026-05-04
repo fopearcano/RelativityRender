@@ -170,6 +170,23 @@ bool save_aov_to_ppm(const rr::renderer::GpuAOVBuffer& buffer,
                      int                               height,
                      std::string_view                  label);
 
+// OptiX Gap A Step 3.5 forward declaration. The helper is
+// defined further down (alongside `denoise_and_save_ppm`)
+// inside the same `RR_HAS_CUDA && RELATIVITYRENDER_ENABLE_OPTIX`
+// gate; the forward decl is needed because
+// `run_render_optix_aovs` (above the definition site)
+// calls it under the same gate.
+#if defined(RR_HAS_CUDA) && defined(RELATIVITYRENDER_ENABLE_OPTIX)
+bool render_optix_aovs_and_denoise_to_ppm(
+        rr::optix::OptixDenoiser&                denoiser,
+        const rr::scene::Scene&                  scene,
+        const std::vector<rr::lighting::Light>&  lights,
+        int                                       width,
+        int                                       height,
+        const std::string&                       out_path
+            = std::string("output/optix_aovs_denoised.ppm"));
+#endif
+
 bool save_image_or_error(const rr::image::Image& img,
                          const std::string&      out_path,
                          std::string_view        label,
@@ -1976,6 +1993,66 @@ int run_render_optix_aovs(const rr::core::Config& cfg) {
     all_ok &= save_one(r.searchlight_factor,
                        "output/optix_aov_searchlight.ppm",
                        "OptiX AOV searchlight");
+
+    // OptiX Gap A Step 3.5: when `--denoise` is set, run the
+    // new orchestration helper to additionally produce
+    // `output/optix_aovs_denoised.ppm` from the same scene
+    // via `OptixRenderer::render_aovs_retain` ->
+    // `denoise_and_save_ppm`. The six AOV PPMs above are
+    // unchanged (the helper does its own re-render via
+    // `render_aovs_retain` because Stage 20N's `render_aovs`
+    // does not retain its device buffers across the call).
+    //
+    // Per the user's "if OptiX unavailable, log warning and
+    // keep noisy output" rule: the helper handles every
+    // failure mode internally (denoiser unavailable / init
+    // fail / render fail / denoise fail / save fail) by
+    // returning `false`; the dispatcher logs a warning and
+    // keeps the existing six AOV PPMs as the user's noisy
+    // output. The exit code is determined by the AOV-save
+    // step alone.
+    //
+    // The new helper requires `RR_HAS_CUDA` in addition to
+    // `RELATIVITYRENDER_ENABLE_OPTIX` (the Stage 21D.4
+    // `denoise_and_save_ppm` consumes `GpuBuffer<float>`,
+    // which the audit-host fallback can't provide). The
+    // outer `#else` branch above already covers the
+    // `RELATIVITYRENDER_ENABLE_OPTIX`-undefined case; here
+    // we only need the additional CUDA gate.
+    if (cfg.denoise_enabled) {
+#ifdef RR_HAS_CUDA
+        rr::optix::OptixBackend backend;
+        if (!backend.initialize()) {
+            Logger::warning(
+                "--render-optix-aovs --denoise: OptixBackend "
+                "init failed: " + backend.last_error()
+              + "; keeping noisy AOV PPMs.");
+        } else {
+            rr::optix::OptixDenoiser denoiser;
+            if (!denoiser.initialize(backend)) {
+                Logger::warning(
+                    "--render-optix-aovs --denoise: "
+                    "OptixDenoiser init failed: "
+                  + denoiser.last_error()
+                  + "; keeping noisy AOV PPMs.");
+            } else if (!render_optix_aovs_and_denoise_to_ppm(
+                           denoiser, scene, lights,
+                           cfg.width, cfg.height,
+                           "output/optix_aovs_denoised.ppm")) {
+                Logger::warning(
+                    "--render-optix-aovs --denoise: helper "
+                    "did not produce a denoised PPM; keeping "
+                    "noisy AOV PPMs.");
+            }
+        }
+#else
+        Logger::warning(
+            "--render-optix-aovs --denoise: denoiser "
+            "unavailable on this build (requires "
+            "-DRR_ENABLE_CUDA=ON); keeping noisy AOV PPMs.");
+#endif  // RR_HAS_CUDA
+    }
+
     return all_ok ? 0 : 1;
 #endif
 }
@@ -3943,8 +4020,7 @@ bool render_optix_aovs_and_denoise_to_ppm(
         const std::vector<rr::lighting::Light>&  lights,
         int                                       width,
         int                                       height,
-        const std::string&                       out_path
-            = std::string("output/optix_aovs_denoised.ppm")) {
+        const std::string&                       out_path) {
     using rr::core::Logger;
 
     Logger::info("optix-aovs-denoise: helper entered (Step 3.4)");

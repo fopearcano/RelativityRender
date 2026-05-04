@@ -29478,6 +29478,298 @@ wiring; that is Step 4.**
   this audit host (no
   CUDA + no OptiX SDK).
 
+## OptiX Gap A polish — Step 3.5 (minimal CLI hook)
+
+**Scope of this slice
+(post-Step-3.4 helper
+complete): wire the new
+orchestration helper
+`render_optix_aovs_and_denoise_to_ppm`
+into the existing CLI
+surface ONLY when an OptiX
+render is requested AND
+`--denoise` is set AND OptiX
+support is compiled in.
+Specifically: the existing
+`run_render_optix_aovs`
+dispatcher (Stage 20N) gains
+an OPTIONAL post-AOV-save
+denoise step that calls the
+new helper to additionally
+produce
+`output/optix_aovs_denoised.ppm`.
+The six existing AOV PPMs
+are unchanged. Per the
+user's "if OptiX unavailable,
+log warning and keep noisy
+output" rule, every failure
+in the new block warns +
+preserves the noisy AOVs.
+NO new CLI flag (the existing
+`--denoise` modifier is what
+triggers the new path); NO
+change to the no-`--denoise`
+behaviour.**
+
+### What ships
+
+- `src/main.cpp`:
+    - **Forward declaration**
+      added near the top of
+      the file (right after
+      the existing
+      `save_aov_to_ppm`
+      forward decl, gated by
+      `#if defined(RR_HAS_CUDA)
+      && defined(RELATIVITYRENDER_ENABLE_OPTIX)`)
+      because the helper's
+      definition lives below
+      `run_render_optix_aovs`
+      in the file. The
+      forward decl carries
+      the default argument
+      (`out_path =
+      "output/optix_aovs_denoised.ppm"`).
+    - The helper's
+      **definition** (Step
+      3.4) had its default
+      argument removed (C++
+      requires the default
+      to appear in only one
+      declaration; the
+      forward decl now owns
+      it). Body unchanged.
+    - **`run_render_optix_aovs`'s
+      SDK_FOUND branch**
+      gets a new post-AOV-
+      save block:
+        - Skips silently when
+          `cfg.denoise_enabled
+          == false` (the
+          standard quiet
+          path; no log line,
+          no cost).
+        - When `--denoise` is
+          set AND
+          `RR_HAS_CUDA` is
+          defined: tries to
+          init `OptixBackend`
+          + `OptixDenoiser`,
+          then call the
+          helper. Each step's
+          failure logs a
+          `Logger::warning(
+          "--render-optix-aovs
+          --denoise: ...;
+          keeping noisy AOV
+          PPMs.")` line and
+          falls through; the
+          dispatcher's exit
+          code is determined
+          ENTIRELY by the
+          AOV-save step (the
+          existing `all_ok`
+          flag), so a denoise
+          failure never
+          changes the dispatcher's
+          success status.
+        - When `--denoise` is
+          set BUT
+          `RR_HAS_CUDA` is
+          undefined (e.g.,
+          OptiX-only audit-
+          host build): logs
+          the documented
+          "denoiser unavailable
+          on this build
+          (requires
+          -DRR_ENABLE_CUDA=ON);
+          keeping noisy AOV
+          PPMs." warning. No
+          helper call attempted.
+- This `BUILD_PLAN.md`
+  slice-closing entry.
+
+### What does NOT change
+
+- `run_render_optix_aovs`'s
+  no-`--denoise` path:
+  byte-identical (the new
+  block is gated by `if
+  (cfg.denoise_enabled)`).
+- The six AOV PPMs
+  produced by
+  `OptixRenderer::render_aovs`
+  (Stage 20N): byte-
+  identical. The new helper
+  does its own re-render
+  via `render_aovs_retain`
+  (since Stage 20N's
+  `render_aovs` does not
+  retain its device
+  buffers); the existing
+  six-PPM output path is
+  unaffected.
+- `OptixRenderer::*`,
+  `OptixDenoiser::*`,
+  `denoise_and_save_ppm`,
+  `denoise_aov_buffers_to_ppm`:
+  byte-identical.
+- All other CLI surfaces
+  (`--render-optix-test`,
+  `--render-optix-triangle`,
+  `--render-optix-relativity`,
+  `--render-optix-raygen`,
+  `--render-optix-mesh-scene`,
+  `--render-optix-material-scene`,
+  `--render-optix-pathtrace`,
+  `--render-optix-direct-lighting`,
+  `--render-optix-shadow-test`,
+  `--render-optix-textured-material`,
+  `--render-optix-denoise`,
+  `--render-denoise`,
+  `--render`, `--render-aovs`,
+  ...): byte-identical.
+- The CUDA path
+  (`src/cuda/`,
+  `src/renderer/`,
+  `src/pathtracer/`):
+  zero bytes changed.
+
+### Behaviour matrix for `--render-optix-aovs`
+
+| `--denoise` set? | OptiX SDK at runtime? | CUDA at build time? | Outcome                    |
+|------------------|-----------------------|---------------------|----------------------------|
+| No               | n/a                   | n/a                 | Six AOV PPMs (unchanged    |
+|                  |                       |                     | from Stage 20N).           |
+| Yes              | No (audit-host or     | n/a                 | Standard `--render-optix-  |
+|                  | binary built without  |                     | aovs` audit-host fallback  |
+|                  | SDK)                  |                     | fires BEFORE the new       |
+|                  |                       |                     | block. Exit 1 with          |
+|                  |                       |                     | documented "requires        |
+|                  |                       |                     | OptiX" error; no PPMs       |
+|                  |                       |                     | written. Behaviour          |
+|                  |                       |                     | unchanged from pre-3.5.     |
+| Yes              | Yes                   | No                  | Six AOV PPMs written;       |
+|                  |                       |                     | Logger::warning(            |
+|                  |                       |                     | "--render-optix-aovs        |
+|                  |                       |                     | --denoise: denoiser         |
+|                  |                       |                     | unavailable on this build   |
+|                  |                       |                     | (requires                   |
+|                  |                       |                     | -DRR_ENABLE_CUDA=ON);       |
+|                  |                       |                     | keeping noisy AOV PPMs.").  |
+|                  |                       |                     | Exit 0 (AOV save            |
+|                  |                       |                     | succeeded).                 |
+| Yes              | Yes                   | Yes, denoise OK     | Six AOV PPMs +              |
+|                  |                       |                     | output/optix_aovs_denoised. |
+|                  |                       |                     | ppm written. Exit 0.        |
+| Yes              | Yes                   | Yes, denoise fails  | Six AOV PPMs written;       |
+|                  |                       |                     | Logger::warning(            |
+|                  |                       |                     | "...did not produce a       |
+|                  |                       |                     | denoised PPM; keeping       |
+|                  |                       |                     | noisy AOV PPMs.").          |
+|                  |                       |                     | Exit 0 (AOV save            |
+|                  |                       |                     | succeeded; denoise          |
+|                  |                       |                     | failure is non-fatal per    |
+|                  |                       |                     | the user's rule). The       |
+|                  |                       |                     | helper's internal           |
+|                  |                       |                     | Stage 21D.5 noisy-Beauty    |
+|                  |                       |                     | fallback may already        |
+|                  |                       |                     | have written                |
+|                  |                       |                     | output/optix_aovs_denoised  |
+|                  |                       |                     | .ppm with the noisy         |
+|                  |                       |                     | Beauty AOV; the warning     |
+|                  |                       |                     | here only fires when even   |
+|                  |                       |                     | that fallback failed.       |
+
+### Master rule compliance
+
+- **Do not change normal
+  CUDA render path**:
+  zero bytes changed in
+  `src/cuda/`,
+  `src/renderer/`,
+  `src/pathtracer/`. The
+  Stage 21E.2 `--render
+  --denoise` dispatcher
+  (which uses CUDA AOV
+  pipeline) is untouched.
+- **Do not change non-
+  denoise render
+  behavior**: the new
+  block is gated by `if
+  (cfg.denoise_enabled)`;
+  without `--denoise`,
+  `run_render_optix_aovs`
+  is byte-identical with
+  Stage 20N.
+- **If OptiX unavailable,
+  log warning and keep
+  noisy output**: the
+  helper warns + leaves
+  the six AOV PPMs in
+  place on every failure
+  mode (denoiser-
+  unavailable / init-
+  failed / helper
+  returned false). The
+  dispatcher exit code
+  is determined by the
+  AOV-save step alone.
+- **Update BUILD_PLAN**:
+  this entry, per master
+  rule 8.
+
+### Verified at the build
+
+- `cmake -S . -B build_off
+  -DRR_ENABLE_CUDA=OFF
+  -DRR_ENABLE_OPTIX=OFF`
+  (audit host): clean
+  build; ctest 6/6 green.
+- `cmake -S . -B build_on_audit
+  -DRR_ENABLE_CUDA=OFF
+  -DRR_ENABLE_OPTIX=ON`
+  (audit host, no SDK):
+  clean build; ctest 7/7
+  green.
+- `./build_off/bin/RelativityRender
+  --render-optix-aovs
+  --denoise`: emits the
+  Stage 21E.1 announcement,
+  then hits the existing
+  audit-host
+  "--render-optix-aovs
+  requires OptiX" error.
+  Exit 1; no crash; the
+  new denoise block is
+  unreachable in this
+  mode (the dispatcher
+  returns before reaching
+  it).
+- `./build_on_audit/bin/RelativityRender
+  --render-optix-aovs
+  --denoise`: emits the
+  announcement, then hits
+  the SDK-not-found stub
+  inside `render_aovs`
+  (`OptixRenderer::render_aovs
+  requires the OptiX SDK`).
+  Exit 1; no crash; the
+  new denoise block is
+  also unreachable here.
+- The actual CUDA +
+  OptiX-SDK end-to-end
+  path (six AOV PPMs +
+  one denoised PPM in a
+  single
+  `--render-optix-aovs
+  --denoise` invocation)
+  is structurally in
+  place but cannot be
+  empirically verified
+  on this audit host.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
