@@ -32505,6 +32505,333 @@ explicit.
   documented
   above.
 
+## PT-P.4 — accumulation reset correctness audit (docs only)
+
+**Scope of this slice
+(post-PT-P.3
+implementation
+complete): write the
+end-of-arc audit at
+`docs/PATH_TRACER_POLISH_STEP_1_AUDIT.md`
+that walks the six
+prompt checks and
+records each as PASS
+/ REPAIR / BLOCKED.
+Mirrors the TEX-P.7
+texture-polish audit's
+shape applied to the
+first PT-P.x
+implementation slice.
+Documentation only;
+zero source changes;
+zero build effect.**
+
+### What ships
+
+- `docs/PATH_TRACER_POLISH_STEP_1_AUDIT.md`
+  (NEW). Six
+  sections + a
+  verdict + a
+  recommended next
+  step:
+    - **§1 What
+      changed.** Quotes
+      `git diff
+      b4d73eb~1..b4d73eb
+      --stat`
+      verbatim;
+      sub-bullets
+      per-file (the
+      §1.1 doc-only
+      ordering note,
+      the §1.2 fast
+      path, the new
+      ctest binary,
+      the
+      `CMakeLists.txt`
+      registration,
+      and the
+      slice-closing
+      `BUILD_PLAN.md`
+      entry). §1.5
+      records the
+      no-touch
+      invariants
+      verified by a
+      one-line
+      `git diff -- ...`
+      check that
+      returns 0
+      bytes.
+    - **§2 Does
+      build pass?**
+      PASS. Tabulates
+      both audit-host
+      configs (build
+      7/7 OFF, build-ON
+      8/8 ON-audit-
+      host); zero new
+      compiler
+      warnings under
+      `-Wall -Wextra
+      -Wpedantic`.
+    - **§3 Does the
+      existing
+      path-tracer
+      path remain
+      intact?** PASS.
+      Three
+      sub-checks:
+      §3.1 source
+      diff (zero
+      bytes changed
+      in
+      `src/cuda/`,
+      `src/optix/`,
+      `src/pathtracer/`,
+      `src/main.cpp`),
+      §3.2
+      `--render-
+      pathtrace`
+      audit-host
+      fallback
+      byte-identical,
+      §3.3
+      `--scene-info
+      scenes/test_textured_material.rrscene`
+      emits the
+      TEX-P.6
+      fixture's
+      expected
+      three-case log
+      sequence
+      unchanged.
+    - **§4 CPU ray
+      / path tracing
+      violations.**
+      ZERO. Re-runs
+      the Stage-11
+      audit's two
+      grep sweeps
+      (`for.*<.*width|for.*<.*height`
+      over
+      `src/renderer/`
+      +
+      `src/pathtracer/*.cpp`
+      + `src/main.cpp`,
+      and
+      `intersect_sphere|
+      intersect_triangle|
+      closest_hit`
+      over the same
+      paths) and
+      records the
+      same matches
+      Stage 11
+      recorded:
+      one
+      sample-launcher
+      loop in
+      `PathTracer.cpp:78`,
+      one
+      `intersect_triangle`
+      doc-comment in
+      `Hit.h:30`. No
+      new violations
+      from PT-P.3.
+    - **§5 Runtime-
+      deferred
+      checks.**
+      BLOCKED. Six
+      PPM artefacts
+      (`gpu_rng_test.ppm`,
+      `gpu_accumulation_test.ppm`,
+      `pathtrace_spp_{1,16}.ppm`,
+      `optix_pathtrace_spp{1,16}.ppm`)
+      whose CUDA-host
+      output should
+      be
+      byte-identical
+      with the
+      pre-PT-P.3
+      baseline (the
+      structural
+      claim is
+      guaranteed by
+      §3.1's
+      zero-bytes
+      finding +
+      §1.2's
+      external-contract
+      preservation).
+      Records an
+      additional
+      operator-side
+      timing check
+      (run
+      `--render-
+      pathtrace`
+      twice in a
+      single warm
+      process to see
+      the §1.2 fast
+      path skip a
+      `cudaFree +
+      cudaMalloc +
+      cudaMemset`
+      round trip on
+      the second
+      invocation).
+      Notes that
+      `tools/verify_cuda_host.py`
+      does not need
+      an update —
+      the new
+      `renderer_tests`
+      binary is
+      picked up
+      automatically
+      by the
+      existing
+      cmake-build ->
+      ctest step.
+    - **§6 Verdict.**
+      Overall PASS.
+      Five-row
+      summary table
+      (PASS, PASS,
+      PASS, PASS,
+      BLOCKED). Zero
+      REPAIR items.
+    - **Recommended
+      next step.**
+      Per
+      `PATH_TRACER_POLISH_PLAN.md`
+      §5 the natural
+      follow-up is
+      §4.3 max-bounce
+      validation
+      (PT-P.5 task +
+      PT-P.6
+      implementation).
+      Alternative:
+      trigger the
+      CUDA-host
+      verification
+      run that flips
+      the §5 BLOCKED
+      row to PASS.
+- This `BUILD_PLAN.md`
+  slice-closing
+  entry.
+
+### What does NOT change
+
+- All PT-P.{1,2,3}
+  artefacts:
+  byte-identical
+  (PT-P.4 is a
+  documentation
+  audit; it touches
+  no `.cu`, `.cpp`,
+  `.h`, `.cuh`,
+  `.rrscene`,
+  `cmake`, or
+  `tests/` file).
+- Build configs:
+  byte-identical.
+  ctest remains 7/7
+  OFF and 8/8 ON-
+  audit-host with
+  no rebuild
+  needed (the new
+  doc is not part
+  of any build
+  target).
+- All other docs:
+  PT-P.4 only ADDS
+  `PATH_TRACER_POLISH_STEP_1_AUDIT.md`;
+  no edits to
+  `PATH_TRACER_POLISH_PLAN.md`,
+  `PATH_TRACER_POLISH_STEP_1_TASK.md`,
+  the TEX-P.x
+  arc, or the
+  CUDA-H.x arc.
+
+### Master rule compliance
+
+- **Build
+  incrementally /
+  every step
+  compilable**:
+  docs-only slice;
+  build is
+  trivially
+  preserved.
+- **No CPU per-pixel
+  work**: §4 of
+  the audit doc
+  actively
+  re-verifies this
+  rule is upheld
+  post-PT-P.3.
+- **Update
+  BUILD_PLAN**:
+  this entry, per
+  master rule 8.
+
+### Verified at the build
+
+- `cmake --build
+  build` (audit
+  host,
+  RR_ENABLE_CUDA=OFF,
+  RR_ENABLE_OPTIX=OFF):
+  re-built
+  cleanly during
+  the audit;
+  ctest 7/7
+  green.
+- `cmake --build
+  build-ON`
+  (audit host,
+  RR_ENABLE_CUDA=OFF,
+  RR_ENABLE_OPTIX=ON):
+  re-built
+  cleanly; ctest
+  8/8 green.
+- `./build-ON/bin/RelativityRender
+  --render-pathtrace
+  scenes/test_full_scene.rrscene`:
+  emits the
+  documented
+  "requires CUDA"
+  audit-host
+  fallback;
+  byte-identical
+  with the
+  pre-PT-P.3
+  baseline.
+  Recorded under
+  §3.2 of the
+  audit doc.
+- `./build/bin/RelativityRender
+  --scene-info
+  scenes/test_textured_material.rrscene`:
+  emits the
+  TEX-P.6
+  fixture's
+  expected three-
+  case log
+  sequence (1
+  Case 1 info +
+  2 Case 3
+  warnings;
+  `fixups
+  applied: 2`).
+  Recorded under
+  §3.3.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
