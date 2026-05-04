@@ -26421,6 +26421,228 @@ byte-for-byte.
   operator; that is the
   point of the plan.
 
+## CUDA-H.2 — verification script skeleton
+
+**Scope of this slice
+(post-CUDA-H.1 verification
+plan): create the skeleton
+runner script the operator
+will use to drive the
+CUDA-H.1 verification
+plan's command catalogue.
+Per the user's "do not
+hardcode long-running
+commands" rule, the skeleton
+ships only the fast, safe
+`--device-info` smoke as a
+built-in command; the actual
+render commands per
+`docs/CUDA_HOST_VERIFICATION_PLAN.md`
+are added in subsequent
+CUDA-H.x slices once the
+operator has confirmed the
+runner shape.**
+
+### What ships
+
+- `tools/verify_cuda_host.py`
+  (~280 lines, Python 3.10+
+  per the user rule):
+    - `Command` dataclass
+      (frozen): `name`,
+      `argv`,
+      `expected_outputs`
+      (reserved for future
+      slices' file-existence
+      checks).
+    - `CommandResult`
+      dataclass: `name`,
+      `argv`, `status`
+      (`pass` / `fail` /
+      `timeout` / `error`),
+      `returncode`,
+      `duration_s`,
+      `stdout`, `stderr`.
+      Every failure mode
+      (non-zero exit,
+      timeout, OS error)
+      produces a result
+      with the matching
+      status; the runner
+      never raises on a
+      command failure.
+    - `run_command(binary,
+      cmd, timeout_s, cwd)`
+      function: runs a
+      single command via
+      `subprocess.run`,
+      enforces the
+      per-command timeout,
+      captures stdout +
+      stderr (UTF-8 with
+      `errors="replace"`).
+    - `base_commands()`
+      catalogue: returns a
+      single-element list
+      with `--device-info`
+      (the only safe, fast
+      smoke; per the user's
+      "do not hardcode
+      long-running commands"
+      rule, no render
+      commands are baked
+      in).
+    - `optix_commands()`
+      catalogue: returns
+      an empty list in the
+      skeleton; future
+      CUDA-H.x slices
+      populate it from
+      `CUDA_HOST_VERIFICATION_PLAN.md`
+      §4.
+    - argparse with the
+      user-required flags
+      (`--optix`,
+      `--timeout`) plus
+      minimal binary-
+      discovery support
+      (`--bin`,
+      `--build-dir`,
+      `--repo-root`,
+      `--show-stdout`).
+    - `print_summary(...)`
+      tabular reporter:
+      one row per command
+      with status / rc /
+      duration; final
+      "totals: N pass, M
+      fail, K timeout"
+      line.
+    - `main()` returns
+      exit code 0 when
+      every command in the
+      active set passes,
+      1 otherwise. Missing
+      binary path also
+      returns 1 with a
+      documented error.
+- This `BUILD_PLAN.md`
+  slice-closing entry.
+
+### Smoke results (audit host)
+
+The audit host has no
+CUDA toolkit + no OptiX
+SDK, but the script's only
+default command
+(`--device-info`) runs
+cleanly through the OFF
+build's CPU-only
+implementation (which prints
+"No CUDA-capable devices
+visible..." and exits 0):
+
+```
+$ python3 tools/verify_cuda_host.py \
+      --bin build_off/bin/RelativityRender \
+      --build-dir build_off
+binary  : build_off/bin/RelativityRender
+cwd     : /home/user/RelativityRender
+timeout : 60.0s per command
+commands: 1
+  [OK] device-info (0.00s)
+========================================================================
+name                               status   rc     time
+------------------------------------------------------------------------
+device-info                          PASS    0    0.00s
+========================================================================
+totals: 1 pass
+```
+
+`--optix` is accepted but
+the OptiX command list is
+empty in the skeleton, so
+the same 1-pass result
+appears with `--optix`.
+A missing binary path
+returns exit 1 with the
+documented "binary not
+found" error. `--help`
+prints the full argparse
+usage text including the
+`--optix` and `--timeout`
+flag descriptions per the
+user's CUDA-H.2 spec.
+
+### Master rule compliance
+
+- **No `--server` call**:
+  per the user's rule, the
+  skeleton's command list
+  has no `--server` entry.
+  Future CUDA-H.x slices
+  must also avoid
+  `--server`; the
+  CUDA_HOST_VERIFICATION_PLAN
+  explicitly excludes it.
+- **No renderer changes**:
+  the slice touches only
+  `tools/verify_cuda_host.py`
+  (new file) + this
+  BUILD_PLAN entry. No
+  `src/` modification.
+- **No long-running
+  hardcoded commands**:
+  only `--device-info` is
+  shipped (sub-second on
+  any host).
+- **Python 3.10+ compatible**:
+  uses `from __future__
+  import annotations`,
+  PEP-604 union types
+  (`int | None`),
+  `dataclasses`, modern
+  `typing` features
+  (`collections.abc.Iterable`).
+  Works on the audit host
+  (Python 3.11.15).
+
+### Backward compatibility
+
+The slice introduces a new
+file (`tools/verify_cuda_host.py`)
+and does not modify any
+existing source. All build
+configurations (OFF, ON-
+audit-host, CUDA-only,
+CUDA + OptiX) are
+unchanged; existing CLI
+surfaces are byte-identical.
+
+### Verified at the build
+
+- `tools/verify_cuda_host.py`
+  parses cleanly via
+  `python3 -c "import ast;
+  ast.parse(open(...))"`.
+- `chmod +x` applied; the
+  script's shebang line
+  (`#!/usr/bin/env python3`)
+  matches the project's
+  Python 3.10+ rule.
+- Smokes: `--device-info`
+  via the OFF build's
+  binary -> 1 pass; same
+  with `--optix`; missing
+  binary -> exit 1; `--help`
+  prints expected usage.
+- The audit host's
+  baseline OFF / ON-audit-
+  host build state is
+  unchanged (the slice
+  doesn't touch any C++
+  source).
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
