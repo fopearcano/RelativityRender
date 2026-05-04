@@ -26643,6 +26643,289 @@ surfaces are byte-identical.
   doesn't touch any C++
   source).
 
+## CUDA-H.3 — build & device checks
+
+**Scope of this slice
+(post-CUDA-H.2 skeleton):
+extend the verification
+runner with (a) an optional
+build phase (cmake configure
++ cmake --build, with
+`--skip-build` toggle and a
+separate `--build-timeout`),
+(b) a binary-discovery pass
+that runs AFTER the build,
+and (c) a `--device-info`
+output analyzer that records
+two boolean signals
+(`cuda_device_present`,
+`no_critical_errors`) in
+memory. Per the user's
+"timeouts on all subprocess
+calls / must not hang" rules,
+every step uses
+`subprocess.run(timeout=...)`
+with halt-on-build-failure
+so the runner always reaches
+the summary. Per the
+"no renderer code changes"
+rule, only
+`tools/verify_cuda_host.py`
+is touched.**
+
+### What ships
+
+- `tools/verify_cuda_host.py`:
+    - `Command` dataclass
+      gains `program: Path
+      | None = None` and
+      `timeout_override:
+      float | None = None`
+      fields. When `program`
+      is set the runner uses
+      it as argv[0] (e.g.
+      `Path("cmake")`); when
+      None, falls back to
+      the discovered
+      RelativityRender
+      binary. `timeout_override`
+      lets the build phase
+      use its own longer
+      timeout.
+    - `run_command(...)`
+      now accepts `binary:
+      Path | None` and
+      honours `cmd.program`
+      / `cmd.timeout_override`.
+      Returns a
+      `CommandResult` with
+      `status="error"` if no
+      program was discovered
+      and the command did
+      not override it.
+    - `make_build_commands(args)`:
+      returns the build
+      phase per
+      `docs/CUDA_HOST_VERIFICATION_PLAN.md`
+      §1 (cmake configure
+      with `-DCMAKE_BUILD_TYPE=Release
+      -DRR_ENABLE_CUDA=ON
+      -DRR_BUILD_TESTS=ON`
+      plus `-DRR_ENABLE_OPTIX=ON`
+      and `-DOPTIX_ROOT=<path>`
+      when `--optix` /
+      `--optix-root` are set;
+      then cmake --build).
+      Both build commands
+      carry `timeout_override
+      = args.build_timeout`.
+    - `analyze_device_info(
+      result) -> DeviceInfoSignals`:
+      parses the captured
+      stdout+stderr for two
+      booleans:
+        - `cuda_device_present`:
+          a `[<index>] <name>
+          (sm_<cc>...` line
+          is present AND the
+          negative
+          "No CUDA-capable
+          devices visible"
+          sentinel is absent.
+        - `no_critical_errors`:
+          no `[ERROR]` log
+          line AND
+          returncode == 0.
+    - `DeviceInfoSignals`
+      dataclass holds the
+      two booleans in
+      memory; per the
+      CUDA-H.3 contract no
+      file is written yet
+      (next slice's
+      concern).
+    - argparse extended:
+      `--skip-build`,
+      `--build-timeout`
+      (default 600s),
+      `--source-dir`
+      (default repo root),
+      `--optix-root`
+      (default unset).
+    - `main()` flow:
+      1. parse args.
+      2. if not
+         `--skip-build`: run
+         build commands with
+         halt-on-first-
+         failure. On any
+         build failure print
+         the summary,
+         "build failed;
+         skipping subsequent
+         commands.", and
+         exit 1.
+      3. discover binary
+         (post-build).
+      4. run base + (optional
+         optix) command set
+         WITHOUT halt-on-
+         failure (one render
+         failing should not
+         hide the others).
+      5. if a `device-info`
+         result is present,
+         run
+         `analyze_device_info`
+         and print the two
+         signals.
+      6. exit 0 iff every
+         result is `pass`.
+- This `BUILD_PLAN.md`
+  slice-closing entry.
+
+### Smoke results (audit host)
+
+The audit host has no CUDA
+toolkit + no OptiX SDK; the
+smokes confirm the runner
+correctly reports each state
+without hanging.
+
+1. **Default flow (build +
+   device-info)**: cmake
+   configure fails with the
+   documented "Could not find
+   nvcc" error; halt-on-build-
+   failure kicks in; runner
+   exits 1; subsequent
+   commands skipped.
+
+   ```
+   $ python3 tools/verify_cuda_host.py --build-dir build_smoke
+   build   : 2 step(s)
+     [FAIL] cmake-configure (0.18s)
+   ...
+   build failed; skipping subsequent commands.
+   exit=1
+   ```
+
+2. **`--skip-build`** against
+   the existing OFF build:
+   `--device-info` runs in
+   ~0.00s, both signals
+   recorded:
+   ```
+     [OK] device-info (0.00s)
+   totals: 1 pass
+
+   device-info analysis:
+     cuda_device_present : False
+     no_critical_errors  : True
+   exit=0
+   ```
+   `cuda_device_present` is
+   False because the audit
+   host has no GPU;
+   `no_critical_errors` is
+   True because the
+   "No CUDA-capable devices
+   visible" line is INFO,
+   not ERROR.
+
+3. **`--skip-build --optix`**:
+   same result as #2 (the
+   OptiX command catalogue
+   is empty in the skeleton;
+   future slices populate
+   it).
+
+4. **`--help`**: prints all
+   new flags
+   (`--skip-build`,
+   `--build-timeout`,
+   `--source-dir`,
+   `--optix-root`) plus the
+   pre-existing CUDA-H.2
+   flags.
+
+### Master rule compliance
+
+- **Timeouts on all
+  subprocess calls**: the
+  per-command timeout is
+  enforced by
+  `subprocess.run(timeout=...)`;
+  the build phase uses
+  `args.build_timeout`
+  (default 600s) via the new
+  `Command.timeout_override`
+  field; the render phase
+  uses `args.timeout`
+  (default 60s).
+- **No renderer code
+  changes**: only
+  `tools/verify_cuda_host.py`
+  + this BUILD_PLAN entry
+  touched.
+- **Must not hang**: every
+  subprocess call has a
+  timeout; build failure
+  triggers halt-on-failure
+  so the runner always
+  reaches the summary;
+  missing-binary exits 1
+  cleanly.
+
+### Backward compatibility
+
+- The CUDA-H.2 default
+  command set (just
+  `--device-info`) is
+  byte-identical with the
+  pre-CUDA-H.3 behaviour
+  when invoked with
+  `--skip-build`.
+- The script is purely
+  additive on the source
+  tree (no C++ touched).
+- No existing CLI surface,
+  build option, or test
+  is altered.
+
+### Verified at the build
+
+- `python3 -c "import ast;
+  ast.parse(open('tools/
+  verify_cuda_host.py').read())"`:
+  syntax check passes.
+- All four smokes above
+  exit with the documented
+  status; no hangs (every
+  subprocess call has a
+  timeout).
+- The audit host's OFF
+  build (`build_off/`) is
+  the only smoke target;
+  the script does not
+  modify any C++ source,
+  so the existing OFF +
+  ON-audit-host ctest
+  baselines (6/6 + 7/7)
+  are unchanged.
+- The actual CUDA-host
+  build flow (cmake
+  configure + cmake --build
+  with `-DRR_ENABLE_CUDA=ON`)
+  is structurally in place
+  but cannot be empirically
+  verified on this audit
+  host (no nvcc) — exactly
+  the runtime-deferred
+  posture the
+  CUDA_HOST_VERIFICATION_PLAN
+  formalises.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:

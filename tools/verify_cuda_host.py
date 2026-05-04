@@ -1,25 +1,39 @@
 #!/usr/bin/env python3
-"""CUDA-host verification skeleton runner.
+"""CUDA-host verification runner.
 
-This is the CUDA-H.2 skeleton: argparse + subprocess + structured
-result collection. The full command list from
-``docs/CUDA_HOST_VERIFICATION_PLAN.md`` is intentionally NOT baked
-into this skeleton; the only command run by default is the
-fast, safe ``--device-info`` smoke. Subsequent CUDA-H.x slices
-expand the runner with the actual render-command catalogue,
-output-file existence checks, and reference-image comparisons.
+CUDA-H.2 shipped the skeleton (argparse + subprocess + structured
+result collection). CUDA-H.3 extends it with:
 
-Per the CUDA-H.2 contract:
+- An optional build phase (``cmake -S . -B build ...`` plus
+  ``cmake --build build -j``). Disable with ``--skip-build``.
+- A binary-discovery pass that runs AFTER the build phase so the
+  freshly-built binary is the one used for subsequent commands.
+- A ``--device-info`` output analyzer that records two signals
+  (``cuda_device_present``, ``no_critical_errors``) in memory.
+- A separate ``--build-timeout`` so the long compile step can
+  use a different timeout from the render-command timeout
+  (master rule: every subprocess call has a timeout; the runner
+  must not hang).
 
-- argparse exposes ``--optix`` and ``--timeout`` (plus minimal
-  build-discovery flags so the runner can find the binary).
-- ``run_command(...)`` runs each ``Command`` via ``subprocess.run``
-  with a per-command timeout, captures stdout/stderr, and returns
-  a ``CommandResult`` POD.
+Future CUDA-H.x slices populate the render-command catalogue
+per ``docs/CUDA_HOST_VERIFICATION_PLAN.md``.
+
+Per the CUDA-H.x contract:
+
+- argparse exposes ``--optix`` and ``--timeout`` plus minimal
+  build-discovery flags so the runner can find / build the
+  binary, plus build-phase flags (``--skip-build``,
+  ``--build-timeout``, ``--source-dir``, ``--optix-root``).
+- ``run_command(...)`` runs each ``Command`` via
+  ``subprocess.run`` with a per-command timeout, captures
+  stdout/stderr, and returns a ``CommandResult`` POD.
 - The runner never calls ``--server`` (rule).
 - The runner never modifies the renderer source (rule).
-- The runner never hard-codes long-running render commands; only
-  ``--device-info`` ships as a built-in smoke check.
+- The runner never hard-codes long-running RENDER commands;
+  the only baked-in commands are the build phase
+  (``cmake configure`` + ``cmake --build``) and the
+  ``--device-info`` smoke. Render commands per the
+  verification plan land in subsequent CUDA-H.x slices.
 
 Python 3.10+ required (uses PEP-604 union types in dataclass
 annotations and modern ``typing`` features).
@@ -27,9 +41,11 @@ annotations and modern ``typing`` features).
 Usage::
 
     python3 tools/verify_cuda_host.py
-    python3 tools/verify_cuda_host.py --optix
-    python3 tools/verify_cuda_host.py --timeout 120
-    python3 tools/verify_cuda_host.py --bin build/bin/RelativityRender
+    python3 tools/verify_cuda_host.py --skip-build
+    python3 tools/verify_cuda_host.py --optix \\
+            --optix-root /opt/optix
+    python3 tools/verify_cuda_host.py --timeout 120 \\
+            --build-timeout 1200
 
 Exit code is 0 when every command in the active set passes, 1
 otherwise.
@@ -57,16 +73,23 @@ class Command:
 
     ``name`` is a short, stable identifier used in the summary
     table and any future log/result file. ``argv`` is the list of
-    arguments to pass to the RelativityRender binary (the binary
-    path itself is prepended by the runner). ``expected_outputs``
-    is an optional list of file paths (relative to the repo root)
-    the command is expected to produce; future CUDA-H.x slices
-    will use this list to verify file existence + non-emptiness
-    after the command exits.
+    arguments to pass to the program (the program itself is
+    prepended by the runner). ``program`` is an optional override:
+    when ``None`` (default), the runner uses the discovered
+    RelativityRender binary; when set (e.g. ``Path("cmake")``),
+    the runner uses that program directly. ``timeout_override``
+    is an optional per-command timeout that wins over the
+    runner-level default (used for the build phase, which
+    legitimately takes longer than a single render command).
+    ``expected_outputs`` is reserved for future CUDA-H.x slices
+    that will verify output-file existence after the command
+    exits.
     """
 
     name: str
     argv: list[str]
+    program: Path | None = None
+    timeout_override: float | None = None
     expected_outputs: list[Path] = dataclasses.field(default_factory=list)
 
 
@@ -101,19 +124,44 @@ class CommandResult:
 
 
 def run_command(
-    binary: Path,
+    binary: Path | None,
     cmd: Command,
     timeout_s: float,
     cwd: Path,
 ) -> CommandResult:
     """Run a single ``Command`` via ``subprocess.run``.
 
-    Captures stdout + stderr; enforces ``timeout_s`` per command.
-    Never raises on a non-zero exit; reflects every failure mode
-    in the returned ``CommandResult.status``.
+    Captures stdout + stderr; enforces ``cmd.timeout_override``
+    when set, otherwise ``timeout_s``. Never raises on a non-zero
+    exit; reflects every failure mode in the returned
+    ``CommandResult.status``.
+
+    ``binary`` is used as argv[0] when the command does not
+    override it via ``cmd.program``. When ``cmd.program`` is set
+    (e.g., for ``cmake`` build commands) the binary parameter
+    can be ``None``.
     """
 
-    argv = [str(binary), *cmd.argv]
+    program = cmd.program if cmd.program is not None else binary
+    if program is None:
+        return CommandResult(
+            name=cmd.name,
+            argv=list(cmd.argv),
+            status="error",
+            returncode=None,
+            duration_s=0.0,
+            stdout="",
+            stderr=(
+                "runner error: no program (binary not discovered "
+                "and no Command.program override)"
+            ),
+        )
+
+    effective_timeout = (
+        cmd.timeout_override if cmd.timeout_override is not None
+        else timeout_s
+    )
+    argv = [str(program), *cmd.argv]
     start = time.monotonic()
     try:
         completed = subprocess.run(  # noqa: S603 (caller-provided argv)
@@ -121,7 +169,7 @@ def run_command(
             cwd=str(cwd),
             capture_output=True,
             text=True,
-            timeout=timeout_s,
+            timeout=effective_timeout,
             check=False,
         )
     except subprocess.TimeoutExpired as exc:
@@ -161,6 +209,55 @@ def run_command(
 # ---------------------------------------------------------------------------
 
 
+def make_build_commands(
+    args: argparse.Namespace,
+) -> list[Command]:
+    """The build phase: ``cmake configure`` + ``cmake --build``.
+
+    Mirrors ``docs/CUDA_HOST_VERIFICATION_PLAN.md`` §1.
+
+    The configure step always passes
+    ``-DCMAKE_BUILD_TYPE=Release``, ``-DRR_ENABLE_CUDA=ON``,
+    ``-DRR_BUILD_TESTS=ON``. When ``args.optix`` is set, also
+    passes ``-DRR_ENABLE_OPTIX=ON`` (and ``-DOPTIX_ROOT=...``
+    when ``args.optix_root`` is set).
+
+    Both build commands carry ``timeout_override =
+    args.build_timeout`` so they don't share the per-render
+    ``args.timeout`` (build legitimately takes longer than a
+    single render command).
+    """
+
+    configure_argv = [
+        "-S", str(args.source_dir),
+        "-B", str(args.build_dir),
+        "-DCMAKE_BUILD_TYPE=Release",
+        "-DRR_ENABLE_CUDA=ON",
+        "-DRR_BUILD_TESTS=ON",
+    ]
+    if args.optix:
+        configure_argv.append("-DRR_ENABLE_OPTIX=ON")
+        if args.optix_root is not None:
+            configure_argv.append(
+                f"-DOPTIX_ROOT={args.optix_root}"
+            )
+
+    return [
+        Command(
+            name="cmake-configure",
+            argv=configure_argv,
+            program=Path("cmake"),
+            timeout_override=args.build_timeout,
+        ),
+        Command(
+            name="cmake-build",
+            argv=["--build", str(args.build_dir), "-j"],
+            program=Path("cmake"),
+            timeout_override=args.build_timeout,
+        ),
+    ]
+
+
 def base_commands() -> list[Command]:
     """The default command set: just ``--device-info``.
 
@@ -187,6 +284,83 @@ def optix_commands() -> list[Command]:
     """
 
     return []
+
+
+# ---------------------------------------------------------------------------
+# Output analysis
+# ---------------------------------------------------------------------------
+
+
+@dataclasses.dataclass
+class DeviceInfoSignals:
+    """In-memory record of the ``--device-info`` output analysis.
+
+    Two boolean signals per the CUDA-H.3 prompt:
+
+    - ``cuda_device_present``: stdout/stderr contains a CUDA
+      device row (``"[N] <name> (sm_..."``) AND the negative
+      "No CUDA-capable devices visible" line is absent.
+    - ``no_critical_errors``: stdout/stderr does not contain
+      any ``"[ERROR]"`` log line AND the underlying command's
+      return code is 0.
+
+    The dataclass is recorded in memory only (no file write
+    yet per the CUDA-H.3 contract); future CUDA-H.x slices
+    can persist the signals to a result file.
+    """
+
+    cuda_device_present: bool
+    no_critical_errors: bool
+
+
+def analyze_device_info(result: CommandResult) -> DeviceInfoSignals:
+    """Parse a ``--device-info`` ``CommandResult`` for two signals.
+
+    Detection rules:
+
+    - A device row is recognised by the ``"[<index>] <name>
+      (sm_<cc>, ..."`` pattern emitted by
+      ``run_render_device_info`` in ``src/main.cpp``.
+    - The negative "No CUDA-capable devices visible" line is
+      the documented "no GPU detected" sentinel emitted by
+      the same function on a CUDA-disabled or empty-driver
+      host.
+    - Critical errors are matched against the project's
+      ``[ERROR]`` Logger prefix (used by every dispatcher's
+      hard-failure path).
+
+    Returns the two boolean signals as a ``DeviceInfoSignals``
+    POD; callers decide how to act on them (a CUDA-host
+    verification PASS requires both true).
+    """
+
+    text = (result.stdout or "") + "\n" + (result.stderr or "")
+
+    has_no_cuda_line = "No CUDA-capable devices visible" in text
+    # Match a "[0] <name> (sm_..." line emitted per device.
+    has_device_row = bool(_DEVICE_ROW_RE.search(text))
+    cuda_device_present = has_device_row and not has_no_cuda_line
+
+    has_error_line = "[ERROR]" in text
+    no_critical_errors = (
+        not has_error_line and result.returncode == 0
+    )
+
+    return DeviceInfoSignals(
+        cuda_device_present=cuda_device_present,
+        no_critical_errors=no_critical_errors,
+    )
+
+
+# Pattern: a left-bracketed integer index, a name, and "(sm_<cc>"
+# anywhere in the same line. Matches the
+# `run_render_device_info` output:
+#     "[0] NVIDIA GeForce RTX 4090 (sm_89, 24 GB, 128 SMs)"
+import re  # noqa: E402  (kept near use site for readability)
+_DEVICE_ROW_RE = re.compile(
+    r"\[\s*\d+\s*\][^\n]*\(sm_\d+",
+    re.MULTILINE,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -309,6 +483,46 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "failure."
         ),
     )
+    parser.add_argument(
+        "--skip-build",
+        action="store_true",
+        help=(
+            "Skip the build phase. Default: run "
+            "'cmake configure' + 'cmake --build' before "
+            "running the command set."
+        ),
+    )
+    parser.add_argument(
+        "--build-timeout",
+        type=float,
+        default=600.0,
+        help=(
+            "Per-command timeout for the build phase in "
+            "seconds (default: 600). Separate from --timeout "
+            "because compile times legitimately exceed render "
+            "timeouts."
+        ),
+    )
+    parser.add_argument(
+        "--source-dir",
+        type=Path,
+        default=Path(__file__).resolve().parent.parent,
+        help=(
+            "Source directory passed as 'cmake -S <source-dir>' "
+            "(default: parent of this script's directory)."
+        ),
+    )
+    parser.add_argument(
+        "--optix-root",
+        type=Path,
+        default=None,
+        help=(
+            "Path to the OptiX SDK install (passed as "
+            "'-DOPTIX_ROOT=<path>'). Only used when --optix is "
+            "set. Default: leave unset and let cmake auto-"
+            "detect / fall through to the audit-host fallback."
+        ),
+    )
     return parser.parse_args(argv)
 
 
@@ -319,30 +533,19 @@ def discover_binary(args: argparse.Namespace) -> Path | None:
     return candidate if candidate.is_file() else None
 
 
-def main(argv: list[str] | None = None) -> int:
-    args = parse_args(argv)
+def _run_command_list(
+    binary: Path | None,
+    commands: list[Command],
+    args: argparse.Namespace,
+    halt_on_failure: bool,
+) -> list[CommandResult]:
+    """Run a list of commands sequentially, collecting results.
 
-    binary = discover_binary(args)
-    if binary is None:
-        print(
-            "error: RelativityRender binary not found. "
-            "Pass --bin <path> or build first.",
-            file=sys.stderr,
-        )
-        return 1
-
-    commands = base_commands()
-    if args.optix:
-        commands += optix_commands()
-
-    if not commands:
-        print("no commands to run; exiting", file=sys.stderr)
-        return 0
-
-    print(f"binary  : {binary}")
-    print(f"cwd     : {args.repo_root}")
-    print(f"timeout : {args.timeout:.1f}s per command")
-    print(f"commands: {len(commands)}")
+    When ``halt_on_failure`` is true, the loop stops at the
+    first non-pass result so subsequent steps (e.g. render
+    commands after a failed build) don't fan out into a flood
+    of meaningless follow-up failures.
+    """
 
     results: list[CommandResult] = []
     for cmd in commands:
@@ -360,9 +563,97 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  [{marker}] {cmd.name} ({result.duration_s:.2f}s)")
         if args.show_stdout or result.status != "pass":
             dump_failure(result)
+        if halt_on_failure and result.status != "pass":
+            break
+    return results
 
-    print_summary(results)
-    return 0 if all(r.status == "pass" for r in results) else 1
+
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv)
+
+    print(f"cwd     : {args.repo_root}")
+    print(f"timeout : {args.timeout:.1f}s per command "
+          f"(build: {args.build_timeout:.1f}s)")
+
+    all_results: list[CommandResult] = []
+
+    # ---- Build phase --------------------------------------
+    # Halt on failure: a broken build means subsequent render
+    # commands would all fail with "binary not found" or stale
+    # binary errors. The runner reports the build failure +
+    # exits non-zero so the operator can fix the build first.
+    if not args.skip_build:
+        build_cmds = make_build_commands(args)
+        print(f"build   : {len(build_cmds)} step(s)")
+        build_results = _run_command_list(
+            binary=None,
+            commands=build_cmds,
+            args=args,
+            halt_on_failure=True,
+        )
+        all_results.extend(build_results)
+        if any(r.status != "pass" for r in build_results):
+            print_summary(all_results)
+            print("\nbuild failed; skipping subsequent commands.")
+            return 1
+    else:
+        print("build   : skipped (--skip-build)")
+
+    # ---- Binary discovery (post-build) --------------------
+    # Run AFTER the build phase so the freshly-built binary is
+    # the one used for subsequent commands.
+    binary = discover_binary(args)
+    if binary is None:
+        print(
+            "error: RelativityRender binary not found after "
+            "build. Pass --bin <path> or check the build "
+            "output.",
+            file=sys.stderr,
+        )
+        print_summary(all_results)
+        return 1
+
+    # ---- Render command catalogue -------------------------
+    commands = base_commands()
+    if args.optix:
+        commands += optix_commands()
+
+    if not commands:
+        print("no render commands configured; exiting after build",
+              file=sys.stderr)
+        print_summary(all_results)
+        return 0 if all(r.status == "pass" for r in all_results) else 1
+
+    print(f"binary  : {binary}")
+    print(f"commands: {len(commands)}")
+    cmd_results = _run_command_list(
+        binary=binary,
+        commands=commands,
+        args=args,
+        halt_on_failure=False,
+    )
+    all_results.extend(cmd_results)
+
+    # ---- Device-info output analysis ----------------------
+    # CUDA-H.3 records two boolean signals in memory; no file
+    # write yet (next slice's concern).
+    device_info = next(
+        (r for r in cmd_results if r.name == "device-info"), None
+    )
+    signals: DeviceInfoSignals | None = None
+    if device_info is not None:
+        signals = analyze_device_info(device_info)
+
+    print_summary(all_results)
+
+    if signals is not None:
+        print()
+        print("device-info analysis:")
+        print(f"  cuda_device_present : {signals.cuda_device_present}")
+        print(f"  no_critical_errors  : {signals.no_critical_errors}")
+
+    overall_pass = all(r.status == "pass" for r in all_results)
+    return 0 if overall_pass else 1
 
 
 if __name__ == "__main__":
