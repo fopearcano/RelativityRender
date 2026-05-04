@@ -99,14 +99,25 @@ class CommandResult:
 
     ``status`` is one of:
 
-    - ``"pass"``: process exit code 0 within the timeout.
-    - ``"fail"``: non-zero exit code.
+    - ``"pass"``: process exit code 0 within the timeout AND
+      every expected output file exists with size > 0.
+    - ``"fail"``: non-zero exit code OR an expected output
+      file is missing / empty (CUDA-H.4 file-check downgrade).
     - ``"timeout"``: process exceeded the per-command timeout.
-    - ``"error"``: runner-side failure (binary missing, OS error).
+    - ``"error"``: runner-side failure (binary missing, OS
+      error).
 
     ``stdout`` / ``stderr`` are captured strings (decoded UTF-8
     with ``errors="replace"`` so malformed bytes never blow up
     the runner).
+
+    ``missing_outputs`` (CUDA-H.4) lists any expected output
+    paths that are absent or zero-byte after the command
+    completes. Empty when ``cmd.expected_outputs`` is empty
+    OR every expected file is present + non-empty. The runner
+    populates this in ``_run_command_list`` after a "pass"
+    subprocess result, then downgrades ``status`` to "fail"
+    if the list is non-empty.
     """
 
     name: str
@@ -116,6 +127,7 @@ class CommandResult:
     duration_s: float
     stdout: str
     stderr: str
+    missing_outputs: list[Path] = dataclasses.field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -259,17 +271,54 @@ def make_build_commands(
 
 
 def base_commands() -> list[Command]:
-    """The default command set: just ``--device-info``.
+    """The default command set.
 
-    Per the CUDA-H.2 "do not hardcode long-running commands"
-    rule, the skeleton only ships the fast, safe smoke. Future
-    CUDA-H.x slices add the actual render commands per
-    ``docs/CUDA_HOST_VERIFICATION_PLAN.md`` once the operator
-    has confirmed the runner shape.
+    CUDA-H.2 shipped just ``--device-info`` (the fast smoke).
+    CUDA-H.3 added the build phase + device-info analyzer
+    around it. CUDA-H.4 adds the four core CUDA render
+    commands per ``docs/CUDA_HOST_VERIFICATION_PLAN.md`` §3.1
+    -- §3.4:
+
+    - ``--render-gradient`` -> ``output/gpu_gradient.ppm``
+    - ``--render-rays``     -> ``output/gpu_camera_rays.ppm``
+    - ``--render-sphere``   -> ``output/gpu_sphere.ppm``
+    - ``--render-relativistic`` -> four PPMs at fixed beta
+      values (``output/sphere_beta_{000,025,075,095}.ppm``).
+
+    Each entry carries the expected output paths in
+    ``Command.expected_outputs``; the runner verifies file
+    existence + ``size > 0`` after the command completes
+    (CUDA-H.4 contract). Future CUDA-H.x slices add the
+    scene-render / texture / AOV / pathtrace commands.
     """
 
     return [
         Command(name="device-info", argv=["--device-info"]),
+        Command(
+            name="render-gradient",
+            argv=["--render-gradient"],
+            expected_outputs=[Path("output/gpu_gradient.ppm")],
+        ),
+        Command(
+            name="render-camera-rays",
+            argv=["--render-rays"],
+            expected_outputs=[Path("output/gpu_camera_rays.ppm")],
+        ),
+        Command(
+            name="render-sphere",
+            argv=["--render-sphere"],
+            expected_outputs=[Path("output/gpu_sphere.ppm")],
+        ),
+        Command(
+            name="render-relativistic",
+            argv=["--render-relativistic"],
+            expected_outputs=[
+                Path("output/sphere_beta_000.ppm"),
+                Path("output/sphere_beta_025.ppm"),
+                Path("output/sphere_beta_075.ppm"),
+                Path("output/sphere_beta_095.ppm"),
+            ],
+        ),
     ]
 
 
@@ -533,6 +582,39 @@ def discover_binary(args: argparse.Namespace) -> Path | None:
     return candidate if candidate.is_file() else None
 
 
+def check_output_files(
+    cmd: Command,
+    cwd: Path,
+) -> list[Path]:
+    """Return the subset of ``cmd.expected_outputs`` that are
+    missing or empty.
+
+    Each expected path is resolved relative to ``cwd`` (the
+    runner's working directory; typically the repo root so
+    paths like ``output/gpu_gradient.ppm`` resolve as
+    expected).
+
+    A path is "missing" when ``Path.is_file()`` is False; it
+    is "empty" when ``Path.stat().st_size == 0``. Both cases
+    end up in the returned list; callers decide how to act
+    on each. Per the CUDA-H.4 contract: file size > 0 is
+    sufficient (no PPM-magic / format check yet; that is a
+    future slice).
+    """
+
+    missing: list[Path] = []
+    for rel in cmd.expected_outputs:
+        absolute = (cwd / rel) if not rel.is_absolute() else rel
+        try:
+            if not absolute.is_file() or absolute.stat().st_size == 0:
+                missing.append(rel)
+        except OSError:
+            # stat() failure (race with deletion, permissions,
+            # etc.) treats the path as missing.
+            missing.append(rel)
+    return missing
+
+
 def _run_command_list(
     binary: Path | None,
     commands: list[Command],
@@ -545,6 +627,13 @@ def _run_command_list(
     first non-pass result so subsequent steps (e.g. render
     commands after a failed build) don't fan out into a flood
     of meaningless follow-up failures.
+
+    After each subprocess returns "pass", the runner verifies
+    every entry in ``cmd.expected_outputs`` exists with
+    ``size > 0`` (CUDA-H.4); if any is missing/empty the
+    result's ``status`` is downgraded to "fail" and the
+    missing paths are recorded in
+    ``CommandResult.missing_outputs``.
     """
 
     results: list[CommandResult] = []
@@ -555,6 +644,25 @@ def _run_command_list(
             timeout_s=args.timeout,
             cwd=args.repo_root,
         )
+
+        # CUDA-H.4: post-run output-file verification. Only
+        # check when the subprocess itself reported "pass"
+        # (a failed subprocess hasn't had a chance to write
+        # files; reporting "missing outputs" on top of the
+        # subprocess error would be noisy).
+        if result.status == "pass" and cmd.expected_outputs:
+            missing = check_output_files(cmd, args.repo_root)
+            if missing:
+                result.missing_outputs = missing
+                result.status = "fail"
+                paths_str = ", ".join(str(p) for p in missing)
+                # Append to stderr so dump_failure shows it.
+                addendum = (
+                    f"\n[runner] expected output file(s) "
+                    f"missing or empty: {paths_str}"
+                )
+                result.stderr = (result.stderr or "") + addendum
+
         results.append(result)
         marker = (
             "OK" if result.status == "pass"

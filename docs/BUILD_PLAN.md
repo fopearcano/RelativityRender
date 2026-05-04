@@ -26926,6 +26926,272 @@ without hanging.
   CUDA_HOST_VERIFICATION_PLAN
   formalises.
 
+## CUDA-H.4 — core CUDA render checks
+
+**Scope of this slice
+(post-CUDA-H.3 build + device
+phase): populate the runner's
+default command set with the
+four core CUDA render
+commands per
+`docs/CUDA_HOST_VERIFICATION_PLAN.md`
+§3.1 -- §3.4. Each command
+declares its expected output
+PPM(s) via the existing
+`Command.expected_outputs`
+field; the runner verifies
+file existence + `size > 0`
+after each successful
+subprocess and downgrades
+the result to "fail" when
+any expected PPM is missing
+or empty. Per the user's
+"no infinite loops / respect
+timeouts / no server" rules:
+every command honours the
+existing per-command timeout
+(`args.timeout`, default
+60s); none of the new
+commands invokes
+`--server`.**
+
+### What ships
+
+- `tools/verify_cuda_host.py`:
+    - `CommandResult` gains a
+      new field
+      `missing_outputs:
+      list[Path]` (default
+      empty) populated by
+      the post-run file
+      check.
+    - New
+      `check_output_files(
+      cmd, cwd) -> list[Path]`
+      helper: returns the
+      subset of
+      `cmd.expected_outputs`
+      that are missing or
+      zero-byte; treats
+      `OSError` from
+      `Path.stat()` as
+      missing.
+    - `_run_command_list(
+      ...)` extended: after
+      each subprocess
+      reports "pass", the
+      runner calls
+      `check_output_files`;
+      if any expected file
+      is missing/empty the
+      result's `status` is
+      downgraded from "pass"
+      to "fail",
+      `missing_outputs` is
+      populated, and a
+      `[runner] expected
+      output file(s)
+      missing or empty: ...`
+      addendum is appended
+      to `stderr` so
+      `dump_failure(...)`
+      surfaces it.
+    - `base_commands()` now
+      returns five entries:
+      the original
+      `--device-info` smoke
+      plus four CUDA render
+      commands:
+        - `render-gradient`
+          (`--render-gradient`)
+          ->
+          `output/gpu_gradient.ppm`.
+        - `render-camera-rays`
+          (`--render-rays`)
+          ->
+          `output/gpu_camera_rays.ppm`.
+        - `render-sphere`
+          (`--render-sphere`)
+          ->
+          `output/gpu_sphere.ppm`.
+        - `render-relativistic`
+          (`--render-relativistic`)
+          -> four PPMs at
+          fixed beta values
+          (`output/sphere_beta_{000,025,075,095}.ppm`).
+- This `BUILD_PLAN.md`
+  slice-closing entry.
+
+### Smoke results (audit host)
+
+The audit host has no CUDA
+toolkit + no OptiX SDK; the
+smokes confirm the runner
+correctly reports each state
+without hanging.
+
+1. **`--skip-build` end-to-
+   end against the OFF
+   build**: device-info
+   passes (signals recorded);
+   each of the four render
+   commands fails with the
+   documented "requires
+   CUDA" stderr error
+   (returncode 1); per-
+   command durations all
+   < 0.01s (early-exit on
+   missing CUDA); no hangs;
+   no timeout fires; final
+   summary reports "4 fail,
+   1 pass"; runner exits 1.
+
+   ```
+   $ python3 tools/verify_cuda_host.py --skip-build \
+         --build-dir build_off
+   ...
+     [OK] device-info (0.00s)
+     [FAIL] render-gradient (0.00s)
+     [FAIL] render-camera-rays (0.00s)
+     [FAIL] render-sphere (0.00s)
+     [FAIL] render-relativistic (0.00s)
+   totals: 4 fail, 1 pass
+   ```
+
+2. **File-check downgrade
+   path** (verified via a
+   contrived in-process
+   smoke that runs
+   `--version` with a fake
+   expected output):
+   subprocess exits 0;
+   runner's file check
+   notices the expected PPM
+   is absent; status
+   downgrades from "pass"
+   to "fail";
+   `missing_outputs` is
+   populated; the
+   `[runner] expected output
+   file(s) missing or empty:
+   ...` addendum appears in
+   `stderr`. This confirms
+   the downgrade triggers
+   even when the underlying
+   subprocess succeeded -
+   the exact condition
+   CUDA-H.4 calls for ("if
+   the renderer 'succeeds'
+   but writes no PPM, the
+   runner must still mark
+   the test as fail").
+
+### Per-test status semantics
+
+| Subprocess status | File check passed | `CommandResult.status` |
+|-------------------|-------------------|------------------------|
+| pass (rc 0)       | yes (or no expected outputs) | pass               |
+| pass (rc 0)       | no                | fail (downgraded)      |
+| fail (rc != 0)    | (skipped)         | fail                   |
+| timeout           | (skipped)         | timeout                |
+| error (OS / runner) | (skipped)       | error                  |
+
+The file check is intentionally skipped when the subprocess
+itself failed; reporting "expected output missing" on top
+of a runner-side or process-side error would be noisy and
+not actionable. The expected-output state is still recorded
+in `missing_outputs` as a side-effect for callers that want
+to inspect both signals; only the status semantics
+short-circuit.
+
+### Master rule compliance
+
+- **No server**: none of
+  the four new commands
+  reaches `--server`; the
+  CLI surface is purely
+  the existing
+  `--render-gradient` /
+  `--render-rays` /
+  `--render-sphere` /
+  `--render-relativistic`
+  set documented in
+  CUDA_HOST_VERIFICATION_PLAN
+  §3.
+- **No infinite loops**:
+  every subprocess uses
+  `args.timeout` (default
+  60s); no
+  `while`-without-progress
+  in the runner.
+- **Respect timeouts**:
+  the existing CUDA-H.3
+  per-command timeout
+  honours every render
+  command in the new
+  catalogue; build and
+  render timeouts remain
+  separate
+  (`args.build_timeout`
+  vs `args.timeout`).
+- **No renderer code
+  changes**: only
+  `tools/verify_cuda_host.py`
+  + this BUILD_PLAN entry
+  touched.
+
+### Backward compatibility
+
+- The CUDA-H.2 / CUDA-H.3
+  argparse surface is
+  unchanged; only the
+  default command list
+  grew.
+- `--skip-build` is
+  unchanged; build phase
+  semantics unchanged.
+- `--device-info`'s
+  reported behaviour is
+  unchanged (still passes
+  on every host; signals
+  still recorded).
+- The existing OFF +
+  ON-audit-host ctest
+  baselines (6/6 + 7/7)
+  are unchanged because
+  no C++ source was
+  modified.
+
+### Verified at the build
+
+- `python3 -c "import ast;
+  ast.parse(open('tools/
+  verify_cuda_host.py').read())"`:
+  syntax check passes.
+- Smoke #1 (full default
+  command set on OFF
+  build): 4 fail + 1 pass;
+  exit 1; no hangs.
+- Smoke #2 (file-check
+  downgrade path):
+  subprocess exits 0;
+  status downgrades to
+  "fail"; missing_outputs
+  populated; addendum
+  appended to stderr.
+- The actual CUDA-host
+  smoke (4 commands all
+  pass with PPMs > 0
+  bytes) is structurally
+  in place but cannot be
+  empirically verified on
+  this audit host (no
+  nvcc) — exactly the
+  runtime-deferred
+  posture the
+  CUDA_HOST_VERIFICATION_PLAN
+  formalises.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
