@@ -25891,6 +25891,181 @@ identical path.
   to a CUDA + OptiX-SDK
   host run.
 
+## Post-Stage 21 — denoiser capstone audit (docs only)
+
+**Scope of this slice (post-Stage
+21E.2, master order #24,
+"Denoising"): a documentation-
+only capstone audit of the
+entire Stage 21 arc — 33
+sub-stages across 5 sub-arcs
+(21A planning + 21B scaffold
++ 21C input wiring + 21D
+invoke + 21E CLI integration)
+plus 3 prior intermediate
+audits (post-21B / post-21C /
+post-21D). Confirms every
+checklist item on the user's
+spec is satisfied, identifies
+the one runtime-deferred
+gate (empirical CUDA-host
+verification of
+`output/denoised.ppm`), and
+recommends the next safe
+stage per master order. NO
+source code modified.**
+
+### What ships
+
+- `docs/STAGE_21_DENOISER_AUDIT.md`:
+  capstone audit document
+  with one section per
+  prompt question (nine in
+  total) plus a summary
+  table, critical findings,
+  and a forward-looking
+  next-stage recommendation
+  table. Verdicts split
+  into "empirical" (audit
+  host ran the command
+  directly) and
+  "structural" (source /
+  build config / wiring
+  inspected; runtime
+  verification deferred to
+  a CUDA + OptiX-SDK host).
+- This `BUILD_PLAN.md`
+  slice-closing entry.
+
+### Audit verdicts (one-line each)
+
+| # | Question                                       | Verdict             |
+|---|------------------------------------------------|---------------------|
+| 1 | Denoiser plan exists?                          | YES (9 sections)    |
+| 2 | OptiX denoiser wrapper exists?                 | YES (213+892 lines) |
+| 3 | Input wiring exists?                           | YES (7 helpers)     |
+| 4 | Invoke path exists?                            | YES                 |
+| 5 | CLI flag exists?                               | YES (3 surfaces)    |
+| 6 | `output/denoised.ppm` exists?                  | RUNTIME DEFERRED    |
+| 7 | OFF / ON-audit-host builds remain valid?       | YES (6/6 + 7/7)     |
+| 8 | No CPU denoising                               | ZERO violations     |
+| 9 | Next safe stage                                | OptiX Gap A polish  |
+
+### Stage 21 arc summary
+
+| Sub-arc | Sub-stages | Span                  |
+|---------|-----------:|-----------------------|
+| 21A     |         10 | `4d08f96..871052f`    |
+| 21B     |         10 | `8d36ca9..93ca434`    |
+| 21C     |          5 | `c471970..b8ca6c9`    |
+| 21D     |          6 | `0eb0c69..e4db2a8`    |
+| 21E     |          2 | `ddd6e2d..3f9943c`    |
+|         |    **33**  | total                  |
+
+Plus three intermediate audits: post-21B (`4bbb487`),
+post-21C (`92d01fc`), post-21D (`3362653`).
+
+### Critical findings
+
+- Stage 21 is structurally
+  complete. Every checklist
+  item from the user's
+  spec is satisfied by
+  source artifacts on
+  disk.
+- One runtime gate
+  remains: empirical
+  CUDA-host verification
+  of `output/denoised.ppm`.
+  Per the Stage 21D.6 +
+  21E.2 "runtime deferred,
+  not code failure" rule,
+  this is the expected
+  audit-host posture.
+- No master rule
+  violations. CUDA path
+  is byte-identical across
+  the entire Stage 21 arc;
+  no per-pixel host work
+  in any of the new
+  denoise paths.
+- Two of three
+  post-Stage-20 audit gaps
+  closed by Stage 21:
+  Gap B (orchestration
+  helper) by
+  `denoise_and_save_ppm`;
+  Gap C (CLI surface) by
+  `--render-optix-denoise`
+  + `--render --denoise`.
+  Gap A (durable AOV
+  ownership for the OptiX
+  path's `render_aovs`)
+  remains as the natural
+  next polish slice.
+
+### Recommended next safe stages
+
+In priority order (from the
+audit doc's Section 9):
+
+1. OptiX-path AOV ownership
+   (post-Stage-20 audit Gap
+   A): make
+   `OptixRenderer::render_aovs`
+   buffers durable across a
+   denoiser invoke for an
+   end-to-end
+   `--render-optix-aovs
+   --denoise` flow.
+2. Empirical CUDA-host
+   verification of
+   `output/denoised.ppm`.
+3. Texture system polish
+   (master #18) — MIP /
+   trilinear / anisotropic.
+4. Path-tracer polish
+   (master #16) — NEE,
+   non-diffuse BSDFs,
+   multi-mesh upload.
+
+Explicitly NOT recommended:
+master #20 (renderer
+server, deferred per
+`docs/STAGE_15_SERVER_DEFERRED.md`)
+and master #21+ (C4D
+bridge / UI / node editor /
+native C4D renderer,
+blocked by master rule 4).
+
+### Backward compatibility
+
+Documentation-only slice. No
+source / CMake / CLI changes.
+Every Stage 21E.2 behaviour
+is preserved byte-for-byte.
+
+### Verified at the build
+
+- `cmake -S . -B build_off
+  -DRR_ENABLE_CUDA=OFF
+  -DRR_ENABLE_OPTIX=OFF`
+  (audit host): clean
+  build; ctest 6/6 green.
+- `cmake -S . -B build_on_audit
+  -DRR_ENABLE_CUDA=OFF
+  -DRR_ENABLE_OPTIX=ON`
+  (audit host, no SDK):
+  clean build; ctest 7/7
+  green.
+- CLI smokes
+  (`--render <scene>
+  --denoise`,
+  `--render-optix-denoise`):
+  exit 1 with documented
+  audit-host fallback
+  errors; no crashes.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
