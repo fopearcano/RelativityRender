@@ -760,10 +760,13 @@ bool OptixDenoiser::denoise(const Inputs& inputs,
     // Build the layer + guide-layer descriptor pair via
     // the Stage 21C.4 helper. The denoiser was init'd
     // with `guideAlbedo=1, guideNormal=1` at Stage 21B.4,
-    // so a pure beauty-only invoke is NOT supported by
-    // the current options; use the guided form (the
-    // user's "beauty-only if supported by current
-    // scaffold/options" carve-out covers this).
+    // so the invoke uses the guided form (Stage 21D.3
+    // formalised; Stage 21D.2 first wired this exact
+    // call shape because pure beauty-only invokes are not
+    // supported by the current init options). The guide
+    // layer carries Albedo (linear-RGB pre-lighting) and
+    // Normal (encoded `0.5 n + 0.5`) per the Stage 21A.3
+    // required-input contract.
     GuidedDenoiserInput guided = prepareGuidedInput(inputs, output);
 
     // Per-launch params. `blendFactor = 0` is full
@@ -825,8 +828,9 @@ bool OptixDenoiser::denoise(const Inputs& inputs,
 
     last_error_.clear();
     std::fprintf(stderr,
-                 "[OptiX:INFO] OptixDenoiser invoke complete: "
-                 "width=%d height=%d FLOAT%d.\n",
+                 "[OptiX:INFO] OptixDenoiser guided invoke "
+                 "complete: width=%d height=%d FLOAT%d "
+                 "(beauty + albedo + normal).\n",
                  inputs.width, inputs.height,
                  inputs.beauty_components);
     return true;

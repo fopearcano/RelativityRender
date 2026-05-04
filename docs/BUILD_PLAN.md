@@ -24355,6 +24355,209 @@ require.
   empirically verified on
   this audit host (no SDK).
 
+## Stage 21D.3 — guided denoiser invoke
+
+**Scope of this slice (Stage 21D.3;
+master order #24, "Denoising"):
+formalise the guided
+`optixDenoiserInvoke` contract
+for the existing `denoise()`
+method. The Stage 21D.2 slice
+already shipped the guided
+form (Beauty + Albedo + Normal)
+because pure beauty-only
+invokes are not supported by
+the current init options
+(`guideAlbedo=1, guideNormal=1`
+pinned at Stage 21B.4); the
+user's "beauty-only if
+supported" carve-out licensed
+that fall-back. Stage 21D.3
+formally documents the
+contract in the source: an
+expanded inline comment block
+above the `prepareGuidedInput`
+call and an explicit "guided
+invoke complete" success log
+that names all three inputs
+the SDK consumed (beauty +
+albedo + normal). NO new
+SDK calls; NO behaviour
+change beyond log wording.**
+
+### What ships
+
+- `src/optix/OptixDenoiser.cpp`
+  (SDK_FOUND `denoise` branch
+  only):
+    - The Stage 21D.2 inline
+      comment above the
+      `prepareGuidedInput`
+      call grew to call out
+      Stage 21D.3 explicitly:
+      "Stage 21D.3 formalised;
+      Stage 21D.2 first wired
+      this exact call shape".
+      The comment now also
+      cites the Stage 21A.3
+      required-input contract
+      (Albedo linear-RGB pre-
+      lighting; Normal encoded
+      `0.5 n + 0.5`).
+    - Success log changed from
+      `"[OptiX:INFO]
+      OptixDenoiser invoke
+      complete: width=W
+      height=H FLOAT3"` to
+      `"[OptiX:INFO]
+      OptixDenoiser guided
+      invoke complete:
+      width=W height=H FLOAT3
+      (beauty + albedo +
+      normal)"`. The new
+      wording makes the
+      guided-mode usage
+      explicit at runtime so
+      operators reading log
+      output can confirm
+      which form ran.
+- This `BUILD_PLAN.md`
+  slice-closing entry.
+
+### Why no new SDK call
+
+The user's task ("Extend
+denoise(...) to support:
+beauty / albedo / normal")
+describes a feature the
+Stage 21D.2 slice already
+implemented in full because
+the `OptixDenoiser` instance
+the project creates at Stage
+21B.4 has `guideAlbedo=1,
+guideNormal=1` pinned in its
+`OptixDenoiserOptions`. The
+SDK contract requires every
+`optixDenoiserInvoke` call
+against such a denoiser to
+provide a non-zero
+`OptixDenoiserGuideLayer`
+with valid Albedo + Normal
+images; pure beauty-only
+invokes return an SDK error.
+
+The Stage 21D.2 implementation
+already builds the layer +
+guide-layer pair via
+`prepareGuidedInput` (Stage
+21C.4), passes them to
+`optixDenoiserInvoke`, and
+returns true on success. No
+SDK call shape changes between
+21D.2 and 21D.3; the contract
+the user asked for is already
+in production.
+
+Stage 21D.3 is a
+documentation-tightening
+slice: it makes the contract
+explicit in the source so
+future readers do not have to
+read both 21D.2 and the SDK
+docs together to understand
+that the invoke call is
+guided, not beauty-only.
+
+### Behaviour matrix (unchanged from 21D.2)
+
+| Build mode               | `denoise(inputs, output)` returns                |
+|--------------------------|--------------------------------------------------|
+| OFF                      | `false`; "OptiX disabled at build time"          |
+| ON, no SDK (audit host)  | `false`; "requires OptiX SDK..."                 |
+| ON, SDK found, init fail | `false`; "denoiser is not available"             |
+| ON, SDK found, valid +   | `true`; `output.device` carries the denoised     |
+| success                  | linear-RGB radiance (caller-owned device buffer);|
+|                          | log shows "guided invoke complete: ... (beauty + |
+|                          | albedo + normal)".                               |
+
+### What does NOT ship
+
+- No CLI surface (the
+  `--render-optix-denoise`
+  action is a future
+  slice).
+- No file output / no
+  host-side download (the
+  function fills
+  `output.device` on the
+  GPU; the consumer
+  downloads + saves).
+- No durable AOV ownership
+  for the OptiX path's
+  `render_aovs`
+  (post-Stage-20 audit Gap
+  A; prerequisite for an
+  end-to-end OptiX
+  `--render-aovs --denoise`
+  flow).
+- No consumer migration:
+  `denoise_aov_buffers_to_ppm`
+  in `main.cpp` still uses
+  the legacy
+  `initialize -> set_inputs
+  -> invoke` trio (where
+  `invoke` is the Stage
+  21B.1 stub). The
+  audit-host CLI
+  behaviour is unchanged.
+
+### Backward compatibility
+
+- The class' public surface
+  is byte-identical with
+  Stage 21D.2.
+- The CUDA renderer is
+  byte-identical (the slice
+  touches only
+  `src/optix/OptixDenoiser.cpp`).
+- The audit-host fallback +
+  OFF stubs of `denoise`
+  are unchanged.
+- The success log line
+  changed wording; any
+  consumer that grepped
+  the previous wording
+  (`"OptixDenoiser invoke
+  complete:"`) needs to
+  match the new substring
+  (`"OptixDenoiser guided
+  invoke complete:"`).
+  The project does not
+  parse rr_optix log lines
+  in any tracked code
+  path, so this is a
+  benign change.
+
+### Verified at the build
+
+- `cmake -S . -B build_off
+  -DRR_ENABLE_CUDA=OFF
+  -DRR_ENABLE_OPTIX=OFF`
+  (audit host): clean build;
+  ctest 6/6 green.
+- `cmake -S . -B build_on_audit
+  -DRR_ENABLE_CUDA=OFF
+  -DRR_ENABLE_OPTIX=ON`
+  (audit host, no SDK):
+  clean build; ctest 7/7
+  green.
+- The SDK-found denoise()
+  guided invoke path is
+  structurally in place but
+  cannot be empirically
+  verified on this audit
+  host (no SDK).
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
