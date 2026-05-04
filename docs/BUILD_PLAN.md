@@ -35287,6 +35287,442 @@ zero build effect.**
   Recorded under
   §5.3.
 
+## PT-P.11 — environment fallback clarity task (docs only)
+
+**Scope of this slice
+(post-PT-P.10 audit
+PASS): produce the
+fully-self-contained
+task definition for
+the next PT-P.x
+implementation slice.
+Mirrors the PT-P.5 ->
+PT-P.6 and PT-P.8 ->
+PT-P.9 task ->
+implementation
+cadence. Per
+`docs/PATH_TRACER_POLISH_SAMPLE_COUNT_CAP_AUDIT.md`
+§9's "Recommended
+next step" the
+natural follow-up is
+`PATH_TRACER_POLISH_PLAN.md`
+§4.4 (environment
+fallback clarity):
+the smallest
+remaining item
+(~5 lines: 1 doc-
+comment + 1 info-
+log line), pure
+clarity work with
+zero behavioural
+risk. NO source
+changes; NO new CLI
+flags; NO kernel
+touches.**
+
+### What ships
+
+- `docs/PATH_TRACER_POLISH_ENV_FALLBACK_TASK.md`
+  (NEW). Eight
+  sections + a
+  reference output:
+    - **§1 Exact
+      issue.** Names
+      the task
+      "Environment
+      fallback
+      clarity",
+      points to
+      `PATH_TRACER_POLISH_PLAN.md`
+      §4.4 as the
+      source, and
+      breaks the
+      single concrete
+      change into
+      two
+      sub-changes:
+      §1.4 a
+      doc-comment
+      extension on
+      `PathTraceConfig::environment_intensity`
+      (one new
+      paragraph
+      naming the
+      `== 0.0f`
+      special
+      case + its
+      authoring
+      rationale),
+      §1.5 a new
+      `Logger::info`
+      line in
+      `run_render_pathtrace`'s
+      post-render
+      block named
+      `environment      :`
+      that echoes
+      both fields.
+      §1.6 calls
+      out the
+      explicit no-
+      kernel-change
+      contract.
+      Notes the
+      implementer's
+      choice between
+      reusing the
+      existing
+      `fmt_vec3`
+      helper
+      (recommended)
+      or introducing
+      a new format
+      helper.
+    - **§2 Expected
+      behaviour.**
+      Three sub-
+      sections
+      mirroring the
+      prompt's spec
+      bullets:
+      §2.1 the
+      doc-comment
+      enumerates
+      three artist-
+      meaningful
+      cases
+      (default,
+      `intensity ==
+      0`, custom
+      `color *
+      intensity`),
+      §2.2 the
+      dispatcher
+      info-log
+      block grows
+      from 4 lines
+      to 5 (the
+      new
+      `environment      :`
+      line always
+      emits — no
+      special-
+      casing for
+      defaults),
+      §2.3 ZERO
+      kernel
+      touches
+      (verifiable
+      by `git diff
+      -- src/cuda/
+      src/optix/`
+      = 0 bytes).
+      Notes the
+      OptiX
+      dispatcher
+      is out of
+      scope for
+      this slice.
+    - **§3 Files
+      likely
+      involved.**
+      Three-row
+      table:
+      `src/pathtracer/PathTracer.h`
+      (doc-comment
+      extension,
+      ~6-8 lines),
+      `src/main.cpp`
+      (one new
+      `Logger::info`,
+      ~3-5 lines),
+      `docs/BUILD_PLAN.md`
+      (slice-closing
+      entry).
+      Honours the
+      max-2-source-
+      files rule.
+      §3.1
+      documents the
+      no-new-test
+      recommendation
+      mirroring
+      PT-P.6 /
+      PT-P.9's
+      "verifiable
+      by code
+      inspection"
+      precedent
+      (PT-P.10
+      cleared the
+      latter with
+      zero REPAIR
+      items).
+    - **§4 What
+      must not be
+      touched.**
+      Seven sub-
+      sections of
+      explicit
+      no-touch
+      invariants:
+      kernel +
+      launcher
+      code (CUDA +
+      OptiX),
+      renderer +
+      `PathTracer.cpp`
+      (no new
+      validation /
+      transform of
+      env fields;
+      the function
+      reads them
+      once each in
+      the existing
+      CUDA-only
+      branch),
+      `PathTraceConfig`
+      field set
+      (no new
+      fields,
+      defaults
+      preserved),
+      every existing
+      path-tracer
+      PPM
+      byte-identical,
+      the CLI
+      surface, the
+      existing four
+      info-log
+      lines (the
+      new
+      `environment      :`
+      line is
+      INSERTED;
+      nothing
+      reformatted),
+      and other
+      audits /
+      plans.
+    - **§5 PASS
+      criteria.**
+      Seven concrete
+      gates: build
+      green on both
+      audit-host
+      configs,
+      ctest 7/7 +
+      8/8 (count
+      unchanged
+      from PT-P.6 /
+      PT-P.9),
+      source-diff
+      size cap
+      (~6-10 in
+      .h; ~3-6
+      in main.cpp;
+      <= 25 added
+      total before
+      flagged
+      deviation),
+      no-touch
+      invariants
+      enforceable
+      by `git diff
+      | wc -l`,
+      audit-host
+      behavioural
+      smoke
+      (`--render-
+      pathtrace`
+      "requires
+      CUDA"
+      fallback +
+      the TEX-P.6
+      fixture's
+      three-case
+      logs both
+      byte-
+      identical),
+      slice-closing
+      `BUILD_PLAN.md`
+      entry, and
+      master rule
+      compliance.
+    - **§6 Out-of-
+      scope.**
+      Explicitly
+      defers
+      `PATH_TRACER_POLISH_PLAN.md`
+      §4.{1,5,7}
+      to future
+      task
+      definitions
+      and the
+      OptiX-side
+      symmetric
+      polish to a
+      separate
+      future slice.
+    - **§7 Why §4.4
+      is the
+      safest viable
+      next slice.**
+      Five
+      structural
+      reasons:
+      PT-P.10
+      audit verdict
+      was clean,
+      it is the
+      smallest
+      remaining
+      item, no
+      new pattern
+      is required
+      (purely
+      additive), the
+      existing
+      dispatcher
+      info-log
+      idiom is
+      well-defined,
+      and the OptiX
+      side is left
+      untouched
+      (CUDA-only
+      blast radius,
+      same
+      discipline
+      PT-P.6 /
+      PT-P.9
+      followed).
+    - **§8 Reference
+      output.**
+      Shows the
+      planned 5-line
+      post-render
+      info log a
+      CUDA-host
+      operator will
+      see. Includes
+      a worked
+      example of
+      what the
+      `environment      :`
+      line reads
+      with
+      `environment_intensity
+      = 0.0f`,
+      confirming
+      the doc-
+      comment's
+      claim that
+      the kernel
+      sees a
+      zero-
+      intensity
+      fallback.
+- This `BUILD_PLAN.md`
+  slice-closing
+  entry.
+
+### What does NOT change
+
+- All
+  PT-P.{1..10}
+  artefacts:
+  byte-identical
+  (PT-P.11 is a
+  task definition;
+  it touches no
+  source file).
+- Build configs:
+  byte-identical.
+  ctest remains
+  7/7 OFF and
+  8/8 ON-audit-
+  host with no
+  rebuild needed.
+- All other docs:
+  PT-P.11 only
+  ADDS
+  `PATH_TRACER_POLISH_ENV_FALLBACK_TASK.md`;
+  no edits to
+  `PATH_TRACER_POLISH_PLAN.md`,
+  the five
+  earlier
+  PT-P.x task /
+  audit docs,
+  the TEX-P.x
+  arc, or the
+  CUDA-H.x arc.
+- The TEX-P.x
+  arc and the
+  PT-P.{1..10}
+  source
+  artefacts:
+  untouched.
+
+### Master rule compliance
+
+- **Build
+  incrementally /
+  every step
+  compilable**:
+  docs-only
+  slice; build
+  is trivially
+  preserved.
+- **Update
+  BUILD_PLAN**:
+  this entry,
+  per master
+  rule 8.
+
+### Verified at the build
+
+- `cmake --build
+  build` + `cmake
+  --build
+  build-ON` were
+  already green
+  at the end of
+  PT-P.10 and
+  remain green;
+  PT-P.11 changed
+  no
+  build-relevant
+  files. ctest
+  7/7 OFF and
+  8/8 ON re-
+  confirmed with
+  no work
+  needed.
+- The task doc's
+  source citations
+  (the verbatim
+  `environment_color`
+  / `environment_intensity`
+  block at
+  `PathTracer.h:60-67`,
+  the four-line
+  post-render
+  info log at
+  `src/main.cpp:2400-2411`,
+  the kernel-side
+  miss handler
+  in
+  `CudaPathTracer.cu`
+  at lines
+  144-184)
+  resolve to the
+  current source
+  byte-for-byte
+  post-PT-P.9.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
