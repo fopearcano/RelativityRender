@@ -22809,6 +22809,118 @@ not crash".**
   clean build; ctest 7/7
   green.
 
+## Post-Stage 21B — denoiser scaffold audit (docs only)
+
+**Scope of this slice (post-Stage
+21B.10, master order #24,
+"Denoising"): a documentation-
+only audit of the entire Stage
+21A planning arc (10 sub-stages)
++ Stage 21B scaffold arc (10
+sub-stages). Confirms the
+denoiser scaffold is in place
+(every SDK call wired except
+`optixDenoiserInvoke`), the
+class initializes without
+crashing (no-leak / no-crash
+invariants documented in Stage
+21B.10 verified by source
+inspection), no image
+processing happens yet, and no
+CPU rendering violations
+exist. NO source code modified.**
+
+### What ships
+
+- `docs/STAGE_21B_DENOISER_SCAFFOLD_AUDIT.md`:
+  audit document with one
+  section per prompt question
+  (six in total) plus a
+  summary table and a
+  forward-looking "what lands
+  next" section. Verdicts
+  split into "empirical"
+  (audit host ran the command
+  directly) and "structural"
+  (source / build config /
+  wiring inspected; runtime
+  verification deferred to a
+  CUDA + OptiX-SDK host).
+- This `BUILD_PLAN.md`
+  slice-closing entry.
+
+### Audit verdicts (one-line each)
+
+| # | Question                              | Verdict             |
+|---|---------------------------------------|---------------------|
+| 1 | Files exist?                          | YES (empirical)     |
+| 2 | Does OptiX OFF build work?            | YES (empirical)     |
+| 3 | Does OptiX ON build work?             | YES (structural)    |
+| 4 | Does denoiser init without crash?     | YES (invariants)    |
+| 5 | No image processing yet?              | YES (structural)    |
+| 6 | Any CPU rendering violations?         | ZERO (empirical)    |
+
+### Critical finding
+
+The Stage 21B scaffold is
+complete except for one
+deliberate gap:
+`optixDenoiserInvoke` is not
+yet wired (the user's task spec
+across Stage 21B.1..21B.10 was
+"no invoke yet"). Every other
+SDK call (`Create`,
+`Destroy`, `ComputeMemoryResources`,
+`Setup`) lives in its
+SDK_FOUND-gated branch with a
+matching audit-host fallback.
+The supporting machinery
+(`GpuBuffer<std::byte>` for
+state + scratch, doc-comment
+invariants for cleanup,
+inline `isAvailable()`) is
+also in place.
+
+The next implementation slice
+needs only to populate the
+`invoke()` body: build the
+`OptixImage2D` descriptor
+triplet, the
+`OptixDenoiserGuideLayer`,
+the layer descriptor, the
+`OptixDenoiserParams`, then
+call `optixDenoiserInvoke` +
+`cudaDeviceSynchronize`. No
+new private members are
+required.
+
+### Backward compatibility
+
+Documentation-only slice. No
+source / CMake / CLI changes.
+Every Stage 21B.10 behaviour
+is preserved byte-for-byte.
+
+### Verified at the build
+
+- `cmake -S . -B build_off
+  -DRR_ENABLE_CUDA=OFF
+  -DRR_ENABLE_OPTIX=OFF`
+  (audit host): clean build;
+  ctest 6/6 green.
+- `cmake -S . -B build_on_audit
+  -DRR_ENABLE_CUDA=OFF
+  -DRR_ENABLE_OPTIX=ON`
+  (audit host, no SDK):
+  clean build; ctest 7/7
+  green.
+- Audit-host CLI smokes:
+  `./bin/RelativityRender
+  --render-denoise` exits 1
+  with the documented
+  "requires both CUDA and
+  OptiX" error; no crash.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
