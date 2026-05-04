@@ -27388,6 +27388,169 @@ commands failed.
   CUDA_HOST_VERIFICATION_PLAN
   formalises.
 
+## CUDA-H.6 — AOV checks
+
+**Scope of this slice
+(post-CUDA-H.5 scene + texture
+checks): extend the runner's
+`base_commands()` catalogue
+with the AOV pass per
+`docs/CUDA_HOST_VERIFICATION_PLAN.md`
+§3.7. Single CLI invocation
+(`--render-aovs`) produces
+six PPMs in one launch; the
+existing CUDA-H.4 file-check
+infrastructure verifies all
+six via the entry's
+`expected_outputs` list (same
+multi-file pattern as
+CUDA-H.4's `render-relativistic`,
+which produces four PPMs in
+one invocation). NO renderer
+modification; NO new CLI
+surface; only the runner's
+catalogue grows.**
+
+### What ships
+
+- `tools/verify_cuda_host.py`
+  (`base_commands()` body
+  only):
+    - new `render-aovs`
+      command:
+      `--render-aovs`.
+      Expected outputs:
+        - `output/aov_beauty.ppm`
+        - `output/aov_normal.ppm`
+        - `output/aov_depth.ppm`
+        - `output/aov_albedo.ppm`
+        - `output/aov_doppler.ppm`
+        - `output/aov_searchlight.ppm`
+- `base_commands()` now
+  returns 9 entries
+  (CUDA-H.4 + H.5's 8 + H.6's
+  1); the runner's per-
+  command timeout +
+  file-check infrastructure
+  applies unchanged.
+- This `BUILD_PLAN.md`
+  slice-closing entry.
+
+### Smoke results (audit host, no CUDA)
+
+```
+$ python3 tools/verify_cuda_host.py --skip-build \
+      --build-dir build_off
+build   : skipped (--skip-build)
+binary  : build_off/bin/RelativityRender
+commands: 9
+  [OK]   device-info (0.00s)
+  [FAIL] render-gradient (0.00s)
+  [FAIL] render-camera-rays (0.00s)
+  [FAIL] render-sphere (0.00s)
+  [FAIL] render-relativistic (0.00s)
+  [FAIL] render-scene-spheres (0.00s)
+  [FAIL] render-texture-sample-test (0.00s)
+  [FAIL] render-textured-material (0.00s)
+  [FAIL] render-aovs (0.00s)
+totals: 8 fail, 1 pass
+
+device-info analysis:
+  cuda_device_present : False
+  no_critical_errors  : True
+exit=1
+```
+
+The new `render-aovs` row's
+stderr carries the documented
+"--render-aovs requires CUDA"
+error from `run_render_aovs`'s
+`#ifndef RR_HAS_CUDA` branch.
+All durations < 0.01s
+(early-exit on missing
+CUDA); no hangs; runner
+exits 1 because eight
+commands failed.
+
+### Master rule compliance
+
+- **No renderer
+  modification**: only the
+  `base_commands()` body
+  in
+  `tools/verify_cuda_host.py`
+  + this BUILD_PLAN entry
+  touched. No `src/`
+  modification; no new
+  CLI surface invented.
+- **Use existing CLI
+  only**: `--render-aovs`
+  was wired in Stage
+  14A.3 + the AOV
+  pipeline lands its six
+  PPMs at the documented
+  paths. The runner
+  treats the CLI as
+  black-box.
+- **Respect timeouts**:
+  the existing CUDA-H.3
+  per-command timeout
+  honours the new
+  command.
+- **No `--server`**:
+  the new command does
+  not invoke `--server`.
+
+### Backward compatibility
+
+- The runner's argparse
+  surface is byte-
+  identical with CUDA-H.5.
+- The CUDA-H.2 / H.3 /
+  H.4 / H.5 commands'
+  Command entries are
+  byte-identical with
+  their prior shape; only
+  one new entry appended.
+- `--skip-build`,
+  `--device-info`
+  parsing, build-phase
+  semantics: all
+  unchanged.
+- The existing OFF +
+  ON-audit-host ctest
+  baselines (6/6 + 7/7)
+  are unchanged because
+  no C++ source was
+  modified.
+
+### Verified at the build
+
+- `python3 -c "import ast;
+  ast.parse(open('tools/
+  verify_cuda_host.py').read())"`:
+  syntax check passes.
+- `--skip-build` smoke on
+  the OFF build (above)
+  exits 1 with 8 fail +
+  1 pass; no hangs.
+- The actual CUDA-host
+  smoke (9 commands all
+  pass with all PPMs > 0
+  bytes; six AOV PPMs
+  produced in one
+  `--render-aovs`
+  invocation) is
+  structurally in place
+  but cannot be
+  empirically verified on
+  this audit host (no
+  nvcc) — exactly the
+  runtime-deferred
+  posture the
+  CUDA_HOST_VERIFICATION_PLAN
+  formalises.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:

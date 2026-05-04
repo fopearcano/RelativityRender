@@ -277,8 +277,9 @@ def base_commands() -> list[Command]:
     CUDA-H.3 added the build phase + device-info analyzer
     around it. CUDA-H.4 added the four core CUDA render
     commands per ``docs/CUDA_HOST_VERIFICATION_PLAN.md`` §3.1
-    -- §3.4. CUDA-H.5 adds the scene-render + texture
-    commands per §3.5 -- §3.6:
+    -- §3.4. CUDA-H.5 added the scene-render + texture
+    commands per §3.5 -- §3.6. CUDA-H.6 adds the AOV pass
+    per §3.7:
 
     - ``--render-gradient``               -> ``output/gpu_gradient.ppm``
     - ``--render-rays``                   -> ``output/gpu_camera_rays.ppm``
@@ -293,12 +294,15 @@ def base_commands() -> list[Command]:
       clarity).
     - ``--render-texture-sample-test``    -> ``output/gpu_texture_sample_test.ppm``
     - ``--render-textured-material``      -> ``output/gpu_textured_material.ppm``
+    - ``--render-aovs``                   -> six PPMs in one
+      invocation (``output/aov_{beauty,normal,depth,albedo,
+      doppler,searchlight}.ppm``).
 
     Each entry carries the expected output paths in
     ``Command.expected_outputs``; the runner verifies file
     existence + ``size > 0`` after the command completes
     (CUDA-H.4 contract). Future CUDA-H.x slices add the
-    AOV / pathtrace commands.
+    pathtrace + OptiX commands.
     """
 
     return [
@@ -350,6 +354,18 @@ def base_commands() -> list[Command]:
             argv=["--render-textured-material"],
             expected_outputs=[
                 Path("output/gpu_textured_material.ppm"),
+            ],
+        ),
+        Command(
+            name="render-aovs",
+            argv=["--render-aovs"],
+            expected_outputs=[
+                Path("output/aov_beauty.ppm"),
+                Path("output/aov_normal.ppm"),
+                Path("output/aov_depth.ppm"),
+                Path("output/aov_albedo.ppm"),
+                Path("output/aov_doppler.ppm"),
+                Path("output/aov_searchlight.ppm"),
             ],
         ),
     ]
