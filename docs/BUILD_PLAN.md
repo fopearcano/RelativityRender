@@ -25049,6 +25049,252 @@ identical to the legacy one.**
   this audit host (no
   CUDA + no OptiX SDK).
 
+## Stage 21D.6 — denoiser test output
+
+**Scope of this slice (Stage 21D.6;
+master order #24, "Denoising"):
+add the
+`--render-optix-denoise` CLI
+surface that runs the new
+`OptixDenoiser::denoise()` API
+end-to-end against an existing
+noisy path-traced scene + AOV
+output. Builds the same demo
+scene as the legacy
+`--render-denoise` (4 diffuse
+spheres, no lights), runs
+`render_scene_with_aovs` to
+populate Beauty / Albedo /
+Normal device buffers, then
+drives the new
+`denoise_and_save_ppm` helper
+(Stage 21D.4 + 21D.5). Output:
+`output/denoised.ppm`. Per the
+user's "if no OptiX runtime is
+available, document as runtime
+deferred, not code failure"
+rule, the audit-host build
+exits 1 with the documented
+"requires CUDA + OptiX" error
+and the actual denoised image
+is deferred to a real CUDA +
+OptiX-SDK host run. NO server,
+NO C4D.**
+
+### What ships
+
+- `src/core/CommandLine.h`:
+  new `Action::RenderOptixDenoise`
+  enum entry with a doc-
+  comment block describing
+  the slice.
+- `src/core/CommandLine.cpp`:
+    - new `--render-optix-denoise`
+      parser branch (no scene
+      argument; mirrors the
+      `--render-denoise`
+      shape).
+    - added to the action-
+      mutex error message
+      (`"cannot combine
+      action flags (... /
+      --render-optix-denoise /
+      ...)"`).
+    - added to the action-
+      validation list (the
+      action is recognised
+      by the validator alongside
+      every other render
+      action).
+    - new help-text entry
+      describing the slice's
+      behaviour and runtime
+      requirements.
+- `src/main.cpp`:
+    - new `run_render_optix_denoise(cfg)`
+      dispatcher inserted
+      right after
+      `run_render_denoise`.
+      Builds the same demo
+      scene + uploads via
+      `GpuScene` + allocates
+      Beauty / Albedo /
+      Normal `GpuAOVBuffer`
+      instances + runs
+      `CudaRenderer::
+      render_scene_with_aovs`
+      + initialises
+      `OptixBackend` +
+      `OptixDenoiser` +
+      builds an
+      `OptixDenoiser::Inputs`
+      from the AOV device
+      pointers + calls
+      `denoise_and_save_ppm`.
+    - new dispatch case
+      `RenderOptixDenoise ->
+      run_render_optix_denoise`
+      in the action switch.
+    - audit-host fallback:
+      when `RR_HAS_CUDA` or
+      `RELATIVITYRENDER_ENABLE_OPTIX`
+      is undefined, the
+      dispatcher returns 1
+      with the documented
+      "requires CUDA + OptiX"
+      error.
+- This `BUILD_PLAN.md`
+  slice-closing entry.
+
+### Behaviour matrix
+
+| Build mode               | `--render-optix-denoise` outcome                 |
+|--------------------------|--------------------------------------------------|
+| OFF                      | exit 1; "requires CUDA + OptiX" error            |
+| ON, no SDK (audit host)  | exit 1; same error (audit-host fallback)         |
+| ON, CUDA + SDK present,  | runs end-to-end; `output/denoised.ppm` carries   |
+| denoise succeeds         | the OptiX-denoised radiance.                     |
+| ON, CUDA + SDK present,  | runs end-to-end; `output/denoised.ppm` carries   |
+| denoise fails            | the noisy Beauty AOV (Stage 21D.5 fallback);     |
+|                          | warning log records the cause; exit 0.           |
+
+### Master rule compliance
+
+- **CPU may download/save
+  only**: the new
+  dispatcher orchestrates
+  the GPU pipeline (AOV
+  render -> denoise ->
+  download -> save). No
+  per-pixel host work.
+- **Renderer not broken
+  by denoiser failure**:
+  Stage 21D.5's noisy-
+  Beauty fallback fires
+  inside `denoise_and_save_ppm`
+  on any denoiser-side
+  failure; the dispatcher
+  exits 0 whenever a file
+  was successfully saved
+  (denoised or noisy
+  fallback).
+- **No server, no C4D**:
+  the dispatcher is a
+  standalone CLI action;
+  no network, no DCC
+  integration.
+
+### What does NOT ship
+
+- No durable AOV
+  ownership for the OptiX
+  path's `render_aovs`
+  (post-Stage-20 audit Gap
+  A; would be required for
+  an `--render-optix-aovs
+  --denoise` modifier
+  flow).
+- No `--denoise` modifier
+  on the new
+  `--render-optix-denoise`
+  action (the default
+  IS the denoise; no
+  modifier needed for the
+  v1 minimal CLI).
+- No consumer migration:
+  the legacy
+  `--render-denoise` and
+  `--render-aovs --denoise`
+  paths still flow through
+  `denoise_aov_buffers_to_ppm`
+  (which uses the older
+  `invoke()` trio; that
+  path always falls into
+  the Stage 19C.3 noisy-
+  Beauty fallback because
+  `invoke()` is still the
+  Stage 21B.1 stub).
+  Migrating those paths
+  to use the new
+  `denoise()` API is a
+  future polish slice.
+
+### Backward compatibility
+
+- The new CLI surface is
+  purely additive. Every
+  existing
+  `--render-*` action's
+  parsing, dispatch, and
+  behaviour is byte-
+  identical with Stage
+  21D.5.
+- The class' public surface
+  is byte-identical (the
+  CLI surface change does
+  not touch `OptixDenoiser`
+  or any class declaration).
+- The CUDA renderer is
+  byte-identical (the slice
+  touches only
+  `src/core/CommandLine.{h,cpp}`
+  and `src/main.cpp`).
+
+### Verified at the build
+
+- `cmake -S . -B build_off
+  -DRR_ENABLE_CUDA=OFF
+  -DRR_ENABLE_OPTIX=OFF`
+  (audit host): clean build;
+  ctest 6/6 green.
+- `cmake -S . -B build_on_audit
+  -DRR_ENABLE_CUDA=OFF
+  -DRR_ENABLE_OPTIX=ON`
+  (audit host, no SDK):
+  clean build; ctest 7/7
+  green.
+- `./build_off/bin/RelativityRender
+  --render-optix-denoise`:
+  exits 1 with the
+  documented
+  "requires CUDA + OptiX"
+  error; no crash. Per
+  the user's "runtime
+  deferred, not code
+  failure" rule, this
+  is the expected audit-
+  host behaviour.
+- `./build_on_audit/bin/RelativityRender
+  --render-optix-denoise`:
+  same documented error;
+  no crash.
+- `./build_off/bin/RelativityRender
+  --render-optix-denoise
+  --render-denoise`:
+  parser rejects with
+  "cannot combine action
+  flags" error; the new
+  flag appears in the
+  validation list.
+- The SDK-found end-to-end
+  denoise path
+  (`render_scene_with_aovs`
+  -> `OptixDenoiser::denoise`
+  -> `denoise_and_save_ppm`
+  -> `output/denoised.ppm`)
+  is structurally in place
+  but cannot be
+  empirically verified on
+  this audit host (no CUDA
+  + no OptiX SDK).
+  Producing the actual
+  denoised PPM is deferred
+  to a CUDA + OptiX-SDK
+  host run — exactly the
+  "runtime deferred, not
+  code failure" carve-out
+  the user authorised.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:

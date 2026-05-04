@@ -398,6 +398,18 @@ public:
         // output/optix_aov_doppler.ppm,
         // output/optix_aov_searchlight.ppm.
         RenderOptixAovs,
+        // Stage 21D.6 first end-to-end run of the new
+        // OptixDenoiser::denoise(Inputs, Output) API. Builds
+        // the same demo scene as RenderDenoise (4 diffuse
+        // spheres, no lights), runs the AOV pipeline to
+        // populate Beauty / Albedo / Normal device buffers,
+        // then drives the new denoise_and_save_ppm helper.
+        // Output: output/denoised.ppm. Requires both CUDA
+        // and OptiX SDK at runtime; on hosts missing either
+        // the dispatcher exits 1 with the documented
+        // "requires" error per the audit-host fallback
+        // contract.
+        RenderOptixDenoise,
         RenderDenoise,
         // Stage 19E.2: smallest-meaningful-relativistic-render demo.
         // Single sphere + one diffuse material + one environment

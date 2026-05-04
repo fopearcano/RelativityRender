@@ -67,6 +67,7 @@ bool set_action(CommandLine::Action& current, CommandLine::Action target,
                 "--render-optix-shadow-test / "
                 "--render-optix-textured-material / "
                 "--render-optix-aovs / "
+                "--render-optix-denoise / "
                 "--render-denoise / "
                 "--render-demo)";
         return false;
@@ -387,6 +388,18 @@ CommandLine::ParseResult CommandLine::parse(int argc, char** argv) {
                 r.action = Action::Error;
                 return r;
             }
+        } else if (a == "--render-optix-denoise") {
+            // Stage 21D.6: end-to-end run of the new
+            // OptixDenoiser::denoise() API. Mirrors the
+            // --render-denoise shape: takes NO scene
+            // argument (the dispatcher builds the same
+            // 4-sphere demo scene inline) and writes
+            // output/denoised.ppm.
+            if (!set_action(r.action, Action::RenderOptixDenoise,
+                            r.error_message)) {
+                r.action = Action::Error;
+                return r;
+            }
         } else if (a == "--render-denoise") {
             if (!set_action(r.action, Action::RenderDenoise,
                             r.error_message)) {
@@ -492,6 +505,7 @@ CommandLine::ParseResult CommandLine::parse(int argc, char** argv) {
      || r.action == Action::RenderOptixShadowTest
      || r.action == Action::RenderOptixTexturedMaterial
      || r.action == Action::RenderOptixAovs
+     || r.action == Action::RenderOptixDenoise
      || r.action == Action::RenderDenoise) {
         if (auto err = r.config.validate(); !err.empty()) {
             r.action        = Action::Error;
@@ -809,6 +823,23 @@ std::string CommandLine::usage(std::string_view argv0) {
        << "                        output/optix_aov_doppler.ppm, "
                                   "output/optix_aov_searchlight.ppm.\n"
        << "                        Same OptiX requirements as above.\n"
+       << "  --render-optix-denoise\n"
+       << "                        Stage 21D.6 first end-to-end run of "
+                                  "the new OptixDenoiser::denoise()\n"
+       << "                        API. Builds the same 4-sphere demo "
+                                  "scene as --render-denoise, runs the\n"
+       << "                        AOV pipeline (Beauty / Albedo / "
+                                  "Normal), then drives the new\n"
+       << "                        denoise_and_save_ppm helper "
+                                  "(denoise -> download -> save). On\n"
+       << "                        denoiser failure the noisy Beauty "
+                                  "AOV is saved as a fallback per the\n"
+       << "                        Stage 21A.7 contract. Default output "
+                                  "output/denoised.ppm.\n"
+       << "                        Requires both -DRR_ENABLE_CUDA=ON "
+                                  "and -DRR_ENABLE_OPTIX=ON plus a host\n"
+       << "                        with the CUDA Toolkit + OptiX SDK "
+                                  "installed at runtime.\n"
        << "  --render-denoise      Stage 19B.3 OptiX denoiser end-to-end "
                                   "fixture. Builds a small\n"
        << "                        4-sphere demo scene + renders it via "
