@@ -26263,6 +26263,164 @@ cadence.
   established in prior
   Stage 21 slices.
 
+## CUDA-H.1 — CUDA-host verification plan (docs only)
+
+**Scope of this slice
+(post-OptiX-Gap-A-Step-1;
+runtime-verification gate
+documented across every prior
+Stage 13/14/15/19/20/21
+audit): create a single
+operator-facing document that
+enumerates the exact commands
+to run on a real CUDA +
+(optional) OptiX-SDK host to
+empirically verify every
+`--render-*` artifact this
+project produces. NO commands
+are run on the audit host;
+NO source code is modified;
+the deliverable is the
+`docs/CUDA_HOST_VERIFICATION_PLAN.md`
+document + this BUILD_PLAN
+slice-closing entry.**
+
+### What ships
+
+- `docs/CUDA_HOST_VERIFICATION_PLAN.md`:
+  six-section verification
+  plan covering:
+    - §0 host preconditions
+      (CUDA toolkit, optional
+      OptiX SDK, scene files,
+      `output/` writability).
+    - §1 build commands
+      (CUDA-only + CUDA +
+      OptiX, plus ctest).
+    - §2 `--device-info`
+      smoke (verifies CUDA
+      device enumeration +
+      OptiX availability
+      stanza).
+    - §3 CUDA render
+      commands (no server):
+      gradient, camera-rays,
+      sphere, relativistic-
+      sphere (4 beta
+      values), scene render
+      (test_spheres.rrscene),
+      texture outputs (2
+      commands), AOV outputs
+      (6 PPMs in one
+      invocation), pathtrace
+      (spp_1 + spp_16 in one
+      invocation).
+    - §4 OptiX render
+      commands (gated on
+      RR_ENABLE_OPTIX=ON +
+      SDK present):
+      pipeline-skeleton +
+      raygen, triangle +
+      relativity, mesh +
+      material + lighting,
+      textured material,
+      pathtrace, AOVs (6
+      PPMs), denoise (legacy
+      + new + end-to-end
+      `--render --denoise`).
+    - §5 aggregate PASS /
+      REPAIR criteria.
+    - §6 master-order
+      coverage matrix
+      mapping each
+      `--render-*` artifact
+      to the master order
+      item it verifies
+      (covers #6..#19
+      + #24; #20 deferred,
+      #21+ blocked).
+- This `BUILD_PLAN.md`
+  slice-closing entry.
+
+### What does NOT ship
+
+- No commands are run on
+  this audit host (the
+  audit host has no CUDA
+  toolkit and no OptiX
+  SDK; running the plan's
+  commands here would
+  reproduce the existing
+  audit-host fallback
+  errors documented in
+  prior audits).
+- No source code,
+  CMakeLists.txt, or CLI
+  surface changes.
+- No empirical
+  verification — the plan
+  is the spec the operator
+  follows on the right
+  hardware to produce the
+  empirical record.
+
+### Why this plan now
+
+The "runtime deferred, not
+code failure" gate has
+appeared in every audit from
+Stage 13B onward. Each
+audit's "Verified at the
+build" section has had to
+say the same thing: "the
+SDK-found path is
+structurally in place but
+cannot be empirically
+verified on this audit host".
+The plan consolidates the
+deferral list into a single
+operator-facing artifact so
+a future CUDA-host run can
+close the gate in one
+session rather than
+re-deriving the command list
+from each audit
+individually.
+
+The plan also formalises
+the PASS / REPAIR criteria
+so the operator can produce
+a single "verified end-to-
+end" record (or a single
+"failed at step X" record)
+that follow-up audits can
+cite without re-running
+every command.
+
+### Backward compatibility
+
+Documentation-only slice. No
+source / CMake / CLI
+changes. Every existing
+behaviour preserved
+byte-for-byte.
+
+### Verified at the build
+
+- No build verification
+  needed (no source
+  changes); the
+  post-OptiX-Gap-A-Step-1
+  baseline (OFF ctest 6/6
+  + ON-audit-host ctest
+  7/7, both green) is
+  unchanged.
+- The plan itself awaits
+  empirical verification
+  by a future CUDA-host
+  operator; that is the
+  point of the plan.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
