@@ -2,7 +2,7 @@
 
 Generator: `tools/verify_cuda_host.py` (CUDA-H.9)
 Spec: `docs/CUDA_HOST_VERIFICATION_PLAN.md`
-Tree state: `e3ed733`
+Tree state: `9218b18`
 
 ## Environment
 
