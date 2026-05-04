@@ -31602,6 +31602,239 @@ zero build effect.**
   / §4 / §5 / §7 of
   the audit doc.
 
+## PT-P.1 — path-tracer polish plan (docs only)
+
+**Scope of this slice
+(post-TEX-P.7 texture
+polish audit complete):
+identify safe path-
+tracer polish items.
+Mirrors the TEX-P.1 ->
+TEX-P.7 cadence
+applied to the
+texture system,
+opening a parallel
+arc for the path
+tracer at master
+order #16. Documentation
+only. NO source
+changes; NO CLI flags;
+NO kernel touches.**
+
+### What ships
+
+- `docs/PATH_TRACER_POLISH_PLAN.md`
+  (NEW). Six sections:
+    - **§1 Current
+      path-tracer
+      status.** Tabulates
+      the
+      `PathTraceConfig`
+      POD, the
+      `PathTracer::render`
+      host loop, the
+      per-sample
+      `k_pathtrace_sample`
+      kernel,
+      `AccumulationBuffer`
+      semantics
+      (including Stage
+      18A.4's first-
+      sample memcpy
+      fast path), the
+      OptiX-path
+      parity (Stages
+      20I / 20J), and
+      the four CLI
+      surfaces
+      (`--render-
+      pathtrace`,
+      `--render-optix-
+      pathtrace`,
+      `--render-rng-
+      test`,
+      `--render-
+      accumulation-
+      test`).
+    - **§2 Runtime-
+      deferred checks.**
+      Six artefacts
+      whose runtime
+      behaviour cannot
+      be verified on
+      the audit host
+      (the four
+      Stage 11 PPMs +
+      the two OptiX
+      pathtrace PPMs);
+      cross-references
+      `tools/verify_cuda_host.py`
+      and the existing
+      `CUDA_HOST_VERIFICATION_REPORT.md`.
+    - **§3 Known
+      limitations.**
+      Eight intentional-
+      and-documented
+      v1 limitations
+      (no NEE, diffuse
+      Lambert only,
+      single-mesh slot,
+      no spheres on
+      OptiX, no CUDA-
+      path relativistic
+      perception, no
+      texture filtering
+      beyond nearest,
+      no firefly clamp,
+      no Russian
+      roulette).
+      Explicitly OUT
+      of scope for
+      this polish arc.
+    - **§4 Small safe
+      polish candidates.**
+      Seven items
+      matching the
+      prompt's seven
+      bullets — RNG
+      stability,
+      accumulation
+      reset
+      correctness,
+      max-bounce
+      validation,
+      environment
+      fallback clarity,
+      emission
+      handling, sample
+      count
+      validation,
+      firefly clamp
+      placeholder. Each
+      carries a Status
+      / Polish item /
+      Cost / Risk
+      block; estimated
+      diffs range
+      ~5-25 source
+      lines per slice.
+    - **§5 Recommended
+      first polish
+      item.** §4.2 —
+      accumulation
+      reset
+      correctness.
+      Smallest viable
+      diff (~6 source
+      lines + ~15
+      test lines), no
+      kernel change,
+      byte-identical
+      rendered output,
+      tightens
+      `AccumulationBuffer`'s
+      host-side state
+      machine. The
+      "why not §4.1
+      first" + "why
+      not §4.7 first"
+      sub-sections
+      explain the
+      sequencing.
+    - **Closing
+      notes.**
+      Recommends
+      PT-P.2 as the
+      §4.2
+      implementation
+      slice and lists
+      the remaining
+      items
+      (§4.{3,6,4,5,1,7})
+      as follow-ups in
+      any order.
+- This `BUILD_PLAN.md`
+  slice-closing entry.
+
+### What does NOT change
+
+- Every path-tracer
+  source artefact:
+  byte-identical (the
+  plan touches no
+  `.cu`, `.cpp`,
+  `.h`, `.cuh` file).
+- Build configs:
+  byte-identical.
+  ctest remains 6/6
+  OFF and 7/7 ON-
+  audit-host with no
+  rebuild needed.
+- All other docs:
+  PT-P.1 only ADDS
+  `PATH_TRACER_POLISH_PLAN.md`;
+  no edits to any
+  existing doc.
+- The TEX-P.x polish
+  arc: untouched.
+  PT-P.x runs in
+  parallel.
+
+### Master rule compliance
+
+- **Build
+  incrementally /
+  every step
+  compilable**: docs-
+  only slice; build
+  is trivially
+  preserved.
+- **No CPU per-pixel
+  work**: §1 / §3 /
+  §4 of the plan
+  re-confirm the
+  Stage 11 audit's
+  zero-CPU-violation
+  finding for the
+  path tracer.
+- **Update
+  BUILD_PLAN**: this
+  entry, per master
+  rule 8.
+
+### Verified at the build
+
+- `cmake --build
+  build` + `cmake
+  --build build-ON`
+  were already green
+  at the end of
+  TEX-P.7 and remain
+  green; PT-P.1
+  changed no
+  build-relevant
+  files. ctest 6/6
+  OFF and 7/7 ON
+  re-confirmed with
+  no work needed.
+- The plan's
+  inventory was
+  cross-checked
+  against
+  `src/pathtracer/`,
+  `src/renderer/`,
+  `src/cuda/`,
+  `src/optix/`, and
+  `src/main.cpp`'s
+  `run_render_pathtrace`
+  via a read-only
+  source survey;
+  every section /
+  line reference
+  documented in the
+  plan resolves to
+  the cited file.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
