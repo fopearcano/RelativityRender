@@ -2677,26 +2677,318 @@ OptixRenderer::render_aovs(
     return R;
 }
 
-// OptiX Gap A Step 1: SDK_FOUND-side stub for
-// `render_aovs_retain`. The Step 2 slice will replace this
-// body with the actual launch + buffer retention; for now
-// the function reports the documented "not implemented"
-// state so the surface compiles cleanly without any
-// behavioural change to the existing pipeline.
+// OptiX Gap A Step 2: SDK_FOUND body for `render_aovs_retain`.
+// Mirrors the Stage 20N `render_aovs` body above
+// (duplicate-then-refactor path per
+// `docs/OPTIX_GAP_A_POLISH_PLAN.md` §4 Step 2; the existing
+// `render_aovs` stays byte-identical) with three substantive
+// differences:
+//
+// - Beauty / Albedo / Normal device buffers are allocated as
+//   `rr::gpu::GpuBuffer<float>` instead of raw `cudaMalloc`,
+//   so RAII transfers ownership into the AovRetainedBuffers
+//   result without an extra free. The other three AOVs
+//   (depth, doppler, searchlight) are not allocated; the
+//   matching launch-params pointers stay null and the OptiX
+//   programs short-circuit those writes per Stage 20N's
+//   null-pointer-skip design.
+// - No host-side download happens. The caller uses the
+//   returned device pointers directly (typically by feeding
+//   them to `OptixDenoiser::Inputs` / a future
+//   `--render-optix-aovs --denoise` consumer).
+// - The cleanup lambda frees only the temporary buffers
+//   (positions, indices, lights, framebuffer); the three
+//   retained AOV `GpuBuffer<float>` instances stay alive and
+//   travel out via the returned struct.
 OptixRenderer::AovRetainedBuffers
 OptixRenderer::render_aovs_retain(
-    const rr::scene::Scene&                  /*scene*/,
-    const std::vector<rr::lighting::Light>&  /*lights*/,
-    int                                       /*width*/,
-    int                                       /*height*/) noexcept {
-    AovRetainedBuffers r;
-    r.ok = false;
-    r.message =
-        "OptixRenderer::render_aovs_retain: not implemented in "
-        "OptiX Gap A Step 1 (types + declaration only); the "
-        "SDK_FOUND launch + buffer retention body lands in "
-        "Step 2 per docs/OPTIX_GAP_A_POLISH_PLAN.md.";
-    return r;
+    const rr::scene::Scene& scene,
+    const std::vector<rr::lighting::Light>& lights,
+    int width, int height) noexcept {
+    AovRetainedBuffers R;
+    R.width  = width;
+    R.height = height;
+
+    if (width <= 0 || height <= 0) {
+        R.message =
+            "OptixRenderer::render_aovs_retain: invalid dimensions";
+        return R;
+    }
+
+    const rr::geometry::Mesh* picked = nullptr;
+    for (const auto& sm : scene.meshes) {
+        if (!sm.object.visible) continue;
+        if (sm.geometry.empty()) continue;
+        picked = &sm.geometry;
+        break;
+    }
+    if (picked == nullptr) {
+        R.message =
+            "render_aovs_retain: scene contains no visible "
+            "non-empty mesh.";
+        return R;
+    }
+
+    rr::material::MaterialParams material_params{};
+    if (picked->material_id >= 0
+     && static_cast<std::size_t>(picked->material_id)
+            < scene.materials.size()) {
+        material_params = scene.materials[picked->material_id].params;
+    }
+
+    OptixBackend backend;
+    if (!backend.initialize()) {
+        R.message = "render_aovs_retain: backend init failed: "
+                  + backend.last_error();
+        return R;
+    }
+
+    OptixPipeline pipeline;
+    {
+        OptixPipelineOptions opts;
+        opts.path_tracer = false;
+        const auto pr = pipeline.create(backend, opts);
+        if (!pr.ok) {
+            R.message = "render_aovs_retain: " + pr.error_message;
+            return R;
+        }
+    }
+    {
+        const auto pr = pipeline.set_hit_material(
+            material_params, /*shading_mode=*/2);
+        if (!pr.ok) {
+            R.message = "render_aovs_retain: " + pr.error_message;
+            return R;
+        }
+    }
+
+    std::vector<float> flat_positions;
+    flat_positions.reserve(picked->vertices.size() * 3u);
+    for (const auto& v : picked->vertices) {
+        flat_positions.push_back(v.position.x);
+        flat_positions.push_back(v.position.y);
+        flat_positions.push_back(v.position.z);
+    }
+
+    const std::size_t n_vertices  = picked->vertices.size();
+    const std::size_t n_triangles = picked->triangles.size();
+
+    std::vector<void*> device_allocs;
+    auto cleanup = [&]() {
+        for (auto* p : device_allocs) {
+            if (p) ::cudaFree(p);
+        }
+        device_allocs.clear();
+    };
+
+    void* d_positions = nullptr;
+    {
+        const std::size_t bytes = flat_positions.size() * sizeof(float);
+        if (::cudaMalloc(&d_positions, bytes) != cudaSuccess) {
+            R.message =
+                "render_aovs_retain: cudaMalloc(positions) failed";
+            return R;
+        }
+        device_allocs.push_back(d_positions);
+        if (::cudaMemcpy(d_positions, flat_positions.data(), bytes,
+                         cudaMemcpyHostToDevice) != cudaSuccess) {
+            cleanup();
+            R.message =
+                "render_aovs_retain: cudaMemcpy(positions) failed";
+            return R;
+        }
+    }
+    void* d_indices = nullptr;
+    {
+        const std::size_t bytes =
+            n_triangles * sizeof(rr::geometry::Triangle);
+        if (::cudaMalloc(&d_indices, bytes) != cudaSuccess) {
+            cleanup();
+            R.message =
+                "render_aovs_retain: cudaMalloc(indices) failed";
+            return R;
+        }
+        device_allocs.push_back(d_indices);
+        if (::cudaMemcpy(d_indices, picked->triangles.data(), bytes,
+                         cudaMemcpyHostToDevice) != cudaSuccess) {
+            cleanup();
+            R.message =
+                "render_aovs_retain: cudaMemcpy(indices) failed";
+            return R;
+        }
+    }
+
+    BuildGasResult gas_result;
+    {
+        MeshGasInput gi{};
+        gi.device_vertices = d_positions;
+        gi.vertex_count    = n_vertices;
+        gi.device_indices  = d_indices;
+        gi.triangle_count  = n_triangles;
+        gas_result = build_mesh_gas(backend, gi);
+        if (!gas_result.ok) {
+            cleanup();
+            R.message =
+                "render_aovs_retain: " + gas_result.error_message;
+            return R;
+        }
+    }
+
+    void* d_lights = nullptr;
+    const int light_count = static_cast<int>(lights.size());
+    if (light_count > 0) {
+        const std::size_t bytes =
+            lights.size() * sizeof(rr::lighting::Light);
+        if (::cudaMalloc(&d_lights, bytes) != cudaSuccess) {
+            cleanup();
+            R.message =
+                "render_aovs_retain: cudaMalloc(lights) failed";
+            return R;
+        }
+        device_allocs.push_back(d_lights);
+        if (::cudaMemcpy(d_lights, lights.data(), bytes,
+                         cudaMemcpyHostToDevice) != cudaSuccess) {
+            cleanup();
+            R.message =
+                "render_aovs_retain: cudaMemcpy(lights) failed";
+            return R;
+        }
+    }
+
+    rr::camera::Camera camera = scene.camera;
+    camera.set_aspect(static_cast<float>(width)
+                    / static_cast<float>(height));
+    const rr::camera::GpuCamera gpu_cam = camera.to_gpu();
+
+    const std::size_t pixel_count =
+        static_cast<std::size_t>(width)
+      * static_cast<std::size_t>(height);
+    const std::size_t framebuffer_floats = pixel_count * 4u;
+    const std::size_t aov3_floats        = pixel_count * 3u;
+
+    // Framebuffer is temporary (the OptiX raygen writes it
+    // but the caller does not need it; freed via cleanup).
+    void* d_framebuffer = nullptr;
+    if (::cudaMalloc(&d_framebuffer,
+                     framebuffer_floats * sizeof(float))
+            != cudaSuccess) {
+        cleanup();
+        R.message =
+            "render_aovs_retain: cudaMalloc(framebuffer) failed";
+        return R;
+    }
+    device_allocs.push_back(d_framebuffer);
+
+    // Retained AOV buffers via GpuBuffer<float>. RAII
+    // transfers ownership into the result struct on success;
+    // on failure the .reset() calls release whatever was
+    // already allocated so the returned R reports ok=false
+    // with empty buffers.
+    if (!R.beauty_device.allocate(aov3_floats)
+     || !R.albedo_device.allocate(aov3_floats)
+     || !R.normal_device.allocate(aov3_floats)) {
+        R.beauty_device.reset();
+        R.albedo_device.reset();
+        R.normal_device.reset();
+        cleanup();
+        R.message =
+            "render_aovs_retain: GpuBuffer.allocate(retained "
+            "AOV buffer) failed";
+        return R;
+    }
+
+    // Mirror Stage 14A.3 / Stage 20N: non-zero observer beta
+    // exists for parity with `render_aovs` (the OptiX programs
+    // honour the Doppler / searchlight scaling regardless of
+    // whether the corresponding AOV pointers are null). The
+    // resulting Beauty buffer carries the same colour-shifted
+    // radiance as `render_aovs` produces.
+    rr::relativity::Observer aov_observer;
+    aov_observer.velocity = rr::math::Vec3{0.0f, 0.0f, -0.5f};
+
+    OptixLaunchParams params{};
+    params.framebuffer  = static_cast<float*>(d_framebuffer);
+    params.width        = width;
+    params.height       = height;
+    params.camera       = gpu_cam;
+    params.scene_handle = gas_result.gas.handle();
+    params.observer     = aov_observer;
+    params.lights       =
+        static_cast<const rr::lighting::Light*>(d_lights);
+    params.light_count  = light_count;
+    params.aov_beauty   = R.beauty_device.device_ptr();
+    params.aov_normal   = R.normal_device.device_ptr();
+    params.aov_albedo   = R.albedo_device.device_ptr();
+    // depth / doppler_factor / searchlight_factor stay null;
+    // the OptiX programs short-circuit those writes per the
+    // null-pointer-skip design of Stage 20N.
+
+    {
+        const ::cudaError_t e = ::cudaMemcpy(
+            pipeline.launch_params_device_ptr(),
+            &params, sizeof(params), cudaMemcpyHostToDevice);
+        if (e != cudaSuccess) {
+            R.beauty_device.reset();
+            R.albedo_device.reset();
+            R.normal_device.reset();
+            cleanup();
+            R.message = std::string("render_aovs_retain: ")
+                      + "cudaMemcpy(launch params) failed: "
+                      + ::cudaGetErrorString(e);
+            return R;
+        }
+    }
+
+    rr::gpu::GpuTimer timer;
+    {
+        const auto* sbt =
+            static_cast<const ::OptixShaderBindingTable*>(
+                pipeline.shader_binding_table());
+        timer.start();
+        const ::OptixResult res = ::optixLaunch(
+            static_cast<::OptixPipeline>(
+                pipeline.pipeline_handle()),
+            /*stream=*/0,
+            reinterpret_cast<::CUdeviceptr>(
+                pipeline.launch_params_device_ptr()),
+            pipeline.launch_params_size_bytes(),
+            sbt,
+            static_cast<unsigned>(width),
+            static_cast<unsigned>(height),
+            /*depth=*/1u);
+        timer.stop();
+        if (res != OPTIX_SUCCESS) {
+            R.beauty_device.reset();
+            R.albedo_device.reset();
+            R.normal_device.reset();
+            cleanup();
+            R.message =
+                std::string("render_aovs_retain: optixLaunch "
+                            "failed: ")
+              + ::optixGetErrorName(res);
+            return R;
+        }
+    }
+    if (::cudaDeviceSynchronize() != cudaSuccess) {
+        R.beauty_device.reset();
+        R.albedo_device.reset();
+        R.normal_device.reset();
+        cleanup();
+        R.message =
+            "render_aovs_retain: cudaDeviceSynchronize failed";
+        return R;
+    }
+    R.gpu_time_ms = timer.elapsed_ms();
+
+    // Free temporary device allocs (positions, indices,
+    // lights, framebuffer). The three retained AOV
+    // GpuBuffers stay alive and travel out via R; their
+    // device memory is freed only when the caller's R
+    // goes out of scope.
+    cleanup();
+    R.ok      = true;
+    R.message = "OptiX retained-AOVs render complete.";
+    return R;
 }
 
 #else   // RELATIVITYRENDER_OPTIX_SDK_FOUND

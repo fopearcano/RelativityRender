@@ -28477,6 +28477,260 @@ byte-for-byte.
   CUDA-H.9 deterministic
   runner.
 
+## OptiX Gap A polish — Step 2 (SDK_FOUND body)
+
+**Scope of this slice
+(post-CUDA-H.9 + post-GAP-A2.x
+task docs): implement the
+SDK_FOUND body of
+`OptixRenderer::render_aovs_retain`
+per the four-doc Step-2 task
+spec
+(`docs/OPTIX_GAP_A_STEP_2_TASK.md`,
+sections 1-9). Step 1 had
+shipped the public surface
+(struct + declaration +
+audit-host / OFF / SDK_FOUND
+stubs); Step 2 replaces the
+SDK_FOUND stub body with the
+real launch + buffer-retention
+sequence, mirroring the
+existing Stage 20N
+`render_aovs` body
+(duplicate-then-refactor path
+per
+`docs/OPTIX_GAP_A_POLISH_PLAN.md`
+§4 Step 2; the existing
+`render_aovs` stays byte-
+identical).**
+
+### What ships
+
+- `src/optix/OptixRenderer.cpp`:
+  the Step-1 SDK_FOUND stub
+  of `render_aovs_retain`
+  (~12 lines) is replaced
+  with the full launch +
+  buffer-retention body
+  (~290 lines). Three
+  substantive differences
+  from the reference Stage
+  20N `render_aovs` body
+  this mirrors:
+    1. **Beauty / Albedo /
+       Normal device buffers
+       use
+       `rr::gpu::GpuBuffer<float>`
+       instead of raw
+       `cudaMalloc`**: RAII
+       transfers ownership
+       into the result struct
+       on success; on failure
+       paths the function
+       calls
+       `R.{beauty,albedo,
+       normal}_device.reset()`
+       so the returned R
+       reports `ok=false` with
+       empty buffers.
+    2. **The other three AOVs
+       (depth, doppler,
+       searchlight) are NOT
+       allocated**: the
+       matching launch-params
+       pointers stay null and
+       the OptiX programs
+       short-circuit those
+       writes per Stage 20N's
+       null-pointer-skip
+       design. The denoiser
+       only consumes Beauty /
+       Albedo / Normal so the
+       skipped AOVs save a
+       small amount of device
+       memory and one
+       roundtrip per pass.
+    3. **No host-side
+       download**: the caller
+       uses the returned
+       device pointers
+       directly (typically
+       feeding them to
+       `OptixDenoiser::Inputs`
+       in a future Step 3
+       consumer). The cleanup
+       lambda still frees
+       temporary allocations
+       (positions, indices,
+       lights, framebuffer);
+       only the three retained
+       AOV `GpuBuffer<float>`
+       instances stay alive
+       and travel out via the
+       returned struct.
+- `docs/BUILD_PLAN.md`:
+  this slice-closing entry
+  (per master rule 8).
+
+### What does NOT change
+
+- `src/optix/OptixRenderer.h`:
+  byte-identical with Step 1
+  (the struct + declaration
+  shipped there).
+- `OptixRenderer::render_aovs`
+  (Stage 20N): byte-identical.
+  No extraction; no shared
+  helper; no sneaky behaviour
+  edits.
+- `OptixRenderer::AovResult`
+  (Stage 20N) +
+  `OptixRenderer::AovRetainedBuffers`
+  (Step 1): both struct
+  layouts byte-identical.
+- The audit-host stub +
+  OFF stub of
+  `render_aovs_retain`:
+  byte-identical (still
+  return ok=false with the
+  documented "requires
+  OptiX SDK" / "OptiX
+  disabled at build time"
+  errors).
+- Every CUDA-side source
+  file
+  (`src/cuda/`,
+  `src/renderer/`,
+  `src/pathtracer/`):
+  byte-identical (proved
+  by the slice's
+  diff-stats).
+- Every other `src/optix/`
+  file: byte-identical.
+- `src/main.cpp`,
+  `src/core/CommandLine.{h,cpp}`,
+  `tests/`,
+  `CMakeLists.txt`: all
+  byte-identical (no
+  consumer / CLI / test /
+  build wiring in Step 2;
+  Step 3 will add the
+  consumer; Step 4 will
+  add the CLI surface).
+
+### Behaviour matrix
+
+| Build mode               | `render_aovs_retain(...)` returns                |
+|--------------------------|--------------------------------------------------|
+| OFF                      | `.cpp` not compiled                              |
+| ON, no SDK (audit host)  | `ok=false`; "requires OptiX SDK" stub fires      |
+|                          | (Step 1 stub preserved)                          |
+| ON, SDK found, success   | `ok=true`; `message ==` "OptiX retained-AOVs     |
+|                          | render complete."; the three GpuBuffer<float>   |
+|                          | members carry `width * height * 3` floats        |
+|                          | each; `gpu_time_ms` reports the optixLaunch      |
+|                          | wall time.                                       |
+| ON, SDK found, failure   | `ok=false`; `message ==` documented per-step     |
+|                          | error string; the three GpuBuffer<float>         |
+|                          | members are reset to empty before return.        |
+
+### Master rule compliance
+
+- **Touch only listed
+  files**: only
+  `src/optix/OptixRenderer.cpp`
+  + this BUILD_PLAN entry
+  per the
+  `docs/OPTIX_GAP_A_STEP_2_TASK.md`
+  §3 spec.
+- **Do not refactor**: the
+  existing `render_aovs`
+  is byte-identical (no
+  extraction or shared
+  helper); the
+  duplicate-then-refactor
+  path was chosen
+  deliberately per the
+  plan's permission and
+  to minimize the diff.
+- **Do not add features**:
+  the only new function
+  body is the one Step 1
+  declared. No CLI, no
+  consumer, no tests.
+- **Keep CUDA path
+  working**: zero bytes
+  changed in `src/cuda/`,
+  `src/renderer/`,
+  `src/pathtracer/`. Same
+  hard rule that has held
+  since Stage 17A.1.
+- **Keep OptiX OFF build
+  working**: ctest 6/6
+  green on the audit host
+  with `RR_ENABLE_OPTIX=OFF`.
+- **Must compile**:
+  ON-audit-host build
+  (no SDK) is ctest 7/7
+  green.
+
+### Verified at the build
+
+- `cmake -S . -B build_off
+  -DRR_ENABLE_CUDA=OFF
+  -DRR_ENABLE_OPTIX=OFF`
+  (audit host): clean
+  build; ctest 6/6 green.
+- `cmake -S . -B build_on_audit
+  -DRR_ENABLE_CUDA=OFF
+  -DRR_ENABLE_OPTIX=ON`
+  (audit host, no SDK):
+  clean build; ctest 7/7
+  green. The new SDK_FOUND
+  body is gated by
+  `RELATIVITYRENDER_OPTIX_SDK_FOUND`
+  (compiled out on this
+  host); the audit-host
+  stub still fires.
+- `python3 tools/verify_cuda_host.py
+  --skip-build --build-dir
+  build_off`: produces a
+  byte-identical
+  `docs/CUDA_HOST_VERIFICATION_REPORT.md`
+  except for the
+  `Tree state` hash line
+  (the only "varying-but-
+  stable identifier" the
+  CUDA-H.9 spec
+  acknowledges). All
+  per-test rows + counts +
+  overall verdict
+  unchanged. Confirms
+  Step 2 changes NO
+  observable runner state
+  on the audit host -
+  exactly what
+  "non-regression" requires
+  per
+  `OPTIX_GAP_A_STEP_2_TASK.md`
+  §8.
+- The SDK-found new body
+  (calls `optixLaunch`
+  with three retained
+  `GpuBuffer<float>` AOV
+  pointers wired into the
+  launch params) is
+  structurally in place
+  but cannot be
+  empirically verified on
+  this audit host (no
+  CUDA + no OptiX SDK).
+  Producing the actual
+  retained AOV device
+  buffers is deferred to
+  a CUDA + OptiX-SDK host
+  run.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
