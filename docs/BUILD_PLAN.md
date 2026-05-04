@@ -36277,6 +36277,412 @@ date.**
   on a CUDA
   host run.
 
+## PT-P.13 — environment fallback clarity audit (docs only)
+
+**Scope of this slice
+(post-PT-P.12
+implementation
+complete): write the
+sub-arc-end audit at
+`docs/PATH_TRACER_POLISH_ENV_FALLBACK_AUDIT.md`
+that walks the seven
+prompt checks and
+records each as PASS
+/ REPAIR / BLOCKED.
+Mirrors PT-P.4
+(step-1 audit),
+PT-P.7 (path-tracer
+arc audit), and
+PT-P.10 (sample-
+count audit) shapes
+applied to the
+PT-P.{11,12}
+sub-arc.
+Documentation only;
+zero source changes;
+zero build effect.**
+
+### What ships
+
+- `docs/PATH_TRACER_POLISH_ENV_FALLBACK_AUDIT.md`
+  (NEW). Seven
+  sections + a
+  verdict + a
+  recommended next
+  step:
+    - **§1
+      Environment
+      fallback
+      behavior is
+      documented.**
+      PASS. Three
+      sub-sections
+      enumerate the
+      three artist-
+      meaningful
+      cases the
+      doc-comment
+      now covers:
+      §1.1 the
+      defaults
+      (cool sky
+      tint), §1.2
+      the new
+      `environment_intensity
+      == 0.0f`
+      paragraph
+      (PT-P.12
+      addition;
+      includes the
+      defensive
+      "no
+      `env_intensity
+      > 0`
+      short-circuit"
+      sentence to
+      prevent a
+      future kernel
+      maintainer
+      from breaking
+      the contract),
+      §1.3 custom
+      colour /
+      non-zero
+      intensity
+      (implicit in
+      the existing
+      multiplication
+      semantics).
+    - **§2
+      Dispatcher /
+      log clarity
+      exists.**
+      PASS. The
+      info-log
+      block grew
+      from 4 to 5
+      lines per
+      spp run.
+      §2.1 confirms
+      the
+      `[x, y, z]`-
+      style format
+      mirrors
+      `run_scene_info`'s
+      existing
+      `fmt_vec3`
+      lambda and
+      the 18-column
+      label width
+      matches
+      neighbouring
+      lines. §2.2
+      confirms the
+      line emits
+      unconditionally
+      (no special-
+      casing for
+      defaults; the
+      operator
+      wants to see
+      the default
+      firing).
+      §2.3 records
+      the OptiX
+      dispatcher
+      is byte-
+      identical
+      (out of
+      scope per
+      the PT-P.11
+      task §6).
+    - **§3 No
+      kernel
+      behavior
+      changed.**
+      PASS. Cites
+      `git diff
+      fa41e58~1..fa41e58
+      -- src/cuda/
+      ... |
+      wc -l` = 0
+      bytes. The
+      kernel-side
+      miss handler
+      at
+      `CudaPathTracer.cu:144-184`
+      is byte-
+      identical;
+      no
+      `if
+      (env_intensity
+      > 0)`
+      short-circuit
+      was
+      introduced.
+    - **§4 Build
+      status.**
+      PASS. Both
+      audit-host
+      configs
+      green
+      (build 7/7,
+      build-ON
+      8/8; counts
+      unchanged
+      from PT-P.6
+      / PT-P.9).
+    - **§5 CPU
+      path-tracing
+      violations.**
+      ZERO. Re-runs
+      the Stage-11
+      audit's
+      three grep
+      sweeps and
+      records the
+      same baseline
+      matches.
+      §5.4 notes
+      that the new
+      info-log
+      line + the
+      `fmt_vec3`
+      lambda iterate
+      ONCE per spp
+      run (sample-
+      frame
+      granularity),
+      not per
+      pixel.
+    - **§6 Runtime-
+      deferred
+      status.**
+      BLOCKED on
+      the same six
+      PPMs every
+      prior path-
+      tracer audit
+      enumerated.
+      §6.1 records
+      one
+      additional
+      PT-P.12-
+      specific
+      operator
+      check on a
+      CUDA host
+      (visually
+      confirm the
+      five-line
+      post-render
+      block emits
+      the
+      `environment      :`
+      line). §6.2
+      confirms
+      `tools/verify_cuda_host.py`
+      diff = 0
+      bytes.
+    - **§7
+      Verdict.**
+      Overall
+      PASS. Six-
+      row summary
+      table (PASS,
+      PASS, PASS,
+      PASS, PASS,
+      BLOCKED).
+      Zero REPAIR
+      items.
+      Notes that
+      the
+      PT-P.{11..13}
+      sub-arc is
+      the smallest
+      in the
+      PT-P.x
+      cadence to
+      date (23
+      added lines
+      vs the
+      25-line
+      cap; no
+      flagged
+      deviation).
+    - **Recommended
+      next step.**
+      Three
+      remaining
+      plan items
+      sequenced:
+      §4.5 emission
+      handling
+      (first non-
+      host-only
+      PT-P.x slice),
+      §4.1 RNG
+      stability,
+      §4.7 firefly
+      clamp
+      placeholder.
+      Alternatives:
+      trigger the
+      CUDA-host
+      verification
+      run, or
+      pivot to a
+      different
+      polish arc /
+      master-order
+      item.
+- This `BUILD_PLAN.md`
+  slice-closing entry.
+
+### What does NOT change
+
+- All
+  PT-P.{1..12}
+  artefacts:
+  byte-identical
+  (PT-P.13 is a
+  documentation
+  audit; it
+  touches no
+  `.cu`, `.cpp`,
+  `.h`, `.cuh`,
+  `.rrscene`,
+  `cmake`, or
+  `tests/` file).
+- Build configs:
+  byte-identical.
+  ctest remains
+  7/7 OFF and
+  8/8 ON-audit-
+  host with no
+  rebuild needed.
+- All other
+  docs: PT-P.13
+  only ADDS
+  `PATH_TRACER_POLISH_ENV_FALLBACK_AUDIT.md`;
+  no edits to
+  `PATH_TRACER_POLISH_PLAN.md`,
+  `PATH_TRACER_POLISH_ENV_FALLBACK_TASK.md`,
+  the six
+  earlier
+  PT-P.x task /
+  audit docs,
+  the TEX-P.x
+  arc, or the
+  CUDA-H.x arc.
+
+### Master rule compliance
+
+- **Build
+  incrementally /
+  every step
+  compilable**:
+  docs-only slice;
+  build is
+  trivially
+  preserved.
+- **No CPU
+  per-pixel work**:
+  §5 of the
+  audit doc
+  actively
+  re-verifies
+  this rule is
+  upheld
+  post-PT-P.12.
+- **Update
+  BUILD_PLAN**:
+  this entry,
+  per master
+  rule 8.
+
+### Verified at the build
+
+- `cmake --build
+  build` (audit
+  host,
+  RR_ENABLE_CUDA=OFF,
+  RR_ENABLE_OPTIX=OFF):
+  re-built
+  cleanly during
+  the audit;
+  ctest 7/7
+  green.
+- `cmake --build
+  build-ON`
+  (audit host,
+  RR_ENABLE_CUDA=OFF,
+  RR_ENABLE_OPTIX=ON):
+  re-built
+  cleanly; ctest
+  8/8 green.
+- `./build/bin/RelativityRender
+  --render-pathtrace
+  scenes/test_full_scene.rrscene`:
+  emits the
+  documented
+  "requires
+  CUDA"
+  audit-host
+  fallback;
+  byte-identical
+  with the
+  pre-PT-P.12
+  baseline. The
+  new info-log
+  line is
+  unreachable
+  on this
+  branch (the
+  dispatcher
+  returns
+  early).
+- `./build/bin/RelativityRender
+  --scene-info
+  scenes/test_textured_material.rrscene`:
+  emits the
+  TEX-P.6
+  fixture's
+  expected log
+  sequence (1
+  Case 1 info
+  + 2 Case 3
+  warnings;
+  `fixups
+  applied: 2`).
+  Confirms
+  zero PT-P.13
+  ripple onto
+  the texture
+  validator.
+- `git diff
+  fa41e58~1..fa41e58
+  -- src/cuda/
+  src/optix/
+  src/renderer/
+  src/pathtracer/PathTracer.cpp
+  src/core/
+  src/io/
+  src/scene/
+  src/material/
+  src/lighting/
+  scenes/ tests/
+  tools/verify_cuda_host.py
+  CMakeLists.txt
+  | wc -l` =>
+  0 bytes
+  (no-touch
+  invariants
+  verified for
+  the
+  PT-P.{11,12}
+  sub-arc).
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
