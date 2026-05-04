@@ -1,5 +1,6 @@
 #include "pathtracer/PathTracer.h"
 
+#include "core/Logger.h"
 #include "gpu/GpuBuffer.h"
 #include "gpu/GpuScene.h"
 #include "gpu/GpuTiming.h"
@@ -31,6 +32,24 @@ PathTraceResult PathTracer::render(const rr::gpu::GpuScene& scene,
     if (cfg.max_bounces < 0) {
         result.message = "max_bounces must be >= 0";
         return result;
+    }
+    // PT-P.6 soft upper cap. Callers asking for absurdly long
+    // paths get a single warning + clamp to `kMaxBouncesCap`
+    // rather than a kernel that does not crash but takes many
+    // times longer than the default. Mirrors the warn-and-clamp
+    // shape `validate_material_texture_ids` (TEX-P.2 / TEX-P.5)
+    // uses. Behaviour for `max_bounces in [0, kMaxBouncesCap]`
+    // is byte-identical with the pre-PT-P.6 path tracer.
+    int effective_max_bounces = cfg.max_bounces;
+    if (effective_max_bounces > kMaxBouncesCap) {
+        rr::core::Logger::warning(
+            "PathTraceConfig::max_bounces=" +
+            std::to_string(cfg.max_bounces) +
+            " exceeds the recommended cap of " +
+            std::to_string(kMaxBouncesCap) +
+            "; clamping. Set explicitly via the dispatcher CLI "
+            "when long bounce paths are needed.");
+        effective_max_bounces = kMaxBouncesCap;
     }
     if (cfg.environment_intensity < 0.0f) {
         result.message = "environment_intensity must be >= 0";
@@ -79,7 +98,7 @@ PathTraceResult PathTracer::render(const rr::gpu::GpuScene& scene,
         if (!rr::cuda::launch_pathtrace_sample(
                 sample.device_ptr(), width, height,
                 scene,
-                cfg.max_bounces,
+                effective_max_bounces,
                 cfg.seed,
                 static_cast<unsigned int>(s),
                 cfg.environment_color,

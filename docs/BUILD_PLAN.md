@@ -33164,6 +33164,422 @@ touches.**
   current source
   byte-for-byte.
 
+## PT-P.6 — max-bounce validation (impl)
+
+**Scope of this slice
+(post-PT-P.5 task
+definition complete):
+ship the second
+`PATH_TRACER_POLISH_PLAN.md`
+implementation slice
+exactly as specified
+by
+`docs/PATH_TRACER_POLISH_STEP_2_TASK.md`
+— a soft upper cap on
+`PathTraceConfig::max_bounces`
+with a
+`Logger::warning` +
+clamp shape
+mirroring TEX-P.2 /
+TEX-P.5's
+`validate_material_texture_ids`.
+NO kernel touches; NO
+new CLI flags;
+byte-identical for
+every caller passing
+`max_bounces in [0,
+kMaxBouncesCap]`.**
+
+### What ships
+
+- `src/pathtracer/PathTracer.h`
+  (modified):
+    - **New
+      `inline constexpr
+      int
+      kMaxBouncesCap =
+      32`** above the
+      existing
+      `PathTraceConfig`
+      declaration.
+      Doc-comment
+      describes the
+      cap as a
+      SUGGESTION (32
+      deeper bounces
+      than the default
+      4 already produce
+      a substantially
+      deeper
+      integration; the
+      cap is not a hard
+      ABI limit) and
+      that the value
+      lives in the
+      header so
+      dispatchers /
+      future UI surfaces
+      can reuse it
+      when validating
+      user input.
+      References the
+      OptiX backend's
+      analogous
+      `OPTIX_PIPELINE_MAX_TRACE_DEPTH`
+      constraint
+      surface as the
+      design precedent.
+- `src/pathtracer/PathTracer.cpp`
+  (modified):
+    - **New `#include
+      "core/Logger.h"`**
+      added next to the
+      existing
+      `gpu/GpuBuffer.h`
+      / `gpu/GpuScene.h`
+      includes.
+    - **PT-P.6 warn-
+      and-clamp branch**
+      inserted
+      immediately AFTER
+      the existing
+      `cfg.max_bounces
+      < 0` check and
+      BEFORE the
+      `cfg.environment_intensity
+      < 0.0f` check.
+      Shape:
+        - Initialise
+          `int
+          effective_max_bounces
+          = cfg.max_bounces;`.
+        - When
+          `effective_max_bounces
+          > kMaxBouncesCap`,
+          emit a single
+          `Logger::warning`
+          line naming the
+          authored value,
+          the cap, and
+          the rationale
+          ("clamping. Set
+          explicitly via
+          the dispatcher
+          CLI when long
+          bounce paths
+          are needed.").
+          Then assign
+          `effective_max_bounces
+          = kMaxBouncesCap;`.
+        - The original
+          `cfg.max_bounces`
+          field is
+          PRESERVED (not
+          mutated); the
+          clamped local
+          shadows it for
+          the launcher.
+    - **Use-site
+      replacement** at
+      the
+      `cuda::launch_pathtrace_sample`
+      call: the
+      `cfg.max_bounces`
+      argument becomes
+      `effective_max_bounces`.
+      All other
+      `cfg.*` reads in
+      the function are
+      untouched (seed,
+      environment_color,
+      environment_intensity).
+- This `BUILD_PLAN.md`
+  slice-closing entry.
+
+### What does NOT change
+
+- `src/cuda/` — zero
+  bytes changed.
+- `src/optix/` — zero
+  bytes changed.
+- `src/renderer/` —
+  zero bytes changed.
+- `src/main.cpp` —
+  zero bytes changed.
+- `src/core/CommandLine.{h,cpp}`
+  — zero bytes
+  changed.
+- `src/io/` — zero
+  bytes changed.
+- All `*.rrscene`
+  files under
+  `scenes/` — zero
+  bytes changed.
+- All `tests/*.cpp`
+  files — zero bytes
+  changed (the slice
+  ships no new test
+  per the task §1's
+  "no new test
+  required" guidance;
+  the polish is
+  verifiable by code
+  inspection).
+- `tools/verify_cuda_host.py`
+  — zero bytes
+  changed.
+- `PathTraceConfig`
+  struct fields:
+  byte-identical (no
+  new fields, no
+  default changes).
+  Only the new
+  `kMaxBouncesCap`
+  free constant is
+  added.
+- All TEX-P.x +
+  PT-P.{1..5}
+  artefacts:
+  byte-identical.
+
+### Diff size deviation note
+
+The PT-P.5 task's §4.3
+"source-diff size
+cap" set
+`PathTracer.cpp` at
+<= 12 added /
+<= 2 deleted. This
+slice ships 20 added
+/ 1 deleted. The
+deviation is entirely
+doc-comment text +
+the multi-line
+`Logger::warning`
+string concatenation:
+the PT-P.6 doc-comment
+block above the
+warn-and-clamp is 7
+lines, the
+`Logger::warning`
+call body is 7 lines
+(broken across lines
+for the long warning
+text), the LOGIC is
+exactly 5 lines (1
+init, 1 branch, 1
+clamp assignment, 2
+braces) + 1 line for
+the include + 1 line
+for the use-site
+replacement. Per the
+PT-P.3 precedent
+("Anything larger
+should be flagged in
+the slice's
+BUILD_PLAN entry as
+a deviation from the
+plan"), this entry
+is the flag.
+Trimming the
+doc-comment would
+defeat the polish's
+explanatory purpose;
+collapsing the
+warning string would
+fail line-length
+limits.
+
+The `PathTracer.h`
+side ships 11 added
+/ 0 deleted. The
+PT-P.5 task's
+§4.3 cap on the .h
+was "<= 6 added if
+the implementer
+hosts
+`kMaxBouncesCap`
+here". The 11 added
+breaks down as 8
+doc-comment lines +
+1 line for the
+`inline constexpr`
+declaration + 2
+blank lines for
+spacing; the
+deviation is again
+entirely
+doc-comment text
+that documents the
+cap's intent +
+references the
+OptiX precedent.
+
+### Behaviour matrix
+
+| Scenario                                                | Pre-PT-P.6                                    | PT-P.6                                        |
+|---------------------------------------------------------|-----------------------------------------------|-----------------------------------------------|
+| Default `max_bounces = 4` (every dispatcher today)      | 4-bounce path-trace; no warn line             | byte-identical (4 <= 32)                       |
+| Caller passes `max_bounces = 16` or 32                  | 16- or 32-bounce path-trace                   | byte-identical                                 |
+| Caller passes `max_bounces = 33` or 100                 | 33- or 100-bounce kernel; no warn             | one warn line; clamped to 32; PPM = the       |
+|                                                         |                                               | scene's 32-bounce result. The clamp does NOT  |
+|                                                         |                                               | mutate `cfg`; only the launcher arg.          |
+| Caller passes `max_bounces = 0` or 1                    | rejected (0) or 1-bounce primary-only         | byte-identical (within bounds)                 |
+| Caller passes `max_bounces = -1`                        | rejected with documented diagnostic           | byte-identical (rejection runs first)         |
+| `--render-pathtrace <scene>` on audit host              | "requires CUDA" fallback, exit 1              | byte-identical fallback                       |
+| `--render-pathtrace` on CUDA host                       | spp=1 + spp=16 PPMs                           | byte-identical (every dispatcher uses default |
+|                                                         |                                               | 4 bounces; clamp never fires)                  |
+| `--render-optix-pathtrace` on SDK host                  | OptiX path-trace PPMs                         | byte-identical (OptiX dispatcher reads its    |
+|                                                         |                                               | own max-bounces; PT-P.6 host clamp does not   |
+|                                                         |                                               | reach the OptiX raygen)                        |
+
+### Master rule compliance
+
+- **Build
+  incrementally /
+  every step
+  compilable**:
+  both audit-host
+  configs green
+  (build 7/7 OFF,
+  build-ON 8/8).
+- **No CPU per-pixel
+  work**: the polish
+  touches host-side
+  validation only;
+  zero changes in
+  the per-pixel
+  computation
+  graph.
+- **Modify maximum
+  2 source files**:
+  the slice
+  modifies exactly
+  two files
+  (`src/pathtracer/PathTracer.h`
+  + `.cpp`); the
+  PT-P.5 task §2
+  explicitly
+  authorises this
+  pair.
+- **No broad
+  refactor / no
+  new major
+  systems / no C4D
+  / no server / no
+  UI / no node
+  editor**: zero
+  matches.
+- **Must compile**:
+  both audit-host
+  configs clean.
+- **Update
+  BUILD_PLAN**:
+  this entry, per
+  master rule 8.
+
+### Verified at the build
+
+- `cmake --build
+  build` (audit
+  host,
+  RR_ENABLE_CUDA=OFF,
+  RR_ENABLE_OPTIX=OFF):
+  clean build,
+  zero new
+  warnings; ctest
+  7/7 green
+  (count
+  unchanged from
+  PT-P.3 — no new
+  ctest binary).
+- `cmake --build
+  build-ON` (audit
+  host,
+  RR_ENABLE_CUDA=OFF,
+  RR_ENABLE_OPTIX=ON):
+  clean build,
+  zero new
+  warnings; ctest
+  8/8 green.
+- `./build-ON/bin/RelativityRender
+  --render-pathtrace
+  scenes/test_full_scene.rrscene`
+  on the audit
+  host: emits the
+  documented
+  "requires
+  CUDA" fallback
+  byte-identically
+  with the
+  pre-PT-P.6
+  baseline. The
+  scene's default
+  `max_bounces`
+  (4) is well
+  within the cap;
+  no
+  `Logger::warning`
+  fires from the
+  PT-P.6 clamp.
+  Exit 1; no
+  kernel crash.
+- `./build/bin/RelativityRender
+  --scene-info
+  scenes/test_textured_material.rrscene`:
+  emits the
+  TEX-P.6
+  fixture's
+  expected log
+  sequence (one
+  Case 1 info +
+  two Case 3
+  warnings;
+  `fixups
+  applied: 2`).
+  Confirms zero
+  PT-P.6 ripple
+  onto the
+  texture
+  validator.
+- `git diff -- src/cuda/
+  src/optix/
+  src/renderer/
+  src/main.cpp
+  src/core/
+  src/io/
+  scenes/ tests/
+  tools/verify_cuda_host.py
+  | wc -l` => 0
+  bytes (no-touch
+  invariants
+  verified).
+- The clamp's
+  warning + clamp
+  paths are
+  reachable by
+  constructing a
+  `PathTraceConfig
+  cfg{};
+  cfg.max_bounces
+  = 100;` and
+  calling
+  `render(...)`;
+  not exercised
+  here to avoid
+  modifying the
+  existing
+  dispatcher's
+  authored
+  bounce count.
+  A future test
+  (or a new CLI
+  modifier) can
+  exercise the
+  warning line
+  end-to-end on a
+  CUDA host.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:

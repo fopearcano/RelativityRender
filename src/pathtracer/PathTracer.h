@@ -12,6 +12,17 @@ namespace rr::gpu { class GpuScene; }
 
 namespace rr::pathtracer {
 
+// PT-P.6 soft cap on `PathTraceConfig::max_bounces`. Callers
+// asking for a longer path get a single `Logger::warning` line
+// from `PathTracer::render` and their bounce count clamped down
+// to this value. The cap is a SUGGESTION (32 deeper bounces
+// than the default 4 already produce a substantially deeper
+// integration); it is not a hard ABI limit. The value lives in
+// the header so dispatchers / future UI surfaces can reuse it
+// when validating user input. Mirrors the OptiX backend's own
+// `OPTIX_PIPELINE_MAX_TRACE_DEPTH` constraint surface.
+inline constexpr int kMaxBouncesCap = 32;
+
 // Configuration for one path-trace render. All fields have sensible
 // defaults so callers can default-construct and only override what
 // they need; the path tracer is "minimal" by design (master rule
