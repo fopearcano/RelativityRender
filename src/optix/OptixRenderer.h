@@ -1,6 +1,7 @@
 #pragma once
 
 #include "image/Image.h"
+#include "gpu/GpuBuffer.h"  // OptiX Gap A Step 1: GpuBuffer<float> for retained AOV device buffers
 
 #include <string>
 #include <vector>
@@ -391,6 +392,71 @@ public:
     //
     // Same audit-host fallback semantics as render_test.
     [[nodiscard]] static AovResult render_aovs(
+        const rr::scene::Scene& scene,
+        const std::vector<rr::lighting::Light>& lights,
+        int width, int height) noexcept;
+
+    // OptiX Gap A Step 1: durable AOV buffer ownership for
+    // the OptiX path. See `docs/OPTIX_GAP_A_POLISH_PLAN.md`
+    // for the full motivation; the short version: the
+    // existing `render_aovs(...)` allocates AOV device
+    // buffers internally, downloads to host Images, and
+    // frees the device buffers before returning. The
+    // OptiX denoiser (Stage 21D) needs Beauty / Albedo /
+    // Normal **device pointers** alive across an
+    // `optixDenoiserInvoke` call; this entry returns
+    // those three buffers via `rr::gpu::GpuBuffer<float>`
+    // RAII handles so the caller controls lifetime.
+    //
+    // Behaviour:
+    // - Same first-non-empty-mesh selection + GAS-build +
+    //   direct-lighting closest-hit as `render_aovs`.
+    // - Allocates Beauty / Albedo / Normal device buffers
+    //   ONLY (depth / doppler / searchlight are skipped;
+    //   the OptiX programs null-check before writing AOVs
+    //   so the launch produces only the three the
+    //   denoiser consumes).
+    // - Does NOT download to host Images. Caller can
+    //   download from `result.beauty_device.device_ptr()`
+    //   etc. if a host-side copy is needed.
+    // - Returns ownership of the three `GpuBuffer<float>`
+    //   instances inside `AovRetainedBuffers`. The
+    //   buffers stay alive until the result struct goes
+    //   out of scope, at which point `GpuBuffer`'s
+    //   destructor calls `cudaFree`.
+    //
+    // Caller protocol for the denoiser:
+    //   auto r = OptixRenderer::render_aovs_retain(...);
+    //   if (!r.ok) { ...handle... }
+    //   OptixDenoiser::Inputs inputs;
+    //   inputs.beauty_device = r.beauty_device.device_ptr();
+    //   inputs.albedo_device = r.albedo_device.device_ptr();
+    //   inputs.normal_device = r.normal_device.device_ptr();
+    //   inputs.width  = r.width;
+    //   inputs.height = r.height;
+    //   inputs.beauty_components = 3;
+    //   denoiser.denoise(inputs, output);  // r still owns the buffers
+    //   // r goes out of scope here -> buffers freed.
+    //
+    // Step 1 (this slice) ships the type + declaration +
+    // audit-host / OFF / SDK_FOUND stubs ONLY. The actual
+    // SDK-found body (the launch + buffer retention)
+    // lands in Step 2 per `OPTIX_GAP_A_POLISH_PLAN.md`.
+    // Until Step 2, this method always returns
+    // `ok = false` with the documented "not implemented
+    // in OptiX Gap A Step 1" message.
+    struct AovRetainedBuffers {
+        bool                       ok = false;
+        std::string                message;
+        rr::gpu::GpuBuffer<float>  beauty_device;
+        rr::gpu::GpuBuffer<float>  albedo_device;
+        rr::gpu::GpuBuffer<float>  normal_device;
+        int                        width  = 0;
+        int                        height = 0;
+        float                      gpu_time_ms = 0.0f;
+    };
+
+    [[nodiscard]] static AovRetainedBuffers render_aovs_retain(
         const rr::scene::Scene& scene,
         const std::vector<rr::lighting::Light>& lights,
         int width, int height) noexcept;

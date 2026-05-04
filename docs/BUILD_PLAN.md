@@ -26066,6 +26066,203 @@ is preserved byte-for-byte.
   audit-host fallback
   errors; no crashes.
 
+## OptiX Gap A polish — Step 1 (types + declaration)
+
+**Scope of this slice (master order
+#17, OptiX upgrade-path polish;
+post-Stage-21 capstone audit
+recommendation): Step 1 of the
+OptiX Gap A polish plan
+documented in
+`docs/OPTIX_GAP_A_POLISH_PLAN.md`.
+Adds the public type +
+declaration that Step 2 will
+fill in. Per the plan: this
+slice ships the new
+`OptixRenderer::AovRetainedBuffers`
+POD + `render_aovs_retain(...)`
+function declaration only; the
+SDK_FOUND launch + buffer
+retention body is intentionally
+deferred to Step 2 so this
+slice's blast radius stays
+minimal. NO CLI surface; NO
+consumer wiring; NO behavioural
+change to any existing entry.**
+
+### What ships
+
+- `docs/OPTIX_GAP_A_POLISH_PLAN.md`:
+  new plan document with the
+  five sections the user
+  requested (gap definition,
+  files involved, why it
+  blocks later stages,
+  minimal implementation
+  steps, PASS / REPAIR
+  criteria).
+- `src/optix/OptixRenderer.h`:
+    - new `#include
+      "gpu/GpuBuffer.h"` for
+      the `GpuBuffer<float>`
+      type used by the new
+      struct.
+    - new public POD
+      `AovRetainedBuffers`
+      with three
+      `rr::gpu::GpuBuffer<float>`
+      members
+      (`beauty_device`,
+      `albedo_device`,
+      `normal_device`),
+      framebuffer dimensions
+      (`width`, `height`),
+      and standard status
+      fields (`ok`,
+      `message`,
+      `gpu_time_ms`).
+    - new public method
+      declaration
+      `[[nodiscard]] static
+      AovRetainedBuffers
+      render_aovs_retain(
+      scene, lights, w,
+      h) noexcept`. Doc-
+      comment block (~40
+      lines) explains the
+      caller protocol for
+      the denoiser, the
+      lifetime contract,
+      and the Step 1 vs
+      Step 2 division.
+- `src/optix/OptixRenderer.cpp`:
+    - new SDK_FOUND stub:
+      returns `ok=false` with
+      `"...not implemented in
+      OptiX Gap A Step 1
+      (types + declaration
+      only); the SDK_FOUND
+      launch + buffer
+      retention body lands
+      in Step 2 per
+      docs/OPTIX_GAP_A_POLISH
+      _PLAN.md"`.
+    - new audit-host + OFF
+      stub: returns
+      `ok=false` with the
+      standard documented
+      "requires OptiX SDK"
+      error, matching every
+      other rr_optix
+      audit-host fallback's
+      shape.
+- This `BUILD_PLAN.md`
+  slice-closing entry.
+
+### Why types-and-declaration first
+
+The full SDK_FOUND body of
+`render_aovs_retain` shares
+substantial logic with the
+existing
+`OptixRenderer::render_aovs`
+(scene setup, GAS build,
+launch params, optixLaunch -
+~300 lines of overlapping
+work). Step 2 will either
+duplicate-then-refactor or
+extract a shared private
+helper; both options keep
+the existing `render_aovs`
+byte-identical for backward
+compat. Splitting Step 1
+(types + declaration) from
+Step 2 (body) keeps each
+slice's diff small and
+reviewable, matching the
+project's established slice
+cadence.
+
+### Behaviour matrix
+
+| Build mode               | `render_aovs_retain(...)` returns                   |
+|--------------------------|-----------------------------------------------------|
+| OFF                      | `.cpp` not compiled                                 |
+| ON, no SDK (audit host)  | `ok=false`; "requires OptiX SDK" stub               |
+| ON, SDK found            | `ok=false`; "not implemented in OptiX Gap A Step 1" |
+|                          | until Step 2 lands the SDK_FOUND body               |
+
+### What does NOT ship
+
+- No SDK_FOUND launch body
+  (Step 2 territory).
+- No consumer / dispatcher
+  wiring (Step 3 territory).
+- No CLI surface (Step 4
+  territory).
+- No empirical CUDA-host
+  verification (Step 5
+  territory).
+- No change to the existing
+  `render_aovs` /
+  `--render-optix-aovs` /
+  `--render-optix-denoise` /
+  `--render-denoise` paths.
+
+### Backward compatibility
+
+- `OptixRenderer::AovResult`
+  + `render_aovs(...)` are
+  byte-identical with
+  Stage 20N.
+- The CUDA renderer is
+  byte-identical (the slice
+  touches only
+  `src/optix/OptixRenderer.{h,cpp}`).
+- Every existing CLI surface
+  is unchanged.
+
+### Verified at the build
+
+- `cmake -S . -B build_off
+  -DRR_ENABLE_CUDA=OFF
+  -DRR_ENABLE_OPTIX=OFF`
+  (audit host): clean
+  build; ctest 6/6 green.
+- `cmake -S . -B build_on_audit
+  -DRR_ENABLE_CUDA=OFF
+  -DRR_ENABLE_OPTIX=ON`
+  (audit host, no SDK):
+  clean build; ctest 7/7
+  green. The new SDK_FOUND
+  stub is gated by the
+  existing
+  `RELATIVITYRENDER_OPTIX_SDK_FOUND`
+  branch (compiled out on
+  this host); the audit-
+  host stub returns the
+  documented "requires
+  OptiX SDK" error.
+- The SDK-found
+  `render_aovs_retain` stub
+  is structurally in place
+  (the new declaration
+  matches the audit-host
+  stub's shape) but its
+  Step 2 body cannot be
+  empirically verified on
+  this audit host (no
+  CUDA + no OptiX SDK).
+  Producing the actual
+  retained device buffers
+  is deferred to a CUDA +
+  OptiX-SDK host run —
+  exactly the
+  "runtime deferred, not
+  code failure" carve-out
+  established in prior
+  Stage 21 slices.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:

@@ -2677,6 +2677,28 @@ OptixRenderer::render_aovs(
     return R;
 }
 
+// OptiX Gap A Step 1: SDK_FOUND-side stub for
+// `render_aovs_retain`. The Step 2 slice will replace this
+// body with the actual launch + buffer retention; for now
+// the function reports the documented "not implemented"
+// state so the surface compiles cleanly without any
+// behavioural change to the existing pipeline.
+OptixRenderer::AovRetainedBuffers
+OptixRenderer::render_aovs_retain(
+    const rr::scene::Scene&                  /*scene*/,
+    const std::vector<rr::lighting::Light>&  /*lights*/,
+    int                                       /*width*/,
+    int                                       /*height*/) noexcept {
+    AovRetainedBuffers r;
+    r.ok = false;
+    r.message =
+        "OptixRenderer::render_aovs_retain: not implemented in "
+        "OptiX Gap A Step 1 (types + declaration only); the "
+        "SDK_FOUND launch + buffer retention body lands in "
+        "Step 2 per docs/OPTIX_GAP_A_POLISH_PLAN.md.";
+    return r;
+}
+
 #else   // RELATIVITYRENDER_OPTIX_SDK_FOUND
 
 OptixRenderer::Result
@@ -2833,6 +2855,25 @@ OptixRenderer::render_aovs(
     r.message =
         "OptixRenderer::render_aovs requires the OptiX SDK; "
         "rebuild with -DRR_ENABLE_OPTIX=ON and pass "
+        "-DOPTIX_ROOT=/path/to/optix-sdk so <optix.h> is "
+        "available. The CUDA path is unaffected.";
+    return r;
+}
+
+// OptiX Gap A Step 1: audit-host + OFF stub for
+// `render_aovs_retain`. Same documented "requires SDK"
+// shape as every other rr_optix audit-host fallback.
+OptixRenderer::AovRetainedBuffers
+OptixRenderer::render_aovs_retain(
+    const rr::scene::Scene&                  /*scene*/,
+    const std::vector<rr::lighting::Light>&  /*lights*/,
+    int                                       /*width*/,
+    int                                       /*height*/) noexcept {
+    AovRetainedBuffers r;
+    r.ok = false;
+    r.message =
+        "OptixRenderer::render_aovs_retain requires the OptiX "
+        "SDK; rebuild with -DRR_ENABLE_OPTIX=ON and pass "
         "-DOPTIX_ROOT=/path/to/optix-sdk so <optix.h> is "
         "available. The CUDA path is unaffected.";
     return r;
