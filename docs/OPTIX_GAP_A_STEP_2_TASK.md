@@ -137,3 +137,133 @@ CLI behaviour is unchanged" + "Existing
 unchanged" + "CUDA renderer is byte-identical" +
 "OFF + ON-audit-host builds remain ctest 6/6 +
 7/7 green".
+
+---
+
+## 6. PASS criteria — observable outputs
+
+`render_aovs_retain` does NOT write any PPM file
+(by design — the whole point is to keep the device
+buffers alive for a downstream consumer). Step 2's
+observable outputs are the function's RETURN VALUE +
+its STDERR LOG, both of which match the established
+rr_optix pattern:
+
+| Build mode               | Expected return + log line                     |
+|--------------------------|------------------------------------------------|
+| OFF                      | `.cpp` not compiled; symbol unreachable        |
+| ON, no SDK (audit host)  | `ok=false`; `message ==` documented "requires  |
+|                          | OptiX SDK; rebuild with -DRR_ENABLE_OPTIX=ON   |
+|                          | and pass -DOPTIX_ROOT=..." (Step 1 stub        |
+|                          | preserved). No `[OptiX:*]` log line; the       |
+|                          | caller surfaces `last_error`.                  |
+| ON, SDK found, success   | `ok=true`; `message ==` "OptiX retained-AOVs   |
+|                          | render complete." (or equivalently formatted   |
+|                          | success line). `width / height` match the      |
+|                          | inputs; `beauty_device / albedo_device /       |
+|                          | normal_device` are non-empty `GpuBuffer<float>`|
+|                          | instances of `width * height * 3` floats each. |
+|                          | `gpu_time_ms > 0`. Stderr carries the standard |
+|                          | `[OptiX:INFO] OptixRenderer::render_aovs_retain|
+|                          | complete: ...` line matching the existing      |
+|                          | `render_aovs` log shape.                       |
+| ON, SDK found, failure   | `ok=false`; `message ==` documented per-step   |
+|                          | error string from the matching launch / GAS /  |
+|                          | upload path (verbatim with the existing        |
+|                          | `render_aovs` error wording where applicable). |
+|                          | Stderr carries an `[OptiX:ERROR] ...` line.    |
+
+The function never throws (`noexcept`-equivalent
+contract from the existing `render_aovs`); every
+failure path is reflected in `ok=false` with a
+populated `message`. No PPM, no PNG, no log file
+output to disk.
+
+## 7. PASS criteria — build requirements
+
+| CMake configuration             | Expected build state                       |
+|---------------------------------|--------------------------------------------|
+| `RR_ENABLE_OPTIX=OFF` (default) | `rr_optix` not built per Stage 12B.3;      |
+|                                 | the audited `.cpp` is not compiled. ctest  |
+|                                 | 6/6 green (audit-host baseline).           |
+| `RR_ENABLE_OPTIX=ON`,           | `rr_optix` built; SDK_FOUND undefined;     |
+| no SDK on disk                  | the audit-host stub of `render_aovs_retain`|
+| (audit-host fallback)           | is the only branch compiled. ctest 7/7    |
+|                                 | green (the +1 over OFF is `optix_tests`).  |
+| `RR_ENABLE_OPTIX=ON` +          | `rr_optix` built; SDK_FOUND defined; the   |
+| `OPTIX_ROOT=/path` (real        | new SDK_FOUND body of `render_aovs_retain` |
+| CUDA + OptiX-SDK host)          | is compiled. Build expected to succeed     |
+|                                 | with 0 errors. ctest expected to be 7/7    |
+|                                 | green; runtime verification of the new     |
+|                                 | body is empirical only on this host        |
+|                                 | (not the audit host).                      |
+
+The audit host (no `nvcc`, no `optix.h`) verifies
+the first two rows empirically; the third row is
+runtime-deferred per the established
+`docs/CUDA_HOST_VERIFICATION_PLAN.md` posture.
+
+## 8. PASS criteria — non-regression (CUDA path unchanged)
+
+Step 2 must NOT regress any pre-existing CLI
+surface or kernel output. The smallest sufficient
+proof set:
+
+- `git diff <pre-Step-2>..<post-Step-2> --stat --
+  src/cuda/ src/renderer/ src/pathtracer/`:
+  must report ZERO bytes changed. The Stage 17-21
+  rule that the CUDA path stays byte-identical
+  across every OptiX / denoiser slice continues
+  to hold.
+- `git diff <pre-Step-2>..<post-Step-2> --stat --
+  src/scene/ src/io/ src/camera/ src/material/
+  src/lighting/ src/relativity/ src/geometry/`:
+  must also report ZERO bytes changed. Step 2 is
+  an `OptixRenderer.cpp`-internal change; the
+  data layer cannot be touched.
+- The audit host's OFF build remains ctest 6/6
+  green. The audit host's ON-audit-host build
+  remains ctest 7/7 green. Both must produce
+  byte-identical test binaries pre- vs post-
+  Step 2 (verified by re-running the tests; no
+  test source is touched).
+- `--render-optix-aovs` invocation on a CUDA +
+  OptiX-SDK host produces the same six PPMs
+  (`output/optix_aov_{beauty,normal,depth,albedo,
+  doppler,searchlight}.ppm`) byte-identical to
+  the pre-Step-2 baseline (or, if a future polish
+  refactors `render_aovs` internals via the
+  refactor-then-share path, the LOGICAL output
+  is identical even if some implementation
+  detail moves). Empirical verification deferred
+  to a CUDA + OptiX-SDK host run.
+- `--render-optix-test`, `--render-optix-triangle`,
+  `--render-optix-relativity`,
+  `--render-optix-raygen`,
+  `--render-optix-mesh-scene`,
+  `--render-optix-material-scene`,
+  `--render-optix-pathtrace`,
+  `--render-optix-direct-lighting`,
+  `--render-optix-shadow-test`,
+  `--render-optix-textured-material`,
+  `--render-optix-denoise`: every one of these
+  CLI surfaces must continue to behave
+  byte-identically with its pre-Step-2 baseline
+  (deferred to a CUDA + OptiX-SDK host's
+  empirical verification; structural verification
+  via the existing audit-host fallback already
+  holds).
+- The CUDA-H.x verification runner produces a
+  byte-identical `docs/CUDA_HOST_VERIFICATION_REPORT.md`
+  pre- vs post-Step-2 on the audit host (the
+  runner is deterministic; per-test status only
+  changes when the binary's CLI behaviour
+  changes, which Step 2 does not do).
+
+A REPAIR is required when ANY of the above checks
+fails. The Step-2 implementer must run the
+audit-host smokes (OFF + ON-audit-host builds,
+both ctest passes, plus a single CUDA-H.9 runner
+invocation to confirm the report bytes are
+unchanged) before committing.
+
