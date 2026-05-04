@@ -30372,6 +30372,278 @@ the kernel.**
   guarantees this slice
   is shipping.
 
+## TEX-P.4 — UV policy spec
+
+**Scope of this slice
+(post-TEX-P.3 GPU
+sampler safety
+complete): commit the
+renderer to a single
+v1 UV addressing
+policy (clamp-to-edge)
+across both backends,
+and capture the
+public-facing
+texture-system
+contract in a single
+normative spec at
+`docs/TEXTURE_SYSTEM.md`.
+The implementation
+already implements
+clamp-to-edge through
+the shared
+`rr::cuda::sampleTextureNearest`
+helper (Stage 13B.2);
+TEX-P.4 only formalises
+the choice + writes the
+spec doc + adds a
+sampler-header pointer
+to the spec. No new CLI
+flag, no new wrap-mode
+enum, no per-texture
+metadata. Wrap-mode
+authoring + bilinear /
+trilinear filtering +
+mipmaps are deferred to
+future slices and
+listed in the spec's
+"Future work" section
+so the deferral is
+visible.**
+
+### What ships
+
+- `docs/TEXTURE_SYSTEM.md`
+  (NEW, normative): the
+  public-facing texture-
+  system contract.
+  Sections:
+    - **§1 Chosen UV
+      policy: clamp-to-
+      edge.** Specifies
+      the four-step
+      sampling pipeline
+      (NaN -> 0; clamp;
+      quantise; texel-
+      space clamp), the
+      top-left UV origin
+      convention, and
+      the rationale for
+      clamp-over-wrap (no
+      extra per-texture
+      metadata; matches
+      `GL_CLAMP_TO_EDGE`
+      and the existing
+      Stage 13B.2 code).
+      Calls out that the
+      single
+      `rr::cuda::sampleTextureNearest`
+      helper is the sole
+      enforcement point;
+      both backends
+      inherit the policy
+      by inlining the
+      same `RR_HD`
+      function.
+    - **§2 Invalid
+      texture fallback.**
+      Six-row table of
+      defended classes
+      (null pointer / non-
+      positive width /
+      non-positive height
+      / NaN UV / +/-inf UV
+      / unknown format
+      byte) and what each
+      class returns.
+      Documents
+      `kInvalidTextureFallback`
+      (TEX-P.3 named
+      magenta constant),
+      the kernel call-
+      site gate that
+      substitutes
+      `params.baseColor`
+      in correctly-
+      authored scenes,
+      and the host-side
+      `validate_material_texture_ids`
+      validator (TEX-P.2)
+      as defence in
+      depth.
+    - **§3 Format
+      dispatch and texel
+      layout.** Stride
+      table for `Rgba8`
+      and `Rgba32F`,
+      alpha-drop
+      rationale, and the
+      buffer-size
+      invariant
+      (`width * height *
+      stride(format)`
+      bytes) that
+      `GpuTexture::upload_from`
+      enforces and the
+      sampler relies on.
+    - **§4 Future work.**
+      Explicit deferrals:
+      bilinear /
+      trilinear, mipmaps,
+      wrap-mode metadata,
+      anisotropic
+      filtering, texture
+      node graph
+      (master #23),
+      hardware texture
+      units, additional
+      formats. Each entry
+      documents what
+      would need to
+      change so a future
+      slice does not
+      duplicate the
+      rationale.
+    - **§5 Verification.**
+      Notes that the
+      audit host
+      type-checks the
+      header through
+      `tests/optix_tests.cpp`'s
+      transitive include,
+      and that runtime
+      sampling lives
+      behind
+      `--render-texture-sample-test`,
+      `--render-textured-material`,
+      `--render-optix-textured-material`.
+    - **§6 Change log.**
+      One-line entries
+      for TEX-P.4 / .3 /
+      .2 / .1, Stage 20M,
+      Stage 13B.x.
+- `src/cuda/CudaTexture.cuh`:
+    - **`sampleTextureNearest`
+      header doc-comment
+      gains a TEX-P.4
+      pointer line**: the
+      existing "clamp-to-
+      edge" rationale
+      paragraph is
+      extended with "TEX-
+      P.4 commits the
+      renderer to clamp-
+      to-edge as the v1
+      UV policy (see
+      docs/TEXTURE_SYSTEM.md
+      §1)". Body of the
+      function is
+      byte-identical
+      with TEX-P.3.
+- This `BUILD_PLAN.md`
+  slice-closing entry.
+
+### What does NOT change
+
+- `rr::cuda::sampleTextureNearest`
+  function body: byte-
+  identical with TEX-P.3.
+  No new branches, no
+  new parameters, no
+  new state.
+- `DeviceTextureView`
+  POD: byte-identical.
+  No `WrapMode` enum, no
+  new metadata fields;
+  per-texture wrap mode
+  is explicitly future
+  work.
+- `MaterialParams`:
+  byte-identical.
+- Kernel call sites
+  (`CudaTestKernel.cu`,
+  `OptixPrograms.cu`):
+  byte-identical.
+- All texture-aware CLI
+  surfaces
+  (`--render-texture-sample-test`,
+  `--render-textured-material`,
+  `--render-optix-textured-material`):
+  byte-identical PPM
+  output for valid
+  textures, identical
+  fallback semantics
+  for invalid textures.
+- The host-side
+  `validate_material_texture_ids`
+  validator: unchanged.
+- The TEX-P.1 polish
+  plan (`docs/TEXTURE_POLISH_PLAN.md`):
+  unchanged. Its §3.2
+  ("UV clamp / wrap
+  consistency") is now
+  closed by TEX-P.4
+  picking clamp; the
+  follow-up wrap-mode
+  enum is deferred to
+  the future-work
+  section of
+  `TEXTURE_SYSTEM.md`.
+
+### Master rule compliance
+
+- **No advanced
+  filtering**: bilinear
+  / trilinear / aniso
+  are listed under
+  TEXTURE_SYSTEM.md's
+  Future work and not
+  implemented here.
+- **No mipmaps**: same
+  treatment.
+- **No node graph**:
+  texture node graph is
+  master order #23 and
+  is explicitly
+  deferred in the spec.
+- **No C4D / no UI**:
+  zero touches outside
+  `src/cuda/CudaTexture.cuh`'s
+  doc comment and the
+  two doc files.
+- **Compiles**: both
+  audit-host configs
+  green.
+- **Update BUILD_PLAN**:
+  this entry, per
+  master rule 8.
+
+### Verified at the build
+
+- `cmake --build build`
+  (audit host,
+  RR_ENABLE_CUDA=OFF,
+  RR_ENABLE_OPTIX=OFF):
+  clean build; ctest
+  6/6 green.
+- `cmake --build
+  build-ON` (audit host,
+  RR_ENABLE_CUDA=OFF,
+  RR_ENABLE_OPTIX=ON):
+  clean build; ctest
+  7/7 green.
+- The doc-comment-only
+  edit in
+  `src/cuda/CudaTexture.cuh`
+  cannot affect codegen
+  (comments are
+  stripped by the
+  preprocessor) so the
+  byte-identical
+  guarantee for valid
+  texture renders is
+  trivially preserved.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:

@@ -88,7 +88,11 @@ inline constexpr rr::math::Vec3 kInvalidTextureFallback{1.0f, 0.0f, 1.0f};
 // consistently"; clamp is chosen here because it requires no
 // extra metadata, never folds the texture against itself, and
 // matches what a sampler with default GL_CLAMP_TO_EDGE settings
-// would do.
+// would do. TEX-P.4 commits the renderer to clamp-to-edge as
+// the v1 UV policy (see `docs/TEXTURE_SYSTEM.md` §1); a future
+// slice may add a per-texture `WrapMode` enum, but until then
+// every backend that consumes this helper inherits clamp-to-
+// edge automatically.
 //
 // Returns the texel's RGB components as a `Vec3` in `[0, 1]`:
 // - `Rgba8`   : each unsigned byte / 255.0f
