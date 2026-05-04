@@ -267,3 +267,83 @@ both ctest passes, plus a single CUDA-H.9 runner
 invocation to confirm the report bytes are
 unchanged) before committing.
 
+---
+
+## 9. Preconditions
+
+Per `docs/BUILD_PLAN.md` and the prior Stage 20 +
+Step 1 commits, the following components must
+exist before Step 2's SDK_FOUND body can be
+implemented. The audit confirms ALL prerequisites
+are present (`grep` over the relevant headers; cited
+prior commits / stages where each artifact landed).
+
+### 9.1 Required existing components
+
+| Artifact                                    | Source                              | Stage / Commit |
+|---------------------------------------------|-------------------------------------|----------------|
+| `OptixRenderer::AovRetainedBuffers` struct  | `src/optix/OptixRenderer.h:448`     | Step 1 (`6287471`) |
+| `OptixRenderer::render_aovs_retain` decl    | `src/optix/OptixRenderer.h:459`     | Step 1 (`6287471`) |
+| `render_aovs_retain` SDK_FOUND stub         | `src/optix/OptixRenderer.cpp`       | Step 1 (`6287471`) |
+| (the body Step 2 replaces)                  |                                     |                |
+| `render_aovs_retain` audit-host + OFF stub  | `src/optix/OptixRenderer.cpp`       | Step 1 (`6287471`) |
+| (must stay byte-identical per §5)           |                                     |                |
+| `rr::gpu::GpuBuffer<T>` template            | `src/gpu/GpuBuffer.h:31`            | Module 6/7 baseline |
+| `MeshGasInput` + `build_mesh_gas`           | `src/optix/OptixAccel.h:59`         | Stage 20F       |
+| `OptixPipeline::set_hit_material(params,    | `src/optix/OptixPipeline.h:155`     | Stage 20G + 20K |
+| shading_mode)`                              |                                     |                |
+| `OptixLaunchParams::aov_beauty`,            | `src/optix/OptixLaunchParams.h:241+`| Stage 20N       |
+| `aov_normal`, `aov_albedo` pointer fields   |                                     |                |
+| Reference body to mirror:                   | `src/optix/OptixRenderer.cpp`       | Stage 20N       |
+| `OptixRenderer::render_aovs` SDK_FOUND      | (line ~2376; ~300 lines)            |                |
+| branch                                      |                                     |                |
+| `OptixBackend::initialize` /                | `src/optix/OptixBackend.h`          | Stage 17A.1     |
+| `device_context()`                          |                                     |                |
+| `OptixPipeline::create` (`path_tracer=false`| `src/optix/OptixPipeline.h`         | Stage 17A.3 +   |
+| variant)                                    |                                     | 20K extension   |
+| `rr::gpu::GpuTimer` (for `gpu_time_ms`)     | `src/gpu/` (cuda-side helper)       | Stage 18A.1     |
+| `<optix.h>` + `<optix_stubs.h>` includes    | gated by                            | Stage 12B.4     |
+| (raw cudaMalloc / cudaMemcpy / cudaFree     | `RELATIVITYRENDER_OPTIX_SDK_FOUND`  |                |
+| also available inside the same gate)        |                                     |                |
+| `rr::lighting::Light` device upload pattern | inline in Stage 20K's               | Stage 20K       |
+| (same `cudaMalloc + cudaMemcpy` shape)      | `render_direct_lighting`            |                |
+| CMake wiring: `rr_optix` builds when        | `CMakeLists.txt`                    | Stage 12B.3 +   |
+| `RR_ENABLE_OPTIX=ON`; links `RelativityRender`|                                   | 12B.4           |
+
+### 9.2 Missing prerequisites
+
+**NONE.** Every artifact Step 2 needs to compile +
+link is already in place. The audit verified this
+empirically by `grep`-ing the cited headers; no
+forward references are needed.
+
+The user's "if prerequisites are missing → mark
+BLOCKED + do not implement code" condition does
+NOT trigger.
+
+### 9.3 Step 2 status
+
+**READY** — Step 2 may be implemented in the next
+slice without any preceding prep work. The
+implementer:
+
+1. Opens `src/optix/OptixRenderer.cpp`.
+2. Locates the SDK_FOUND stub of
+   `render_aovs_retain` (added by Step 1).
+3. Replaces it with the launch + buffer-retention
+   body, using the existing Stage 20N `render_aovs`
+   SDK_FOUND branch (~300 lines, same file) as the
+   shape reference; substitutes raw `cudaMalloc`
+   for the three retained AOV buffers with
+   `GpuBuffer<float>::allocate(...)`; skips the
+   host-side download; transfers ownership into the
+   `AovRetainedBuffers` result struct.
+4. Re-runs the audit-host smokes per §7 (both
+   ctest baselines stay green).
+5. Updates `docs/BUILD_PLAN.md` per master rule 8.
+6. Commits + pushes.
+
+No CMake changes, no new headers, no test changes,
+no consumer / CLI wiring. The existing rr_optix
+target picks up the modified `.cpp` automatically.
+
