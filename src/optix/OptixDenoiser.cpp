@@ -164,6 +164,39 @@ make_output_image(const OptixDenoiser::Output& output,
     return img;
 }
 
+// Stage 21C.3: prepare a beauty-only `::OptixDenoiserLayer`
+// from a beauty AOV + caller-supplied output buffer. "Beauty
+// only" = no albedo / normal guide layer; the function
+// ignores `inputs.albedo_device` and `inputs.normal_device`.
+//
+// Returns a value-typed layer with:
+// - `input`           = the beauty AOV descriptor (built via
+//                       `make_beauty_image`).
+// - `previousOutput`  = zero-initialised (unused outside the
+//                       temporal denoiser models the project
+//                       does not target per the Stage 21A.9
+//                       v1-scope decision).
+// - `output`          = the output descriptor (built via
+//                       `make_output_image`).
+//
+// The layer is the building block the eventual
+// `optixDenoiserInvoke` call will hand to the SDK as the
+// `layers` array. Stage 21C.3 only ships the helper; no
+// invoke happens yet. The function is `noexcept` and pure
+// (no allocation, no global state, no side effects);
+// `[[maybe_unused]]` silences the unused-function warning
+// until the next sub-stage wires it.
+[[maybe_unused]] ::OptixDenoiserLayer
+prepareBeautyOnlyInput(const OptixDenoiser::Inputs&  inputs,
+                       const OptixDenoiser::Output&  output) noexcept {
+    ::OptixDenoiserLayer layer{};
+    layer.input          = make_beauty_image(inputs);
+    layer.previousOutput = ::OptixImage2D{};  // unused (no temporal)
+    layer.output         = make_output_image(output,
+                                             inputs.beauty_components);
+    return layer;
+}
+
 }  // namespace
 
 #endif  // RELATIVITYRENDER_OPTIX_SDK_FOUND
