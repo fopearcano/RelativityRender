@@ -23786,6 +23786,130 @@ buffers are populated.
   because of the SDK_FOUND
   gate).
 
+## Post-Stage 21C — denoiser input wiring audit (docs only)
+
+**Scope of this slice (post-Stage
+21C.5, master order #24,
+"Denoising"): a documentation-
+only audit of the entire Stage
+21C input-wiring arc (5 sub-
+stages). Confirms the input
+scaffold is in place: documented
+input/output structs (21C.1),
+SDK-typed image helpers (21C.2),
+beauty-only layer builder
+(21C.3), guided layer +
+guide-layer builder (21C.4),
+input validator (21C.5). All
+seven helpers are `[[maybe_unused]]`
+because the next slice will
+wire them through
+`OptixDenoiser::invoke`. NO
+source code modified.**
+
+### What ships
+
+- `docs/STAGE_21C_DENOISER_INPUT_AUDIT.md`:
+  audit document with one
+  section per prompt question
+  (six in total) plus a
+  summary table and a
+  forward-looking "what lands
+  next" section. Verdicts
+  split into "empirical"
+  (audit host ran the command
+  directly) and "structural"
+  (source / build config /
+  wiring inspected; runtime
+  verification deferred to a
+  CUDA + OptiX-SDK host).
+- This `BUILD_PLAN.md`
+  slice-closing entry.
+
+### Audit verdicts (one-line each)
+
+| # | Question                                       | Verdict             |
+|---|------------------------------------------------|---------------------|
+| 1 | Beauty-only input can be prepared?             | YES (structural)    |
+| 2 | Beauty/albedo/normal input can be prepared?    | YES (structural)    |
+| 3 | Output buffer metadata exists?                 | YES (structural)    |
+| 4 | Input validation exists?                       | YES (8 checks)      |
+| 5 | No denoiser invocation yet?                    | YES (empirical grep)|
+| 6 | Builds with OptiX OFF and ON?                  | YES (6/6 + 7/7)     |
+
+### Stage 21C arc summary
+
+| Sub-stage | Commit    | Slice                                                |
+|-----------|-----------|------------------------------------------------------|
+| 21C.1     | `c471970` | Input structs (documented contract)                  |
+| 21C.2     | `4149816` | Image-format helpers (4 `make_*_image`)              |
+| 21C.3     | `0d88f45` | Beauty-only denoiser input (`prepareBeautyOnlyInput`)|
+| 21C.4     | `26490dd` | Beauty + Albedo + Normal input (`prepareGuidedInput`)|
+| 21C.5     | `b8ca6c9` | Input validation (`validateDenoiserInputs`)          |
+
+### Critical finding
+
+The Stage 21C input-wiring
+scaffold is complete. Every
+helper the next slice needs to
+write the `optixDenoiserInvoke`
+body exists (4 image helpers +
+2 layer builders + 1
+validator) and is staged
+behind the SDK_FOUND gate so
+the audit-host build stays
+green.
+
+The next slice's remaining
+work for an end-to-end
+denoised render is:
+
+- Wire `prepareGuidedInput` +
+  `validateDenoiserInputs`
+  into `OptixDenoiser::invoke`'s
+  SDK_FOUND branch.
+- Build the
+  `OptixDenoiserParams`
+  (HDR intensity pointer,
+  per-frame `denoiseAlpha`
+  override).
+- Call `optixDenoiserInvoke`
+  + `cudaDeviceSynchronize`.
+- Add the
+  `--render-optix-denoise`
+  CLI surface
+  (post-Stage-20 audit Gap
+  C).
+- Address durable AOV
+  ownership for the OptiX
+  path's `render_aovs`
+  (post-Stage-20 audit Gap
+  A).
+
+No further input-side
+scaffolding is required.
+
+### Backward compatibility
+
+Documentation-only slice. No
+source / CMake / CLI changes.
+Every Stage 21C.5 behaviour
+is preserved byte-for-byte.
+
+### Verified at the build
+
+- `cmake -S . -B build_off
+  -DRR_ENABLE_CUDA=OFF
+  -DRR_ENABLE_OPTIX=OFF`
+  (audit host): clean build;
+  ctest 6/6 green.
+- `cmake -S . -B build_on_audit
+  -DRR_ENABLE_CUDA=OFF
+  -DRR_ENABLE_OPTIX=ON`
+  (audit host, no SDK):
+  clean build; ctest 7/7
+  green.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
