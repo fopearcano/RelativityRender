@@ -197,6 +197,45 @@ prepareBeautyOnlyInput(const OptixDenoiser::Inputs&  inputs,
     return layer;
 }
 
+// Stage 21C.4: guided denoiser input. Same Beauty +
+// Output shape as `prepareBeautyOnlyInput`, plus the
+// `OptixDenoiserGuideLayer` carrying the Albedo + Normal
+// guide images. This matches the denoiser's init-time
+// options pinned at Stage 21B.4 (`guideAlbedo = 1`,
+// `guideNormal = 1`), so the resulting structs are what
+// the eventual `optixDenoiserInvoke` call will hand to
+// the SDK.
+//
+// The `flow`, `previousOutputInternalGuideLayer`,
+// `outputInternalGuideLayer`, and (newer SDK) flow-
+// trustworthiness fields stay zero-initialised because
+// the project's denoiser model is HDR (non-temporal) per
+// the Stage 21A.9 v1-scope decision; the SDK ignores
+// them outside the temporal models.
+struct GuidedDenoiserInput {
+    ::OptixDenoiserLayer       layer;
+    ::OptixDenoiserGuideLayer  guide;
+};
+
+[[maybe_unused]] GuidedDenoiserInput
+prepareGuidedInput(const OptixDenoiser::Inputs&  inputs,
+                   const OptixDenoiser::Output&  output) noexcept {
+    GuidedDenoiserInput out{};
+
+    // Beauty + output (same shape as the beauty-only path).
+    out.layer.input          = make_beauty_image(inputs);
+    out.layer.previousOutput = ::OptixImage2D{};
+    out.layer.output         = make_output_image(output,
+                                                 inputs.beauty_components);
+
+    // Guide layer: Albedo + Normal. The other guide-layer
+    // fields stay zero-initialised (temporal denoiser
+    // territory; not used by the HDR model).
+    out.guide.albedo = make_albedo_image(inputs);
+    out.guide.normal = make_normal_image(inputs);
+    return out;
+}
+
 }  // namespace
 
 #endif  // RELATIVITYRENDER_OPTIX_SDK_FOUND

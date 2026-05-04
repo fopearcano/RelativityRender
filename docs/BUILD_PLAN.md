@@ -23455,6 +23455,178 @@ SDK_FOUND branch.
   this audit host (no
   `<optix.h>`).
 
+## Stage 21C.4 — beauty-albedo-normal denoiser input
+
+**Scope of this slice (Stage 21C.4;
+master order #24, "Denoising"):
+add `prepareGuidedInput` helper
+that builds the full denoiser
+input (`OptixDenoiserLayer` for
+Beauty + caller-supplied
+output) **plus** the
+`OptixDenoiserGuideLayer`
+carrying the Albedo + Normal
+guide images. Matches the
+denoiser's init-time options
+pinned at Stage 21B.4
+(`guideAlbedo = 1`,
+`guideNormal = 1`), so the
+returned structs are exactly
+what the eventual
+`optixDenoiserInvoke` call will
+hand to the SDK. Per the
+user's rules: "no denoiser
+invoke yet", "no CLI flag
+yet", "must compile". The
+helper is `[[maybe_unused]]`
+until the next sub-stage wires
+it.**
+
+### What ships
+
+- `src/optix/OptixDenoiser.cpp`:
+  new file-static struct +
+  helper inside the existing
+  Stage 21C.2 anonymous
+  namespace (still gated by
+  `#ifdef RELATIVITYRENDER_OPTIX_SDK_FOUND`):
+    ```
+    struct GuidedDenoiserInput {
+        ::OptixDenoiserLayer       layer;
+        ::OptixDenoiserGuideLayer  guide;
+    };
+
+    [[maybe_unused]] GuidedDenoiserInput
+    prepareGuidedInput(
+        const OptixDenoiser::Inputs&  inputs,
+        const OptixDenoiser::Output&  output) noexcept;
+    ```
+  The helper:
+    - Builds `out.layer`
+      identically to
+      `prepareBeautyOnlyInput`
+      (Stage 21C.3): Beauty
+      input + output, no
+      previousOutput.
+    - Builds `out.guide.albedo`
+      via the Stage 21C.2
+      `make_albedo_image`
+      helper (FLOAT3, linear,
+      pre-lighting).
+    - Builds `out.guide.normal`
+      via the Stage 21C.2
+      `make_normal_image`
+      helper (FLOAT3, encoded
+      `0.5 n + 0.5`).
+    - Leaves the other guide
+      fields zero-initialised
+      (`flow`,
+      `previousOutputInternalGuideLayer`,
+      `outputInternalGuideLayer`,
+      newer-SDK
+      flow-trustworthiness).
+      These are temporal-
+      denoiser territory
+      ignored by the HDR
+      model the project uses
+      per the Stage 21A.9
+      v1-scope decision.
+  `noexcept`, pure (no
+  allocation, no global
+  state, no side effects),
+  `[[maybe_unused]]` until
+  the next sub-stage wires
+  it.
+- This `BUILD_PLAN.md`
+  slice-closing entry.
+
+### Why two structs returned together
+
+`optixDenoiserInvoke`'s
+signature takes both
+arguments side-by-side:
+
+```
+optixDenoiserInvoke(
+    denoiser, stream, &params,
+    state, stateSize,
+    &guideLayer,
+    &layers, numLayers,
+    inputOffsetX, inputOffsetY,
+    scratch, scratchSize);
+```
+
+So a single helper that
+returns both via a small POD
+saves the eventual invoke
+implementation from
+maintaining two separate
+helper calls + plumbing the
+results through. The struct
+is local to the anonymous
+namespace; not part of the
+public surface.
+
+### What does NOT ship
+
+- No `optixDenoiserInvoke`
+  call (per user rule).
+- No `set_inputs` change
+  (helper is reserved for
+  the next sub-stage).
+- No `OptixDenoiserParams`
+  construction (invoke-time
+  concern).
+- No `--render-optix-denoise`
+  CLI flag (per user rule
+  "no CLI flag yet").
+- No render pipeline / CLI /
+  consumer changes.
+
+### Backward compatibility
+
+- The class' public surface
+  is byte-identical with
+  Stage 21C.3 (only one new
+  POD struct + one helper
+  added in the .cpp's
+  anonymous namespace; no
+  header change).
+- `denoise_aov_buffers_to_ppm`
+  in `main.cpp` is
+  unchanged. Behaviour on
+  the audit host is
+  unchanged.
+- The CUDA renderer is
+  byte-identical (the slice
+  touches only
+  `src/optix/OptixDenoiser.cpp`).
+
+### Verified at the build
+
+- `cmake -S . -B build_off
+  -DRR_ENABLE_CUDA=OFF
+  -DRR_ENABLE_OPTIX=OFF`
+  (audit host): clean build;
+  ctest 6/6 green.
+- `cmake -S . -B build_on_audit
+  -DRR_ENABLE_CUDA=OFF
+  -DRR_ENABLE_OPTIX=ON`
+  (audit host, no SDK):
+  clean build; ctest 7/7
+  green. The new struct +
+  helper are inside the
+  SDK_FOUND gate; on this
+  host the gate is
+  undefined, so they are
+  compiled out entirely.
+- The helper's SDK-found
+  behaviour is structurally
+  in place but cannot be
+  empirically verified on
+  this audit host (no
+  `<optix.h>`).
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
