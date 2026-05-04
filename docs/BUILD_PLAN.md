@@ -24102,6 +24102,259 @@ run.
   verified on this audit
   host (no `<optix.h>`).
 
+## Stage 21D.2 — beauty/guided invoke
+
+**Scope of this slice (Stage 21D.2;
+master order #24, "Denoising"):
+populate the
+`OptixDenoiser::denoise(Inputs,
+Output)` SDK_FOUND branch with
+the actual `optixDenoiserInvoke`
+call. After the Stage 21D.1
+shell's availability check +
+input validation, the function
+now: prepares the per-
+resolution state via
+`set_inputs(...)` (Stage 21B.6
+-> 21B.7 -> 21B.8); builds the
+guided layer + guide-layer
+descriptor pair via
+`prepareGuidedInput(...)`
+(Stage 21C.4); zero-inits an
+`OptixDenoiserParams` with
+`blendFactor=0` (full denoise);
+calls
+`optixDenoiserInvoke(denoiser,
+stream=0, &params, state, ...,
+&guide, &layer, numLayers=1,
+inputOffset=0, scratch, ...)`;
+synchronises the device.
+Per the user's "beauty-only if
+supported by current
+scaffold/options" rule: the
+denoiser was init'd with
+`guideAlbedo=1, guideNormal=1`
+at Stage 21B.4, so a pure
+beauty-only invoke is NOT
+supported by the current
+options; this slice ships the
+guided form instead. Per the
+user's other rules: "no file
+output yet" (the function
+fills the device output buffer
+but does not save / read on
+the host), "no CLI integration
+yet" (the
+`--render-optix-denoise`
+surface is a future slice),
+"must compile with OptiX ON",
+"OFF build must remain
+valid".**
+
+### What ships
+
+- `src/optix/OptixDenoiser.cpp`
+  (SDK_FOUND `denoise` branch
+  only):
+    - `set_inputs(inputs)`
+      call after the Stage
+      21D.1 validation. On
+      failure, the existing
+      `last_error_` from
+      `set_inputs` propagates
+      and the function
+      returns false.
+    - `prepareGuidedInput(
+      inputs, output)` call.
+      The Stage 21C.4 helper
+      builds a value-typed
+      `GuidedDenoiserInput`
+      with the `OptixDenoiserLayer`
+      (Beauty input + Output)
+      and the
+      `OptixDenoiserGuideLayer`
+      (Albedo + Normal).
+    - Zero-initialised
+      `OptixDenoiserParams`
+      with `blendFactor =
+      0.0f` (full denoise; no
+      blend with input).
+      `denoiseAlpha` lives in
+      the create-time
+      `OptixDenoiserOptions`
+      (Stage 21B.4) so the
+      params struct's field
+      stays zero-init
+      (`OPTIX_DENOISER_ALPHA_MODE_COPY`).
+    - `optixDenoiserInvoke`
+      call with the bound
+      state + scratch buffers
+      (Stage 21B.7
+      `state_buffer_` /
+      `scratch_buffer_`),
+      the guide + layer
+      descriptors, and
+      `numLayers=1`,
+      `inputOffsetX/Y=0`. On
+      failure: populates
+      `last_error_` with
+      `optixGetErrorName(res)`,
+      logs `[OptiX:ERROR]
+      OptixDenoiser::denoise:
+      optixDenoiserInvoke
+      failed: ...`, returns
+      false.
+    - `cudaDeviceSynchronize`
+      so the host knows the
+      output device buffer
+      is fully written before
+      the consumer proceeds
+      to download. On
+      failure: populates
+      `last_error_`, logs the
+      error, returns false.
+    - On success: clears
+      `last_error_`, logs
+      `[OptiX:INFO]
+      OptixDenoiser invoke
+      complete: width=W
+      height=H FLOAT3 (or
+      FLOAT4)`, returns true.
+- This `BUILD_PLAN.md`
+  slice-closing entry.
+
+### Why guided not pure beauty-only
+
+`OptixDenoiserOptions::guideAlbedo
+= 1` and `::guideNormal = 1`
+were pinned at the Stage
+21B.4 `optixDenoiserCreate`
+call. Per the OptiX SDK
+contract, an
+`optixDenoiserInvoke` call
+against a denoiser created
+with these options MUST
+provide a guide layer with
+non-null Albedo + Normal
+images; passing zero-init
+guide images is a SDK
+violation that returns an
+error.
+
+Pure beauty-only invokes
+require either (a)
+re-creating the denoiser
+with `guideAlbedo=0,
+guideNormal=0`, or (b)
+preparing zero-data
+descriptors that the SDK's
+new beauty-only mode
+accepts. Either path is a
+larger change than this
+slice's scope. The user's
+"beauty-only if supported by
+current scaffold/options"
+clause licenses the
+fall-back to the guided
+form, which is exactly what
+the Stage 21A plan + Stage
+21B.4 options already
+require.
+
+### Behaviour matrix
+
+| Build mode               | Pre-conditions met         | `denoise(inputs, output)` returns                |
+|--------------------------|----------------------------|--------------------------------------------------|
+| OFF                      | n/a                        | `false`; "OptiX disabled at build time"          |
+| ON, no SDK (audit host)  | n/a                        | `false`; "requires OptiX SDK..."                 |
+| ON, SDK found, init fail | `isAvailable() == false`   | `false`; "denoiser is not available"             |
+| ON, SDK found, init ok,  | validator fails            | `false`; `"OptixDenoiser::denoise: " +`          |
+| invalid inputs           |                            | the validator's error                            |
+| ON, SDK found, init ok,  | set_inputs / invoke /      | `false`; the underlying `last_error_`            |
+| valid, runtime err       | sync error                 | (e.g. `"optixDenoiserInvoke failed: ..."`).      |
+| ON, SDK found, init ok,  | every step succeeds        | `true`; `output.device` carries the denoised     |
+| valid, success           |                            | linear-RGB radiance (caller-owned device buffer).|
+
+### What does NOT ship
+
+- No file output / no host-
+  side download (the
+  function fills
+  `output.device` on the
+  GPU; the consumer's
+  responsibility to
+  download + save).
+- No CLI surface (the
+  `--render-optix-denoise`
+  action lands in a future
+  slice, post-Stage-20
+  audit Gap C).
+- No durable AOV ownership
+  for the OptiX path's
+  `render_aovs` (Gap A;
+  prerequisite for an
+  end-to-end OptiX
+  `--render-aovs --denoise`
+  flow).
+- No consumer migration:
+  `denoise_aov_buffers_to_ppm`
+  in `main.cpp` still uses
+  the
+  `initialize -> set_inputs
+  -> invoke` trio, where
+  `invoke` is still the
+  Stage 21B.1 stub. The
+  audit-host CLI behaviour
+  is unchanged: the
+  consumer takes the Stage
+  19C.3 noisy-Beauty
+  fallback path.
+
+### Backward compatibility
+
+- The class' public surface
+  is byte-identical with
+  Stage 21D.1 (`denoise`
+  declaration unchanged;
+  body grew but signature
+  did not).
+- The CUDA renderer is
+  byte-identical (the slice
+  touches only
+  `src/optix/OptixDenoiser.cpp`).
+- The audit-host fallback +
+  OFF stubs of `denoise`
+  are unchanged.
+
+### Verified at the build
+
+- `cmake -S . -B build_off
+  -DRR_ENABLE_CUDA=OFF
+  -DRR_ENABLE_OPTIX=OFF`
+  (audit host): clean build;
+  ctest 6/6 green.
+- `cmake -S . -B build_on_audit
+  -DRR_ENABLE_CUDA=OFF
+  -DRR_ENABLE_OPTIX=ON`
+  (audit host, no SDK):
+  clean build; ctest 7/7
+  green. The new
+  `optixDenoiserInvoke` +
+  `cudaDeviceSynchronize`
+  calls compile inside the
+  SDK_FOUND gate; on this
+  host the gate is
+  undefined, so the calls
+  are compiled out and the
+  audit-host stub fires
+  instead.
+- The SDK-found
+  `optixDenoiserInvoke`
+  call path is structurally
+  in place but cannot be
+  empirically verified on
+  this audit host (no SDK).
+
 ## Next stage
 
 When prompted, the natural follow-ups are:

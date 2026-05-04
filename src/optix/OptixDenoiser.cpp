@@ -745,11 +745,91 @@ bool OptixDenoiser::denoise(const Inputs& inputs,
         return false;
     }
 
-    last_error_ =
-        "OptixDenoiser::denoise: invoke not yet wired (Stage 21D.1 "
-        "shell only; inputs validated, optixDenoiserInvoke wiring "
-        "lands in subsequent Stage 21D sub-stages).";
-    return false;
+    // Stage 21D.2: prepare per-resolution state +
+    // allocations + setup via the existing
+    // `set_inputs(...)` machinery (Stage 21B.6 -> 21B.8).
+    // After this returns successfully, `state_buffer_` /
+    // `scratch_buffer_` carry the device-side state +
+    // scratch buffers that `optixDenoiserSetup` already
+    // initialised for `inputs.width / ::height`.
+    if (!set_inputs(inputs)) {
+        // last_error_ already populated by set_inputs.
+        return false;
+    }
+
+    // Build the layer + guide-layer descriptor pair via
+    // the Stage 21C.4 helper. The denoiser was init'd
+    // with `guideAlbedo=1, guideNormal=1` at Stage 21B.4,
+    // so a pure beauty-only invoke is NOT supported by
+    // the current options; use the guided form (the
+    // user's "beauty-only if supported by current
+    // scaffold/options" carve-out covers this).
+    GuidedDenoiserInput guided = prepareGuidedInput(inputs, output);
+
+    // Per-launch params. `blendFactor = 0` is full
+    // denoise (no blend with input); `denoiseAlpha`
+    // lives on the `OptixDenoiserOptions` pinned at
+    // create-time (Stage 21B.4) so the params struct's
+    // field stays zero-initialised. Newer SDK fields
+    // (`hdrIntensity`, `hdrAverageColor`,
+    // `temporalModeUsePreviousLayers`, ...) all stay
+    // zero-init - none of them is required for the
+    // HDR non-temporal denoiser the project targets.
+    ::OptixDenoiserParams params{};
+    params.blendFactor = 0.0f;
+
+    // optixDenoiserInvoke. State + scratch buffers come
+    // from the Stage 21B.7 `GpuBuffer` members that
+    // `set_inputs` populated above. `numLayers=1` because
+    // we have a single Beauty layer; `inputOffset`s are
+    // 0 because we are not tile-denoising.
+    {
+        const ::OptixResult res = ::optixDenoiserInvoke(
+            static_cast<::OptixDenoiser>(denoiser_),
+            /*stream=*/0,
+            &params,
+            reinterpret_cast<::CUdeviceptr>(state_buffer_.device_ptr()),
+            state_size_,
+            &guided.guide,
+            &guided.layer,
+            /*numLayers=*/1u,
+            /*inputOffsetX=*/0u,
+            /*inputOffsetY=*/0u,
+            reinterpret_cast<::CUdeviceptr>(scratch_buffer_.device_ptr()),
+            scratch_size_);
+        if (res != OPTIX_SUCCESS) {
+            last_error_ =
+                std::string("OptixDenoiser::denoise: "
+                            "optixDenoiserInvoke failed: ")
+              + ::optixGetErrorName(res);
+            std::fprintf(stderr,
+                         "[OptiX:ERROR] %s\n",
+                         last_error_.c_str());
+            return false;
+        }
+    }
+
+    // Synchronise so the host knows the output device
+    // buffer is fully written before the caller proceeds
+    // to download (a future sub-stage's concern; this
+    // slice ships only the GPU-side write).
+    if (::cudaDeviceSynchronize() != cudaSuccess) {
+        last_error_ =
+            "OptixDenoiser::denoise: cudaDeviceSynchronize failed "
+            "after optixDenoiserInvoke.";
+        std::fprintf(stderr,
+                     "[OptiX:ERROR] %s\n",
+                     last_error_.c_str());
+        return false;
+    }
+
+    last_error_.clear();
+    std::fprintf(stderr,
+                 "[OptiX:INFO] OptixDenoiser invoke complete: "
+                 "width=%d height=%d FLOAT%d.\n",
+                 inputs.width, inputs.height,
+                 inputs.beauty_components);
+    return true;
 }
 
 #else  // RELATIVITYRENDER_OPTIX_SDK_FOUND
