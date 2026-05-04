@@ -22586,6 +22586,125 @@ denoiser.**
   empirically verified on
   this audit host (no SDK).
 
+## Stage 21B.9 — denoiser availability query
+
+**Scope of this slice (Stage 21B.9;
+master order #24, "Denoising"):
+add a `bool isAvailable() const
+noexcept` method to
+`OptixDenoiser`. Returns `true`
+iff the build was configured
+with `-DRR_ENABLE_OPTIX=ON` AND
+`initialize(backend)` succeeded.
+Per the user's rules: "true if
+OptiX ON and initialized", "no
+execution". The method is
+defined inline in the header so
+consumers can call it from any
+TU regardless of build mode
+(in OFF the method is a
+constant-`false` no-op; in ON it
+forwards to the runtime
+`initialized_` flag).**
+
+### What ships
+
+- `src/optix/OptixDenoiser.h`:
+  new public method
+    ```
+    [[nodiscard]] bool
+    isAvailable() const noexcept {
+    #ifdef RELATIVITYRENDER_ENABLE_OPTIX
+        return initialized_;
+    #else
+        return false;
+    #endif
+    }
+    ```
+  Defined inline, declared
+  alongside the existing
+  status getters
+  (`is_initialized`,
+  `inputs_set`, etc.). No
+  `.cpp` change needed.
+- This `BUILD_PLAN.md`
+  slice-closing entry.
+
+### Why inline in the header
+
+`RELATIVITYRENDER_ENABLE_OPTIX`
+propagates from `rr_optix`'s
+PUBLIC compile definitions to
+its consumers via the
+`target_link_libraries(
+RelativityRender PRIVATE
+rr_optix)` chain — but only
+when `rr_optix` is in the link
+chain (i.e., when
+`RR_ENABLE_OPTIX=ON`). When
+OFF, the macro is undefined for
+every consumer and `rr_optix`
+is not built at all.
+
+Defining `isAvailable()` inline
+in the header makes the symbol
+available without a link
+dependency on `rr_optix`. A
+consumer that includes
+`optix/OptixDenoiser.h`
+without gating their own
+include with
+`#ifdef RELATIVITYRENDER_ENABLE_OPTIX`
+gets the method but it
+correctly reports `false` in
+the OFF build because the
+macro is undefined for them
+too. This is the lightest
+possible "denoiser available?"
+query.
+
+### Behaviour matrix
+
+| Build mode               | `isAvailable()` returns                                          |
+|--------------------------|------------------------------------------------------------------|
+| OFF                      | `false` (constant; the inline body's OFF branch fires)           |
+| ON, no SDK (audit host)  | `false` (initialize fails before setting `initialized_`)         |
+| ON, SDK found, init ok   | `true`                                                           |
+| ON, SDK found, init fail | `false`                                                          |
+
+### Backward compatibility
+
+- The class' public surface
+  grows by one inline method;
+  existing methods + struct
+  layouts are byte-identical
+  with Stage 21B.8.
+- `denoise_aov_buffers_to_ppm`
+  in `main.cpp` does not
+  consume `isAvailable()`
+  yet; the method is
+  available for future
+  callers. Behaviour on the
+  audit host is unchanged.
+- The CUDA renderer is
+  byte-identical (the slice
+  touches only
+  `src/optix/OptixDenoiser.h`).
+
+### Verified at the build
+
+- `cmake -S . -B build_off
+  -DRR_ENABLE_CUDA=OFF
+  -DRR_ENABLE_OPTIX=OFF`
+  (audit host): clean build;
+  ctest 6/6 green.
+- `cmake -S . -B build_on_audit
+  -DRR_ENABLE_CUDA=OFF
+  -DRR_ENABLE_OPTIX=ON`
+  (audit host, no SDK):
+  clean build; ctest 7/7
+  green.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:

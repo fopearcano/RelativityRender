@@ -70,6 +70,24 @@ public:
     [[nodiscard]] void*              denoiser_handle() const noexcept;
     [[nodiscard]] const std::string& last_error()      const noexcept;
 
+    // Stage 21B.9: high-level availability query. Returns
+    // `true` iff the build was configured with
+    // `-DRR_ENABLE_OPTIX=ON` AND `initialize(backend)`
+    // succeeded. Defined inline so callers can consume the
+    // header in either build mode without gating their own
+    // call site - in the OFF build the method is a
+    // constant-`false` no-op; in the ON build it forwards
+    // to the runtime `initialized_` flag.
+    //
+    // Pure read; "no execution" per the Stage 21B.9 rule.
+    [[nodiscard]] bool isAvailable() const noexcept {
+#ifdef RELATIVITYRENDER_ENABLE_OPTIX
+        return initialized_;
+#else
+        return false;
+#endif
+    }
+
 private:
     void*       denoiser_                = nullptr;
     bool        initialized_             = false;
