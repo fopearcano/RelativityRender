@@ -35,15 +35,72 @@ class OptixBackend;
 
 class OptixDenoiser {
 public:
+    // Stage 21C.1 denoiser input contract.
+    //
+    // Three required device-resident buffers per
+    // `docs/DENOISER_PLAN.md` "Required inputs" section:
+    // Beauty (noisy linear-RGB radiance), Albedo (linear
+    // RGB, base colour at hit before lighting), and
+    // Normal (per-pixel shading normal). All three live
+    // on the GPU and are populated by the renderer's
+    // AOV-aware launch (`CudaRenderer::render_scene_with_aovs`
+    // for the CUDA path; `OptixRenderer::render_aovs` for
+    // the OptiX path) before this struct is filled in by
+    // the host.
+    //
+    // The denoiser does NOT take ownership of the device
+    // buffers; the caller (renderer host orchestration)
+    // keeps them alive across the eventual
+    // `optixDenoiserInvoke`.
     struct Inputs {
+        // Beauty (noisy linear-RGB radiance). Layout
+        // depends on `beauty_components`:
+        // - 3 floats / pixel (FLOAT3, default; matches
+        //   the Stage 14A `AOVType::Beauty` buffer
+        //   layout the CUDA / OptiX AOV pipelines
+        //   produce).
+        // - 4 floats / pixel (FLOAT4; reserved for the
+        //   path-tracer's RGBA32F resolve buffer).
+        // The OptiX denoiser maps each to
+        // `OPTIX_PIXEL_FORMAT_FLOAT3` /
+        // `OPTIX_PIXEL_FORMAT_FLOAT4` respectively.
         const float* beauty_device     = nullptr;
         int          beauty_components = 3;
+
+        // Albedo (linear RGB, base colour BEFORE
+        // lighting). 3 floats / pixel (FLOAT3). Source:
+        // the Stage 14A `AOVType::Albedo` buffer
+        // produced by either AOV pipeline.
         const float* albedo_device     = nullptr;
+
+        // Normal (per-pixel shading normal). 3 floats /
+        // pixel (FLOAT3). The Stage 14A AOV pipelines
+        // emit `0.5 * n + 0.5` (encoded into [0, 1]) for
+        // hits and `(0, 0, 0)` for misses; the OptiX
+        // denoiser handles this layout through its HDR
+        // model. Same convention used by the CUDA
+        // `--render-aovs` -> denoiser handoff.
         const float* normal_device     = nullptr;
+
+        // Framebuffer dimensions. Same value across all
+        // three input buffers; the OptiX denoiser
+        // requires uniform dims across Beauty + guide
+        // layers.
         int          width             = 0;
         int          height            = 0;
     };
 
+    // Stage 21C.1 denoiser output contract.
+    //
+    // Single device-side buffer the denoiser writes into.
+    // Caller-owned: the denoiser does not allocate or
+    // free this buffer. Sized to `width * height *
+    // beauty_components` floats (matching the bound
+    // Beauty input's layout). On `optixDenoiserInvoke`
+    // success, the device buffer carries the denoised
+    // linear-RGB radiance the consumer can download +
+    // save to `output/denoised.ppm` per the Stage 21A.6
+    // output contract.
     struct Output {
         float* device = nullptr;
         int    width  = 0;

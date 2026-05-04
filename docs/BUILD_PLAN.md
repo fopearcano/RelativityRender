@@ -22921,6 +22921,151 @@ is preserved byte-for-byte.
   "requires both CUDA and
   OptiX" error; no crash.
 
+## Stage 21C.1 — denoiser input structs (documented)
+
+**Scope of this slice (Stage 21C.1;
+master order #24, "Denoising"):
+formalize the denoiser input +
+output struct contract that
+will drive the eventual
+`optixDenoiserInvoke` call. The
+two structs (`OptixDenoiser::Inputs`
+and `OptixDenoiser::Output`)
+were carried forward from
+Stage 21B.1 with all six
+required fields already
+present (Beauty / Albedo /
+Normal device pointers + width
++ height on `Inputs`, output
+device pointer + width +
+height on `Output`); this
+slice adds per-struct +
+per-field doc-comment blocks
+formalizing the layout +
+ownership + range
+contract per the Stage 21A
+plan. NO field types or names
+change (would break consumer
+compatibility per the user's
+"do not modify render pipeline
+yet" rule); NO denoiser
+invoke; NO behaviour change.**
+
+### What ships
+
+- `src/optix/OptixDenoiser.h`:
+    - new doc-comment block
+      above `struct Inputs`
+      describing the
+      "denoiser input
+      contract" (three
+      device-resident
+      buffers; renderer
+      AOV pipeline produces
+      them; denoiser does
+      not own them).
+    - new per-field doc
+      comments on
+      `beauty_device` /
+      `beauty_components`,
+      `albedo_device`,
+      `normal_device`, and
+      `width` / `height`.
+      Each comment cites the
+      specific Stage 14A
+      AOV the field maps to
+      and the expected
+      layout (FLOAT3 / FLOAT4,
+      linear-RGB, encoded
+      normal `0.5n + 0.5`,
+      etc.).
+    - new doc-comment block
+      above `struct Output`
+      describing the
+      "denoiser output
+      contract" (single
+      caller-owned device
+      buffer; sized to
+      `width * height *
+      beauty_components`
+      floats; carries the
+      denoised linear-RGB
+      radiance ready for
+      download + save to
+      `output/denoised.ppm`).
+- This `BUILD_PLAN.md`
+  slice-closing entry.
+
+### Field map (against the Stage 21A.3 / 21A.4 plan)
+
+| Stage 21A.3 required input | Stage 21C.1 struct field      | Layout                               |
+|----------------------------|-------------------------------|--------------------------------------|
+| Beauty (noisy)             | `Inputs::beauty_device`       | FLOAT3 (default) or FLOAT4, linear   |
+| Albedo                     | `Inputs::albedo_device`       | FLOAT3, linear, pre-lighting         |
+| Normal                     | `Inputs::normal_device`       | FLOAT3, encoded `0.5n + 0.5`         |
+| —                          | `Inputs::beauty_components`   | 3 (default; FLOAT3) or 4 (FLOAT4)    |
+| —                          | `Inputs::width / ::height`    | uniform across all three buffers     |
+| (Stage 21A.6 output)       | `Output::device`              | width * height * beauty_components   |
+| —                          | `Output::width / ::height`    | match Inputs::width / ::height       |
+
+### Backward compatibility
+
+- The struct field types,
+  names, defaults, and
+  layouts are byte-identical
+  with Stage 21B.10 — only
+  comments change. Existing
+  consumers
+  (`denoise_aov_buffers_to_ppm`
+  in `src/main.cpp`) compile
+  unchanged.
+- The CUDA renderer is
+  byte-identical (the slice
+  touches only
+  `src/optix/OptixDenoiser.h`).
+- No render-pipeline changes
+  per the user's rule "do
+  not modify render pipeline
+  yet"; the consumers
+  populate the structs the
+  same way they did in
+  Stage 19B.4.
+
+### Why structs already existed
+
+The `Inputs` and `Output`
+structs were originally
+introduced in Stage 19B.2.
+The Stage 21B.1 reset
+preserved them because the
+Stage 21A plan documents the
+same three required inputs +
+single output contract; the
+right shape was already in
+place. Stage 21C.1's
+contribution is purely
+documentation: the per-field
+comments make the layout
+contract self-documenting
+and eliminate the need for
+consumers to consult the
+Stage 21A plan to populate
+the structs correctly.
+
+### Verified at the build
+
+- `cmake -S . -B build_off
+  -DRR_ENABLE_CUDA=OFF
+  -DRR_ENABLE_OPTIX=OFF`
+  (audit host): clean build;
+  ctest 6/6 green.
+- `cmake -S . -B build_on_audit
+  -DRR_ENABLE_CUDA=OFF
+  -DRR_ENABLE_OPTIX=ON`
+  (audit host, no SDK):
+  clean build; ctest 7/7
+  green.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
