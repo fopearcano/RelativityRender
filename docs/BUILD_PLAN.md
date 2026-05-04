@@ -32832,6 +32832,338 @@ zero build effect.**
   Recorded under
   §3.3.
 
+## PT-P.5 — path-tracer polish step 2 task (docs only)
+
+**Scope of this slice
+(post-PT-P.4 audit
+PASS): produce the
+fully-self-contained
+task definition for
+the next PT-P.x
+implementation slice.
+Mirrors the PT-P.2 ->
+PT-P.3 cadence applied
+to the second polish
+item. Per
+`docs/PATH_TRACER_POLISH_STEP_1_AUDIT.md`'s
+"Recommended next
+step" the natural
+follow-up is
+`PATH_TRACER_POLISH_PLAN.md`
+§4.3 (max-bounce
+validation): same
+warn-and-clamp shape
+TEX-P.2 / TEX-P.5
+established for
+`validate_material_texture_ids`,
+host-side only,
+byte-identical for
+every existing
+render. NO source
+changes; NO new CLI
+flags; NO kernel
+touches.**
+
+### What ships
+
+- `docs/PATH_TRACER_POLISH_STEP_2_TASK.md`
+  (NEW). Five
+  sections + an
+  out-of-scope
+  list:
+    - **§1 Exact
+      next polish
+      item.** Names
+      the task
+      "Max-bounce
+      validation
+      (soft cap)",
+      points to
+      `PATH_TRACER_POLISH_PLAN.md`
+      §4.3 as the
+      source, and
+      gives the
+      single concrete
+      change as a
+      verbatim
+      patch
+      sketch: a new
+      `kMaxBouncesCap
+      = 32`
+      constant
+      (placement
+      header-public
+      recommended,
+      file-local
+      acceptable),
+      a
+      warn-and-clamp
+      branch
+      immediately
+      after the
+      existing
+      `cfg.max_bounces
+      < 0` check in
+      `PathTracer::render`,
+      and one
+      use-site
+      replacement
+      in the
+      `cuda::launch_pathtrace_sample`
+      argument.
+      Notes that no
+      new test is
+      required (the
+      §4.3 plan
+      entry's "Cost"
+      line was "~8
+      lines in
+      `PathTracer.cpp`";
+      the polish is
+      verifiable by
+      code
+      inspection).
+    - **§2 Files
+      likely
+      involved.**
+      Three-row
+      table:
+      `src/pathtracer/PathTracer.cpp`
+      (the only
+      .cpp), an
+      OPTIONAL
+      `src/pathtracer/PathTracer.h`
+      (if the
+      implementer
+      hosts the cap
+      constant in the
+      header — the
+      recommended
+      choice), and
+      the
+      slice-closing
+      `BUILD_PLAN.md`
+      entry. Honours
+      the PT-P.3
+      "max 2 source
+      files" rule
+      (1 .cpp + 1
+      .h).
+    - **§3 Why it
+      is safe now.**
+      Five
+      structural
+      reasons:
+      §3.1 PT-P.4
+      audit verdict
+      was clean
+      (zero REPAIR
+      items),
+      §3.2 the change
+      is host-side
+      only,
+      §3.3 the
+      `Logger::warning`
+      + clamp pattern
+      is already
+      established
+      across TEX-P.2
+      / TEX-P.5 /
+      TEX-P.6,
+      §3.4 the
+      default + every
+      common
+      `max_bounces`
+      value is
+      unaffected (no
+      caller passes
+      > 32 today; no
+      existing
+      render is
+      bit-shifted),
+      §3.5 the
+      OptiX side
+      already has
+      its own
+      `OPTIX_PIPELINE_MAX_TRACE_DEPTH`
+      bound at
+      pipeline-build
+      time — host-
+      side
+      `PathTraceConfig::max_bounces`
+      clamp is
+      analogous
+      defence in
+      depth on the
+      CUDA path. A
+      "what is NOT
+      yet safe"
+      sub-section
+      explains the
+      sequencing vs
+      §4.1 (RNG
+      stability,
+      ripples through
+      every PPM) and
+      §4.7 (firefly
+      clamp; touches
+      both backends).
+    - **§4 PASS
+      criteria.**
+      Seven concrete
+      gates:
+      build green
+      on both
+      audit-host
+      configs, ctest
+      7/7 + 8/8
+      (count
+      unchanged from
+      PT-P.3),
+      source-diff
+      size cap
+      (~8-10 net
+      new lines in
+      PathTracer.cpp;
+      0 or ~6 in
+      PathTracer.h),
+      no-touch
+      invariants
+      across
+      `src/cuda/`,
+      `src/optix/`,
+      `src/renderer/`,
+      `src/main.cpp`,
+      `src/core/CommandLine.{h,cpp}`,
+      `src/io/`,
+      every
+      `*.rrscene`,
+      every
+      `tests/*.cpp`,
+      and
+      `tools/verify_cuda_host.py`,
+      audit-host
+      behavioural
+      smoke
+      (`--render-pathtrace`
+      "requires
+      CUDA" fallback
+      byte-identical
+      + `--scene-info
+      scenes/test_textured_material.rrscene`
+      three-case
+      logs unchanged
+      since
+      max_bounces=4
+      default falls
+      well within
+      the cap),
+      slice-closing
+      `BUILD_PLAN.md`
+      entry, and
+      master rule
+      compliance.
+    - **§5 Out-of-
+      scope.**
+      Explicitly
+      defers
+      `PATH_TRACER_POLISH_PLAN.md`
+      §4.{1,4,5,6,7}
+      to their own
+      future task
+      definitions.
+      Recommends
+      §4.6
+      (sample-count
+      cap) as the
+      next-after-§4.3
+      slice because
+      it trivially
+      reuses the
+      same warn-and-
+      clamp pattern.
+- This `BUILD_PLAN.md`
+  slice-closing entry.
+
+### What does NOT change
+
+- All PT-P.{1,2,3,4}
+  artefacts:
+  byte-identical
+  (PT-P.5 is a
+  task definition;
+  it touches no
+  source file).
+- Build configs:
+  byte-identical.
+  ctest remains 7/7
+  OFF and 8/8 ON-
+  audit-host with
+  no rebuild
+  needed.
+- All other docs:
+  PT-P.5 only ADDS
+  `PATH_TRACER_POLISH_STEP_2_TASK.md`;
+  no edits to
+  `PATH_TRACER_POLISH_PLAN.md`,
+  `PATH_TRACER_POLISH_STEP_1_TASK.md`,
+  `PATH_TRACER_POLISH_STEP_1_AUDIT.md`,
+  the TEX-P.x
+  arc, or the
+  CUDA-H.x arc.
+- The TEX-P.x +
+  CUDA-H.x +
+  OptiX Gap A
+  polish arcs:
+  untouched.
+  PT-P.x continues
+  in parallel.
+
+### Master rule compliance
+
+- **Build
+  incrementally /
+  every step
+  compilable**:
+  docs-only slice;
+  build is
+  trivially
+  preserved.
+- **Update
+  BUILD_PLAN**:
+  this entry, per
+  master rule 8.
+
+### Verified at the build
+
+- `cmake --build
+  build` + `cmake
+  --build build-ON`
+  were already green
+  at the end of
+  PT-P.4 and remain
+  green; PT-P.5
+  changed no
+  build-relevant
+  files. ctest 7/7
+  OFF and 8/8 ON
+  re-confirmed with
+  no work needed.
+- The task doc's
+  source citations
+  (the verbatim
+  `cfg.max_bounces`
+  validation block
+  at
+  `PathTracer.cpp:23-38`,
+  the launcher arg
+  at line 82, the
+  default `4` in
+  `PathTraceConfig.h`)
+  resolve to the
+  current source
+  byte-for-byte.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
