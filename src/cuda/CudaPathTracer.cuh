@@ -44,6 +44,18 @@ namespace rr::cuda {
 //                      by `env_intensity` and the running
 //                      throughput on a miss.
 //   `env_intensity`    scalar multiplier on `env_color`.
+//   `firefly_clamp`    PT-P.24: per-channel firefly clamp on
+//                      the per-sample radiance. 0.0f disables
+//                      the clamp (default; every
+//                      PathTraceConfig{} value passes 0.0f);
+//                      > 0 produces a `fminf(radiance.x|y|z,
+//                      firefly_clamp)` per channel before the
+//                      per-pixel write. See
+//                      `PathTraceConfig::firefly_clamp` for
+//                      the authoring contract; the OptiX
+//                      backend mirrors the same clamp via
+//                      `OptixLaunchParams::firefly_clamp`.
+//                      Negative values cause launch failure.
 //
 // Returns false on launch failure (drains the sticky
 // `cudaGetLastError` so a later real CUDA call sees a clean
@@ -57,6 +69,7 @@ namespace rr::cuda {
                                            unsigned int             seed,
                                            unsigned int             sample_index,
                                            rr::math::Vec3           env_color,
-                                           float                    env_intensity);
+                                           float                    env_intensity,
+                                           float                    firefly_clamp);
 
 }  // namespace rr::cuda

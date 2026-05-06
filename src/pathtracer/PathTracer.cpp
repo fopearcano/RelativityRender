@@ -73,6 +73,18 @@ PathTraceResult PathTracer::render(const rr::gpu::GpuScene& scene,
         result.message = "environment_intensity must be >= 0";
         return result;
     }
+    // PT-P.24: lower-bound rejection on the firefly_clamp field
+    // (PT-P.21 placeholder; PT-P.24 wires it through both
+    // backends). Default 0.0f is the no-clamp path; positive
+    // values trigger the per-channel `fminf` clamp the kernel
+    // applies before each per-pixel write. Negative values are
+    // not meaningful (the integrator's per-channel radiance is
+    // non-negative); we reject them with the same diagnostic
+    // shape the env-intensity check uses.
+    if (cfg.firefly_clamp < 0.0f) {
+        result.message = "firefly_clamp must be >= 0";
+        return result;
+    }
 
 #ifndef RR_HAS_CUDA
     (void)scene;
@@ -120,7 +132,8 @@ PathTraceResult PathTracer::render(const rr::gpu::GpuScene& scene,
                 cfg.seed,
                 static_cast<unsigned int>(s),
                 cfg.environment_color,
-                cfg.environment_intensity)) {
+                cfg.environment_intensity,
+                cfg.firefly_clamp)) {
             result.message =
                 "pathtrace sample-kernel launch failed at iteration "
                 + std::to_string(s);

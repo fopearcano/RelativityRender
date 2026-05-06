@@ -1221,7 +1221,8 @@ OptixRenderer::Result
 OptixRenderer::render_pathtrace(const rr::scene::Scene& scene,
                                 int width, int height,
                                 int spp, int max_bounces,
-                                unsigned int seed) noexcept {
+                                unsigned int seed,
+                                float firefly_clamp) noexcept {
     Result r;
 
     if (width <= 0 || height <= 0) {
@@ -1231,6 +1232,17 @@ OptixRenderer::render_pathtrace(const rr::scene::Scene& scene,
     if (spp < 1 || max_bounces < 1) {
         r.message = "OptixRenderer::render_pathtrace: spp and "
                     "max_bounces must each be >= 1";
+        return r;
+    }
+    // PT-P.24: lower-bound rejection on the firefly_clamp
+    // parameter. Mirrors `PathTracer::render`'s
+    // `cfg.firefly_clamp < 0.0f` rejection in
+    // src/pathtracer/PathTracer.cpp; the two messages share
+    // the "firefly_clamp must be >= 0" suffix so a future
+    // operator searching the codebase finds both sites.
+    if (firefly_clamp < 0.0f) {
+        r.message = "OptixRenderer::render_pathtrace: "
+                    "firefly_clamp must be >= 0";
         return r;
     }
 
@@ -1385,9 +1397,10 @@ OptixRenderer::render_pathtrace(const rr::scene::Scene& scene,
     params.height       = height;
     params.camera       = gpu_cam;
     params.scene_handle = gas_result.gas.handle();
-    params.spp          = spp;
-    params.max_bounces  = max_bounces;
-    params.seed         = seed;
+    params.spp           = spp;
+    params.max_bounces   = max_bounces;
+    params.seed          = seed;
+    params.firefly_clamp = firefly_clamp;  // PT-P.24
     // Default `observer` + `params` (|beta| = 0) keep the
     // Doppler / searchlight stack at identity. Caller-driven
     // observer setup lives in a future slice.
@@ -1470,7 +1483,8 @@ OptixRenderer::render_pathtrace_progressive(
     int width, int height,
     int max_bounces,
     unsigned int seed,
-    const std::vector<int>& checkpoint_samples) noexcept {
+    const std::vector<int>& checkpoint_samples,
+    float firefly_clamp) noexcept {
     PathtraceProgressiveResult R;
 
     if (width <= 0 || height <= 0) {
@@ -1481,6 +1495,13 @@ OptixRenderer::render_pathtrace_progressive(
     if (max_bounces < 1) {
         R.message = "OptixRenderer::render_pathtrace_progressive: "
                     "max_bounces must be >= 1";
+        return R;
+    }
+    // PT-P.24: lower-bound rejection on the firefly_clamp
+    // parameter. Same shape as render_pathtrace's check.
+    if (firefly_clamp < 0.0f) {
+        R.message = "OptixRenderer::render_pathtrace_progressive: "
+                    "firefly_clamp must be >= 0";
         return R;
     }
     if (checkpoint_samples.empty()) {
@@ -1679,9 +1700,10 @@ OptixRenderer::render_pathtrace_progressive(
         params.height       = height;
         params.camera       = gpu_cam;
         params.scene_handle = gas_result.gas.handle();
-        params.spp          = 1;
-        params.max_bounces  = max_bounces;
-        params.seed         = seed;
+        params.spp           = 1;
+        params.max_bounces   = max_bounces;
+        params.seed          = seed;
+        params.firefly_clamp = firefly_clamp;  // PT-P.24
         params.sample_index =
             static_cast<std::uint32_t>(sample_index);
 
@@ -3076,7 +3098,8 @@ OptixRenderer::render_pathtrace(const rr::scene::Scene& /*scene*/,
                                 int /*height*/,
                                 int /*spp*/,
                                 int /*max_bounces*/,
-                                unsigned int /*seed*/) noexcept {
+                                unsigned int /*seed*/,
+                                float /*firefly_clamp*/) noexcept {
     Result r;
     r.ok = false;
     r.message =
@@ -3094,7 +3117,8 @@ OptixRenderer::render_pathtrace_progressive(
     int /*height*/,
     int /*max_bounces*/,
     unsigned int /*seed*/,
-    const std::vector<int>& /*checkpoint_samples*/) noexcept {
+    const std::vector<int>& /*checkpoint_samples*/,
+    float /*firefly_clamp*/) noexcept {
     PathtraceProgressiveResult r;
     r.ok = false;
     r.message =

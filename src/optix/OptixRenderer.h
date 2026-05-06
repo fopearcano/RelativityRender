@@ -217,7 +217,8 @@ public:
         const rr::scene::Scene& scene,
         int width, int height,
         int spp, int max_bounces,
-        unsigned int seed = 0u) noexcept;
+        unsigned int seed = 0u,
+        float firefly_clamp = 0.0f) noexcept;  // PT-P.24
 
     // Stage 20J progressive checkpoint snapshot. One per
     // requested element of `checkpoint_samples` argument to
@@ -277,7 +278,8 @@ public:
         int width, int height,
         int max_bounces,
         unsigned int seed,
-        const std::vector<int>& checkpoint_samples) noexcept;
+        const std::vector<int>& checkpoint_samples,
+        float firefly_clamp = 0.0f) noexcept;  // PT-P.24
 
     // Stage 20K basic direct-lighting render. Same first-non-
     // empty-mesh selection + GAS-build path as render_mesh_scene.

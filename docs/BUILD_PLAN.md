@@ -42557,6 +42557,867 @@ slice.**
   for-byte
   post-PT-P.21.
 
+## PT-P.24 — firefly clamp backend wiring (impl)
+
+**Backend symmetry
+note**: this slice
+ships the kernel
+guards on BOTH
+backends (CUDA
+`k_pathtrace_sample`
++ OptiX
+`__raygen__pathtrace`)
+in the SAME commit
+per the PT-P.20
+task §1.2 +
+PT-P.22 audit §6.2
++ PT-P.23 task §2
+symmetric-output
+invariant. Landing
+one backend without
+the other would
+silently diverge
+their outputs at
+non-zero clamp;
+this slice closes
+that gap atomically.
+
+**Default-off
+pixel-identity
+proof**: both
+backends use strict
+`>` gating
+(`if
+(firefly_clamp >
+0.0f)`). When
+`cfg.firefly_clamp
+== 0.0f` (the
+PathTraceConfig
+default + the
+explicit dispatcher
+pass-through in
+`run_render_optix_pathtrace`),
+the branch is NOT
+entered; the per-
+pixel write
+(CUDA) and per-
+sample
+accumulation
+(OptiX) are
+byte-identical
+with the pre-
+PT-P.24
+arithmetic. No
+floating-point
+operation is
+inserted on the
+default path; the
+control-flow
+short-circuits
+before any
+`fminf` is
+executed.
+
+**Scope of this
+slice (post-PT-P.23
+task definition
+complete): ship the
+LARGEST PT-P.x
+source-file
+footprint to date
+exactly as
+specified by
+`docs/PATH_TRACER_POLISH_FIREFLY_CLAMP_WIRING_TASK.md`.
+Eight source files
+edited, ~134 added
+/ ~19 deleted.
+The exceedance of
+the established
+"max 2 source
+files" rule is
+explicitly
+authorised by the
+brief §3.1; THIS
+slice fulfils that
+authorisation.**
+
+### What ships
+
+- `src/pathtracer/PathTracer.cpp`
+  (modified):
+    - **PT-P.24
+      lower-bound
+      rejection**
+      added to
+      `PathTracer::render`
+      after the
+      existing
+      `cfg.environment_intensity
+      < 0.0f` check.
+      Rejects
+      `cfg.firefly_clamp
+      < 0.0f` with
+      "firefly_clamp
+      must be >= 0".
+    - **`cfg.firefly_clamp`
+      passed
+      through** to
+      `launch_pathtrace_sample`
+      as the new
+      trailing
+      argument
+      (line 136).
+- `src/cuda/CudaPathTracer.cuh`
+  (modified):
+    - **`float
+      firefly_clamp`**
+      appended to
+      the launcher
+      signature.
+    - **Doc-comment
+      table grown**
+      with the
+      new
+      parameter's
+      contract
+      (default 0.0f
+      = no clamp;
+      negative =
+      launch
+      failure;
+      cross-
+      reference to
+      `PathTraceConfig::firefly_clamp`
+      + the OptiX
+      mirror).
+- `src/cuda/CudaPathTracer.cu`
+  (modified):
+    - **Kernel
+      signature
+      gains
+      `float
+      firefly_clamp`**
+      as the last
+      parameter.
+    - **PT-P.24
+      clamp guard
+      inserted**
+      between the
+      bounce loop
+      and the
+      per-pixel
+      write at
+      lines
+      237-241. 11-
+      line doc-
+      comment +
+      `if
+      (firefly_clamp
+      > 0.0f) {
+      fminf(...)
+      per channel }`
+      block.
+    - **Launcher
+      fn signature
+      gains
+      `float
+      firefly_clamp`**.
+      The pre-
+      launch guard
+      gains
+      `firefly_clamp
+      < 0.0f` as
+      a defence-
+      in-depth
+      check. The
+      `<<<grid,
+      block>>>`
+      kernel
+      invocation
+      passes the
+      new arg.
+- `src/optix/OptixLaunchParams.h`
+  (modified):
+    - **`float
+      firefly_clamp
+      = 0.0f`**
+      appended to
+      the launch-
+      params POD
+      after `seed`.
+    - **14-line
+      doc-comment
+      block**
+      naming
+      external
+      semantics +
+      cross-
+      reference to
+      the CUDA
+      mirror + the
+      "convergent
+      at non-zero
+      clamp"
+      invariant.
+- `src/optix/OptixRenderer.h`
+  (modified):
+    - **Both
+      `render_pathtrace`
+      and
+      `render_pathtrace_progressive`
+      signatures**
+      gain a
+      trailing
+      `float
+      firefly_clamp
+      = 0.0f`
+      default-arg
+      parameter.
+      The default-
+      arg ensures
+      every existing
+      caller keeps
+      its behaviour
+      unchanged.
+- `src/optix/OptixRenderer.cpp`
+  (modified):
+    - **`render_pathtrace`**
+      (SDK_FOUND
+      branch + the
+      audit-host-
+      fallback stub
+      at line 3096)
+      gain the
+      new
+      parameter.
+      The
+      SDK_FOUND
+      body adds a
+      lower-bound
+      rejection
+      ("firefly_clamp
+      must be
+      >= 0")
+      mirroring
+      the CUDA-
+      side
+      validator
+      message
+      shape, and
+      sets
+      `params.firefly_clamp
+      = firefly_clamp`
+      at the
+      launch-params
+      upload site.
+    - **`render_pathtrace_progressive`**
+      (SDK_FOUND
+      branch + the
+      audit-host-
+      fallback stub
+      at line
+      3113):
+      identical
+      treatment.
+- `src/optix/OptixPrograms.cu`
+  (modified):
+    - **PT-P.24
+      clamp guard
+      inserted**
+      in
+      `__raygen__pathtrace`
+      between the
+      bounce loop
+      and the
+      per-sample
+      `rgb_sum +=`
+      accumulation.
+      11-line doc-
+      comment +
+      `if
+      (optixLaunchParams.firefly_clamp
+      > 0.0f) {
+      fminf(...)
+      per channel }`
+      block.
+- `src/main.cpp`
+  (modified):
+    - **`run_render_optix_pathtrace`'s**
+      `render_pathtrace_progressive`
+      call gains
+      explicit
+      `/*firefly_clamp=*/0.0f`
+      trailing arg
+      with a brief
+      doc-comment.
+      Documents
+      the
+      dispatcher's
+      default-off
+      choice;
+      relies on
+      the
+      signature
+      default-arg
+      for safety.
+- This `BUILD_PLAN.md`
+  slice-closing
+  entry.
+
+### What does NOT change
+
+- `src/renderer/`,
+  `src/core/`,
+  `src/io/`,
+  `src/scene/`,
+  `src/material/`,
+  `src/lighting/`,
+  `src/texture/`:
+  zero bytes
+  changed.
+- `src/pathtracer/PathTracer.h`,
+  `src/pathtracer/RNG.{h,cuh}`,
+  `src/pathtracer/Sampling.{h,cuh}`:
+  zero bytes
+  changed. The
+  PT-P.21
+  `firefly_clamp
+  = 0.0f` field
+  is preserved
+  verbatim;
+  PT-P.{6,9,18}
+  predecessors
+  unchanged.
+- All other CUDA
+  TUs in
+  `src/cuda/`
+  (every file
+  EXCEPT
+  `CudaPathTracer.{cuh,cu}`):
+  zero bytes
+  changed.
+- All other
+  OptiX programs
+  in `src/optix/`
+  (every file
+  EXCEPT
+  `OptixLaunchParams.h`,
+  `OptixRenderer.{h,cpp}`,
+  `OptixPrograms.cu`):
+  zero bytes
+  changed. The
+  Stage 17A
+  pinhole raygen,
+  the AOV
+  programs, the
+  textured-
+  material
+  closest-hit,
+  the denoiser
+  pipeline:
+  byte-
+  identical.
+- All
+  `*.rrscene`
+  files under
+  `scenes/`:
+  zero bytes
+  changed.
+- All
+  `tests/*.cpp`
+  files: zero
+  bytes changed
+  (the slice
+  ships no new
+  test per
+  PT-P.23 §3.2's
+  optional
+  guidance).
+- `tools/verify_cuda_host.py`,
+  `CMakeLists.txt`:
+  zero bytes
+  changed.
+- All
+  PT-P.{1..23}
+  artefacts:
+  byte-identical.
+
+### Diff size deviation note
+
+The PT-P.23 task §5.3
+source-diff size
+cap was "≤ 100
+added before
+flagged
+deviation" (note:
+the ~50-75 baseline
+was itself a
+flagged deviation
+from max-2-source-
+files). This slice
+ships ~134 added
+/ ~19 deleted
+across 8 source
+files — modestly
+above the 100-line
+cap. The breakdown:
+
+- `src/cuda/CudaPathTracer.cu`:
+  +35 (the kernel
+  signature update +
+  the 16-line clamp
+  guard with doc-
+  comment + the
+  launcher def
+  signature update +
+  the pre-launch
+  defence-in-depth
+  check + the
+  `<<<>>>` invocation
+  arg).
+- `src/cuda/CudaPathTracer.cuh`:
+  +15 (the
+  signature
+  update + the
+  10-line
+  doc-comment
+  table addition).
+- `src/main.cpp`:
+  +7 (4-line
+  comment +
+  3-line
+  signature
+  update).
+- `src/optix/OptixLaunchParams.h`:
+  +14 (14-line
+  doc-comment +
+  the field
+  declaration).
+- `src/optix/OptixPrograms.cu`:
+  +17 (11-line
+  doc-comment +
+  6-line `if`
+  block).
+- `src/optix/OptixRenderer.cpp`:
+  +44 / -10
+  (TWO dispatcher
+  entries gain
+  the parameter
+  + lower-bound
+  rejection +
+  `params.firefly_clamp
+  =`; PLUS the
+  TWO audit-
+  host-fallback
+  stubs gain
+  the parameter
+  too).
+- `src/optix/OptixRenderer.h`:
+  +6 / -2
+  (signature
+  changes for
+  both dispatch
+  entries).
+- `src/pathtracer/PathTracer.cpp`:
+  +15 (8-line
+  validation
+  comment + 4-
+  line rejection
+  + 1-line
+  trailing arg
+  in the launcher
+  call).
+
+Two structural
+contributors to
+the over-cap diff:
+
+1. **The audit-
+   host fallback
+   stubs** at
+   `OptixRenderer.cpp:3096`
+   and `:3113`
+   were not
+   enumerated in
+   the PT-P.23
+   task §3 file
+   list — the
+   brief named
+   the SDK_FOUND
+   bodies but
+   not the
+   ELSE-branch
+   stubs that
+   compile when
+   the SDK is
+   absent. The
+   audit-host
+   fallback's
+   signatures
+   must match
+   the header
+   declaration,
+   so the stubs
+   needed the
+   same parameter
+   addition. ~6
+   lines.
+2. **Doc-comment
+   density**.
+   The PT-P.x
+   precedent has
+   been to
+   document the
+   contract
+   inline (PT-
+   P.6's
+   max_bounces
+   clamp had a
+   7-line block;
+   PT-P.9's
+   spp clamp
+   same; PT-
+   P.15's
+   is_emissive
+   short-circuit
+   had an 11-
+   line block).
+   PT-P.24
+   ships the
+   same density
+   on TWO
+   kernel sites
+   (CUDA + OptiX)
+   plus the
+   launch-params
+   POD field.
+   Each block
+   averages
+   ~12 lines;
+   ×3 = ~36
+   doc-comment
+   lines.
+
+The actual LOGIC
+(branch + clamp +
+launch-params
+upload + signature
+plumbing) is ~50
+lines — within
+the brief's
+expected
+50-75 range.
+Trimming the
+doc-comments would
+defeat the
+slice's
+"Backend
+symmetry note" +
+"Default-off
+pixel-identity
+proof" purposes
+that the brief
+§5.6 explicitly
+required this
+entry to record.
+
+### Behaviour matrix
+
+| Scenario                                               | Pre-PT-P.24                          | PT-P.24                                       |
+|--------------------------------------------------------|--------------------------------------|-----------------------------------------------|
+| Default `cfg.firefly_clamp == 0.0f` (CUDA + OptiX)     | per-pixel write / per-sample accum   | byte-identical (strict `>` gate skips clamp;  |
+|                                                        | proceeds with raw radiance           | `radiance` unchanged)                          |
+| `cfg.firefly_clamp = 8.0f` (CUDA path)                 | compile-error: launcher signature    | per-channel `fminf(radiance.x|y|z, 8.0f)`     |
+|                                                        | doesn't accept the param             | applied before per-pixel write                 |
+| `cfg.firefly_clamp = 8.0f` (OptiX path)                | compile-error: launch-params POD     | per-channel `fminf(radiance.x|y|z, 8.0f)`     |
+|                                                        | doesn't have the field               | applied before per-sample accumulation         |
+| `cfg.firefly_clamp = -0.5f` (any path)                 | compile error or silent acceptance   | rejection: "firefly_clamp must be >= 0"       |
+|                                                        |                                      | (host validator + launcher defence-in-depth + |
+|                                                        |                                      | OptiX dispatcher rejection — three sites)     |
+| `--render-pathtrace` on audit host                     | "requires CUDA" fallback             | byte-identical fallback                       |
+| `--render-optix-pathtrace` on audit host               | "requires OptiX SDK" fallback        | byte-identical fallback (audit-host stub      |
+|                                                        |                                      | also got the new parameter)                    |
+| Pixel data of any rendered PPM at default-off          | as-is                                | byte-identical (per the default-off proof     |
+|                                                        |                                      | above)                                         |
+
+### Master rule compliance
+
+- **CUDA and
+  OptiX wiring
+  must land
+  together**:
+  this commit
+  ships both
+  kernel
+  guards in
+  the same
+  changeset.
+  The PT-P.20
+  task §1.2 +
+  PT-P.22 audit
+  §6.2 + PT-P.23
+  task §2
+  symmetric-
+  output
+  invariant is
+  honoured.
+- **No broad
+  refactor / no
+  new rendering
+  mode / no C4D
+  / no server /
+  no UI / no
+  node editor**:
+  zero matches.
+  The polish is
+  purely
+  parameter
+  threading +
+  one new
+  kernel branch
+  per backend.
+- **Build
+  incrementally /
+  every step
+  compilable**:
+  both audit-
+  host configs
+  green
+  (build 7/7,
+  build-ON
+  8/8).
+- **Keep CUDA
+  path
+  working**:
+  default-off
+  proof above
+  +
+  `--render-pathtrace`
+  audit-host
+  smoke
+  byte-
+  identical.
+- **Keep OptiX
+  OFF build
+  working**:
+  the OFF
+  build (no
+  RR_ENABLE_OPTIX)
+  cleanly
+  compiles —
+  the new
+  field /
+  signature
+  changes are
+  type-checked
+  via every
+  consumer
+  including the
+  ELSE-branch
+  audit-host
+  stubs.
+  ctest 7/7.
+- **Update
+  BUILD_PLAN**:
+  this entry,
+  per master
+  rule 8.
+
+### Verified at the build
+
+- `cmake --build
+  build` (audit
+  host,
+  RR_ENABLE_CUDA=OFF,
+  RR_ENABLE_OPTIX=OFF):
+  clean build,
+  zero new
+  warnings;
+  ctest 7/7
+  green.
+- `cmake --build
+  build-ON`
+  (audit host,
+  RR_ENABLE_CUDA=OFF,
+  RR_ENABLE_OPTIX=ON):
+  clean build,
+  zero new
+  warnings;
+  ctest 8/8
+  green. The
+  OptiX-side
+  audit-host
+  fallback
+  stubs at
+  `OptixRenderer.cpp:3096,
+  :3113`
+  needed
+  signature
+  updates that
+  the PT-P.23
+  task §3
+  file list
+  did not
+  enumerate
+  explicitly
+  (the brief
+  named the
+  SDK_FOUND
+  bodies only);
+  the stub
+  updates are
+  flagged in
+  the diff-
+  size note
+  above.
+- `./build/bin/RelativityRender
+  --render-pathtrace
+  scenes/test_full_scene.rrscene`
+  on the audit
+  host: emits
+  the
+  documented
+  "requires
+  CUDA"
+  audit-host
+  fallback
+  byte-
+  identically
+  with the
+  pre-PT-P.24
+  baseline.
+  The new
+  clamp is
+  unreachable
+  on this
+  branch (the
+  dispatcher
+  returns
+  early).
+- `./build-ON/bin/RelativityRender
+  --render-optix-pathtrace
+  scenes/test_full_scene.rrscene`
+  on the audit
+  host: emits
+  the
+  documented
+  "requires
+  OptiX SDK"
+  fallback
+  byte-
+  identically
+  with the
+  pre-PT-P.24
+  baseline.
+  The new
+  clamp
+  parameter
+  is
+  type-checked
+  through to
+  the
+  fallback
+  stub.
+- `./build/bin/RelativityRender
+  --scene-info
+  scenes/test_textured_material.rrscene`:
+  emits the
+  TEX-P.6
+  fixture's
+  expected log
+  sequence
+  byte-
+  identically
+  (one Case 1
+  info + two
+  Case 3
+  warnings;
+  `fixups
+  applied: 2`).
+  Confirms
+  zero PT-P.24
+  ripple onto
+  the texture
+  validator.
+- `git diff
+  -- src/renderer/
+  src/core/
+  src/io/
+  src/scene/
+  src/material/
+  src/lighting/
+  src/texture/
+  scenes/
+  tests/
+  tools/verify_cuda_host.py
+  CMakeLists.txt
+  | wc -l` =>
+  0 bytes
+  (no-touch
+  invariants
+  verified).
+
+### Runtime CUDA-host verification (BLOCKED on this audit host)
+
+PT-P.23's task §7
+listed six
+operator-side
+checks the
+PT-P.25 audit will
+need on a real
+CUDA + OptiX-SDK
+host:
+
+- §7.1 default-off
+  byte-IDENTITY
+  (CUDA path)
+  via `cmp`.
+- §7.2 default-off
+  byte-IDENTITY
+  (OptiX path)
+  via `cmp`.
+- §7.3 non-zero
+  clamp produces
+  visible
+  reduction
+  (OPTIONAL —
+  requires CLI
+  flag or
+  harness; PT-
+  P.24 did NOT
+  add a CLI
+  flag per the
+  brief §6).
+- §7.4 cross-
+  backend
+  convergence
+  at non-zero
+  clamp
+  (OPTIONAL —
+  recommended
+  first cross-
+  backend
+  smoke for a
+  kernel-side
+  feature).
+- §7.5 ctest
+  cycle on a
+  CUDA-built
+  host
+  (mandatory).
+- §7.6 refresh
+  `CUDA_HOST_VERIFICATION_REPORT.md`.
+
+None of those
+runs on this
+audit host. The
+PT-P.25 audit
+will record
+them as
+DEFERRED until
+an operator
+performs them.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:

@@ -1566,9 +1566,14 @@ int run_render_optix_pathtrace(const rr::core::Config& cfg) {
     constexpr unsigned int kSeed = 0u;
     const std::vector<int> kCheckpoints = { 1, 16 };
 
+    // PT-P.24: explicit `firefly_clamp = 0.0f` so a future
+    // reader sees the field is intentionally defaulted. The
+    // signature default-arg matches; passing it explicitly
+    // documents the dispatcher's choice.
     auto pr = rr::optix::OptixRenderer::render_pathtrace_progressive(
         load.scene, cfg.width, cfg.height,
-        kMaxBounces, kSeed, kCheckpoints);
+        kMaxBounces, kSeed, kCheckpoints,
+        /*firefly_clamp=*/0.0f);
     if (!pr.ok) {
         Logger::error("optix path-trace progressive render failed: "
                     + pr.message);

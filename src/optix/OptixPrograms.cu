@@ -930,6 +930,23 @@ extern "C" __global__ void __raygen__pathtrace() {
             ray.direction = world_dir;
         }
 
+        // PT-P.24: per-channel firefly clamp on the per-sample
+        // radiance, mirroring the CUDA path-tracer kernel's
+        // clamp at the same point in its integrator (per-sample
+        // radiance, pre-accumulation). Strict `>` gating
+        // ensures `firefly_clamp == 0.0f` (the
+        // PathTraceConfig + OptixLaunchParams default) is a
+        // no-op at the control-flow level — the branch is not
+        // entered and `radiance` is unchanged. The two
+        // backends apply the same clamp expression at the
+        // same point so their outputs remain convergent at
+        // non-zero clamp.
+        if (optixLaunchParams.firefly_clamp > 0.0f) {
+            radiance.x = fminf(radiance.x, optixLaunchParams.firefly_clamp);
+            radiance.y = fminf(radiance.y, optixLaunchParams.firefly_clamp);
+            radiance.z = fminf(radiance.z, optixLaunchParams.firefly_clamp);
+        }
+
         rgb_sum.x += radiance.x;
         rgb_sum.y += radiance.y;
         rgb_sum.z += radiance.z;

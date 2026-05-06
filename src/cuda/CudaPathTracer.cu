@@ -150,7 +150,8 @@ __global__ void k_pathtrace_sample(float*           pixels,
                                    unsigned int     seed,
                                    unsigned int     sample_index,
                                    Vec3             env_color,
-                                   float            env_intensity) {
+                                   float            env_intensity,
+                                   float            firefly_clamp) {
     const int x = blockIdx.x * blockDim.x + threadIdx.x;
     const int y = blockIdx.y * blockDim.y + threadIdx.y;
     if (x >= width || y >= height) return;
@@ -234,6 +235,25 @@ __global__ void k_pathtrace_sample(float*           pixels,
         ray.direction = world_dir;
     }
 
+    // PT-P.24: per-channel firefly clamp on the per-sample
+    // radiance. Strict `>` gating: when `firefly_clamp == 0.0f`
+    // (the PathTraceConfig default), the branch is not taken
+    // and `radiance` is unchanged; the resulting per-pixel
+    // write is byte-identical with the pre-PT-P.24 arithmetic.
+    // When `firefly_clamp > 0.0f`, each channel is clamped via
+    // `fminf` before being written. The branch is uniform
+    // per-warp (every pixel in a launch reads the same
+    // `firefly_clamp`), so no warp divergence is introduced.
+    // The OptiX path-trace raygen mirrors this clamp at the
+    // same point in its integrator (per-sample radiance,
+    // pre-accumulation) so the two backends' outputs remain
+    // convergent at non-zero clamp.
+    if (firefly_clamp > 0.0f) {
+        radiance.x = fminf(radiance.x, firefly_clamp);
+        radiance.y = fminf(radiance.y, firefly_clamp);
+        radiance.z = fminf(radiance.z, firefly_clamp);
+    }
+
     const int idx = (y * width + x) * 4;
     pixels[idx + 0] = radiance.x;
     pixels[idx + 1] = radiance.y;
@@ -251,9 +271,15 @@ bool launch_pathtrace_sample(float*                   device_sample_pixels,
                              unsigned int             seed,
                              unsigned int             sample_index,
                              rr::math::Vec3           env_color,
-                             float                    env_intensity) {
+                             float                    env_intensity,
+                             float                    firefly_clamp) {
+    // PT-P.24: defence-in-depth on the host validator's
+    // `firefly_clamp >= 0.0f` rejection. The host-side
+    // `PathTracer::render` already returns an error message
+    // for negative values; the launcher catches a caller that
+    // bypasses that validator.
     if (device_sample_pixels == nullptr || width <= 0 || height <= 0
-     || max_bounces < 0) {
+     || max_bounces < 0 || firefly_clamp < 0.0f) {
         return false;
     }
 
@@ -287,7 +313,8 @@ bool launch_pathtrace_sample(float*                   device_sample_pixels,
     k_pathtrace_sample<<<grid, block>>>(device_sample_pixels, width, height,
                                         view, max_bounces, seed,
                                         sample_index,
-                                        env_color, env_intensity);
+                                        env_color, env_intensity,
+                                        firefly_clamp);
     if (cudaGetLastError() != cudaSuccess) {
         (void)cudaGetLastError();
         return false;

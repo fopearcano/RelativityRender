@@ -145,6 +145,20 @@ struct OptixLaunchParams {
     std::int32_t  max_bounces  = 1;
     std::uint32_t seed         = 0;
 
+    // PT-P.24: per-channel firefly clamp on the per-sample
+    // radiance, mirroring the CUDA path-tracer kernel's
+    // `firefly_clamp` parameter. 0.0f disables the clamp
+    // (default; matches `PathTraceConfig::firefly_clamp`'s
+    // PT-P.21 default exactly); > 0 produces a per-channel
+    // `fminf(radiance.x|y|z, firefly_clamp)` in
+    // `__raygen__pathtrace` BEFORE the per-sample
+    // `rgb_sum +=` accumulation. Both backends apply the same
+    // clamp expression at the same point in their integrators
+    // so their outputs remain convergent at non-zero clamp.
+    // See `OptixRenderer::render_pathtrace*`'s
+    // `firefly_clamp` parameter for the host-side wiring.
+    float         firefly_clamp = 0.0f;
+
     // ---- Stage 20K direct-lighting state ----
     //
     // Used by the radiance closest-hit when the SBT hit-record
