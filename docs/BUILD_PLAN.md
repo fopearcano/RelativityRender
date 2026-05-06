@@ -37875,6 +37875,491 @@ future reader.
   is BLOCKED on
   this host run.
 
+## PT-P.16 — emission handling audit (docs only)
+
+**Scope of this slice
+(post-PT-P.15
+implementation
+complete): write the
+sub-arc-end audit at
+`docs/PATH_TRACER_POLISH_EMISSION_AUDIT.md`
+that walks the seven
+prompt checks and
+records each as PASS
+/ REPAIR / BLOCKED.
+Mirrors PT-P.4
+(step-1 audit),
+PT-P.7 (path-tracer
+arc audit), PT-P.10
+(sample-count audit)
+and PT-P.13 (env-
+fallback audit)
+shapes applied to
+the PT-P.{14,15}
+sub-arc.
+Documentation only;
+zero source changes;
+zero build effect.**
+
+### What ships
+
+- `docs/PATH_TRACER_POLISH_EMISSION_AUDIT.md`
+  (NEW). Seven
+  sections + a
+  verdict + a
+  recommended next
+  step:
+    - **§1 Emission
+      behavior is
+      documented.**
+      PASS. Three
+      sub-sections
+      enumerate the
+      three
+      documentation
+      locations:
+      §1.1 the
+      `is_emissive`
+      predicate's
+      doc-comment
+      block (the
+      canonical
+      spec: truth
+      table +
+      factorisation
+      convention +
+      uniform-per-
+      warp branch
+      property),
+      §1.2 the
+      kernel-side
+      guard's
+      doc-comment
+      paragraph
+      (load-bearing
+      "IEEE-754
+      add-of-zero
+      is exact"
+      claim), §1.3
+      the pre-
+      existing
+      field-level
+      "multiplier
+      on
+      emissionColor"
+      note.
+    - **§2 Emissive
+      hits add
+      radiance
+      consistently.**
+      PASS
+      structurally;
+      BLOCKED
+      empirically.
+      Three sub-
+      checks: §2.1
+      the guard's
+      true-branch
+      executes the
+      identical 6
+      multiplies +
+      3 adds
+      arithmetic
+      verbatim;
+      §2.2 the
+      `test_full_scene.rrscene`
+      fixture's
+      "emissive"
+      material (id
+      3) fires the
+      predicate
+      `true` (truth-
+      table check
+      worked
+      through);
+      §2.3
+      empirical
+      `cmp`-
+      based byte-
+      identity
+      verification
+      requires a
+      CUDA host.
+    - **§3 Non-
+      emissive
+      materials
+      unchanged.**
+      PASS
+      structurally;
+      BLOCKED
+      empirically.
+      §3.1 cites
+      the IEEE-754
+      add-of-zero
+      exactness
+      that makes
+      the pre-/
+      post-slice
+      paths
+      arithmetically
+      equivalent;
+      §3.2
+      tabulates
+      the fixture's
+      five
+      materials
+      (4/5 take
+      the short-
+      circuit; the
+      "emissive"
+      one fires
+      the guard);
+      §3.3 confirms
+      the
+      `MaterialParams{}`
+      default
+      fallback for
+      unmaterialed
+      primitives is
+      non-emissive;
+      §3.4
+      empirical
+      verification
+      deferred to
+      same CUDA-
+      host run.
+    - **§4 GPU-side
+      shading only.**
+      PASS — zero
+      host-side
+      callers.
+      `grep -rn
+      "is_emissive"
+      src/`
+      returns three
+      matches: the
+      predicate
+      declaration
+      in
+      `MaterialTypes.h:71`,
+      one doc-
+      comment
+      reference at
+      `CudaPathTracer.cu:196`,
+      one actual
+      call site at
+      `CudaPathTracer.cu:200`
+      inside the
+      `__global__
+      k_pathtrace_sample`
+      kernel. The
+      Stage-11
+      audit's three
+      grep sweeps
+      re-confirm
+      the same
+      baseline
+      matches; no
+      new host-
+      side per-
+      pixel work.
+    - **§5 Build
+      status.**
+      PASS. Both
+      audit-host
+      configs
+      green
+      (build 7/7,
+      build-ON
+      8/8). Zero
+      new compiler
+      warnings.
+      The
+      `is_emissive`
+      predicate
+      type-checks
+      on the
+      audit-host
+      build through
+      every
+      `MaterialTypes.h`
+      consumer
+      (host-
+      compiled
+      `rr_material`
+      static lib);
+      the `.cu`
+      kernel TU is
+      gated by
+      `RR_ENABLE_CUDA`
+      and not
+      compiled on
+      the audit
+      host but the
+      host-side
+      predicate
+      type-checks
+      cleanly.
+    - **§6 Runtime-
+      deferred
+      CUDA-host
+      status.**
+      BLOCKED on
+      six PPM
+      artefacts
+      (the same
+      set every
+      prior path-
+      tracer audit
+      enumerated)
+      PLUS one
+      PT-P.15-
+      specific
+      empirical
+      check (§6.1).
+      §6.1 records
+      the operator
+      `cmp`-based
+      byte-identity
+      check on
+      `test_full_scene.rrscene`
+      pre-/post-
+      PT-P.15;
+      §6.2 notes
+      an optional
+      emissive-
+      only fixture
+      isolating
+      the true-
+      branch path
+      (NOT
+      required for
+      the verdict);
+      §6.3 confirms
+      no runner
+      update
+      needed.
+    - **§7 Verdict.**
+      Overall PASS.
+      Seven-row
+      summary table
+      (PASS, PASS-
+      structural-/
+      -BLOCKED-
+      empirical
+      (×2), PASS,
+      PASS,
+      BLOCKED).
+      Zero REPAIR
+      items.
+      Notes that
+      the
+      PT-P.{14,15,16}
+      sub-arc
+      closes a
+      clean three-
+      slice cadence
+      and that
+      PT-P.15's
+      flagged 43
+      vs 25
+      diff-size
+      deviation
+      was entirely
+      doc-comment +
+      indentation
+      (LOGIC = 3
+      lines).
+    - **Recommended
+      next step.**
+      Two
+      remaining
+      plan items
+      sequenced:
+      §4.1 RNG
+      stability
+      (FIRST
+      PT-P.x slice
+      that
+      changes
+      every PPM
+      byte-
+      exactly),
+      §4.7 firefly
+      clamp
+      placeholder
+      (largest
+      remaining
+      surface;
+      sequence
+      last).
+      Alternatives:
+      trigger the
+      CUDA-host
+      verification
+      run, apply
+      `is_emissive`
+      to the
+      other
+      emission
+      consumers
+      (CUDA
+      `--render`
+      kernel +
+      OptiX
+      flat-shading
+      branches),
+      or pivot to
+      a different
+      polish arc /
+      master-
+      order item.
+- This `BUILD_PLAN.md`
+  slice-closing entry.
+
+### What does NOT change
+
+- All
+  PT-P.{1..15}
+  artefacts:
+  byte-identical
+  (PT-P.16 is a
+  documentation
+  audit; it
+  touches no
+  `.cu`, `.cpp`,
+  `.h`, `.cuh`,
+  `.rrscene`,
+  `cmake`, or
+  `tests/` file).
+- Build configs:
+  byte-identical.
+  ctest remains
+  7/7 OFF and
+  8/8 ON-audit-
+  host with no
+  rebuild needed.
+- All other
+  docs: PT-P.16
+  only ADDS
+  `PATH_TRACER_POLISH_EMISSION_AUDIT.md`;
+  no edits to
+  `PATH_TRACER_POLISH_PLAN.md`,
+  `PATH_TRACER_POLISH_EMISSION_TASK.md`,
+  the seven
+  earlier
+  PT-P.x task /
+  audit docs,
+  the TEX-P.x
+  arc, or the
+  CUDA-H.x arc.
+
+### Master rule compliance
+
+- **Build
+  incrementally /
+  every step
+  compilable**:
+  docs-only
+  slice; build
+  is trivially
+  preserved.
+- **No CPU
+  per-pixel
+  work**: §4 of
+  the audit doc
+  actively
+  re-verifies
+  this rule is
+  upheld
+  post-PT-P.15
+  (zero
+  host-side
+  `is_emissive`
+  callers; the
+  Stage-11 grep
+  sweeps return
+  the same
+  baseline
+  matches).
+- **Update
+  BUILD_PLAN**:
+  this entry,
+  per master
+  rule 8.
+
+### Verified at the build
+
+- `cmake --build
+  build` (audit
+  host,
+  RR_ENABLE_CUDA=OFF,
+  RR_ENABLE_OPTIX=OFF):
+  re-built
+  cleanly during
+  the audit;
+  ctest 7/7
+  green.
+- `cmake --build
+  build-ON`
+  (audit host,
+  RR_ENABLE_CUDA=OFF,
+  RR_ENABLE_OPTIX=ON):
+  re-built
+  cleanly; ctest
+  8/8 green.
+- `./build/bin/RelativityRender
+  --render-pathtrace
+  scenes/test_full_scene.rrscene`:
+  emits the
+  documented
+  "requires
+  CUDA"
+  audit-host
+  fallback;
+  byte-identical
+  with the
+  pre-PT-P.15
+  baseline.
+- `./build/bin/RelativityRender
+  --scene-info
+  scenes/test_textured_material.rrscene`:
+  emits the
+  TEX-P.6
+  fixture's
+  expected log
+  sequence (1
+  Case 1 info
+  + 2 Case 3
+  warnings;
+  `fixups
+  applied: 2`).
+  Confirms zero
+  PT-P.16
+  ripple onto
+  the texture
+  validator.
+- `git diff
+  dd98d90~1..dd98d90
+  -- src/optix/
+  src/pathtracer/
+  src/renderer/
+  src/main.cpp
+  src/core/
+  src/io/
+  src/scene/
+  src/lighting/
+  scenes/ tests/
+  tools/verify_cuda_host.py
+  CMakeLists.txt
+  | wc -l` =>
+  0 bytes
+  (no-touch
+  invariants
+  verified for
+  the PT-P.15
+  slice).
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
