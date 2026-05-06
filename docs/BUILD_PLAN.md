@@ -40219,6 +40219,479 @@ zero build effect.**
   CUDA TUs:
   zero matches.
 
+## PT-P.20 — firefly clamp placeholder task definition (docs only)
+
+**Scope of this slice
+(post-PT-P.19 audit
+PASS): produce the
+fully-self-contained
+task definition for
+the LAST remaining
+`PATH_TRACER_POLISH_PLAN.md`
+§4 implementation
+item. Per the
+PT-P.19 audit's
+"Recommended next
+step" the natural
+follow-up is §4.7
+firefly clamp
+placeholder.
+Mirrors the
+PT-P.{2,5,8,11,14,17}
+task cadence.
+
+The task brief
+deliberately scopes
+PT-P.21 to a
+FIELD-ONLY
+placeholder (one
+source file edit; ~15
+lines) and DEFERS
+the kernel-guard
+wiring on both
+backends to a
+future PT-P.x slice.
+Reasons: (a) max-
+2-source-files rule
+would be violated
+by the full
+implementation
+(7-8 source files),
+(b) CUDA-OptiX
+symmetry requires
+both backends to
+land together —
+piecewise
+implementation
+would silently
+diverge their
+outputs at non-zero
+clamp, (c) until
+NEE / area-light
+slices ship, no
+visible firefly
+exists to clamp; the
+field is decorative
+today.**
+
+### What ships
+
+- `docs/PATH_TRACER_POLISH_FIREFLY_CLAMP_TASK.md`
+  (NEW). Eight
+  sections + a
+  rationale for
+  the field-only
+  scoping
+  decision:
+    - **§1 Exact
+      issue.**
+      Names the
+      task
+      "Firefly
+      clamp
+      placeholder
+      (`PathTraceConfig`
+      field only;
+      kernel guards
+      deferred)".
+      Sub-sections:
+      §1.1 add
+      `float
+      firefly_clamp
+      = 0.0f` to
+      `PathTraceConfig`
+      with a
+      ~10-18-line
+      doc-comment
+      explaining
+      semantics +
+      default-off
+      rationale +
+      forward-
+      compatibility
+      plan; §1.2
+      explicitly
+      states NO
+      kernel guards
+      (with four
+      reasons); §1.3
+      no new test
+      required.
+    - **§2 Expected
+      behaviour.**
+      Four sub-
+      bullets
+      mirroring
+      the prompt's
+      spec:
+      §2.1 add
+      `firefly_clamp
+      = 0.0f`,
+      §2.2 document
+      as
+      placeholder /
+      default-off,
+      §2.3 default
+      output must
+      remain
+      unchanged
+      (verifiable
+      by
+      `cmp`-based
+      byte-identity
+      on a CUDA
+      host), §2.4
+      optional
+      kernel
+      guards
+      authorised
+      only if
+      strict-`>`-
+      gated and
+      both backends
+      land
+      together;
+      otherwise
+      defer.
+    - **§3 Files
+      likely
+      involved.**
+      Two-row
+      table:
+      `src/pathtracer/PathTracer.h`
+      (~12-22
+      added) +
+      `docs/BUILD_PLAN.md`
+      (slice-closing
+      entry). ONE
+      source file;
+      best PT-P.x
+      footprint to
+      date. §3.1
+      enumerates
+      the 8+
+      files the
+      kernel-
+      guard
+      version
+      WOULD touch
+      (as a
+      negative
+      reference
+      for the
+      implementer
+      who's
+      tempted).
+    - **§4 What
+      must not be
+      touched.**
+      Six sub-
+      sections of
+      explicit
+      no-touch
+      invariants:
+      kernel +
+      launcher code
+      (CUDA +
+      OptiX),
+      path-tracer
+      host
+      orchestration,
+      existing
+      `PathTraceConfig`
+      fields
+      (PT-P.6 /
+      PT-P.9 /
+      PT-P.12 /
+      PT-P.15 /
+      PT-P.18
+      predecessors
+      preserved),
+      every
+      existing PPM
+      byte-
+      identical,
+      CLI surface,
+      other
+      audits / plans.
+    - **§5 PASS
+      criteria.**
+      Seven
+      concrete
+      gates:
+      build green
+      on both
+      audit-host
+      configs,
+      ctest 7/7 +
+      8/8 (the
+      `pathtracer_tests`
+      binary's
+      internal
+      count
+      remains 9 —
+      no new
+      test),
+      source-diff
+      size cap
+      (~12-22
+      added in
+      `.h`; <=25
+      total
+      before
+      flagged
+      deviation),
+      no-touch
+      invariants
+      enforceable
+      by directory-
+      scoped
+      `git diff |
+      wc -l`,
+      audit-host
+      behavioural
+      smoke (the
+      `--render-pathtrace`
+      "requires
+      CUDA"
+      fallback +
+      the TEX-P.6
+      fixture's
+      three-case
+      logs both
+      byte-
+      identical),
+      slice-closing
+      `BUILD_PLAN.md`
+      entry with
+      a "Field-
+      only
+      placeholder
+      scoping
+      note"
+      subsection,
+      master rule
+      compliance.
+    - **§6
+      Runtime-
+      deferred
+      checks.**
+      Simplest
+      runtime
+      posture in
+      the PT-P.x
+      cadence —
+      PT-P.21 has
+      the LEAST
+      runtime
+      surface of
+      any §4 item.
+      Three
+      OPTIONAL
+      CUDA-host
+      checks for
+      a future
+      operator run
+      (default
+      render
+      byte-IDENTITY
+      — the
+      inverse of
+      PT-P.18's
+      mandatory
+      byte-
+      DIFFERENCE
+      check; ctest
+      cycle on a
+      CUDA host;
+      no
+      CUDA-H.x
+      runner
+      update). §6.4
+      PT-P.22's
+      audit
+      runtime
+      posture: no
+      runtime
+      checks
+      needed; the
+      placeholder
+      is fully
+      verifiable
+      on the audit
+      host.
+    - **§7 Out-
+      of-scope.**
+      LAST §4
+      item; after
+      PT-P.21 +
+      PT-P.22 land,
+      the §4
+      polish arc
+      closes. The
+      kernel-guard
+      wiring
+      deferred
+      here is its
+      own future
+      task
+      definition
+      (PT-P.23 /
+      "Wire
+      firefly
+      clamp
+      through both
+      backends");
+      that future
+      slice would
+      touch ~7-8
+      source
+      files +
+      land both
+      backends in
+      the SAME
+      commit so
+      the
+      symmetric-
+      output
+      invariant is
+      preserved.
+    - **§8 Why
+      §4.7 is
+      the safest
+      viable next
+      slice.**
+      Five
+      structural
+      reasons:
+      PT-P.19
+      audit
+      verdict was
+      clean, the
+      change is
+      the smallest
+      possible
+      (one source
+      file edit,
+      ~15 lines),
+      no new
+      pattern
+      required
+      (trivial
+      POD-field
+      addition),
+      the default-
+      off contract
+      is provably
+      safe (the
+      field is
+      declared but
+      not read; no
+      caller can
+      observe a
+      behavioural
+      difference),
+      and the
+      PT-P.x arc
+      closes
+      cleanly
+      (six of
+      seven §4
+      items
+      shipped + a
+      well-defined
+      future
+      sub-arc for
+      the kernel
+      wiring).
+- This `BUILD_PLAN.md`
+  slice-closing entry.
+
+### What does NOT change
+
+- All
+  PT-P.{1..19}
+  artefacts:
+  byte-identical
+  (PT-P.20 is a
+  task
+  definition; it
+  touches no
+  source file).
+- Build configs:
+  byte-identical.
+  ctest remains
+  7/7 OFF and
+  8/8 ON-audit-
+  host with no
+  rebuild needed.
+- All other docs:
+  PT-P.20 only
+  ADDS
+  `PATH_TRACER_POLISH_FIREFLY_CLAMP_TASK.md`;
+  no edits to
+  `PATH_TRACER_POLISH_PLAN.md`,
+  the nine
+  earlier
+  PT-P.x task /
+  audit docs,
+  the TEX-P.x
+  arc, or the
+  CUDA-H.x arc.
+
+### Master rule compliance
+
+- **Build
+  incrementally /
+  every step
+  compilable**:
+  docs-only
+  slice; build
+  is trivially
+  preserved.
+- **Update
+  BUILD_PLAN**:
+  this entry,
+  per master
+  rule 8.
+
+### Verified at the build
+
+- `cmake --build
+  build` + `cmake
+  --build
+  build-ON` were
+  already green
+  at the end of
+  PT-P.19 and
+  remain green;
+  PT-P.20 changed
+  no
+  build-relevant
+  files. ctest
+  7/7 OFF and
+  8/8 ON re-
+  confirmed with
+  no work
+  needed.
+- The task doc's
+  source citations
+  (the verbatim
+  `PathTraceConfig`
+  struct at
+  `PathTracer.h:48-67`,
+  the launcher
+  signature at
+  `CudaPathTracer.cuh:52-60`,
+  the
+  `__raygen__pathtrace`
+  body at
+  `OptixPrograms.cu:817..`)
+  resolve to the
+  current source
+  byte-for-byte
+  post-PT-P.18.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
