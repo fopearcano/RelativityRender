@@ -63,14 +63,43 @@ RR_HD inline Rng make_pixel_rng(std::uint32_t pixel_x,
                                 std::uint32_t pixel_y,
                                 std::uint32_t frame_index,
                                 std::uint64_t global_seed) {
-    // Pack the four inputs into a 64-bit key. The shifts and XORs
-    // below are chosen so swapping x <-> y, x <-> frame, etc.,
-    // produces distinct keys; SplitMix64 then avalanches each bit.
+    // PT-P.18: hash each of the four inputs through SplitMix64
+    // INDIVIDUALLY (with a per-position salt) before xoring them
+    // into the PCG seed key. The pre-PT-P.18 mix shift-and-
+    // xored the inputs into a single 64-bit key (`pixel_y <<
+    // 16` and `frame_index << 0` overlapped in bits [0, 32));
+    // the collision was recovered by the subsequent SplitMix64
+    // + burn-one-step, but the per-input hash makes the mix's
+    // independence explicit and removes the recovery
+    // dependency.
+    //
+    // The salts are required: a naive `splitmix64(seed) ^
+    // splitmix64(pixel_x) ^ splitmix64(pixel_y) ^
+    // splitmix64(frame)` mix has a cancellation bug when two
+    // inputs happen to share a value (e.g. `seed == frame ==
+    // 0` AND `pixel_x == 0`: the four `splitmix64(0)` calls
+    // xor-cancel pairwise to produce `key == 0`). XORing each
+    // input with a distinct 64-bit salt before hashing breaks
+    // the cancellation: even when two inputs are
+    // value-equal, their pre-hash bit patterns differ, so
+    // `splitmix64(input ^ salt_a) != splitmix64(input ^
+    // salt_b)`. The salt values are well-known SplitMix64 /
+    // xxHash mixing constants chosen for their odd-bit-density
+    // and lack of trivial periodicity; they have no relation
+    // to the renderer's authored seeds. The
+    // `test_rng_grid_collision_check()` test
+    // (`tests/pathtracer_tests.cpp`) verifies the 4096-cell
+    // grid has zero state collisions post-PT-P.18.
+    constexpr std::uint64_t kSeedSalt  = 0x9E3779B97F4A7C15ULL;
+    constexpr std::uint64_t kPxSalt    = 0xBF58476D1CE4E5B9ULL;
+    constexpr std::uint64_t kPySalt    = 0x94D049BB133111EBULL;
+    constexpr std::uint64_t kFrameSalt = 0xC2B2AE3D27D4EB4FULL;
+
     const std::uint64_t key =
-          global_seed
-        ^ (static_cast<std::uint64_t>(pixel_x)     << 32u)
-        ^ (static_cast<std::uint64_t>(pixel_y)     << 16u)
-        ^ (static_cast<std::uint64_t>(frame_index)       );
+          splitmix64(static_cast<std::uint64_t>(global_seed)  ^ kSeedSalt)
+        ^ splitmix64(static_cast<std::uint64_t>(pixel_x)      ^ kPxSalt)
+        ^ splitmix64(static_cast<std::uint64_t>(pixel_y)      ^ kPySalt)
+        ^ splitmix64(static_cast<std::uint64_t>(frame_index)  ^ kFrameSalt);
 
     Rng r;
     r.state = splitmix64(key);

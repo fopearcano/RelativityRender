@@ -23,6 +23,7 @@
 #include "math/Vec2.h"
 #include "math/Vec3.h"
 
+#include <algorithm>  // PT-P.18: std::sort for the grid-collision check
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -199,6 +200,57 @@ void test_cosine_hemisphere_pdf() {
                     static_cast<float>(0.5 / rr::math::kPi), 1e-5f));
 }
 
+// PT-P.18: full-grid collision check on the new per-input
+// SplitMix64 seed mix. The pre-PT-P.18 mix had overlapping
+// shifts (`pixel_y << 16` and `frame_index << 0` collided in
+// bits [0, 32)). The existing decorrelation test only checked
+// four adjacent perturbations; this test asserts that every
+// (x, y, sample) cell in a 16x16x4 grid + four seed
+// perturbations produces a distinct PCG state - 4096 calls,
+// every one bit-distinct.
+void test_rng_grid_collision_check() {
+    using namespace rr::pathtracer;
+
+    constexpr int kW       = 16;
+    constexpr int kH       = 16;
+    constexpr int kSpp     = 4;
+    constexpr int kSeeds   = 4;
+    constexpr std::size_t N =
+        static_cast<std::size_t>(kW) * kH * kSpp * kSeeds;
+
+    std::uint64_t states[N];
+    std::size_t idx = 0;
+    for (int s = 0; s < kSeeds; ++s) {
+        for (int sm = 0; sm < kSpp; ++sm) {
+            for (int y = 0; y < kH; ++y) {
+                for (int x = 0; x < kW; ++x) {
+                    const Rng r = make_pixel_rng(
+                        static_cast<std::uint32_t>(x),
+                        static_cast<std::uint32_t>(y),
+                        static_cast<std::uint32_t>(sm),
+                        static_cast<std::uint64_t>(s));
+                    states[idx++] = r.state;
+                }
+            }
+        }
+    }
+
+    // Sort and scan for duplicates. Sort is fine for a
+    // 4096-element host array.
+    std::sort(states, states + N);
+    bool any_dup = false;
+    for (std::size_t i = 1; i < N; ++i) {
+        if (states[i] == states[i - 1]) {
+            any_dup = true;
+            std::fprintf(stderr,
+                "FAIL: duplicate state at index %zu: 0x%016llx\n",
+                i, static_cast<unsigned long long>(states[i]));
+            break;
+        }
+    }
+    RR_CHECK(!any_dup);
+}
+
 }  // namespace
 
 int main() {
@@ -211,6 +263,7 @@ int main() {
     test_cosine_hemisphere_unit_length_and_upper();
     test_cosine_hemisphere_distribution();
     test_cosine_hemisphere_pdf();
+    test_rng_grid_collision_check();
 
     std::fprintf(stderr, "pathtracer_tests: %d/%d passed\n",
                  g_total - g_failed, g_total);
