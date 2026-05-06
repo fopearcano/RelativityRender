@@ -53,4 +53,24 @@ struct MaterialParams {
     bool           useBaseColorTexture = false;  // gate; false uses flat baseColor
 };
 
+// PT-P.15: predicate that returns true iff a material's
+// emission contribution is meaningfully non-zero. Used by the
+// CUDA path tracer (`src/cuda/CudaPathTracer.cu`) to short-
+// circuit the per-bounce emission add on the common (non-
+// emissive) path; the branch is uniform per-warp because
+// `MaterialParams` is shared by every pixel hitting the same
+// surface, so no warp divergence is introduced. Returns false
+// for the default-constructed `MaterialParams{}` (the
+// renderer's fallback for unmaterialed primitives).
+//
+// The convention authored across `MaterialParams` is:
+//   emitted_radiance = emissionColor * emissionStrength
+// where `emissionColor` is the unit-spectrum colour and
+// `emissionStrength` is its scalar multiplier. Both must be
+// non-zero for the material to contribute light.
+[[nodiscard]] RR_HD inline bool is_emissive(const MaterialParams& m) {
+    return m.emissionStrength > 0.0f
+        && (m.emissionColor.x + m.emissionColor.y + m.emissionColor.z) > 0.0f;
+}
+
 }

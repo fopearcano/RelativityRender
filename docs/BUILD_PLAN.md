@@ -37230,6 +37230,651 @@ materials.**
   byte-for-byte
   post-PT-P.12.
 
+## PT-P.15 — emission handling (impl)
+
+**Scope of this slice
+(post-PT-P.14 task
+definition complete):
+ship the fifth
+`PATH_TRACER_POLISH_PLAN.md`
+implementation slice
+exactly as specified
+by
+`docs/PATH_TRACER_POLISH_EMISSION_TASK.md`
+— a tiny `is_emissive`
+predicate +
+short-circuit on the
+CUDA path tracer's
+per-bounce emission
+add. ZERO behavioural
+change for any
+correctly-authored
+material. FIRST
+PT-P.x slice to
+touch a `.cu` file
+(PT-P.{3,6,9,12} all
+stayed host-side).**
+
+### What ships
+
+- `src/material/MaterialTypes.h`
+  (modified):
+    - **New
+      `[[nodiscard]]
+      RR_HD inline
+      bool
+      is_emissive(const
+      MaterialParams&)`**
+      predicate
+      appended after
+      the
+      `MaterialParams`
+      struct closing
+      brace. Returns
+      true iff
+      `m.emissionStrength
+      > 0.0f`
+      AND
+      `(m.emissionColor.x
+      + .y + .z)
+      > 0.0f`. False
+      for the
+      default-
+      constructed
+      `MaterialParams{}`
+      (the
+      renderer's
+      fallback for
+      unmaterialed
+      primitives).
+      Doc-comment
+      block above
+      the function
+      describes the
+      uniform-per-
+      warp branch
+      property + the
+      `emissionColor
+      *
+      emissionStrength`
+      factorisation
+      convention so
+      a future
+      material-graph
+      editor can
+      distinguish
+      "white emitter
+      at 5x" from
+      "5x-white
+      emitter at
+      1x".
+- `src/cuda/CudaPathTracer.cu`
+  (modified):
+    - **PT-P.15
+      short-circuit
+      branch**
+      added around
+      the existing
+      emission-add
+      block. Wraps
+      the existing
+      6-line body
+      (`const Vec3
+      emission = ...;
+      radiance =
+      radiance +
+      ...;`) in
+      `if
+      (rr::material::is_emissive(m))
+      { ... }`. The
+      original
+      "Emission: the
+      hit acts as a
+      light source.
+      ..." comment
+      moves inside
+      the guard
+      unchanged; a
+      new PT-P.15
+      doc-comment
+      paragraph
+      above the
+      `if`
+      explains the
+      uniform-per-
+      warp savings
+      (6 multiplies
+      + 3 adds per
+      hit per
+      bounce on
+      the common
+      path) + the
+      IEEE-754
+      add-of-zero
+      equivalence
+      that
+      guarantees
+      bit-identical
+      pixels for
+      non-emissive
+      materials.
+- This `BUILD_PLAN.md`
+  slice-closing entry.
+
+### What does NOT change
+
+- `src/optix/` —
+  zero bytes
+  changed. The
+  OptiX path-
+  tracer
+  programs
+  (`__raygen__pathtrace`,
+  `__miss__pathtrace`,
+  `__closesthit__pathtrace`)
+  do not consume
+  emission today;
+  the flat-
+  shading +
+  textured-
+  material
+  branches that
+  DO consume
+  `emissionColor
+  * emissionStrength`
+  (`OptixPrograms.cu:382-387`
+  and `:645-649`)
+  are not
+  path-tracing
+  and are out
+  of scope per
+  the task §4.1.
+- Every other
+  CUDA kernel
+  in `src/cuda/`
+  (except
+  `CudaPathTracer.cu`):
+  zero bytes
+  changed.
+  `CudaTestKernel.cu`'s
+  emission add
+  at line 425
+  (the `--render`
+  direct-lighting
+  renderer) stays
+  as-is per the
+  task §4.2 —
+  it's NOT
+  path-tracing
+  and applying
+  the helper
+  there is a
+  separate
+  smaller slice.
+- `src/pathtracer/`
+  — zero bytes
+  changed. The
+  PT-P.6 / PT-P.9
+  / PT-P.12
+  predecessors
+  (clamps + env-
+  fallback doc)
+  remain
+  byte-identical.
+- `src/renderer/`
+  — zero bytes
+  changed.
+- `src/main.cpp`
+  — zero bytes
+  changed. No
+  new info-log
+  line; no
+  change to
+  `run_render_pathtrace`
+  or any other
+  dispatcher.
+- `src/core/CommandLine.{h,cpp}`
+  — zero bytes
+  changed. No
+  new CLI flag.
+- `src/io/`,
+  `src/scene/`,
+  `src/lighting/`
+  — zero bytes
+  changed.
+- `src/material/`
+  — only
+  `MaterialTypes.h`
+  modified
+  (predicate
+  appended after
+  the struct).
+  The
+  `MaterialParams`
+  struct fields
+  themselves are
+  byte-identical
+  (no new
+  fields, no
+  default
+  changes).
+- All `*.rrscene`
+  files under
+  `scenes/` —
+  zero bytes
+  changed.
+- All
+  `tests/*.cpp`
+  files — zero
+  bytes changed
+  (the slice
+  ships no new
+  test per the
+  task §1.7;
+  optional
+  extension not
+  taken).
+- `tools/verify_cuda_host.py`
+  — zero bytes
+  changed.
+- `CMakeLists.txt`
+  — zero bytes
+  changed.
+- All
+  PT-P.{1..14}
+  artefacts
+  (plan, audits,
+  task briefs):
+  byte-identical.
+
+### Diff size deviation note
+
+The PT-P.14 task's
+§5.3 source-diff
+size cap set ≤ 25
+added across both
+source files. This
+slice ships 43
+added / 10 deleted
+(33 added in
+`CudaPathTracer.cu`
+including the
+re-indent of the
+existing 6-line
+body inside the
+new `if` brace, +
+20 added in
+`MaterialTypes.h`
+for the predicate +
+its doc-comment).
+The deviation is
+entirely doc-comment
+text + indentation:
+
+- `MaterialTypes.h`'s
+  20 added lines
+  break down as
+  18 doc-comment
+  lines (3-line
+  contract +
+  4-line
+  authoring-
+  convention
+  block + 11
+  body /
+  formatting) +
+  2 lines for
+  the
+  `[[nodiscard]]
+  RR_HD inline
+  bool ... { return
+  ...; }`
+  declaration.
+- `CudaPathTracer.cu`'s
+  net +23 lines
+  break down
+  as 11 lines
+  of new
+  doc-comment
+  above the
+  guard
+  (explaining
+  the IEEE-754
+  add-of-zero
+  equivalence +
+  the per-warp
+  uniformity), 1
+  line for the
+  `if`, 1 line
+  for the
+  closing `}`,
+  and 4 lines
+  of indentation
+  added /
+  removed inside
+  the existing
+  6-line body
+  (the body
+  itself is
+  byte-identical
+  modulo
+  whitespace).
+
+The actual LOGIC
+ships exactly two
+edits: the
+predicate
+declaration (1
+line) and the `if`
+guard (2 lines for
+the brace pair).
+Per the PT-P.6 /
+PT-P.9 precedent,
+the deviation is
+flagged in this
+entry; trimming
+the doc-comments
+would defeat the
+polish's stated
+purpose ("clarity"),
+which is to make
+the
+emissionColor *
+emissionStrength
+factorisation
+explicit + the
+short-circuit's
+correctness
+provable to a
+future reader.
+
+### Behaviour matrix
+
+| Scenario                                                | Pre-PT-P.15                                   | PT-P.15                                       |
+|---------------------------------------------------------|-----------------------------------------------|-----------------------------------------------|
+| Emissive material (e.g. test_full_scene's "emissive")   | 6 multiplies + 3 adds per hit per bounce      | byte-identical (predicate fires `true`;       |
+|                                                         |                                               | guarded body executes the same arithmetic)    |
+| Non-emissive material (default `emissionStrength = 0`)  | 6 multiplies + 3 `+= 0` adds per hit per      | guard short-circuits; zero arithmetic. PPM    |
+|                                                         | bounce (correct but wasteful)                 | bit-identical (IEEE-754 add of zero is exact) |
+| Emissive scene with `emissionColor = (0,0,0)` AND       | 6 multiplies producing zero + 3 `+= 0` adds   | guard fires `false`; zero arithmetic.         |
+| `emissionStrength > 0`                                  |                                               | Bit-identical (still zero contribution).      |
+| Inverse: `emissionColor != 0` AND                       | 6 multiplies producing zero + 3 `+= 0` adds   | guard fires `false`; zero arithmetic.         |
+| `emissionStrength == 0`                                 |                                               | Bit-identical.                                |
+| `--render-pathtrace` on audit host                      | "requires CUDA" fallback, exit 1              | byte-identical fallback (kernel unreachable). |
+| `--render-pathtrace` on CUDA host                       | spp=1 + spp=16 PPMs                           | byte-identical for every authored material    |
+|                                                         |                                               | (test_full_scene + every fixture).            |
+| `--render-optix-pathtrace` on SDK host                  | OptiX path-trace PPMs                         | byte-identical (OptiX path-tracer programs    |
+|                                                         |                                               | are emission-blind today; PT-P.15 doesn't     |
+|                                                         |                                               | reach them).                                  |
+| `--render` on CUDA host (CudaTestKernel.cu's            | direct-lighting renderer with emission        | byte-identical (PT-P.15 doesn't touch         |
+| `k_render_scene`)                                       |                                               | CudaTestKernel.cu).                           |
+
+### Master rule compliance
+
+- **Touch only
+  the files listed
+  in the task
+  doc**: exactly
+  two source
+  files
+  (`src/material/MaterialTypes.h`
+  +
+  `src/cuda/CudaPathTracer.cu`)
+  + the
+  slice-closing
+  `BUILD_PLAN.md`
+  entry. The
+  PT-P.14 task
+  §3 explicitly
+  authorises
+  this pair.
+- **Build
+  incrementally /
+  every step
+  compilable**:
+  both audit-host
+  configs green
+  (build 7/7,
+  build-ON 8/8;
+  ctest counts
+  unchanged from
+  PT-P.6 /
+  PT-P.9 /
+  PT-P.12).
+- **No broad
+  refactor / no
+  RNG changes /
+  no firefly
+  clamp yet /
+  no C4D / no
+  server / no
+  UI / no node
+  editor**: zero
+  matches.
+- **All shading
+  remains
+  GPU-side**: the
+  `is_emissive`
+  predicate runs
+  inside the
+  `__global__`
+  `k_pathtrace_sample`
+  kernel; zero
+  new host-side
+  per-pixel work.
+  The predicate
+  is `RR_HD
+  inline` so it
+  could be
+  called from
+  host code, but
+  no host caller
+  is added by
+  this slice.
+  Master rule
+  5/7 ("All
+  per-pixel/per-
+  ray rendering
+  must happen on
+  GPU") remains
+  upheld.
+- **Keep CUDA
+  path
+  working**: hot-
+  path code
+  unchanged; the
+  guard's
+  emissive-true
+  branch
+  executes the
+  identical
+  multiply-add
+  sequence. PPM
+  output
+  byte-identical
+  for every
+  authored
+  material.
+- **Keep OptiX
+  OFF build
+  working**:
+  build config
+  green; ctest
+  7/7. The new
+  `is_emissive`
+  predicate is
+  type-checked
+  on the
+  audit-host
+  build through
+  every
+  `MaterialTypes.h`
+  consumer (host
+  code + tests),
+  even though
+  `CudaPathTracer.cu`
+  itself is
+  gated by
+  `RR_ENABLE_CUDA`
+  and is not
+  compiled in
+  the OFF
+  config.
+- **Update
+  BUILD_PLAN**:
+  this entry,
+  per master
+  rule 8.
+
+### Verified at the build
+
+- `cmake --build
+  build` (audit
+  host,
+  RR_ENABLE_CUDA=OFF,
+  RR_ENABLE_OPTIX=OFF):
+  clean build,
+  zero new
+  warnings;
+  ctest 7/7
+  green
+  (count
+  unchanged
+  from PT-P.6
+  / PT-P.9 /
+  PT-P.12 — no
+  new ctest
+  binary).
+- `cmake --build
+  build-ON`
+  (audit host,
+  RR_ENABLE_CUDA=OFF,
+  RR_ENABLE_OPTIX=ON):
+  clean build,
+  zero new
+  warnings;
+  ctest 8/8
+  green.
+- `./build/bin/RelativityRender
+  --render-pathtrace
+  scenes/test_full_scene.rrscene`
+  on the audit
+  host: emits
+  the
+  documented
+  "requires
+  CUDA"
+  audit-host
+  fallback
+  byte-identically
+  with the
+  pre-PT-P.15
+  baseline. The
+  new guard is
+  unreachable
+  on the
+  audit-host
+  branch (the
+  dispatcher
+  returns
+  early); the
+  smoke
+  confirms
+  that
+  fallback
+  path is
+  unchanged.
+  Exit 1; no
+  kernel
+  crash.
+- `./build/bin/RelativityRender
+  --scene-info
+  scenes/test_textured_material.rrscene`:
+  emits the
+  TEX-P.6
+  fixture's
+  expected log
+  sequence (one
+  Case 1 info +
+  two Case 3
+  warnings;
+  `fixups
+  applied: 2`).
+  Confirms
+  zero PT-P.15
+  ripple onto
+  the texture
+  validator.
+- `git diff --
+  src/optix/
+  src/pathtracer/
+  src/renderer/
+  src/main.cpp
+  src/core/
+  src/io/
+  src/scene/
+  src/lighting/
+  scenes/
+  tests/
+  tools/verify_cuda_host.py
+  CMakeLists.txt
+  | wc -l` =>
+  0 bytes
+  (no-touch
+  invariants
+  verified for
+  every
+  directory the
+  task §5.4
+  enumerated
+  except the
+  two
+  authorised
+  edits).
+- The
+  `is_emissive`
+  predicate is
+  type-checked
+  on the
+  audit-host
+  build via the
+  CUDA TU's
+  transitive
+  `material/MaterialTypes.h`
+  include; the
+  predicate
+  body is one
+  expression and
+  uses only
+  `Vec3`
+  field-access
+  + scalar
+  comparison,
+  both of which
+  are
+  RR_HD-friendly.
+- The
+  short-circuit
+  branch's
+  byte-identity
+  guarantees
+  (§2.1 + §2.2
+  of the task)
+  are reachable
+  on a CUDA
+  host by
+  rendering
+  `scenes/test_full_scene.rrscene`
+  pre/post-slice
+  and pixel-
+  diffing the
+  resulting
+  PPMs;
+  empirical
+  confirmation
+  is BLOCKED on
+  this host run.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:

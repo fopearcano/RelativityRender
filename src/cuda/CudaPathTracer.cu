@@ -186,16 +186,29 @@ __global__ void k_pathtrace_sample(float*           pixels,
                                     scene.materials,
                                     scene.material_count);
 
-        // Emission: the hit acts as a light source. Add its
-        // contribution before generating the next bounce so even
-        // bounce == max_bounces - 1 picks it up.
-        const Vec3 emission =
-            Vec3{m.emissionColor.x * m.emissionStrength,
-                 m.emissionColor.y * m.emissionStrength,
-                 m.emissionColor.z * m.emissionStrength};
-        radiance = radiance + Vec3{throughput.x * emission.x,
-                                   throughput.y * emission.y,
-                                   throughput.z * emission.z};
+        // PT-P.15: short-circuit the emission add on non-emissive
+        // surfaces. The kernel-side branch is uniform per-warp
+        // (every pixel hitting the same surface reads the same
+        // MaterialParams), so the cost is one uniform compare and
+        // the savings on the common path are 6 multiplies + 3 adds
+        // per hit per bounce. The `emissionColor * emissionStrength`
+        // factorisation is the convention declared in
+        // `MaterialTypes.h::is_emissive`; both must be non-zero for
+        // the material to contribute light. The non-emissive path
+        // is bit-identical with the pre-PT-P.15 `+= 0` arithmetic
+        // because IEEE-754 addition of zero is exact.
+        if (rr::material::is_emissive(m)) {
+            // Emission: the hit acts as a light source. Add its
+            // contribution before generating the next bounce so even
+            // bounce == max_bounces - 1 picks it up.
+            const Vec3 emission =
+                Vec3{m.emissionColor.x * m.emissionStrength,
+                     m.emissionColor.y * m.emissionStrength,
+                     m.emissionColor.z * m.emissionStrength};
+            radiance = radiance + Vec3{throughput.x * emission.x,
+                                       throughput.y * emission.y,
+                                       throughput.z * emission.z};
+        }
 
         // If this was the last allowed bounce, stop - no point
         // sampling a direction we are not going to trace.
