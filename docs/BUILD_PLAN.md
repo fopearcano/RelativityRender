@@ -39694,6 +39694,531 @@ no CUDA-capable
 GPU /  no OptiX
 SDK).
 
+## PT-P.19 — RNG stability audit (docs only)
+
+**Scope of this slice
+(post-PT-P.18
+implementation
+complete): write the
+sub-arc-end audit at
+`docs/PATH_TRACER_POLISH_RNG_STABILITY_AUDIT.md`
+that walks the nine
+prompt checks and
+records each as PASS
+/ REPAIR / DEFERRED.
+Mirrors PT-P.4
+(step-1 audit),
+PT-P.7 (path-tracer
+arc audit), PT-P.10
+(sample-count audit),
+PT-P.13 (env-fallback
+audit), PT-P.16
+(emission audit)
+shapes applied to
+the PT-P.{17,18}
+sub-arc.
+Documentation only;
+zero source changes;
+zero build effect.**
+
+### What ships
+
+- `docs/PATH_TRACER_POLISH_RNG_STABILITY_AUDIT.md`
+  (NEW). Nine
+  sections + a
+  verdict + a
+  recommended next
+  step:
+    - **§1 RNG
+      behavior is
+      documented.**
+      PASS. Three
+      sub-sections
+      enumerate the
+      three
+      documentation
+      locations: the
+      PT-P.18 inline
+      doc-comment
+      paragraph (the
+      cancellation
+      bug + salt
+      fix + audit
+      trail to the
+      grid-collision
+      test), the
+      pre-existing
+      `pcg32_next` /
+      `splitmix64`
+      doc-comments
+      (PCG-XSH-RR-64-32
+      + SplitMix64
+      reference
+      implementations
+      named), and
+      the
+      function-level
+      `make_pixel_rng`
+      contract
+      doc-comment.
+    - **§2 No
+      time-based
+      seeds exist.**
+      PASS. The
+      hidden-time-
+      source grep
+      sweep
+      (`std::time |
+      std::chrono |
+      std::random_device |
+      ...`) over
+      the seeding
+      code paths
+      returns zero
+      matches. The
+      `<chrono>`
+      reference in
+      `gpu/GpuTiming.h`
+      is for
+      kernel-launch
+      wall-clock
+      TIMING, not
+      seeding;
+      acknowledged
+      as non-seeding.
+    - **§3 Same
+      config
+      produces
+      deterministic
+      sequence.**
+      PASS. Three
+      sub-checks:
+      §3.1 the
+      function body
+      is structurally
+      pure (four
+      arguments + four
+      constexpr
+      salts; no
+      global state),
+      §3.2 the
+      pre-existing
+      `test_rng_determinism`
+      test still
+      passes in
+      both build
+      configs, §3.3
+      the new
+      grid-collision
+      test confirms
+      DIFFERENT
+      inputs produce
+      DIFFERENT
+      outputs across
+      a 4096-cell
+      grid (a
+      stricter form
+      of
+      determinism).
+    - **§4 Pixel/
+      sample seed
+      mixing is
+      explicit.**
+      PASS. The
+      mixing is
+      named in the
+      doc-comment +
+      the four salt
+      constants are
+      visible at
+      `RNG.h:95-99`
+      + the per-input
+      `splitmix64`
+      calls are at
+      `:101-105`. A
+      future
+      maintainer
+      can re-derive
+      the contract
+      from the
+      source alone.
+    - **§5 Build
+      status.** PASS.
+      Both audit-
+      host configs
+      green
+      (build 7/7,
+      build-ON 8/8).
+      Zero new
+      compiler
+      warnings.
+      `pathtracer_tests`'s
+      INTERNAL test
+      count grew 8
+      -> 9 (+1
+      `RR_CHECK` for
+      the new
+      `!any_dup`
+      assertion);
+      ctest binary
+      count
+      unchanged at
+      7/7 / 8/8.
+      §5.1 tabulates
+      the five
+      `make_pixel_rng`
+      call sites
+      across CUDA-
+      gated `.cu`
+      files; all
+      signature-
+      preserved
+      post-slice.
+    - **§6 Expected
+      PPM byte
+      changes are
+      documented.**
+      PASS. Three
+      documentation
+      locations:
+      §6.1 the
+      PT-P.18
+      BUILD_PLAN
+      entry's
+      "Pixel-diff
+      warning"
+      subsection +
+      behaviour
+      matrix
+      tabulating
+      pre-/post
+      states for
+      every PPM,
+      §6.2 the
+      PT-P.17 task
+      §4.5
+      explicitly
+      flagged the
+      expectation
+      ahead of time,
+      §6.3 the
+      PT-P.18 brief-
+      deviation note
+      records the
+      cancellation-
+      bug + test-
+      caught
+      discovery + salt
+      fix as audit
+      trail.
+    - **§7 Runtime
+      CUDA-host
+      verification
+      status.**
+      DEFERRED (=
+      BLOCKED on
+      this audit
+      host). Five
+      operator-side
+      checks named
+      from PT-P.17
+      task §6: §6.1
+      `cmp`-based
+      PPM byte-
+      DIFFERENCE
+      confirmation,
+      §6.2 visual +
+      statistical
+      sanity, §6.3
+      CUDA-host
+      ctest cycle,
+      §6.4
+      CUDA-H.x
+      report
+      refresh, §6.5
+      optional
+      1280×720
+      collision
+      check. §7.1
+      confirms all
+      structural
+      pre-conditions
+      for the
+      checks are
+      met; §7.2
+      gives the
+      operator-side
+      procedure for
+      the future
+      CUDA-host
+      run.
+    - **§8 CPU RNG /
+      path-tracing
+      violations.**
+      ZERO. Four
+      grep sweeps:
+      §8.1 per-pixel
+      for-loops on
+      the host
+      (zero
+      matches),
+      §8.2 spp
+      launcher loop
+      (one match —
+      the same
+      single
+      sample-frame-
+      granularity
+      loop the
+      Stage-11
+      audit
+      classified),
+      §8.3 host-
+      side
+      intersection /
+      closest-hit
+      code (one
+      match — a
+      doc-comment
+      in `Hit.h`),
+      §8.4 RNG-
+      specific
+      use sweep
+      (`make_pixel_rng`
+      callers all
+      device-side
+      OR host-test
+      callers; no
+      production
+      host-side
+      RNG path).
+    - **§9 Verdict.**
+      Overall PASS.
+      Eight-row
+      summary table
+      (PASS, PASS,
+      PASS, PASS,
+      PASS, PASS,
+      DEFERRED,
+      PASS — zero
+      violations).
+      Zero REPAIR
+      items. Notes
+      that the
+      brief-deviation
+      discovery is
+      NOT a repair
+      — it's an
+      audit trail
+      of the test
+      catching a
+      bug in the
+      brief itself;
+      the
+      implementation
+      now correctly
+      satisfies the
+      brief's
+      external-
+      behaviour
+      contract.
+    - **Recommended
+      next step.**
+      ONE remaining
+      plan item:
+      §4.7 firefly
+      clamp
+      placeholder
+      (largest
+      remaining
+      surface;
+      touches BOTH
+      backends).
+      Natural
+      cadence:
+      PT-P.20 task
+      → PT-P.21
+      impl →
+      PT-P.22
+      audit closes
+      the
+      `PATH_TRACER_POLISH_PLAN.md`
+      §4 arc.
+      Alternatives:
+      trigger the
+      CUDA-host
+      verification
+      run, or
+      pivot to a
+      different
+      polish arc /
+      master-order
+      item.
+- This `BUILD_PLAN.md`
+  slice-closing entry.
+
+### What does NOT change
+
+- All
+  PT-P.{1..18}
+  artefacts:
+  byte-identical
+  (PT-P.19 is a
+  documentation
+  audit; it
+  touches no
+  `.cu`, `.cpp`,
+  `.h`, `.cuh`,
+  `.rrscene`,
+  `cmake`, or
+  `tests/` file).
+- Build configs:
+  byte-identical.
+  ctest remains
+  7/7 OFF and
+  8/8 ON-audit-
+  host with no
+  rebuild needed.
+- All other docs:
+  PT-P.19 only
+  ADDS
+  `PATH_TRACER_POLISH_RNG_STABILITY_AUDIT.md`;
+  no edits to
+  `PATH_TRACER_POLISH_PLAN.md`,
+  `PATH_TRACER_POLISH_RNG_STABILITY_TASK.md`,
+  the eight
+  earlier
+  PT-P.x task /
+  audit docs,
+  the TEX-P.x
+  arc, or the
+  CUDA-H.x arc.
+
+### Master rule compliance
+
+- **Build
+  incrementally /
+  every step
+  compilable**:
+  docs-only
+  slice; build
+  is trivially
+  preserved.
+- **No CPU
+  per-pixel
+  work**: §8 of
+  the audit doc
+  actively
+  re-verifies
+  this rule is
+  upheld
+  post-PT-P.18
+  (zero new
+  per-pixel host
+  loops; the
+  test's
+  4096-cell
+  iteration is
+  a host
+  ctest, not
+  per-pixel
+  rendering).
+- **Update
+  BUILD_PLAN**:
+  this entry,
+  per master
+  rule 8.
+
+### Verified at the build
+
+- `cmake --build
+  build` (audit
+  host,
+  RR_ENABLE_CUDA=OFF,
+  RR_ENABLE_OPTIX=OFF):
+  re-built
+  cleanly during
+  the audit;
+  ctest 7/7
+  green
+  (`pathtracer_tests`
+  internal count
+  20034/20034
+  passed).
+- `cmake --build
+  build-ON`
+  (audit host,
+  RR_ENABLE_CUDA=OFF,
+  RR_ENABLE_OPTIX=ON):
+  re-built
+  cleanly; ctest
+  8/8 green.
+- `./build/bin/RelativityRender
+  --render-pathtrace
+  scenes/test_full_scene.rrscene`:
+  emits the
+  documented
+  "requires
+  CUDA"
+  audit-host
+  fallback;
+  byte-identical
+  with the
+  pre-PT-P.18
+  baseline.
+- `./build/bin/RelativityRender
+  --scene-info
+  scenes/test_textured_material.rrscene`:
+  emits the
+  TEX-P.6
+  fixture's
+  expected log
+  sequence (1
+  Case 1 info
+  + 2 Case 3
+  warnings;
+  `fixups
+  applied: 2`).
+  Confirms zero
+  PT-P.19 ripple
+  onto the
+  texture
+  validator.
+- `git diff
+  d2af0c5~1..d2af0c5
+  -- src/cuda/
+  src/optix/
+  src/pathtracer/PathTracer.h
+  src/pathtracer/PathTracer.cpp
+  src/pathtracer/Sampling.h
+  src/pathtracer/Sampling.cuh
+  src/pathtracer/RNG.cuh
+  src/main.cpp
+  src/core/
+  src/io/
+  src/scene/
+  src/material/
+  src/lighting/
+  src/renderer/
+  scenes/
+  tools/verify_cuda_host.py
+  CMakeLists.txt
+  | wc -l` =>
+  0 bytes
+  (no-touch
+  invariants
+  verified for
+  the PT-P.18
+  slice).
+- Hidden
+  time-source
+  grep over
+  `src/pathtracer/`
+  + the three
+  RNG-consuming
+  CUDA TUs:
+  zero matches.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
