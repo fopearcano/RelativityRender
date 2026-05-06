@@ -36683,6 +36683,553 @@ zero build effect.**
   PT-P.{11,12}
   sub-arc).
 
+## PT-P.14 — emission handling task definition (docs only)
+
+**Scope of this slice
+(post-PT-P.13 audit
+PASS): produce the
+fully-self-contained
+task definition for
+the next PT-P.x
+implementation slice.
+Mirrors the PT-P.5
+-> PT-P.6, PT-P.8 ->
+PT-P.9, PT-P.11 ->
+PT-P.12 task ->
+implementation
+cadence. Per
+`docs/PATH_TRACER_POLISH_ENV_FALLBACK_AUDIT.md`
+§7's "Recommended
+next step" the
+natural follow-up is
+`PATH_TRACER_POLISH_PLAN.md`
+§4.5 (emission
+handling): a tiny
+`is_emissive`
+predicate + a kernel-
+side short-circuit
+on the CUDA path
+tracer. NO source
+changes; NO new CLI
+flags; NO kernel
+behaviour change for
+correctly-authored
+materials.**
+
+### What ships
+
+- `docs/PATH_TRACER_POLISH_EMISSION_TASK.md`
+  (NEW). Nine
+  sections + a
+  reference diff:
+    - **§1 Exact
+      issue.** Names
+      the task
+      "Emission
+      handling
+      clarity +
+      per-hit short-
+      circuit
+      (CUDA path
+      tracer
+      only)",
+      points to
+      `PATH_TRACER_POLISH_PLAN.md`
+      §4.5 as the
+      source. Two
+      sub-changes:
+      §1.4 a new
+      `RR_HD inline
+      bool
+      is_emissive(const
+      MaterialParams&)`
+      predicate
+      appended to
+      `MaterialTypes.h`
+      after the
+      struct, §1.5
+      the existing
+      emission-add
+      block in
+      `CudaPathTracer.cu`
+      (lines
+      192-198)
+      wrapped in
+      `if
+      (rr::material::is_emissive(m))
+      { ... }` with
+      a brief
+      comment
+      explaining the
+      short-circuit.
+      §1.6 confirms
+      the
+      `MaterialParams`
+      struct itself
+      is byte-
+      identical
+      (only a free
+      function
+      added). §1.7
+      records the
+      no-new-test
+      recommendation
+      (mirrors
+      PT-P.6 /
+      PT-P.9 /
+      PT-P.12) but
+      notes the
+      implementer
+      MAY optionally
+      extend
+      `tests/renderer_tests.cpp`
+      with a host-
+      only check on
+      `is_emissive(MaterialParams{}) ==
+      false` since
+      the predicate
+      is RR_HD
+      inline.
+    - **§2 Expected
+      behaviour.**
+      Three sub-
+      sections
+      mirroring the
+      prompt's spec
+      bullets:
+      §2.1 emissive
+      hits add
+      radiance
+      consistently
+      (byte-identical
+      multiplication
+      + add for any
+      `is_emissive(m)
+      == true`),
+      §2.2 non-
+      emissive
+      materials
+      remain
+      unchanged
+      (the pre-
+      slice +=0
+      and the post-
+      slice skip
+      both produce
+      bit-identical
+      pixels;
+      IEEE-754
+      addition of
+      zero is
+      exact),
+      §2.3 NO CPU
+      shading (the
+      predicate
+      runs on the
+      device per
+      thread per
+      bounce; the
+      RR_HD inline
+      qualifier
+      means it
+      COULD be
+      called from
+      host code,
+      but no host
+      caller is
+      added by
+      this slice).
+    - **§3 Files
+      likely
+      involved.**
+      Three-row
+      table:
+      `src/material/MaterialTypes.h`
+      (predicate +
+      doc-comment,
+      ~8-12 lines),
+      `src/cuda/CudaPathTracer.cu`
+      (one `if`
+      wrapper + a
+      comment, ~6-8
+      lines net),
+      `docs/BUILD_PLAN.md`
+      (slice-closing
+      entry).
+      Honours the
+      max-2-source-
+      files rule.
+      §3.1 calls
+      out that
+      PT-P.15 is
+      the FIRST
+      PT-P.x slice
+      to touch a
+      `.cu` file
+      (PT-P.{3,6,9,12}
+      were all
+      host-side);
+      explains
+      why the .cu
+      counts as
+      one source
+      file in the
+      cap.
+    - **§4 What
+      must not be
+      touched.**
+      Eight sub-
+      sections of
+      explicit
+      no-touch
+      invariants:
+      OptiX
+      programs +
+      OptiX backend
+      (the OptiX
+      path-tracer
+      programs do
+      not consume
+      emission
+      today; the
+      flat-shading
+      + textured-
+      material
+      branches that
+      DO are not
+      path-tracing
+      and are out
+      of scope),
+      every other
+      CUDA kernel
+      (`CudaTestKernel.cu`'s
+      emission add
+      at line 425
+      stays as-is),
+      path-tracer
+      host code
+      (the PT-P.6
+      / PT-P.9 /
+      PT-P.12
+      predecessors
+      remain
+      byte-identical),
+      dispatcher /
+      CLI, every
+      existing PPM
+      byte-identical
+      across both
+      backends,
+      `PathTraceConfig`
+      field set
+      (no new
+      fields), every
+      `*.rrscene`
+      fixture, and
+      every other
+      audit /
+      plan.
+    - **§5 PASS
+      criteria.**
+      Seven concrete
+      gates: build
+      green on both
+      audit-host
+      configs (the
+      `is_emissive`
+      helper
+      compiles
+      host-side via
+      RR_HD inline
+      so even the
+      OFF config
+      type-checks
+      it), ctest
+      7/7 + 8/8
+      (count
+      unchanged
+      from PT-P.12),
+      source-diff
+      size cap
+      (~8-15 in
+      `MaterialTypes.h`;
+      ~6-12 in
+      `CudaPathTracer.cu`;
+      <= 25 added
+      total before
+      flagged
+      deviation),
+      no-touch
+      invariants
+      enforceable
+      by
+      directory-
+      scoped
+      `git diff |
+      wc -l`,
+      audit-host
+      behavioural
+      smoke (the
+      `--render-pathtrace`
+      "requires
+      CUDA"
+      fallback +
+      the TEX-P.6
+      fixture's
+      three-case
+      logs both
+      byte-
+      identical),
+      slice-closing
+      `BUILD_PLAN.md`
+      entry, and
+      master rule
+      compliance.
+    - **§6
+      Runtime-
+      deferred
+      CUDA-host
+      checks.**
+      First PT-P.x
+      slice with a
+      slice-specific
+      empirical
+      hook (not
+      just "the
+      `requires
+      CUDA`
+      fallback
+      fires the
+      same as
+      before").
+      Three checks
+      for the
+      future CUDA
+      host: §6.1
+      byte-identity
+      on
+      `test_full_scene.rrscene`
+      (the
+      "emissive"
+      material
+      with
+      strength=2.0
+      makes the
+      predicate
+      fire `true`
+      on every
+      hit, and
+      the kernel
+      arithmetic
+      is identical
+      pre/post-
+      slice),
+      §6.2
+      byte-identity
+      on a non-
+      emissive
+      scene
+      (`+= 0` is
+      exact, so
+      skipping the
+      block
+      produces
+      bit-identical
+      pixels),
+      §6.3
+      optional
+      emissive-only
+      scene that
+      isolates the
+      `true`-branch
+      path. §6.4
+      confirms the
+      runner needs
+      no update
+      (the existing
+      `render-pathtrace`
+      command
+      exercises
+      §6.1
+      automatically).
+    - **§7 Out-
+      of-scope.**
+      Explicitly
+      defers
+      `PATH_TRACER_POLISH_PLAN.md`
+      §4.{1,7} to
+      future
+      slices, and
+      OptiX-side
+      emission
+      support +
+      the other
+      `is_emissive`
+      consumers
+      (`CudaTestKernel.cu`,
+      `OptixPrograms.cu`'s
+      flat-shading)
+      to separate
+      future
+      slices.
+    - **§8 Why
+      §4.5 is the
+      safest
+      viable next
+      slice.** Five
+      structural
+      reasons:
+      PT-P.13
+      audit
+      verdict was
+      clean, the
+      predicate is
+      provably
+      equivalent
+      on the
+      common path
+      (IEEE-754
+      addition of
+      zero is
+      exact), no
+      new pattern
+      is required
+      (mirrors
+      `device_texture_view_valid`
+      in
+      `CudaTexture.cuh:64`),
+      the CUDA
+      path tracer
+      is the only
+      path-tracer-
+      side
+      consumer of
+      emission
+      (smallest
+      viable
+      kernel-side
+      slice), and
+      the branch
+      is uniform
+      per-warp (no
+      warp
+      divergence).
+    - **§9
+      Reference
+      diff.** Shows
+      the planned
+      `CudaPathTracer.cu`
+      patch as a
+      `diff` block
+      so the
+      implementer
+      can see the
+      target shape
+      directly.
+- This `BUILD_PLAN.md`
+  slice-closing entry.
+
+### What does NOT change
+
+- All
+  PT-P.{1..13}
+  artefacts:
+  byte-identical
+  (PT-P.14 is a
+  task definition;
+  it touches no
+  source file).
+- Build configs:
+  byte-identical.
+  ctest remains
+  7/7 OFF and
+  8/8 ON-audit-
+  host with no
+  rebuild needed.
+- All other docs:
+  PT-P.14 only
+  ADDS
+  `PATH_TRACER_POLISH_EMISSION_TASK.md`;
+  no edits to
+  `PATH_TRACER_POLISH_PLAN.md`,
+  the seven
+  earlier
+  PT-P.x task /
+  audit docs,
+  the TEX-P.x
+  arc, or the
+  CUDA-H.x arc.
+- The TEX-P.x
+  arc and the
+  PT-P.{1..13}
+  source
+  artefacts:
+  untouched.
+
+### Master rule compliance
+
+- **Build
+  incrementally /
+  every step
+  compilable**:
+  docs-only
+  slice; build
+  is trivially
+  preserved.
+- **Update
+  BUILD_PLAN**:
+  this entry,
+  per master
+  rule 8.
+
+### Verified at the build
+
+- `cmake --build
+  build` + `cmake
+  --build
+  build-ON` were
+  already green
+  at the end of
+  PT-P.13 and
+  remain green;
+  PT-P.14
+  changed no
+  build-relevant
+  files. ctest
+  7/7 OFF and
+  8/8 ON re-
+  confirmed with
+  no work
+  needed.
+- The task doc's
+  source citations
+  (the verbatim
+  `emissionColor`
+  / `emissionStrength`
+  declarations
+  at
+  `MaterialTypes.h:29-31`,
+  the per-bounce
+  emission add
+  at
+  `CudaPathTracer.cu:185-198`,
+  the OptiX
+  emission
+  consumers at
+  `OptixPrograms.cu:382-387`
+  and `:645-649`,
+  and the
+  Lambert-only
+  OptiX path-
+  tracer
+  closest-hit
+  at
+  `OptixPrograms.cu:967`)
+  resolve to the
+  current source
+  byte-for-byte
+  post-PT-P.12.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
