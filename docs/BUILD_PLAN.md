@@ -41302,6 +41302,628 @@ rather than
 "DEFERRED" or
 "BLOCKED".
 
+## PT-P.22 — firefly clamp placeholder audit (docs only)
+
+**The PT-P.x §4
+polish arc closes
+here.** PT-P.{20,21,22}
+together ship the
+LAST
+`PATH_TRACER_POLISH_PLAN.md`
+§4 item; with this
+audit landing,
+seven out of seven
+§4 items have
+shipped through the
+established task →
+impl → audit
+cadence with zero
+REPAIR items
+across the entire
+arc.
+
+**Scope of this
+slice (post-PT-P.21
+implementation
+complete): write
+the sub-arc-end
+audit at
+`docs/PATH_TRACER_POLISH_FIREFLY_CLAMP_AUDIT.md`
+that walks the
+seven prompt
+checks and
+records each as
+PASS / REPAIR /
+BLOCKED. Mirrors
+the PT-P.{4,7,10,13,16,19}
+audit shapes
+applied to the
+PT-P.{20,21}
+sub-arc.
+Documentation
+only; zero source
+changes; zero
+build effect.**
+
+### What ships
+
+- `docs/PATH_TRACER_POLISH_FIREFLY_CLAMP_AUDIT.md`
+  (NEW). Seven
+  sections + a
+  verdict + a
+  recommended next
+  step + a clean
+  shipping table
+  for the entire
+  PT-P.x polish
+  arc:
+    - **§1
+      Firefly
+      clamp
+      placeholder
+      exists.**
+      PASS. `grep
+      -rn
+      "firefly_clamp"
+      src/`
+      returns two
+      matches in
+      one file
+      (`PathTracer.h:86`
+      doc-comment +
+      `:103` field
+      declaration).
+      Field
+      placement,
+      type, and
+      default all
+      match the
+      PT-P.20 task
+      §1.1 spec
+      verbatim.
+      Predecessor
+      fields
+      preserved
+      (PT-P.6 /
+      PT-P.9 /
+      PT-P.12 caps
+      + defaults).
+    - **§2
+      Placeholder
+      is
+      documented.**
+      PASS. The
+      24-line
+      doc-comment
+      block names
+      every
+      property the
+      PT-P.20 task
+      §2.2
+      contract
+      required:
+      external
+      semantics,
+      default-off
+      behaviour,
+      "currently
+      NOT read"
+      claim,
+      forward-
+      compatibility
+      plan,
+      default-off
+      rationale,
+      deferral
+      cross-
+      reference to
+      PT-P.20.
+      Self-
+      contained
+      documentation
+      (no
+      `BUILD_PLAN.md`
+      / audit-doc
+      consultation
+      required).
+    - **§3 Default
+      render
+      output is
+      unchanged.**
+      PASS
+      structurally;
+      OPTIONAL
+      CUDA-host
+      inverse
+      byte-IDENTITY
+      check. Five
+      sub-sections:
+      §3.1
+      source-diff
+      containment
+      (`git diff
+      -- ...
+      | wc -l`
+      = 0 bytes
+      across every
+      directory
+      EXCEPT the
+      one
+      authorised
+      edit), §3.2
+      no reader
+      of the new
+      field
+      (grep
+      returns two
+      matches
+      both inside
+      the field's
+      own file),
+      §3.3 no
+      clamp logic
+      in any
+      kernel
+      (`fminf.*firefly_clamp
+      | clamp.*radiance`
+      grep over
+      `src/cuda/`
+      + `src/optix/`
+      returns
+      zero
+      matches),
+      §3.4
+      default-
+      construction
+      guarantees
+      (C++
+      aggregate
+      init rules
+      → `firefly_clamp
+      == 0.0f`
+      for every
+      `PathTraceConfig{}`),
+      §3.5
+      empirical
+      audit-host
+      smokes
+      (`--render-pathtrace`
+      "requires
+      CUDA"
+      fallback
+      byte-
+      identical;
+      `--scene-info`
+      TEX-P.6
+      logs
+      unchanged),
+      §3.6
+      empirical
+      PPM byte-
+      IDENTITY
+      check on
+      CUDA host
+      (operator-
+      side
+      procedure
+      using
+      `cmp`).
+    - **§4 No
+      real clamp
+      accidentally
+      active.**
+      PASS — zero
+      clamp logic
+      anywhere
+      in the
+      kernel
+      code.
+      Three
+      sub-checks:
+      §4.1 no
+      clamp
+      expression
+      (no
+      `fminf` /
+      `std::fmin`
+      / `clamp(...)`
+      against
+      radiance),
+      §4.2 no
+      conditional
+      reading the
+      field, §4.3
+      no silent
+      bias in
+      the
+      integrator
+      (the kernel
+      writes
+      per-sample
+      `radiance`
+      to `pixels`
+      / `rgb_sum`
+      verbatim
+      with no
+      pre-write
+      clamp).
+    - **§5 Build
+      status.**
+      PASS. Both
+      audit-host
+      configs
+      green
+      (build 7/7,
+      build-ON
+      8/8;
+      `pathtracer_tests`
+      internal
+      count 9/9).
+    - **§6
+      Runtime-
+      deferred
+      status.**
+      **NO
+      RUNTIME
+      CHECKS
+      REQUIRED**
+      — the
+      simplest
+      runtime
+      posture in
+      the PT-P.x
+      cadence.
+      Three
+      OPTIONAL
+      CUDA-host
+      checks
+      (default
+      render
+      byte-IDENTITY
+      via `cmp`,
+      ctest cycle,
+      no runner
+      update); all
+      redundant
+      with the
+      structural
+      guarantees.
+      §6.1
+      compares
+      this audit
+      to the six
+      prior PT-P.x
+      audits
+      (PT-P.19 was
+      the high-
+      water mark
+      with five
+      mandatory
+      CUDA-host
+      checks;
+      PT-P.22 is
+      the low-
+      water mark
+      with zero).
+      §6.2 names
+      the
+      forward-
+      compatible
+      runtime
+      checks the
+      future
+      kernel-
+      wiring
+      slice will
+      need.
+    - **§7
+      Verdict.**
+      Overall
+      PASS.
+      Six-row
+      summary
+      table (PASS,
+      PASS, PASS-
+      structural,
+      PASS, PASS,
+      NO RUNTIME
+      CHECKS).
+      Zero REPAIR
+      items;
+      ZERO
+      DEFERRED
+      rows
+      (cleanest
+      verdict in
+      the PT-P.x
+      audit
+      catalogue).
+    - **The
+      PT-P.x
+      polish arc
+      closes.**
+      Seven-row
+      shipping
+      table for
+      the entire
+      arc: §4.{1..7}
+      all PASS
+      across 21
+      incremental
+      slices
+      (seven trios
+      of task →
+      impl →
+      audit). The
+      §4.7 polish
+      ships only
+      the
+      placeholder;
+      the kernel
+      wiring is
+      its own
+      future
+      sub-arc
+      (PT-P.23 +
+      follow-ups).
+    - **Recommended
+      next step.**
+      Three
+      directions:
+      (a) PT-P.23
+      "Wire
+      firefly
+      clamp
+      through
+      both
+      backends"
+      — drop-in
+      extension
+      using the
+      already-
+      declared
+      `cfg.firefly_clamp`
+      (~7-8 source
+      files; both
+      backends
+      MUST land
+      together);
+      (b) trigger
+      the
+      CUDA-host
+      verification
+      run that
+      flips the
+      accumulated
+      DEFERRED
+      rows from
+      PT-P.4 /
+      PT-P.7 /
+      PT-P.10 /
+      PT-P.13 /
+      PT-P.16 /
+      PT-P.19 to
+      PASS;
+      (c) pivot
+      to a
+      master-
+      order item
+      (master #16
+      path tracing
+      feature
+      work — NEE /
+      non-diffuse
+      BSDFs /
+      multi-mesh
+      upload).
+- This `BUILD_PLAN.md`
+  slice-closing entry.
+
+### What does NOT change
+
+- All
+  PT-P.{1..21}
+  artefacts:
+  byte-identical
+  (PT-P.22 is a
+  documentation
+  audit; it
+  touches no
+  `.cu`, `.cpp`,
+  `.h`, `.cuh`,
+  `.rrscene`,
+  `cmake`, or
+  `tests/` file).
+- Build configs:
+  byte-identical.
+  ctest remains
+  7/7 OFF and
+  8/8 ON-audit-
+  host with no
+  rebuild needed.
+- All other
+  docs: PT-P.22
+  only ADDS
+  `PATH_TRACER_POLISH_FIREFLY_CLAMP_AUDIT.md`;
+  no edits to
+  `PATH_TRACER_POLISH_PLAN.md`,
+  `PATH_TRACER_POLISH_FIREFLY_CLAMP_TASK.md`,
+  the ten
+  earlier
+  PT-P.x task /
+  audit docs,
+  the TEX-P.x
+  arc, or the
+  CUDA-H.x arc.
+
+### Master rule compliance
+
+- **Build
+  incrementally /
+  every step
+  compilable**:
+  docs-only
+  slice; build
+  is trivially
+  preserved.
+- **Documentation
+  only; do not
+  modify source
+  code; do not
+  add fixes
+  inside the
+  audit**: every
+  audit finding
+  is a
+  read-only
+  observation;
+  zero source
+  edits; the
+  REPAIR-list
+  is empty so
+  no fix-up
+  edits needed.
+  PT-P.22 ADDS
+  one new doc
+  + a
+  BUILD_PLAN
+  entry; no
+  source file
+  is touched.
+- **No CPU
+  per-pixel
+  work**:
+  re-verified
+  by §4 of
+  the audit
+  doc (zero
+  new kernel
+  code paths;
+  zero clamp
+  logic; the
+  integrator
+  remains
+  unbiased).
+- **Update
+  BUILD_PLAN**:
+  this entry,
+  per master
+  rule 8.
+
+### Verified at the build
+
+- `cmake --build
+  build` (audit
+  host,
+  RR_ENABLE_CUDA=OFF,
+  RR_ENABLE_OPTIX=OFF):
+  re-built
+  cleanly during
+  the audit;
+  ctest 7/7
+  green
+  (`pathtracer_tests`
+  internal
+  count
+  20034/20034
+  passed).
+- `cmake --build
+  build-ON`
+  (audit host,
+  RR_ENABLE_CUDA=OFF,
+  RR_ENABLE_OPTIX=ON):
+  re-built
+  cleanly; ctest
+  8/8 green.
+- `./build/bin/RelativityRender
+  --render-pathtrace
+  scenes/test_full_scene.rrscene`:
+  emits the
+  documented
+  "requires
+  CUDA"
+  audit-host
+  fallback;
+  byte-
+  identical
+  with the
+  pre-PT-P.21
+  baseline.
+- `./build/bin/RelativityRender
+  --scene-info
+  scenes/test_textured_material.rrscene`:
+  emits the
+  TEX-P.6
+  fixture's
+  expected log
+  sequence (1
+  Case 1 info
+  + 2 Case 3
+  warnings;
+  `fixups
+  applied: 2`).
+  Confirms
+  zero
+  PT-P.22
+  ripple
+  onto the
+  texture
+  validator.
+- `git diff
+  47ed5cb~1..47ed5cb
+  -- src/cuda/
+  src/optix/
+  src/pathtracer/PathTracer.cpp
+  src/pathtracer/RNG.h
+  src/pathtracer/RNG.cuh
+  src/pathtracer/Sampling.h
+  src/pathtracer/Sampling.cuh
+  src/main.cpp
+  src/core/
+  src/io/
+  src/scene/
+  src/material/
+  src/lighting/
+  src/renderer/
+  scenes/
+  tests/
+  tools/verify_cuda_host.py
+  CMakeLists.txt
+  | wc -l` =>
+  0 bytes
+  (no-touch
+  invariants
+  verified for
+  the PT-P.21
+  slice).
+- `grep -rn
+  "firefly_clamp"
+  src/`
+  returns two
+  matches
+  (declaration
+  + doc-comment
+  reference,
+  both at
+  `PathTracer.h`).
+  Zero
+  consumers
+  read the
+  field
+  outside its
+  home file.
+- `grep -rn
+  "fminf.*firefly_clamp
+  | clamp.*radiance"
+  src/cuda/
+  src/optix/`
+  returns
+  zero
+  matches:
+  no real
+  clamp logic
+  exists.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
