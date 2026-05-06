@@ -38360,6 +38360,543 @@ zero build effect.**
   the PT-P.15
   slice).
 
+## PT-P.17 — RNG stability task definition (docs only)
+
+**Scope of this slice
+(post-PT-P.16 audit
+PASS): produce the
+fully-self-contained
+task definition for
+the next PT-P.x
+implementation slice,
+which is `PATH_TRACER_POLISH_PLAN.md`
+§4.1 (RNG stability).
+Mirrors the PT-P.5
+-> PT-P.6, PT-P.8 ->
+PT-P.9, PT-P.11 ->
+PT-P.12, PT-P.14 ->
+PT-P.15 task ->
+implementation
+cadence.
+
+This is the FIRST
+PT-P.x task slice
+defining a
+runtime-pixel-diff
+change. Every
+existing
+`pathtrace_spp_*.ppm`
++ `gpu_rng_test.ppm`
+will become
+byte-different
+post-PT-P.18 (the
+implementation slice
+this task targets);
+visual quality +
+statistical
+convergence are
+unchanged. The task
+brief calls out the
+mandatory CUDA-host
+runtime checks the
+operator must perform
+once PT-P.18 lands.
+NO source changes;
+NO new CLI flags;
+NO kernel touches by
+this docs-only
+slice.**
+
+### What ships
+
+- `docs/PATH_TRACER_POLISH_RNG_STABILITY_TASK.md`
+  (NEW). Eight
+  sections + a
+  rationale for
+  why §4.1 is
+  the right
+  next slice
+  even though
+  it is the
+  least-safe
+  remaining
+  item:
+    - **§1 Exact
+      issue.**
+      Names the
+      task "RNG
+      stability
+      (per-input
+      SplitMix64
+      seed mix)",
+      points to
+      `PATH_TRACER_POLISH_PLAN.md`
+      §4.1 as the
+      source. Three
+      sub-changes:
+      §1.1 replace
+      the four-
+      line key-
+      construction
+      block in
+      `make_pixel_rng`
+      with per-
+      input
+      SplitMix64
+      hash + xor;
+      §1.2 update
+      the inline
+      doc-comment
+      describing
+      the rationale
+      (the new mix
+      is symmetric
+      across all
+      four inputs);
+      §1.3 add ONE
+      new test
+      `test_rng_grid_collision_check()`
+      in
+      `tests/pathtracer_tests.cpp`
+      that asserts
+      every PCG
+      state in a
+      16x16x4x4
+      grid (4096
+      cells) is
+      unique.
+      §1.4 confirms
+      no kernel
+      call-site
+      changes (the
+      `make_pixel_rng`
+      signature is
+      preserved).
+    - **§2 Expected
+      behavior.**
+      Four sub-
+      sections
+      mirroring the
+      prompt's spec
+      bullets:
+      §2.1 same
+      input config
+      produces same
+      output
+      sequence (the
+      pure-function
+      determinism
+      contract holds
+      within either
+      era), §2.2
+      sample index
+      affects RNG
+      predictably
+      (the per-
+      input
+      SplitMix64
+      hash is
+      bijective; no
+      collisions
+      possible),
+      §2.3 pixel
+      coordinates
+      affect RNG
+      predictably
+      (same), §2.4
+      no hidden
+      time-based
+      seed (the
+      slice
+      preserves
+      the existing
+      no-time-source
+      property; §5.5
+      grep verifies
+      it).
+    - **§3 Files
+      likely
+      involved.**
+      Three-row
+      table:
+      `src/pathtracer/RNG.h`
+      (replace the
+      key-
+      construction
+      block, ~10-18
+      added),
+      `tests/pathtracer_tests.cpp`
+      (one new test
+      function +
+      `main()`
+      invocation,
+      ~25-40 added),
+      `docs/BUILD_PLAN.md`
+      (slice-closing
+      entry).
+      Honours the
+      max-2-source-
+      files rule
+      (the `.h` +
+      the test
+      file). §3.1
+      explains why
+      this is the
+      first PT-P.x
+      source-edit
+      slice that
+      touches a
+      test file
+      (extending
+      `pathtracer_tests`
+      is cheaper
+      than
+      introducing
+      a new ctest
+      binary).
+    - **§4 What
+      must not be
+      touched.**
+      Nine sub-
+      sections of
+      explicit
+      no-touch
+      invariants:
+      `pcg32_next`
+      and
+      `splitmix64`
+      helpers
+      (byte-identical
+      bodies),
+      `Rng` struct,
+      `next_float`
+      / `next_vec2`
+      consumers,
+      every
+      `make_pixel_rng`
+      call site
+      (the public
+      signature is
+      preserved),
+      path-tracer
+      output WITH
+      ONE
+      INTENTIONAL
+      EXCEPTION
+      (the
+      `pathtrace_spp_*.ppm`
+      / `gpu_rng_test.ppm`
+      pixel-diff —
+      explicitly
+      flagged as
+      the slice's
+      sole
+      behavioural
+      change), CLI
+      surface,
+      `PathTraceConfig`
+      field set,
+      the existing
+      eight
+      `pathtracer_tests`
+      cases, and
+      other
+      audits /
+      plans.
+    - **§5 PASS
+      criteria.**
+      Eight concrete
+      gates: build
+      green on both
+      audit-host
+      configs,
+      ctest 7/7 +
+      8/8 (the
+      `pathtracer_tests`
+      binary's
+      INTERNAL test
+      count grows
+      by 1 from 8
+      to 9 but the
+      ctest binary
+      count stays
+      at 7/7),
+      source-diff
+      size cap
+      (~10-18 in
+      `.h`; ~25-40
+      in test;
+      <=60 added
+      total before
+      flagged
+      deviation),
+      no-touch
+      invariants
+      enforceable
+      by directory-
+      scoped
+      `git diff |
+      wc -l`,
+      hidden
+      time-source
+      grep check
+      (zero
+      non-comment
+      matches in
+      the seeding
+      code paths),
+      audit-host
+      behavioural
+      smoke
+      (`--render-pathtrace`
+      "requires
+      CUDA"
+      fallback +
+      the TEX-P.6
+      fixture's
+      three-case
+      logs both
+      byte-
+      identical),
+      slice-closing
+      `BUILD_PLAN.md`
+      entry (with
+      a prominent
+      "Pixel-diff
+      warning"
+      sub-section),
+      master rule
+      compliance.
+    - **§6 Runtime
+      CUDA-host
+      checks
+      needed.**
+      FIRST PT-P.x
+      slice with
+      MANDATORY
+      runtime
+      CUDA-host
+      verification.
+      Five checks
+      the operator
+      must perform
+      on a CUDA
+      host before
+      PT-P.19's
+      audit can
+      verdict PASS:
+      §6.1 `cmp`-
+      based PPM
+      byte-DIFFERENCE
+      confirmation
+      (the
+      intentional
+      pixel-diff),
+      §6.2 visual
+      + statistical
+      sanity (the
+      means /
+      variances /
+      PDFs are
+      preserved),
+      §6.3 ctest
+      cycle on the
+      CUDA host
+      (the new
+      test must
+      pass on a
+      CUDA-built
+      host too),
+      §6.4 update
+      the
+      CUDA-H.x
+      verification
+      report (the
+      runner
+      regenerates
+      the report;
+      tree-state
+      hash changes;
+      overall
+      verdict
+      stays PASS
+      / BLOCKED),
+      §6.5 optional
+      large-image
+      collision
+      check (1280x720
+      empirical
+      confirmation
+      of
+      bijectivity).
+    - **§7 Out-of-
+      scope.**
+      Defers
+      `PATH_TRACER_POLISH_PLAN.md`
+      §4.7 (firefly
+      clamp
+      placeholder)
+      to a future
+      slice. After
+      PT-P.18 +
+      PT-P.19 land,
+      §4.7 is the
+      last
+      remaining
+      §4 item;
+      landing it
+      closes the
+      PT-P.x
+      polish arc.
+    - **§8 Why
+      §4.1 is the
+      next viable
+      slice (NOT
+      the safest).**
+      Acknowledges
+      §4.1 is the
+      LEAST-safe
+      remaining
+      item (it
+      changes every
+      rendered
+      pixel) but
+      defends the
+      sequencing:
+      now that
+      PT-P.{3,6,9,12,15,16}
+      have all
+      landed PASS
+      with byte-
+      identical
+      PPM output,
+      §4.1's pixel-
+      diff is the
+      SOLE expected
+      pre-/post-
+      slice change
+      once the
+      smaller items
+      are
+      established
+      baselines.
+      The operator
+      can attribute
+      any
+      post-PT-P.18
+      PPM change
+      unambiguously
+      to the RNG
+      mix; a future
+      regression
+      that
+      introduces an
+      unintended
+      pixel-diff
+      has a clear
+      bisection
+      target.
+- This `BUILD_PLAN.md`
+  slice-closing entry.
+
+### What does NOT change
+
+- All
+  PT-P.{1..16}
+  artefacts:
+  byte-identical
+  (PT-P.17 is a
+  task definition;
+  it touches no
+  source file).
+- Build configs:
+  byte-identical.
+  ctest remains
+  7/7 OFF and
+  8/8 ON-audit-
+  host with no
+  rebuild needed.
+- All other docs:
+  PT-P.17 only
+  ADDS
+  `PATH_TRACER_POLISH_RNG_STABILITY_TASK.md`;
+  no edits to
+  `PATH_TRACER_POLISH_PLAN.md`,
+  the eight
+  earlier
+  PT-P.x task /
+  audit docs,
+  the TEX-P.x
+  arc, or the
+  CUDA-H.x arc.
+- The TEX-P.x
+  arc and the
+  PT-P.{1..16}
+  source
+  artefacts:
+  untouched.
+
+### Master rule compliance
+
+- **Build
+  incrementally /
+  every step
+  compilable**:
+  docs-only
+  slice; build
+  is trivially
+  preserved.
+- **Update
+  BUILD_PLAN**:
+  this entry,
+  per master
+  rule 8.
+
+### Verified at the build
+
+- `cmake --build
+  build` + `cmake
+  --build
+  build-ON` were
+  already green
+  at the end of
+  PT-P.16 and
+  remain green;
+  PT-P.17 changed
+  no
+  build-relevant
+  files. ctest
+  7/7 OFF and
+  8/8 ON re-
+  confirmed with
+  no work
+  needed.
+- The task doc's
+  source citations
+  (the verbatim
+  `make_pixel_rng`
+  body at
+  `RNG.h:62-82`,
+  the existing
+  decorrelation
+  test at
+  `tests/pathtracer_tests.cpp:68-92`,
+  the
+  `make_pixel_rng`
+  call sites in
+  `CudaPathTracer.cu:158`,
+  `CudaAccumulation.cu:114`,
+  `CudaRngTestKernel.cu:54`,
+  the `<chrono>`
+  include in
+  `gpu/GpuTiming.h`
+  acknowledged as
+  non-seeding)
+  resolve to the
+  current source
+  byte-for-byte
+  post-PT-P.15.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
