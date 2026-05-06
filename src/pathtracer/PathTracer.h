@@ -76,6 +76,31 @@ struct PathTraceConfig {
     // than a special case.
     rr::math::Vec3 environment_color     = {0.55f, 0.70f, 1.00f};
     float          environment_intensity = 0.30f;
+
+    // PT-P.21 placeholder: per-channel firefly clamp on the
+    // per-sample radiance. Default 0.0f disables the clamp (the
+    // integrator stays unbiased; the field is currently NOT read
+    // by any kernel). When > 0, a future slice will wire the
+    // value through both backends' path-trace raygens so each
+    // per-sample `radiance.x|y|z` is `fminf(radiance.x|y|z,
+    // firefly_clamp)` before being added to the accumulator.
+    //
+    // Default-off rationale: clamping introduces a small
+    // downward bias in scenes with high-variance light paths
+    // (e.g. small bright emitters surfaced by NEE / area lights);
+    // making it opt-in keeps the unbiased integrator the
+    // canonical baseline.
+    //
+    // Wiring is deferred per
+    // `docs/PATH_TRACER_POLISH_FIREFLY_CLAMP_TASK.md` (PT-P.20):
+    // the CUDA path-trace kernel + the OptiX
+    // `__raygen__pathtrace` need a paired update so the two
+    // backends' outputs remain convergent at non-zero clamp;
+    // landing one without the other would silently diverge them.
+    // PT-P.21 ships ONLY this field + its doc-comment so the
+    // future kernel-wiring slice has a stable forward-compatible
+    // anchor to attach itself to.
+    float firefly_clamp = 0.0f;
 };
 
 // Result of a path-trace render. Mirrors the shape used by every

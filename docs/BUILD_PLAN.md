@@ -40692,6 +40692,616 @@ today.**
   byte-for-byte
   post-PT-P.18.
 
+## PT-P.21 — firefly clamp placeholder (impl)
+
+**Field-only
+placeholder scoping
+note**: this slice
+ships ONLY the
+`PathTraceConfig::firefly_clamp
+= 0.0f` config field
++ its doc-comment.
+The kernel guards
+on both backends
+(CUDA + OptiX
+path-trace raygens)
+are EXPLICITLY
+DEFERRED to a
+future PT-P.x slice
+that can land them
+together. Per
+`docs/PATH_TRACER_POLISH_FIREFLY_CLAMP_TASK.md`
+§1.2 + §3, landing
+the kernel guards
+piecewise (CUDA-only
+or OptiX-only) would
+silently diverge the
+two backends'
+outputs at non-zero
+clamp; PT-P.21
+preserves the
+symmetric-output
+invariant by
+shipping zero kernel
+changes. The new
+field is forward-
+compatible: a
+future slice's diff
+becomes "wire an
+existing field
+through the kernel"
+rather than "add a
+new field + wire
+it".
+
+**Scope of this
+slice (post-PT-P.20
+task definition
+complete): ship the
+LAST
+`PATH_TRACER_POLISH_PLAN.md`
+§4 implementation
+slice exactly as
+specified by
+`docs/PATH_TRACER_POLISH_FIREFLY_CLAMP_TASK.md`.
+ONE source file
+edit, 25 added /
+0 deleted. Default-
+off + not-read =
+every existing
+render byte-
+identical pre-/post-
+PT-P.21.**
+
+### What ships
+
+- `src/pathtracer/PathTracer.h`
+  (modified):
+    - **PT-P.21
+      placeholder
+      field**
+      `float
+      firefly_clamp
+      = 0.0f`
+      appended to
+      the
+      `PathTraceConfig`
+      struct after
+      the existing
+      `environment_intensity`
+      field.
+    - **Doc-
+      comment
+      block**
+      (24 lines)
+      above the
+      field
+      describing:
+      (a) the
+      external
+      semantics
+      ("per-channel
+      firefly clamp
+      on the per-
+      sample
+      radiance"),
+      (b) the
+      default-off
+      behaviour
+      ("0.0f
+      disables the
+      clamp ... the
+      field is
+      currently
+      NOT read by
+      any kernel"),
+      (c) the
+      forward-
+      compatibility
+      contract
+      ("a future
+      slice will
+      wire the
+      value through
+      both
+      backends'
+      path-trace
+      raygens"),
+      (d) the
+      default-off
+      rationale
+      ("clamping
+      introduces a
+      small
+      downward
+      bias in
+      scenes with
+      high-variance
+      light paths
+      ... making
+      it opt-in
+      keeps the
+      unbiased
+      integrator
+      the canonical
+      baseline"),
+      (e) the
+      deferral
+      cross-
+      reference
+      ("Wiring is
+      deferred per
+      docs/PATH_TRACER_POLISH_FIREFLY_CLAMP_TASK.md
+      (PT-P.20)").
+- This `BUILD_PLAN.md`
+  slice-closing entry.
+
+### What does NOT change
+
+- `src/cuda/` —
+  zero bytes
+  changed. The
+  CUDA path-tracer
+  kernel
+  (`CudaPathTracer.cu`)
+  + every other
+  CUDA TU are
+  byte-identical;
+  no kernel guard
+  was added.
+- `src/optix/` —
+  zero bytes
+  changed. The
+  OptiX path-
+  tracer programs
+  (`OptixPrograms.cu`)
+  are byte-
+  identical; no
+  raygen guard
+  was added.
+- `src/pathtracer/PathTracer.cpp`
+  — zero bytes
+  changed. The
+  validation
+  prelude
+  (PT-P.6 / PT-P.9
+  clamps + the
+  lower-bound /
+  negative
+  rejections) is
+  byte-identical;
+  no
+  `cfg.firefly_clamp`
+  read; no new
+  validation.
+- `src/pathtracer/RNG.h`,
+  `src/pathtracer/RNG.cuh`,
+  `src/pathtracer/Sampling.h`,
+  `src/pathtracer/Sampling.cuh`:
+  byte-identical.
+- `src/renderer/AccumulationBuffer.{h,cpp}`,
+  `src/renderer/AOV.{h,cpp}`,
+  `src/renderer/GpuAOVBuffer.{h,cpp}`,
+  `src/renderer/Hit.h`:
+  byte-identical.
+- `src/main.cpp`,
+  `src/core/`,
+  `src/io/`,
+  `src/scene/`,
+  `src/material/`,
+  `src/lighting/`:
+  zero bytes
+  changed.
+- All `*.rrscene`
+  files under
+  `scenes/` —
+  zero bytes
+  changed.
+- All
+  `tests/*.cpp`
+  files — zero
+  bytes changed
+  (the slice
+  ships no new
+  test per the
+  task §1.3;
+  the placeholder
+  has no
+  observable
+  behaviour to
+  verify beyond
+  default-
+  construction,
+  which is
+  trivially
+  guaranteed by
+  C++'s aggregate
+  initialisation
+  rules).
+- `tools/verify_cuda_host.py`
+  — zero bytes
+  changed.
+- `CMakeLists.txt`
+  — zero bytes
+  changed.
+- The five
+  pre-existing
+  `PathTraceConfig`
+  fields
+  (`max_bounces`,
+  `samples_per_pixel`,
+  `seed`,
+  `environment_color`,
+  `environment_intensity`)
+  keep their
+  declarations,
+  defaults, types,
+  and field
+  order. The
+  PT-P.6
+  `kMaxBouncesCap`
+  + PT-P.9
+  `kSamplesPerPixelCap`
+  + PT-P.12
+  env-fallback
+  doc-comment
+  are byte-
+  identical.
+  The new
+  `firefly_clamp`
+  field is
+  APPENDED.
+- All
+  PT-P.{1..20}
+  artefacts:
+  byte-identical.
+
+### Behaviour matrix
+
+| Scenario                                                | Pre-PT-P.21                                   | PT-P.21                                       |
+|---------------------------------------------------------|-----------------------------------------------|-----------------------------------------------|
+| Default `PathTraceConfig{}` value                       | `firefly_clamp` field does not exist          | `firefly_clamp == 0.0f` (default-constructed) |
+| Caller sets `cfg.firefly_clamp = 8.0f`                  | compile error (field doesn't exist)           | compiles; field is set on the POD; kernel    |
+|                                                         |                                               | does NOT read it (no kernel guard yet)        |
+| Pixel data of any rendered PPM                          | as-is                                         | byte-identical (no kernel reads the field)    |
+| `--render-pathtrace` on audit host                      | "requires CUDA" fallback                      | byte-identical fallback                       |
+| `--render-pathtrace` on CUDA host                       | spp=1 + spp=16 PPMs                           | byte-identical (kernel arithmetic is          |
+|                                                         |                                               | unchanged; the new field is unused)           |
+| `--render-optix-pathtrace` on SDK host                  | OptiX path-trace PPMs                         | byte-identical (OptiX programs are unchanged) |
+| Future slice that wires the field through both backends | n/a                                           | drops in cleanly — the field is already       |
+|                                                         |                                               | declared with the documented default          |
+
+### Diff size
+
+- `src/pathtracer/PathTracer.h`:
+  +25 added /
+  0 deleted.
+  Within the
+  task §5.3 cap
+  of "<= 25
+  added total
+  before flagged
+  deviation" —
+  exactly at
+  the cap; no
+  deviation
+  flag needed.
+- TOTAL across
+  all source
+  files: 25
+  added / 0
+  deleted in
+  ONE file.
+  The smallest
+  PT-P.x impl
+  source-file
+  count to date
+  (one file vs
+  PT-P.{3,15,18}'s
+  two files,
+  PT-P.{6,9,12}'s
+  two files).
+
+### Master rule compliance
+
+- **Touch only
+  the files
+  listed in the
+  task doc**:
+  exactly one
+  source file
+  (`src/pathtracer/PathTracer.h`)
+  + the slice-
+  closing
+  `BUILD_PLAN.md`
+  entry. The
+  PT-P.20 task
+  §3 explicitly
+  authorises
+  this single
+  file.
+- **No real
+  firefly
+  clamping
+  unless task
+  doc explicitly
+  allows it**:
+  the task §1.2
+  EXPLICITLY
+  recommended
+  AGAINST
+  shipping
+  kernel guards
+  in this
+  slice; PT-P.21
+  honours the
+  recommendation.
+  The field is
+  declared but
+  not read by
+  any kernel;
+  there is no
+  clamp logic
+  anywhere in
+  the source.
+- **No changes
+  to default
+  render
+  output**:
+  every existing
+  render is
+  byte-identical
+  pre-/post-
+  PT-P.21
+  (default-
+  construction
+  initialises
+  `firefly_clamp
+  == 0.0f`; no
+  caller reads
+  it). Verified
+  on the audit
+  host by the
+  behavioural
+  smokes.
+- **No broad
+  refactor / no
+  C4D / no
+  server / no
+  UI / no node
+  editor**:
+  zero matches.
+- **Build
+  incrementally /
+  every step
+  compilable**:
+  both audit-
+  host configs
+  green (build
+  7/7, build-ON
+  8/8).
+- **Keep CUDA
+  path
+  working**:
+  zero bytes
+  changed in
+  `src/cuda/`;
+  the CUDA
+  path tracer
+  is byte-
+  identical
+  with PT-P.18.
+- **Keep OptiX
+  OFF build
+  working**:
+  build config
+  green; ctest
+  7/7. The
+  new field
+  is type-
+  checked via
+  every host-
+  side
+  `PathTraceConfig`
+  consumer.
+- **Update
+  BUILD_PLAN**:
+  this entry,
+  per master
+  rule 8.
+
+### Verified at the build
+
+- `cmake --build
+  build` (audit
+  host,
+  RR_ENABLE_CUDA=OFF,
+  RR_ENABLE_OPTIX=OFF):
+  clean build,
+  zero new
+  warnings;
+  ctest 7/7
+  green
+  (`pathtracer_tests`
+  internal count
+  unchanged at
+  9/9; the
+  placeholder
+  has no test).
+- `cmake --build
+  build-ON`
+  (audit host,
+  RR_ENABLE_CUDA=OFF,
+  RR_ENABLE_OPTIX=ON):
+  clean build,
+  zero new
+  warnings;
+  ctest 8/8
+  green.
+- `./build/bin/RelativityRender
+  --render-pathtrace
+  scenes/test_full_scene.rrscene`
+  on the audit
+  host: emits
+  the
+  documented
+  "requires
+  CUDA"
+  audit-host
+  fallback
+  byte-
+  identically
+  with the
+  pre-PT-P.21
+  baseline.
+  The new
+  field is
+  unreachable
+  on the
+  audit-host
+  branch (the
+  dispatcher
+  returns
+  early).
+- `./build/bin/RelativityRender
+  --scene-info
+  scenes/test_textured_material.rrscene`:
+  emits the
+  TEX-P.6
+  fixture's
+  expected log
+  sequence
+  byte-
+  identically
+  (one Case 1
+  info + two
+  Case 3
+  warnings;
+  `fixups
+  applied: 2`).
+  Confirms zero
+  PT-P.21
+  ripple onto
+  the texture
+  validator.
+- `git diff --
+  src/cuda/
+  src/optix/
+  src/pathtracer/PathTracer.cpp
+  src/pathtracer/RNG.h
+  src/pathtracer/RNG.cuh
+  src/pathtracer/Sampling.h
+  src/pathtracer/Sampling.cuh
+  src/main.cpp
+  src/core/
+  src/io/
+  src/scene/
+  src/material/
+  src/lighting/
+  src/renderer/
+  scenes/ tests/
+  tools/verify_cuda_host.py
+  CMakeLists.txt
+  | wc -l` =>
+  0 bytes
+  (no-touch
+  invariants
+  verified for
+  every
+  directory the
+  task §5.4
+  enumerated).
+- The new
+  `firefly_clamp`
+  field is
+  type-checked
+  by every
+  `PathTraceConfig`
+  consumer:
+  `src/pathtracer/PathTracer.cpp`
+  default-
+  constructs the
+  POD without
+  reading the
+  new field;
+  `src/main.cpp`'s
+  `run_render_pathtrace`
+  +
+  `run_render_optix_pathtrace`
+  default-
+  construct
+  `pcfg` and
+  set
+  `pcfg.samples_per_pixel`
+  only —
+  `pcfg.firefly_clamp`
+  remains at
+  `0.0f`; no
+  caller reads
+  the new
+  field.
+
+### Runtime-deferred checks
+
+PT-P.21's
+field-only
+placeholder has
+NO runtime-
+deferred checks.
+The §4 / §5
+no-touch
+invariants are
+byte-precise and
+verifiable on
+the audit host
+alone. Per the
+task §6:
+
+- §6.1 Default
+  render byte-
+  IDENTITY on
+  CUDA host
+  (OPTIONAL):
+  the inverse
+  of PT-P.18's
+  byte-DIFFERENCE
+  check;
+  trivially
+  true since no
+  kernel reads
+  the field.
+- §6.2 ctest
+  cycle on
+  CUDA host
+  (OPTIONAL):
+  trivially
+  passes; no
+  new test.
+- §6.3 No
+  CUDA-H.x
+  runner update.
+- §6.4 The
+  PT-P.22
+  audit's
+  runtime
+  posture: no
+  runtime
+  checks
+  needed.
+
+This is the
+LEAST-runtime-
+surface PT-P.x
+slice; the
+PT-P.22 audit
+verdict will
+record §9 as
+"no runtime
+checks needed"
+rather than
+"DEFERRED" or
+"BLOCKED".
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
