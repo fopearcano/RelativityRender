@@ -41924,6 +41924,639 @@ build effect.**
   clamp logic
   exists.
 
+## PT-P.23 — firefly clamp backend wiring task definition (docs only)
+
+**The PT-P.x §4.7
+sub-arc reopens** —
+PT-P.22 closed the
+seven-item §4
+polish arc with a
+clean PASS, but the
+§4.7 polish shipped
+ONLY the
+`PathTraceConfig::firefly_clamp
+= 0.0f` field
+placeholder; the
+kernel wiring that
+honours it on both
+backends was
+deliberately
+deferred per the
+PT-P.20 task §1.2 +
+the PT-P.21
+BUILD_PLAN entry's
+"Field-only
+placeholder
+scoping note".
+THIS task brief
+defines the
+PT-P.24
+implementation
+slice that wires
+`cfg.firefly_clamp`
+through both the
+CUDA path-tracer
+kernel
+(`k_pathtrace_sample`)
+and the OptiX
+path-tracer
+raygen
+(`__raygen__pathtrace`)
+symmetrically.
+
+**Scope of this
+slice (post-PT-P.22
+audit PASS):
+produce the
+fully-self-
+contained task
+definition for the
+LARGEST PT-P.x
+source-file
+footprint to date
+(8 files). The
+exceedance of the
+established "max
+2 source files"
+rule is explicitly
+authorised by the
+brief because the
+symmetric-output
+invariant (PT-P.20
+task §1.2 +
+PT-P.22 audit
+§6.2) requires
+both backends to
+land atomically.
+NO source changes
+in this docs-only
+slice.**
+
+### What ships
+
+- `docs/PATH_TRACER_POLISH_FIREFLY_CLAMP_WIRING_TASK.md`
+  (NEW). Eight
+  sections + a
+  rationale for
+  the larger
+  source-file
+  footprint:
+    - **§1 Exact
+      goal.** Names
+      the task
+      "Wire
+      `cfg.firefly_clamp`
+      through both
+      backends
+      symmetrically".
+      Eight
+      sub-sections
+      enumerate the
+      per-file
+      changes:
+      §1.1
+      validation +
+      pass-through
+      in
+      `PathTracer.cpp`,
+      §1.2 launcher
+      signature in
+      `CudaPathTracer.cuh`,
+      §1.3 kernel
+      body +
+      launcher fn
+      definition in
+      `CudaPathTracer.cu`,
+      §1.4 launch-
+      params POD
+      in
+      `OptixLaunchParams.h`,
+      §1.5
+      renderer
+      signatures
+      in
+      `OptixRenderer.h`,
+      §1.6
+      renderer
+      bodies in
+      `OptixRenderer.cpp`,
+      §1.7 raygen
+      body in
+      `OptixPrograms.cu`,
+      §1.8
+      dispatcher
+      pass-through
+      in
+      `main.cpp`.
+      Each sub-
+      section
+      gives a
+      verbatim
+      patch
+      sketch.
+    - **§2
+      Required
+      invariant —
+      symmetric
+      default-off
+      behaviour.**
+      The two
+      backends
+      MUST behave
+      identically
+      when
+      `firefly_clamp
+      == 0.0f`.
+      Five sub-
+      points: §2.1
+      strict-`>`-
+      gating
+      clause
+      ensures
+      default-off
+      is exact;
+      §2.2 non-
+      zero-clamp
+      invariance
+      clause
+      requires
+      identical
+      `fminf` per-
+      channel at
+      identical
+      points in
+      both
+      integrators
+      (per-sample
+      radiance,
+      pre-
+      accumulation);
+      §2.3 future
+      cross-backend
+      smoke test
+      (operator-
+      side check
+      on a CUDA +
+      OptiX-SDK
+      host); §2.4
+      no
+      backend-
+      asymmetric
+      behaviour
+      (no CUDA-
+      only or
+      OptiX-only
+      clauses);
+      §2.5
+      identical
+      lower-bound
+      validation
+      message
+      strings
+      across both
+      backends.
+    - **§3 Files
+      likely
+      involved.**
+      Nine-row
+      table
+      (8 source
+      files +
+      `BUILD_PLAN`
+      entry).
+      LARGEST
+      PT-P.x
+      footprint
+      to date.
+      §3.1
+      explicitly
+      authorises
+      the
+      exceedance
+      of the
+      max-2-source-
+      files rule
+      with three
+      reasons:
+      cross-backend
+      symmetry
+      invariant,
+      API surface
+      area
+      (multiple
+      backend
+      boundaries),
+      default-arg
+      discipline
+      (existing
+      callers do
+      not need
+      updates).
+      §3.2
+      optional
+      placeholder
+      test in
+      `pathtracer_tests.cpp`.
+    - **§4 What
+      must not
+      be
+      touched.**
+      Fourteen
+      sub-sections
+      of explicit
+      no-touch
+      invariants:
+      per-pixel
+      arithmetic
+      at
+      `firefly_clamp
+      == 0.0f`
+      byte-
+      identical
+      (the
+      load-bearing
+      claim that
+      makes
+      §5.5's
+      audit-host
+      smokes
+      trivially
+      pass), the
+      validation
+      prelude in
+      `PathTracer::render`
+      (PT-P.6 /
+      PT-P.9 /
+      PT-P.18 /
+      PT-P.20 /
+      PT-P.21
+      predecessors
+      preserved),
+      the OptiX
+      raygen
+      body
+      (modulo
+      the new
+      clamp), the
+      CUDA
+      path-tracer
+      kernel body
+      (modulo
+      the new
+      clamp), all
+      other CUDA
+      TUs, all
+      other OptiX
+      programs,
+      the rest of
+      `src/pathtracer/`,
+      renderer +
+      accumulation,
+      scene /
+      material /
+      texture /
+      lighting /
+      IO, all
+      `*.rrscene`
+      fixtures,
+      tests, CLI
+      surface
+      (no new
+      flag in
+      this slice),
+      tools /
+      build
+      (`tools/verify_cuda_host.py`
+      + `CMakeLists.txt`),
+      other
+      audits /
+      plans.
+    - **§5 PASS
+      criteria.**
+      Seven
+      concrete
+      gates:
+      build green
+      on both
+      audit-host
+      configs,
+      ctest 7/7
+      + 8/8
+      (the
+      `pathtracer_tests`
+      binary's
+      INTERNAL
+      count grows
+      9 → 10 ONLY
+      if the
+      optional
+      placeholder
+      test from
+      §3.2 is
+      added),
+      source-diff
+      size cap
+      (~50-75
+      added across
+      8 source
+      files; <=100
+      total before
+      flagged
+      deviation),
+      no-touch
+      invariants
+      enforceable
+      by directory-
+      scoped
+      `git diff |
+      wc -l`,
+      audit-host
+      behavioural
+      smoke (both
+      `--render-pathtrace`
+      + `--render-optix-pathtrace`
+      "requires
+      CUDA / SDK"
+      fallbacks
+      byte-
+      identical
+      with pre-
+      slice +
+      the TEX-P.6
+      fixture's
+      three-case
+      logs both
+      byte-
+      identical),
+      slice-closing
+      `BUILD_PLAN.md`
+      entry with
+      a "Backend
+      symmetry
+      note"
+      subsection
+      AND a
+      "Default-off
+      pixel-
+      identity
+      proof"
+      subsection,
+      master rule
+      compliance.
+    - **§6 Out-
+      of-scope.**
+      Defers an
+      upper-bound
+      cap on
+      `firefly_clamp`,
+      a CLI flag,
+      adaptive
+      clamping,
+      and other
+      firefly-
+      management
+      techniques
+      to future
+      slices.
+      After
+      PT-P.24 +
+      PT-P.25 land,
+      the §4.7
+      polish has
+      fully
+      shipped.
+    - **§7
+      Runtime
+      CUDA-host
+      checks
+      needed.**
+      SECOND
+      PT-P.x
+      slice with
+      MANDATORY
+      runtime
+      CUDA-host
+      verification
+      (PT-P.18
+      was the
+      first). Six
+      checks: §7.1
+      default-off
+      byte-
+      IDENTITY
+      (CUDA
+      path),
+      §7.2
+      default-off
+      byte-
+      IDENTITY
+      (OptiX
+      path),
+      §7.3 non-
+      zero clamp
+      produces
+      visible
+      reduction
+      (CUDA;
+      OPTIONAL
+      —
+      requires
+      a CLI flag
+      or harness
+      not in
+      scope),
+      §7.4
+      cross-
+      backend
+      convergence
+      at non-zero
+      clamp
+      (OPTIONAL
+      but
+      recommended;
+      first
+      cross-
+      backend
+      smoke for
+      a
+      kernel-side
+      feature),
+      §7.5 ctest
+      cycle on
+      a CUDA
+      host
+      (mandatory),
+      §7.6
+      refresh
+      `CUDA_HOST_VERIFICATION_REPORT.md`
+      (mirrors
+      PT-P.18's
+      §6.4
+      contract).
+    - **§8 Why
+      this slice
+      is the
+      next viable
+      item.** Three
+      reasons:
+      PT-P.22
+      audit
+      verdict was
+      clean (the
+      placeholder
+      is a known-
+      good
+      baseline),
+      the change
+      is
+      contained
+      to known
+      sites (every
+      file:line
+      named in
+      §3), the
+      arc closes
+      naturally
+      (PT-P.24 +
+      PT-P.25
+      complete
+      the §4.7
+      promise).
+      Plus a
+      "What's
+      NOT yet
+      safe"
+      sub-section
+      explaining
+      why §4.7
+      kernel
+      wiring is
+      preferred
+      over the
+      two
+      alternatives
+      from
+      PT-P.22's
+      audit (b)
+      CUDA-host
+      verification
+      run + (c)
+      pivot to
+      master
+      order #16.
+- This `BUILD_PLAN.md`
+  slice-closing entry.
+
+### What does NOT change
+
+- All
+  PT-P.{1..22}
+  artefacts:
+  byte-identical
+  (PT-P.23 is
+  a task
+  definition; it
+  touches no
+  source file).
+- Build configs:
+  byte-identical.
+  ctest remains
+  7/7 OFF and
+  8/8 ON-audit-
+  host with no
+  rebuild needed.
+- All other
+  docs: PT-P.23
+  only ADDS
+  `PATH_TRACER_POLISH_FIREFLY_CLAMP_WIRING_TASK.md`;
+  no edits to
+  `PATH_TRACER_POLISH_PLAN.md`,
+  the eleven
+  earlier
+  PT-P.x task /
+  audit docs,
+  the TEX-P.x
+  arc, or the
+  CUDA-H.x arc.
+
+### Master rule compliance
+
+- **Build
+  incrementally /
+  every step
+  compilable**:
+  docs-only
+  slice; build
+  is trivially
+  preserved.
+- **Update
+  BUILD_PLAN**:
+  this entry,
+  per master
+  rule 8.
+
+### Verified at the build
+
+- `cmake --build
+  build` + `cmake
+  --build
+  build-ON` were
+  already green
+  at the end of
+  PT-P.22 and
+  remain green;
+  PT-P.23
+  changed no
+  build-relevant
+  files. ctest
+  7/7 OFF and
+  8/8 ON re-
+  confirmed
+  with no work
+  needed.
+- The task
+  doc's source
+  citations
+  (the PT-P.21
+  `firefly_clamp
+  = 0.0f`
+  field
+  declaration
+  at
+  `PathTracer.h:103`,
+  the
+  `launch_pathtrace_sample`
+  signature at
+  `CudaPathTracer.cuh:52-60`,
+  the
+  `__raygen__pathtrace`
+  body at
+  `OptixPrograms.cu:817..`
+  with the
+  `rgb_sum +=`
+  accumulation
+  at lines
+  933-935, the
+  OptiX
+  launch-params
+  POD at
+  `OptixLaunchParams.h:144-146`,
+  the
+  `render_pathtrace*`
+  signatures
+  at
+  `OptixRenderer.h:216,274`,
+  the
+  launch-params
+  upload sites
+  at
+  `OptixRenderer.cpp:1388-1390,1682-1684`)
+  resolve to
+  the current
+  source byte-
+  for-byte
+  post-PT-P.21.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
