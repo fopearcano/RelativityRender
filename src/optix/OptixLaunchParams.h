@@ -197,6 +197,60 @@ struct OptixLaunchParams {
     // register when the ray escapes.
     bool          enable_shadows = false;
 
+    // ---- NEE.4 path-trace direct lighting (Next Event Estimation) ----
+    //
+    // OptiX-side mirror of NEE.2's CUDA `PathTraceConfig::enable_nee`.
+    // Consumed exclusively by `__raygen__pathtrace`: when `true`
+    // AND `light_count > 0`, the raygen invokes
+    // `rr::pathtracer::sample_direct_light_uniform` once per
+    // bounce vertex (using one in-guard `next_float(rng)` draw
+    // for the uniform light selection), traces an any-hit
+    // shadow ray that reuses the Stage 20L `__miss__shadow` SBT
+    // record (`missSbtIndex = 1` + `OPTIX_RAY_FLAG_DISABLE_CLOSESTHIT
+    // | OPTIX_RAY_FLAG_TERMINATE_ON_FIRST_HIT`; the shadow miss
+    // sets payload register 0 = 1 on visibility, 0 on occlusion),
+    // and adds a Lambert-BRDF + cosine + throughput-modulated
+    // direct-light contribution to the running per-sample
+    // radiance.
+    //
+    // Default `false` keeps the OptiX raygen byte-for-byte
+    // identical with the pre-NEE.4 build: the in-guard
+    // `next_float(rng)` draw is never executed, the cosine-
+    // hemisphere `next_vec2(rng)` immediately below pulls
+    // from a bit-identical RNG state, no shadow ray is traced,
+    // and the per-pixel write is bit-exact with the pre-NEE.4
+    // arithmetic. Same IEEE-754 zero-add-exactness argument
+    // PT-P.21 / PT-P.24 used for the firefly-clamp default-off
+    // path.
+    //
+    // Other OptiX entries (`__raygen__pinhole`, `__raygen__test`,
+    // `__raygen__aov_sample`, `__raygen__direct_lighting` -
+    // i.e. the radiance pipeline + the Stage 20K `shading_mode
+    // == 2` direct-lighting closest-hit) IGNORE this field;
+    // their dispatchers leave it default-`false` and their
+    // shading paths do not consume it. The NEE branch lives
+    // ONLY inside `__raygen__pathtrace`, mirroring the CUDA
+    // path's confinement to `k_pathtrace_sample`.
+    //
+    // Light-type scope: `LightType::Point` and
+    // `LightType::Directional` contribute through the helper
+    // (matching CUDA NEE.2). `LightType::Area` and
+    // `LightType::Environment` are PLACEHOLDER per
+    // `Light.h:20-31`; the helper returns `pdf_inv = 0` for
+    // those types and the kernel naturally treats them as
+    // zero-contribution samples. MIS is reserved for the
+    // future area-light slice (the v1 "no double-count
+    // window" argument from `docs/PATH_TRACER_NEE_TASK.md`
+    // §1 holds because Point + Directional lights have no
+    // mesh).
+    //
+    // See `OptixRenderer::render_pathtrace*`'s `enable_nee`
+    // parameter for the host-side wiring, and
+    // `PathTraceConfig::enable_nee` in
+    // `src/pathtracer/PathTracer.h` for the CUDA-side
+    // counterpart this field mirrors.
+    bool          enable_nee = false;
+
     // ---- Stage 20M textured-material state ----
     //
     // Used by the radiance closest-hit when the SBT hit-record

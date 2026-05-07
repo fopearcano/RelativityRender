@@ -128,19 +128,31 @@ struct PathTraceConfig {
     // PLACEHOLDER per `Light.h:20-31` and contribute zero
     // through the NEE branch.
     //
-    // OptiX backend status: `OptixRenderer::render_pathtrace`
-    // currently IGNORES this field — the OptiX path-trace
-    // raygen has no NEE wiring yet (the next sub-arc slice
-    // adds it). Until then, mixing `enable_nee == true`
-    // with the OptiX backend silently produces an emission-
-    // only render from OptiX while the CUDA backend
-    // produces a NEE render; the two backends DO NOT
-    // converge to the same image until the OptiX-side NEE
-    // slice lands. The CUDA-only landing of NEE.2 is safe
-    // because `enable_nee == false` (the default for every
-    // existing caller) keeps both backends byte-identical
-    // with the pre-NEE build — the divergence only appears
-    // when a future caller flips the flag.
+    // OptiX backend status (post-NEE.4): the OptiX path-
+    // trace raygen now mirrors the CUDA NEE branch via
+    // `OptixLaunchParams::enable_nee` and the trailing
+    // `bool enable_nee` argument on
+    // `OptixRenderer::render_pathtrace*`. The two backends
+    // are convergence-equivalent at every value of
+    // `enable_nee` (both off: byte-identical to the pre-
+    // NEE build; both on: same Lambert-BRDF + cosine +
+    // throughput-modulated direct-light contribution from
+    // the same `sample_direct_light_uniform` helper, the
+    // same Stage 20L `__miss__shadow` SBT record reused for
+    // visibility, and the same Point + Directional light-
+    // type scope). `PathTraceConfig::enable_nee` flows
+    // through `launch_pathtrace_sample` for the CUDA path;
+    // the OptiX dispatcher takes `enable_nee` as a separate
+    // argument because it does not consume `PathTraceConfig`
+    // directly. A caller that drives both backends from a
+    // single `PathTraceConfig` should pass `cfg.enable_nee`
+    // to both APIs; the CLI flag that does this is reserved
+    // for NEE.5 (`--enable-nee`).
+    //
+    // Default `enable_nee == false` continues to keep both
+    // backends byte-identical with the pre-NEE build — the
+    // §5.5 atomicity-equivalent invariant from
+    // `docs/PATH_TRACER_NEE_AUDIT.md` §3.2 is upheld.
     //
     // No MIS yet. v1 sums the existing emission term and
     // the new NEE term naively. The "no double-count

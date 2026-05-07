@@ -54,6 +54,7 @@
 #include "math/Vec3.h"
 #include "optix/OptixLaunchParams.h"
 #include "optix/OptixSBT.h"           // Stage 20G: HitGroupData
+#include "pathtracer/DirectLight.cuh" // NEE.4: sample_direct_light_uniform
 #include "pathtracer/RNG.h"           // Stage 20I: RNG seed helper
 #include "pathtracer/Sampling.h"      // Stage 20I: cos-hemisphere
 #include "relativity/RelativityMath.h"
@@ -914,6 +915,129 @@ extern "C" __global__ void __raygen__pathtrace() {
             const Vec3 albedo {__uint_as_float(p7),
                                __uint_as_float(p8),
                                __uint_as_float(p9)};
+
+            // NEE.4 OptiX-side mirror of the CUDA NEE.2 branch
+            // in `k_pathtrace_sample` (`CudaPathTracer.cu:276`).
+            // Default-off byte-identity argument: when
+            // `optixLaunchParams.enable_nee == false` (the
+            // dispatcher default for every existing caller),
+            // this branch is never entered. The
+            // `next_float(rng)` draw for the light-selection
+            // index lives INSIDE the guard, so the cosine-
+            // hemisphere `next_vec2(rng)` below pulls from a
+            // bit-identical RNG state (same as the pre-NEE.4
+            // build). No shadow ray is traced. No FP add ever
+            // touches `radiance` from the NEE branch at
+            // default. The argument is the same IEEE-754
+            // zero-add-exactness one PT-P.21 / PT-P.24
+            // established for the firefly-clamp default-off
+            // path. The branch is uniform per-warp (every
+            // launch reads the same `enable_nee` /
+            // `light_count`), so no warp divergence is
+            // introduced at default.
+            //
+            // When entered, the raygen:
+            //   1. Picks one light uniformly via
+            //      `sample_direct_light_uniform` (the same
+            //      RR_HD inline helper the CUDA path uses).
+            //   2. If the sample is valid (`pdf_inv > 0`),
+            //      offsets the shadow-ray origin off the
+            //      surface along the geometric normal to
+            //      dodge self-intersection, and traces an
+            //      any-hit shadow ray. The shadow ray reuses
+            //      the Stage 20L `__miss__shadow` SBT record
+            //      (`missSbtIndex = 1` +
+            //      `OPTIX_RAY_FLAG_DISABLE_CLOSESTHIT
+            //      | OPTIX_RAY_FLAG_TERMINATE_ON_FIRST_HIT`):
+            //      the radiance closest-hit is bypassed, so
+            //      a hit anywhere in (tmin, tmax) terminates
+            //      traversal without firing any shader and
+            //      payload-register-0 stays at the raygen-
+            //      initialised `0u` (occluded); a miss
+            //      runs `__miss__shadow` which writes `1u`
+            //      (visible).
+            //   3. If visible AND the cosine to the surface
+            //      is positive, adds a Lambert-BRDF + cosine
+            //      + throughput-modulated direct-light
+            //      contribution to `radiance`. The Lambert
+            //      BRDF reuses `albedo` from the closest-hit
+            //      payload (which IS the material's
+            //      `params.baseColor` per
+            //      `__closesthit__pathtrace`); same Lambert
+            //      term `albedo / pi` the CUDA mirror uses.
+            //
+            // No MIS yet (v1 light-type scope is Point +
+            // Directional, both have no mesh — the existing
+            // emission term and the new NEE term sample
+            // disjoint contributions). MIS is reserved for
+            // the future area-light slice.
+            if (optixLaunchParams.enable_nee
+                && optixLaunchParams.light_count > 0) {
+                const float u_select = rr::pathtracer::next_float(rng);
+                const auto sample = rr::pathtracer::sample_direct_light_uniform(
+                    optixLaunchParams.lights,
+                    optixLaunchParams.light_count,
+                    hit_pos, hit_n, u_select);
+                if (sample.pdf_inv > 0.0f) {
+                    // Receiver-end origin offset (matches
+                    // both the diffuse-bounce origin offset
+                    // below and the Stage 20L `shadow_origin`
+                    // offset in the radiance closest-hit's
+                    // direct-lighting branch). Light-end
+                    // epsilon is `kShadowEps` subtracted from
+                    // `sample.distance`; for Directional
+                    // lights the helper encoded
+                    // `kDirectionalShadowTMax` so the
+                    // subtraction is irrelevant in float
+                    // arithmetic (1e30 - 1e-3 == 1e30).
+                    const float t_max = sample.distance
+                                      - rr::pathtracer::kShadowEps;
+                    const Vec3 shadow_origin{
+                        hit_pos.x + hit_n.x * 1.0e-4f,
+                        hit_pos.y + hit_n.y * 1.0e-4f,
+                        hit_pos.z + hit_n.z * 1.0e-4f};
+                    unsigned int v_shadow = 0u;  // 0 = occluded
+                    optixTrace(
+                        optixLaunchParams.scene_handle,
+                        make_float3(shadow_origin.x,
+                                    shadow_origin.y,
+                                    shadow_origin.z),
+                        make_float3(sample.wi.x,
+                                    sample.wi.y,
+                                    sample.wi.z),
+                        /*tmin=*/rr::pathtracer::kShadowEps,
+                        /*tmax=*/t_max,
+                        /*time=*/0.0f,
+                        OptixVisibilityMask(255),
+                        OPTIX_RAY_FLAG_DISABLE_CLOSESTHIT
+                          | OPTIX_RAY_FLAG_TERMINATE_ON_FIRST_HIT,
+                        /*sbtOffset=*/0,
+                        /*sbtStride=*/0,
+                        /*missSbtIndex=*/1,
+                        v_shadow);
+                    if (v_shadow != 0u) {
+                        const float cos_th =
+                            hit_n.x * sample.wi.x
+                          + hit_n.y * sample.wi.y
+                          + hit_n.z * sample.wi.z;
+                        if (cos_th > 0.0f) {
+                            // Lambert BRDF: albedo / pi.
+                            const float k = cos_th
+                                          * sample.pdf_inv
+                                          * rr::math::kInvPi;
+                            radiance.x += throughput.x
+                                * sample.li_unattenuated.x
+                                * albedo.x * k;
+                            radiance.y += throughput.y
+                                * sample.li_unattenuated.y
+                                * albedo.y * k;
+                            radiance.z += throughput.z
+                                * sample.li_unattenuated.z
+                                * albedo.z * k;
+                        }
+                    }
+                }
+            }
 
             if (bounce + 1 >= max_bounces) break;
 

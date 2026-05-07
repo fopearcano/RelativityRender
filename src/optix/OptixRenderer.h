@@ -213,12 +213,22 @@ public:
     // conceptually; per-bounce relativistic effects deferred).
     //
     // Same audit-host fallback semantics as render_test.
+    //
+    // NEE.4 grew the trailing argument list with `enable_nee`,
+    // mirroring the CUDA `launch_pathtrace_sample(...,
+    // enable_nee)` parameter and threading the flag into
+    // `OptixLaunchParams::enable_nee` for `__raygen__pathtrace`.
+    // Default `false` preserves the pre-NEE.4 behaviour byte-
+    // for-byte (the raygen's `enable_nee` guard is never
+    // entered, no shadow ray is traced, and the per-pixel
+    // arithmetic is bit-identical with the pre-NEE.4 build).
     [[nodiscard]] static Result render_pathtrace(
         const rr::scene::Scene& scene,
         int width, int height,
         int spp, int max_bounces,
         unsigned int seed = 0u,
-        float firefly_clamp = 0.0f) noexcept;  // PT-P.24
+        float firefly_clamp = 0.0f,    // PT-P.24
+        bool  enable_nee   = false) noexcept;  // NEE.4
 
     // Stage 20J progressive checkpoint snapshot. One per
     // requested element of `checkpoint_samples` argument to
@@ -272,6 +282,13 @@ public:
     // already PRIVATE-links per Stage 18A.1.
     //
     // Same audit-host fallback semantics as render_test.
+    //
+    // NEE.4 grew the trailing argument list with `enable_nee`
+    // (same shape as `render_pathtrace`), threaded into the
+    // shared `OptixLaunchParams::enable_nee` field so every
+    // per-sample launch in the progressive loop sees the same
+    // flag. Default `false` preserves the pre-NEE.4 behaviour
+    // byte-for-byte across every checkpoint.
     [[nodiscard]] static PathtraceProgressiveResult
     render_pathtrace_progressive(
         const rr::scene::Scene& scene,
@@ -279,7 +296,8 @@ public:
         int max_bounces,
         unsigned int seed,
         const std::vector<int>& checkpoint_samples,
-        float firefly_clamp = 0.0f) noexcept;  // PT-P.24
+        float firefly_clamp = 0.0f,    // PT-P.24
+        bool  enable_nee   = false) noexcept;  // NEE.4
 
     // Stage 20K basic direct-lighting render. Same first-non-
     // empty-mesh selection + GAS-build path as render_mesh_scene.

@@ -662,6 +662,22 @@ if(RR_BUILD_TESTS)
     rr_apply_warnings(pathtracer_tests)
     add_test(NAME pathtracer_tests COMMAND pathtracer_tests)
 
+    # pathtracer_nee_tests (NEE.4) covers the host-side
+    # `rr::pathtracer::sample_direct_light_uniform` helper
+    # (`pathtracer/DirectLight.cuh`). The helper is RR_HD inline,
+    # so the same code path the CUDA `k_pathtrace_sample` and the
+    # OptiX `__raygen__pathtrace` kernels execute is exercised
+    # here against the host C++ compiler. Anchors the helper's
+    # branching (count / pointer guards, Point / Directional
+    # light shapes, placeholder light types, uniform-by-count
+    # selection, defence-in-depth clamp on `u_select == 1.0f`)
+    # so a regression is caught at host-build time without
+    # requiring a CUDA-equipped runtime host.
+    add_executable(pathtracer_nee_tests tests/pathtracer_nee_tests.cpp)
+    target_link_libraries(pathtracer_nee_tests PRIVATE rr_pathtracer)
+    rr_apply_warnings(pathtracer_nee_tests)
+    add_test(NAME pathtracer_nee_tests COMMAND pathtracer_nee_tests)
+
     # relativity_tests (Stage 19E.1) covers the relativity math
     # leaf in `src/relativity/RelativityMath.h`: identity at
     # |beta| = 0; forward (parallel-to-beta) blueshift /

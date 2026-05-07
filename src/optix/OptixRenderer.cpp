@@ -1222,7 +1222,8 @@ OptixRenderer::render_pathtrace(const rr::scene::Scene& scene,
                                 int width, int height,
                                 int spp, int max_bounces,
                                 unsigned int seed,
-                                float firefly_clamp) noexcept {
+                                float firefly_clamp,
+                                bool  enable_nee) noexcept {
     Result r;
 
     if (width <= 0 || height <= 0) {
@@ -1401,9 +1402,30 @@ OptixRenderer::render_pathtrace(const rr::scene::Scene& scene,
     params.max_bounces   = max_bounces;
     params.seed          = seed;
     params.firefly_clamp = firefly_clamp;  // PT-P.24
+    params.enable_nee    = enable_nee;     // NEE.4
     // Default `observer` + `params` (|beta| = 0) keep the
     // Doppler / searchlight stack at identity. Caller-driven
     // observer setup lives in a future slice.
+
+    // NEE.4: the NEE branch in `__raygen__pathtrace` reads
+    // `optixLaunchParams.lights` + `light_count`. The current
+    // `render_pathtrace` dispatcher does NOT upload the
+    // scene's light array (the path-tracer entry has
+    // historically rendered an environment-only image; the
+    // direct-lighting closest-hit at `shading_mode == 2` is
+    // the one that consumes lights). At default
+    // (`enable_nee == false`) the raygen never reads the
+    // pointer, so leaving `params.lights == nullptr` is safe
+    // and preserves byte-identity. When a caller flips
+    // `enable_nee == true` without first uploading lights,
+    // the helper's `lights == nullptr || count <= 0` guard
+    // returns the default zero-contribution sample and the
+    // NEE branch contributes nothing — the integrator is
+    // unbiased and produces an emission-only image, the same
+    // way the CUDA path's NEE branch behaves on a no-lights
+    // scene. The light-upload wiring for the path-tracer
+    // dispatcher is reserved for the same slice that adds
+    // the CLI flag (NEE.5+).
 
     {
         const ::cudaError_t e = ::cudaMemcpy(
@@ -1484,7 +1506,8 @@ OptixRenderer::render_pathtrace_progressive(
     int max_bounces,
     unsigned int seed,
     const std::vector<int>& checkpoint_samples,
-    float firefly_clamp) noexcept {
+    float firefly_clamp,
+    bool  enable_nee) noexcept {
     PathtraceProgressiveResult R;
 
     if (width <= 0 || height <= 0) {
@@ -1704,6 +1727,7 @@ OptixRenderer::render_pathtrace_progressive(
         params.max_bounces   = max_bounces;
         params.seed          = seed;
         params.firefly_clamp = firefly_clamp;  // PT-P.24
+        params.enable_nee    = enable_nee;     // NEE.4
         params.sample_index =
             static_cast<std::uint32_t>(sample_index);
 
@@ -3099,7 +3123,8 @@ OptixRenderer::render_pathtrace(const rr::scene::Scene& /*scene*/,
                                 int /*spp*/,
                                 int /*max_bounces*/,
                                 unsigned int /*seed*/,
-                                float /*firefly_clamp*/) noexcept {
+                                float /*firefly_clamp*/,
+                                bool  /*enable_nee*/) noexcept {
     Result r;
     r.ok = false;
     r.message =
@@ -3118,7 +3143,8 @@ OptixRenderer::render_pathtrace_progressive(
     int /*max_bounces*/,
     unsigned int /*seed*/,
     const std::vector<int>& /*checkpoint_samples*/,
-    float /*firefly_clamp*/) noexcept {
+    float /*firefly_clamp*/,
+    bool  /*enable_nee*/) noexcept {
     PathtraceProgressiveResult r;
     r.ok = false;
     r.message =

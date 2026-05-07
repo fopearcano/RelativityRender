@@ -48710,6 +48710,1276 @@ follow-up.**
   impl
   slice).
 
+## NEE.4 — OptiX-side NEE mirror (impl + first host-side helper test)
+
+**Scope of
+this slice
+(post-NEE.3
+audit):
+ship the
+OptiX
+counterpart
+of the
+NEE.2 CUDA
+skeleton
+plus the
+first host-
+side helper
+test for
+`sample_direct_light_uniform`.
+Closes the
+§5.5
+atomicity-
+equivalent
+invariant
+from
+`docs/PATH_TRACER_NEE_AUDIT.md`
+§3.2 — both
+backends
+now consume
+the same
+`enable_nee`
+flag, share
+the same
+RR_HD
+inline
+helper, and
+honour the
+default-off
+byte-
+identity
+contract;
+the next
+caller (the
+NEE.5 CLI
+flag slice)
+can flip
+the flag
+without
+introducing
+silent
+cross-
+backend
+divergence.**
+
+### What ships
+
+- **`src/optix/OptixLaunchParams.h`.**
+  Adds
+  `bool
+  enable_nee
+  = false`
+  field at
+  the end
+  of the
+  POD with
+  a 50-line
+  doc-
+  comment
+  block
+  documenting:
+    - the
+      mirror
+      shape
+      against
+      the
+      CUDA
+      `PathTraceConfig::enable_nee`,
+    - the
+      consumers
+      (only
+      `__raygen__pathtrace`;
+      every
+      other
+      OptiX
+      entry
+      ignores
+      the
+      field),
+    - the
+      shadow-
+      ray
+      reuse
+      of the
+      Stage
+      20L
+      `__miss__shadow`
+      SBT
+      record
+      (`missSbtIndex
+      = 1` +
+      `OPTIX_RAY_FLAG_DISABLE_CLOSESTHIT
+      |
+      OPTIX_RAY_FLAG_TERMINATE_ON_FIRST_HIT`),
+    - the
+      default-
+      off
+      byte-
+      identity
+      argument
+      (the
+      in-
+      guard
+      `next_float(rng)`
+      draw is
+      never
+      executed,
+      so the
+      cosine-
+      hemisphere
+      `next_vec2(rng)`
+      pulls
+      from a
+      bit-
+      identical
+      RNG
+      state;
+      same
+      IEEE-
+      754
+      zero-
+      add-
+      exactness
+      argument
+      PT-P.21
+      / PT-
+      P.24
+      established
+      for the
+      firefly-
+      clamp
+      default-
+      off
+      path),
+    - light-
+      type
+      scope
+      (Point
+      +
+      Directional
+      contribute,
+      Area /
+      Environment
+      are
+      PLACEHOLDER
+      and
+      return
+      zero-
+      contribution
+      samples),
+    - the
+      cross-
+      reference
+      to
+      `OptixRenderer::render_pathtrace*`'s
+      new
+      trailing
+      `enable_nee`
+      argument.
+- **`src/optix/OptixPrograms.cu`.**
+  Adds the
+  NEE
+  branch to
+  `__raygen__pathtrace`
+  inserted
+  AFTER
+  `albedo`
+  is
+  decoded
+  from
+  payload
+  registers
+  p7..p9
+  and
+  BEFORE
+  the
+  `bounce
+  + 1 >=
+  max_bounces`
+  break +
+  cosine
+  bounce
+  sampling
+  (mirroring
+  the
+  exact
+  insertion
+  point in
+  `CudaPathTracer.cu:276`).
+  The
+  branch:
+    - guards
+      on
+      `optixLaunchParams.enable_nee
+      &&
+      optixLaunchParams.light_count
+      > 0`,
+    - draws
+      a
+      single
+      `next_float(rng)`
+      (in-
+      guard,
+      matching
+      the
+      CUDA
+      RNG-
+      stream
+      preservation
+      contract),
+    - calls
+      the
+      RR_HD
+      inline
+      `rr::pathtracer::sample_direct_light_uniform(...)`
+      (the
+      same
+      helper
+      the
+      CUDA
+      kernel
+      uses),
+    - if
+      `sample.pdf_inv
+      > 0`:
+      offsets
+      the
+      shadow-
+      ray
+      origin
+      off the
+      surface
+      along
+      the
+      geometric
+      normal
+      by
+      `1.0e-4f`
+      (matching
+      both
+      the
+      diffuse-
+      bounce
+      origin
+      offset
+      below
+      and
+      the
+      Stage
+      20L
+      `shadow_origin`
+      offset),
+      computes
+      `t_max
+      =
+      sample.distance
+      -
+      kShadowEps`,
+      and
+      traces
+      a
+      shadow
+      ray
+      reusing
+      the
+      Stage
+      20L
+      `__miss__shadow`
+      SBT
+      record
+      (`missSbtIndex
+      = 1` +
+      `OPTIX_RAY_FLAG_DISABLE_CLOSESTHIT
+      |
+      OPTIX_RAY_FLAG_TERMINATE_ON_FIRST_HIT`;
+      the
+      radiance
+      closest-
+      hit is
+      bypassed,
+      so
+      payload-
+      register-0
+      stays
+      at the
+      raygen-
+      initialised
+      `0u`
+      (occluded)
+      on hit,
+      and
+      `__miss__shadow`
+      writes
+      `1u`
+      (visible)
+      on
+      miss).
+    - if
+      visible
+      AND
+      `cos_th
+      > 0`:
+      adds a
+      Lambert-
+      BRDF +
+      cosine
+      +
+      throughput-
+      modulated
+      direct-
+      light
+      contribution
+      to
+      `radiance`.
+      The
+      Lambert
+      BRDF
+      reuses
+      the
+      `albedo`
+      payload
+      (which
+      IS the
+      material's
+      `params.baseColor`
+      per
+      `__closesthit__pathtrace`),
+      same
+      `albedo
+      / pi`
+      term
+      the
+      CUDA
+      mirror
+      uses.
+    - includes
+      `pathtracer/DirectLight.cuh`
+      at the
+      top of
+      the TU
+      (joins
+      the
+      existing
+      RR_HD
+      includes
+      `pathtracer/RNG.h`
+      +
+      `pathtracer/Sampling.h`).
+- **`src/optix/OptixRenderer.h`.**
+  Grows
+  `render_pathtrace`
+  AND
+  `render_pathtrace_progressive`
+  signatures
+  with a
+  trailing
+  defaulted
+  `bool
+  enable_nee
+  = false`
+  argument.
+  Default
+  preserves
+  byte-
+  identity
+  for
+  every
+  existing
+  call site
+  (`run_render_optix_pathtrace`
+  in
+  `src/main.cpp:1586`,
+  the only
+  external
+  caller
+  today,
+  is
+  unchanged).
+  Doc-
+  comment
+  updates
+  reference
+  the
+  NEE.4
+  mirror
+  +
+  default-
+  off byte-
+  identity.
+- **`src/optix/OptixRenderer.cpp`.**
+  Threads
+  `enable_nee`
+  into
+  `params.enable_nee`
+  for both
+  the
+  `render_pathtrace`
+  active
+  body
+  AND the
+  `render_pathtrace_progressive`
+  per-
+  launch
+  param
+  population
+  inside
+  the
+  progressive
+  loop.
+  Updates
+  both
+  fallback
+  audit-
+  host
+  (no-
+  OptiX-
+  SDK)
+  signatures
+  to
+  match
+  the
+  new
+  parameter
+  list.
+  Adds an
+  inline
+  block
+  comment
+  documenting
+  that
+  `params.lights`
+  remains
+  `nullptr`
+  in this
+  slice —
+  the
+  helper
+  guards
+  on
+  null-
+  pointer
+  /
+  count==0
+  and
+  contributes
+  zero,
+  which
+  is
+  unbiased;
+  the
+  light-
+  upload
+  wiring
+  for the
+  path-
+  tracer
+  dispatcher
+  is
+  reserved
+  for the
+  CLI
+  slice
+  (NEE.5+).
+- **`src/pathtracer/PathTracer.h`.**
+  Updates
+  the
+  `enable_nee`
+  field
+  doc-
+  comment's
+  "OptiX
+  backend
+  status"
+  subsection
+  from "the
+  OptiX
+  path-
+  trace
+  raygen
+  has no
+  NEE
+  wiring
+  yet" to
+  the
+  post-
+  NEE.4
+  state:
+  both
+  backends
+  are
+  convergence-
+  equivalent
+  at every
+  value of
+  `enable_nee`,
+  the §5.5
+  atomicity-
+  equivalent
+  invariant
+  from
+  `PATH_TRACER_NEE_AUDIT.md`
+  §3.2 is
+  upheld,
+  and the
+  CLI flag
+  that
+  flips
+  the
+  field
+  for
+  both
+  backends
+  is
+  reserved
+  for the
+  next
+  slice
+  (NEE.5).
+- **`tests/pathtracer_nee_tests.cpp`
+  (NEW).**
+  Host-
+  side
+  helper
+  tests
+  for
+  `rr::pathtracer::sample_direct_light_uniform`
+  exercising:
+    - count
+      == 0
+      and
+      lights
+      ==
+      nullptr
+      return
+      zero-
+      contribution
+      samples
+      (`pdf_inv
+      ==
+      0`),
+    - Point
+      light
+      in
+      front
+      of
+      receiver:
+      `pdf_inv
+      ==
+      count`,
+      `wi`
+      points
+      from
+      hit
+      toward
+      light,
+      `distance
+      ==
+      |light
+      -
+      hit|`,
+      `li_unattenuated`
+      carries
+      1/r²
+      falloff,
+    - Point
+      light
+      behind
+      receiver:
+      zero
+      contribution,
+    - Point
+      light
+      coincident
+      with
+      receiver
+      (r²
+      ==
+      0):
+      zero
+      contribution
+      (avoids
+      divide-
+      by-
+      zero),
+    - Directional
+      light
+      pointing
+      toward
+      receiver:
+      `distance
+      ==
+      kDirectionalShadowTMax`,
+      no
+      falloff,
+      `wi
+      ==
+      -normalize(direction)`,
+    - Directional
+      light
+      pointing
+      away
+      from
+      receiver:
+      zero
+      contribution,
+    - Directional
+      light
+      with
+      degenerate
+      direction
+      (zero
+      vector):
+      zero
+      contribution,
+    - PLACEHOLDER
+      `LightType::Area`
+      and
+      `LightType::Environment`:
+      zero
+      contribution,
+    - Uniform-
+      by-
+      count
+      selection:
+      with
+      `count
+      == 4`
+      and
+      `u_select`
+      walking
+      the
+      (1/8,
+      3/8,
+      5/8,
+      7/8)
+      bin
+      centres,
+      each
+      bin
+      maps
+      to a
+      distinct
+      light
+      index;
+      defence-
+      in-
+      depth
+      clamp
+      on
+      `u_select
+      ==
+      1.0f`
+      maps
+      to
+      `count
+      - 1`.
+- **`CMakeLists.txt`.**
+  Wires
+  the new
+  test
+  binary:
+  `add_executable(pathtracer_nee_tests
+  ...)`
+  +
+  `target_link_libraries(...
+  PRIVATE
+  rr_pathtracer)`
+  +
+  `add_test(NAME
+  pathtracer_nee_tests
+  COMMAND
+  pathtracer_nee_tests)`.
+  Mirrors
+  the
+  existing
+  `pathtracer_tests`
+  shape.
+- This
+  `BUILD_PLAN.md`
+  slice-
+  closing
+  entry.
+
+### What does NOT change
+
+- **No
+  CLI
+  surface.**
+  No
+  `--enable-nee`
+  flag.
+  Verified
+  via
+  `--help
+  | grep
+  enable-nee`
+  returning
+  empty.
+  The
+  CLI
+  flag is
+  reserved
+  for
+  NEE.5
+  per the
+  §3.2
+  sequencing
+  constraint
+  (the
+  CLI
+  flag
+  flips
+  callers,
+  and
+  callers
+  must
+  not
+  flip
+  the
+  field
+  before
+  the
+  OptiX
+  mirror
+  lands —
+  which
+  is what
+  THIS
+  slice
+  ships).
+- **No
+  caller
+  flips
+  the
+  field.**
+  Every
+  caller
+  of
+  `OptixRenderer::render_pathtrace*`
+  reaches
+  the
+  default
+  `false`
+  via
+  the new
+  trailing
+  default-
+  arg.
+  Verified
+  via
+  `grep
+  -rn
+  "enable_nee"
+  src/`
+  finding
+  zero
+  `cfg.enable_nee
+  =
+  true`
+  /
+  `enable_nee=true`
+  assignments
+  anywhere
+  outside
+  the
+  field
+  declarations
+  +
+  doc-
+  comments
+  +
+  parameter
+  names.
+- **No
+  light-
+  upload
+  in the
+  OptiX
+  path-
+  tracer
+  dispatcher.**
+  `params.lights`
+  remains
+  `nullptr`
+  in
+  `OptixRenderer::render_pathtrace*`.
+  At
+  `enable_nee
+  ==
+  false`
+  this is
+  irrelevant
+  (the
+  raygen
+  never
+  consumes
+  the
+  field);
+  at
+  `enable_nee
+  ==
+  true`
+  with no
+  lights,
+  the
+  helper's
+  `lights
+  ==
+  nullptr
+  || count
+  <= 0`
+  guard
+  returns
+  the
+  zero-
+  contribution
+  sample
+  and the
+  estimator
+  is
+  unbiased
+  (emission-
+  only
+  image).
+  Light-
+  upload
+  wiring
+  is
+  reserved
+  for the
+  CLI
+  slice
+  (NEE.5+).
+- **Must-
+  not-
+  touch
+  paths
+  unchanged.**
+  `git
+  diff
+  --
+  src/cuda/
+  src/lighting/
+  src/gpu/
+  src/pathtracer/RNG.h
+  src/pathtracer/RNG.cuh
+  src/pathtracer/Sampling.h
+  src/pathtracer/Sampling.cuh
+  src/pathtracer/DirectLight.h
+  src/pathtracer/DirectLight.cuh
+  src/main.cpp
+  scenes/
+  tools/
+  docs/`
+  returns
+  zero
+  bytes.
+  The
+  CUDA
+  NEE.2
+  branch,
+  the
+  RR_HD
+  helper,
+  the
+  `Light`
+  POD,
+  the
+  `GpuScene::upload_lights`
+  contract,
+  the
+  RNG
+  /
+  Sampling
+  primitives,
+  the CLI
+  surface,
+  and
+  every
+  other
+  must-
+  not-
+  touch
+  surface
+  are
+  byte-
+  identical
+  with
+  the
+  pre-
+  NEE.4
+  build.
+- **No
+  MIS.**
+  Same
+  v1 NEE
+  scope
+  the
+  CUDA
+  side
+  ships:
+  Point
+  +
+  Directional
+  light
+  contributions
+  only;
+  the
+  emission-
+  add and
+  the
+  NEE-
+  add are
+  summed
+  naively.
+  The "no
+  double-
+  count
+  window"
+  argument
+  from
+  `docs/PATH_TRACER_NEE_TASK.md`
+  §1
+  holds
+  because
+  Point
+  +
+  Directional
+  lights
+  have no
+  mesh.
+  MIS is
+  reserved
+  for the
+  future
+  area-
+  light
+  slice.
+- **All
+  prior
+  artefacts
+  byte-
+  identical.**
+  PT-P.{1..25},
+  CUDA-
+  OPTIX-
+  VERIFY,
+  firefly-
+  clamp
+  CLI
+  task /
+  impl /
+  audit,
+  TEX-P.x,
+  CUDA-
+  H.x,
+  NEE.{1,2,3}
+  source
+  +
+  artefacts
+  are
+  byte-
+  identical
+  except
+  for the
+  six
+  files
+  listed
+  above
+  +
+  `tests/pathtracer_nee_tests.cpp`.
+
+### Master rule compliance
+
+- **Build
+  incrementally
+  / every
+  step
+  compilable**:
+  both
+  audit-
+  host
+  configs
+  rebuild
+  cleanly
+  (OFF:
+  `cmake
+  --build
+  build
+  -j` ⇒
+  clean;
+  ON:
+  `cmake
+  --build
+  build-
+  ON -j`
+  ⇒
+  clean,
+  including
+  the
+  PTX
+  recompile
+  for
+  `OptixPrograms.cu`).
+  ctest
+  goes
+  from
+  7→8
+  on OFF
+  and
+  8→9
+  on ON
+  (the
+  new
+  `pathtracer_nee_tests`
+  binary
+  is the
+  +1 in
+  both).
+- **Documentation
+  +
+  source
+  in one
+  slice**:
+  the
+  doc-
+  comment
+  on
+  `OptixLaunchParams::enable_nee`,
+  the
+  per-
+  branch
+  in-line
+  comment
+  in
+  `__raygen__pathtrace`,
+  the
+  dispatcher
+  signature
+  doc-
+  comments
+  in
+  `OptixRenderer.h`,
+  the
+  `params.lights
+  ==
+  nullptr`
+  inline
+  comment
+  in
+  `OptixRenderer.cpp`,
+  and
+  the
+  `PathTraceConfig::enable_nee`
+  status
+  update
+  in
+  `PathTracer.h`
+  ship
+  alongside
+  the
+  source
+  changes
+  in the
+  same
+  commit.
+- **No
+  CPU
+  per-
+  pixel
+  work**:
+  the
+  NEE
+  branch
+  lives
+  ONLY
+  in
+  device
+  code
+  (`__raygen__pathtrace`).
+  The
+  host-
+  side
+  helper
+  test is
+  a
+  pure-
+  POD
+  exerciser
+  of an
+  RR_HD
+  inline;
+  no
+  per-
+  pixel
+  work,
+  no
+  framebuffer
+  walk,
+  no
+  Image
+  load.
+- **Update
+  BUILD_PLAN**:
+  this
+  entry,
+  per
+  master
+  rule 8.
+
+### Verified at the build
+
+- `cmake
+  --build
+  build
+  -j`
+  (audit
+  host,
+  RR_ENABLE_CUDA=OFF,
+  RR_ENABLE_OPTIX=OFF):
+  clean.
+  ctest
+  100%
+  green
+  (8/8;
+  +1 vs
+  the
+  NEE.3
+  baseline:
+  `pathtracer_nee_tests`).
+- `cmake
+  --build
+  build-
+  ON -j`
+  (audit
+  host,
+  RR_ENABLE_CUDA=OFF,
+  RR_ENABLE_OPTIX=ON):
+  clean.
+  ctest
+  100%
+  green
+  (9/9;
+  +1 vs
+  the
+  NEE.3
+  baseline).
+- Audit-
+  host
+  smoke
+  surface
+  preserved:
+  `--render-pathtrace`
+  emits
+  the
+  documented
+  "requires
+  CUDA"
+  fallback;
+  `--render-optix-pathtrace`
+  emits
+  the
+  `firefly_clamp:
+  0.000000
+  (disabled)`
+  log
+  line
+  followed
+  by the
+  documented
+  "requires
+  the
+  OptiX
+  SDK"
+  fallback.
+  No new
+  log
+  line
+  for
+  `enable_nee`
+  yet
+  (deferred
+  to
+  NEE.5
+  when
+  the
+  CLI
+  flag
+  lands).
+- TEX-
+  P.6
+  fixture
+  regression
+  re-
+  verified:
+  `--scene-info
+  scenes/test_textured_material.rrscene`
+  emits
+  the
+  expected
+  three-
+  case
+  log
+  sequence
+  (one
+  Case 1
+  info
+  + two
+  Case 3
+  warnings;
+  `fixups
+  applied:
+  2`).
+- `git
+  diff
+  --
+  src/cuda/
+  src/lighting/
+  src/gpu/
+  src/pathtracer/RNG.h
+  src/pathtracer/RNG.cuh
+  src/pathtracer/Sampling.h
+  src/pathtracer/Sampling.cuh
+  src/pathtracer/DirectLight.h
+  src/pathtracer/DirectLight.cuh
+  src/main.cpp
+  scenes/
+  tools/
+  docs/
+  | wc -l`
+  ⇒ 0
+  bytes
+  (no-
+  touch
+  invariants
+  for
+  the
+  NEE.4
+  impl
+  slice
+  hold).
+- Help-
+  text
+  surface
+  unchanged:
+  `--help
+  | grep
+  -E
+  "enable-nee|enable_nee"`
+  ⇒
+  empty
+  (no
+  CLI
+  surface
+  in
+  this
+  slice
+  by
+  design;
+  reserved
+  for
+  NEE.5).
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
