@@ -43418,6 +43418,591 @@ DEFERRED until
 an operator
 performs them.
 
+## PT-P.25 — firefly clamp backend wiring audit (docs only)
+
+**The PT-P.x §4
+polish arc has
+fully shipped.**
+PT-P.{20..25}
+together complete
+the
+`PATH_TRACER_POLISH_PLAN.md`
+§4.7 promise:
+PT-P.{20,21,22}
+shipped the
+field-only
+placeholder;
+PT-P.{23,24,25}
+shipped the
+kernel wiring on
+both backends.
+With this audit
+landing, the
+seven §4 items
+(§4.{1..7}) are
+all PASS through
+the established
+task → impl →
+audit cadence.
+
+**Scope of this
+slice (post-PT-P.24
+implementation
+complete): write
+the sub-arc-end
+audit at
+`docs/PATH_TRACER_POLISH_FIREFLY_CLAMP_WIRING_AUDIT.md`
+that walks the
+nine prompt
+checks and
+records each as
+PASS / REPAIR /
+DEFERRED.
+Mirrors the
+PT-P.{4,7,10,13,16,19,22}
+audit shapes
+applied to the
+PT-P.{23,24}
+sub-arc.
+Documentation
+only; zero
+source changes;
+zero build
+effect.**
+
+### What ships
+
+- `docs/PATH_TRACER_POLISH_FIREFLY_CLAMP_WIRING_AUDIT.md`
+  (NEW). Nine
+  sections + a
+  verdict + a
+  recommended
+  next step:
+    - **§1 CUDA
+      pathtrace
+      receives
+      firefly_clamp.**
+      PASS. Three
+      sub-sections
+      enumerate
+      the host
+      orchestration
+      (`PathTracer.cpp`),
+      launcher
+      signature
+      (`CudaPathTracer.cuh`),
+      kernel +
+      launcher fn
+      body
+      (`CudaPathTracer.cu`).
+      Cites every
+      file:line
+      call site.
+    - **§2 OptiX
+      pathtrace
+      receives
+      firefly_clamp.**
+      PASS. Five
+      sub-sections
+      enumerate
+      the
+      dispatcher
+      (`main.cpp`),
+      renderer
+      signatures
+      (`OptixRenderer.h`),
+      renderer
+      bodies
+      (`OptixRenderer.cpp`
+      — both
+      SDK_FOUND
+      bodies + both
+      audit-host
+      fallback
+      stubs),
+      launch-params
+      POD
+      (`OptixLaunchParams.h`),
+      OptiX raygen
+      (`OptixPrograms.cu`).
+      Cites every
+      file:line.
+    - **§3 Clamp
+      inactive
+      when
+      firefly_clamp
+      <= 0.0f.**
+      PASS
+      structurally;
+      OPTIONAL
+      CUDA-host
+      empirical
+      confirmation.
+      Sub-checks:
+      strict `>`
+      gating in
+      both
+      backends;
+      negative
+      values
+      rejected at
+      4 sites
+      upstream;
+      empirical
+      `cmp`-based
+      confirmation
+      deferred.
+    - **§4 Clamp
+      activates
+      only when
+      firefly_clamp
+      > 0.0f.**
+      PASS
+      structurally;
+      OPTIONAL
+      CUDA-host
+      empirical
+      confirmation.
+      §4.1
+      activation
+      truth table
+      (six rows
+      including
+      subnormal,
+      `+inf`, NaN
+      cases). §4.2
+      defensive
+      note on
+      NaN
+      handling
+      (NaN > 0.0f
+      = false; the
+      branch
+      skips
+      safely; a
+      future
+      hardening
+      slice could
+      add an
+      `isfinite`
+      check). §4.3
+      symmetric
+      activation
+      across both
+      backends.
+    - **§5 Per-
+      channel
+      clamp is
+      consistent.**
+      PASS — three
+      independent
+      `fminf` calls
+      per backend
+      (no vector
+      clamp; no
+      luminance-
+      based
+      clamp). The
+      two snippets
+      are
+      verbatim-
+      identical
+      modulo the
+      condition
+      expression
+      source
+      (kernel
+      arg vs
+      `optixLaunchParams`
+      global).
+    - **§6 Default
+      render
+      output
+      should
+      remain
+      unchanged.**
+      PASS
+      structurally;
+      OPTIONAL
+      CUDA-host
+      empirical
+      confirmation.
+      Five sub-
+      sections:
+      §6.1 source-
+      diff
+      containment
+      (`git diff`
+      = 0 bytes),
+      §6.2 no-op
+      control-
+      flow at
+      default,
+      §6.3 audit-
+      host
+      empirical
+      smokes,
+      §6.4 TEX-P.6
+      fixture
+      regression
+      check, §6.5
+      empirical
+      PPM byte-
+      IDENTITY
+      deferred.
+    - **§7 OptiX
+      OFF build
+      remains
+      valid.**
+      PASS. Both
+      audit-host
+      configs
+      green
+      (build 7/7,
+      build-ON
+      8/8). §7.1
+      compile-
+      time gating
+      verification
+      explains
+      why the OFF
+      build skips
+      OptixRenderer.h
+      entirely
+      (the
+      `#ifdef
+      RELATIVITYRENDER_ENABLE_OPTIX`
+      guard in
+      main.cpp).
+      §7.2 both
+      configs
+      green
+      verification.
+    - **§8 Runtime
+      CUDA / OptiX
+      verification
+      status.**
+      DEFERRED on
+      six checks
+      (= BLOCKED
+      on this
+      audit
+      host). Six-
+      row table
+      naming each
+      check + its
+      structural
+      pre-
+      condition.
+      §8.1
+      structural
+      guarantees
+      that make
+      the runtime
+      checks
+      confirmations
+      rather than
+      discoveries.
+      §8.2
+      operator-
+      side
+      procedure
+      for
+      `cmp`-based
+      byte-
+      identity.
+      §8.3 runner
+      integration
+      status
+      (`tools/verify_cuda_host.py`
+      diff = 0
+      bytes).
+    - **§9
+      Verdict.**
+      Overall
+      PASS. Eight-
+      row summary
+      table.
+      Zero REPAIR
+      items.
+      Notes that
+      the §4.7
+      polish has
+      fully
+      shipped via
+      PT-P.{20..25}
+      and the
+      PATH_TRACER_POLISH_PLAN.md
+      §4 arc is
+      now fully
+      closed
+      (seven sub-
+      arcs across
+      PT-P.{4,7,10,13,16,19,22}
+      + the
+      PT-P.{20..25}
+      sub-arc).
+    - **Recommended
+      next step.**
+      Three
+      directions:
+      (a) trigger
+      the CUDA +
+      OptiX-SDK
+      host
+      verification
+      run that
+      flips the
+      accumulated
+      DEFERRED
+      rows; (b)
+      add a
+      `--firefly-clamp
+      <value>`
+      CLI flag
+      deferred
+      from
+      PT-P.23 §6;
+      (c) pivot
+      to master
+      order #16
+      path
+      tracing
+      feature
+      work (NEE /
+      non-diffuse
+      BSDFs /
+      multi-mesh
+      upload).
+      Recommended
+      sequencing:
+      (1) → (2) →
+      (3).
+- This `BUILD_PLAN.md`
+  slice-closing entry.
+
+### What does NOT change
+
+- All
+  PT-P.{1..24}
+  artefacts:
+  byte-identical
+  (PT-P.25 is a
+  documentation
+  audit; it
+  touches no
+  `.cu`, `.cpp`,
+  `.h`, `.cuh`,
+  `.rrscene`,
+  `cmake`, or
+  `tests/` file).
+- Build configs:
+  byte-identical.
+  ctest remains
+  7/7 OFF and
+  8/8 ON-audit-
+  host with no
+  rebuild needed.
+- All other docs:
+  PT-P.25 only
+  ADDS
+  `PATH_TRACER_POLISH_FIREFLY_CLAMP_WIRING_AUDIT.md`;
+  no edits to
+  `PATH_TRACER_POLISH_PLAN.md`,
+  `PATH_TRACER_POLISH_FIREFLY_CLAMP_WIRING_TASK.md`,
+  the twelve
+  earlier
+  PT-P.x task /
+  audit docs,
+  the TEX-P.x
+  arc, or the
+  CUDA-H.x arc.
+
+### Master rule compliance
+
+- **Build
+  incrementally /
+  every step
+  compilable**:
+  docs-only
+  slice; build
+  is trivially
+  preserved.
+- **Documentation
+  only; do not
+  modify source
+  code; do not
+  fix inside
+  audit**:
+  every audit
+  finding is
+  a read-only
+  observation;
+  zero source
+  edits; the
+  REPAIR list
+  is empty so
+  no fix-up
+  edits needed.
+  PT-P.25
+  ADDS one
+  new doc + a
+  BUILD_PLAN
+  entry; no
+  source file
+  is touched.
+- **No CPU
+  per-pixel
+  work**: the
+  clamp runs
+  device-side
+  per kernel
+  thread per
+  sample;
+  re-verified
+  by §1 + §2
+  of the audit
+  doc (zero
+  host-side
+  per-pixel
+  loops; the
+  clamp's
+  call sites
+  are all
+  `__global__`
+  kernels).
+- **Update
+  BUILD_PLAN**:
+  this entry,
+  per master
+  rule 8.
+
+### Verified at the build
+
+- `cmake --build
+  build` (audit
+  host,
+  RR_ENABLE_CUDA=OFF,
+  RR_ENABLE_OPTIX=OFF):
+  re-built
+  cleanly during
+  the audit;
+  ctest 7/7
+  green.
+- `cmake --build
+  build-ON`
+  (audit host,
+  RR_ENABLE_CUDA=OFF,
+  RR_ENABLE_OPTIX=ON):
+  re-built
+  cleanly; ctest
+  8/8 green.
+- `./build/bin/RelativityRender
+  --render-pathtrace
+  scenes/test_full_scene.rrscene`:
+  emits the
+  documented
+  "requires
+  CUDA"
+  audit-host
+  fallback;
+  byte-
+  identical
+  with the
+  pre-PT-P.24
+  baseline.
+- `./build-ON/bin/RelativityRender
+  --render-optix-pathtrace
+  scenes/test_full_scene.rrscene`:
+  emits the
+  documented
+  "requires
+  OptiX SDK"
+  audit-host
+  fallback;
+  byte-
+  identical.
+  The new
+  clamp
+  parameter is
+  type-checked
+  through to
+  the audit-
+  host
+  fallback
+  stub at
+  `OptixRenderer.cpp:3113`.
+- `./build/bin/RelativityRender
+  --scene-info
+  scenes/test_textured_material.rrscene`:
+  emits the
+  TEX-P.6
+  fixture's
+  expected log
+  sequence (1
+  Case 1 info
+  + 2 Case 3
+  warnings;
+  `fixups
+  applied: 2`).
+  Confirms
+  zero PT-P.25
+  ripple onto
+  the texture
+  validator.
+- `git diff
+  0a06d0d~1..0a06d0d
+  -- src/renderer/
+  src/core/
+  src/io/
+  src/scene/
+  src/material/
+  src/lighting/
+  src/texture/
+  src/pathtracer/PathTracer.h
+  src/pathtracer/RNG.h
+  src/pathtracer/RNG.cuh
+  src/pathtracer/Sampling.h
+  src/pathtracer/Sampling.cuh
+  scenes/
+  tests/
+  tools/verify_cuda_host.py
+  CMakeLists.txt
+  | wc -l` =>
+  0 bytes
+  (no-touch
+  invariants
+  verified for
+  the PT-P.24
+  slice).
+- `grep -n
+  "firefly_clamp"
+  src/cuda/CudaPathTracer.cu
+  src/cuda/CudaPathTracer.cuh
+  src/optix/OptixPrograms.cu
+  src/optix/OptixRenderer.h
+  src/optix/OptixRenderer.cpp
+  src/optix/OptixLaunchParams.h
+  src/pathtracer/PathTracer.cpp
+  src/pathtracer/PathTracer.h
+  src/main.cpp`
+  returns >40
+  matches —
+  every
+  signature,
+  declaration,
+  definition,
+  upload site,
+  kernel guard,
+  and dispatcher
+  pass-through
+  is named.
+  Zero matches
+  in any
+  not-explicitly-
+  authorised
+  source file.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
