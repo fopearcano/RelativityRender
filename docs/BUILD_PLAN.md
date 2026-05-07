@@ -44287,6 +44287,529 @@ runtime status)
 broader runtime
 SKIPPED rows).
 
+## Firefly clamp CLI flag — task definition (docs only)
+
+**Scope of this
+slice (post-CUDA +
+OptiX host
+verification
+attempt): produce
+the task brief
+for the
+`--firefly-clamp
+<value>` modifier
+flag deferred
+from PT-P.23 §6,
+recommended in
+PT-P.25's audit
+§9 step (2), and
+flagged as a
+caveat in
+docs/CUDA_OPTIX_HOST_VERIFICATION_REPORT.md.
+Documentation
+only; zero
+source changes.**
+
+The CLI flag is
+the LAST piece
+needed to make
+the firefly-
+clamp polish
+empirically
+verifiable on a
+CUDA + OptiX-SDK
+host. Without
+it, PT-P.23's
+§7.3 + §7.4
+runtime checks
+(non-zero clamp
+visible
+reduction +
+cross-backend
+convergence)
+require a
+one-off binary
+modification or
+custom harness.
+With it, a
+single operator
+session can
+flip ALL the
+PT-P.x arc's
+runtime
+DEFERRED rows
+to PASS.
+
+### What ships
+
+- `docs/FIREFLY_CLAMP_CLI_TASK.md`
+  (NEW). Nine
+  sections + a
+  reference
+  diff:
+    - **§1 Exact
+      CLI flag.**
+      Names the
+      flag
+      (`--firefly-clamp
+      <value>`),
+      cites the
+      three
+      sources
+      (PT-P.23 §6
+      deferral,
+      PT-P.25
+      audit §9 step
+      (2), CUDA-
+      OPTIX-VERIFY
+      caveat).
+      Six sub-
+      sections
+      enumerate the
+      per-file
+      changes:
+      §1.1 add
+      `float
+      firefly_clamp
+      = 0.0f`
+      field to
+      `Config.h`,
+      §1.2 add
+      parser arm
+      to
+      `CommandLine.cpp`
+      with parse-
+      time `< 0.0f`
+      rejection
+      (option A
+      preferred;
+      option B
+      acceptable),
+      §1.3 add
+      help-text
+      line, §1.4
+      wire both
+      pathtrace
+      dispatchers
+      in
+      `main.cpp`,
+      §1.5 NO
+      kernel
+      changes,
+      §1.6 NO new
+      test
+      required.
+    - **§2
+      Expected
+      behaviour.**
+      Five sub-
+      bullets
+      mirroring
+      the prompt's
+      spec: §2.1
+      default
+      remains
+      0.0f, §2.2
+      value <=
+      0.0f
+      disables
+      clamp (with
+      detail on
+      negative
+      values
+      under both
+      option A
+      and option
+      B), §2.3
+      value > 0.0f
+      enables
+      per-channel
+      clamp (with
+      examples for
+      1.0, 8.0,
+      1e6, +inf),
+      §2.4
+      invalid
+      values
+      produce
+      clear error
+      messages
+      (non-numeric,
+      missing,
+      negative),
+      §2.5 no
+      warning
+      path needed.
+    - **§3 Files
+      likely
+      involved.**
+      Four-row
+      table:
+      `src/core/Config.h`
+      (~6-12
+      added),
+      `src/core/CommandLine.cpp`
+      (~25-35
+      added; parser
+      arm + help-
+      text line),
+      `src/main.cpp`
+      (~2-4 added;
+      one line
+      per
+      dispatcher),
+      slice-
+      closing
+      BUILD_PLAN
+      entry.
+      FOUR source
+      files
+      (cross-
+      cutting
+      concern;
+      the brief
+      §3
+      explicitly
+      authorises
+      the
+      exceedance
+      of the
+      max-2-
+      source-
+      files rule).
+    - **§4 What
+      must not be
+      touched.**
+      Seven sub-
+      sections of
+      explicit
+      no-touch
+      invariants:
+      kernel +
+      launcher
+      code (CUDA +
+      OptiX),
+      path-tracer
+      host
+      orchestration,
+      other CLI /
+      Config
+      infrastructure
+      (every other
+      `Config`
+      field +
+      every other
+      parser arm),
+      other
+      dispatchers,
+      every
+      existing
+      PPM byte-
+      identical
+      at default,
+      OptiX OFF
+      build,
+      other
+      audits /
+      plans.
+    - **§5 PASS
+      criteria.**
+      Seven
+      concrete
+      gates:
+      build green
+      on both
+      audit-host
+      configs,
+      ctest 7/7
+      + 8/8
+      unchanged,
+      source-
+      diff size
+      cap (<= 50
+      added
+      total),
+      no-touch
+      invariants,
+      audit-host
+      behavioural
+      smoke (FIVE
+      flag-
+      specific
+      smokes +
+      the TEX-P.6
+      regression
+      check),
+      slice-
+      closing
+      BUILD_PLAN
+      entry,
+      master rule
+      compliance.
+    - **§6
+      Runtime-
+      deferred
+      checks for
+      real CUDA /
+      OptiX
+      host.** Six
+      sub-checks
+      that the
+      flag
+      enables: §6.1
+      default-off
+      byte-
+      IDENTITY
+      via the
+      flag (a
+      sanity
+      check on
+      top of
+      PT-P.24
+      §7.1 +
+      §7.2), §6.2
+      non-zero
+      clamp
+      visible
+      reduction
+      (FIRST
+      runtime
+      confirmation
+      that the
+      polish does
+      useful
+      work),
+      §6.3
+      cross-
+      backend
+      convergence
+      (first
+      cross-
+      backend
+      smoke for a
+      kernel-side
+      feature),
+      §6.4 ctest
+      cycle,
+      §6.5
+      refresh
+      CUDA-H.x
+      report,
+      §6.6
+      update
+      CUDA-OPTIX-
+      VERIFY
+      report.
+    - **§7 Out-of-
+      scope.**
+      Defers a
+      soft cap
+      on
+      `--firefly-clamp`
+      values,
+      adaptive
+      clamp,
+      scene-file
+      authoring
+      of
+      `firefly_clamp`,
+      other
+      firefly-
+      management
+      techniques
+      (RR /
+      splatting /
+      MIS), and
+      adding
+      `--firefly-clamp`
+      to the
+      CUDA-H.x
+      runner's
+      command
+      catalogue.
+    - **§8 Why
+      this slice
+      is the
+      next viable
+      item.**
+      Three
+      reasons:
+      PT-P.25
+      audit
+      verdict was
+      clean, the
+      change is
+      small +
+      contained
+      (~50 lines
+      across 4
+      files), the
+      arc closes
+      the
+      deferred-
+      runtime gap
+      (after this
+      flag + a
+      single
+      operator
+      session,
+      the entire
+      PT-P.x
+      arc's
+      DEFERRED
+      rows can
+      flip to
+      PASS).
+    - **§9
+      Reference
+      diff.** Five
+      diff blocks
+      showing the
+      planned per-
+      file
+      patches:
+      `Config.h`
+      field
+      addition,
+      `CommandLine.cpp`
+      parser arm,
+      `CommandLine.cpp`
+      help-text
+      entry,
+      `main.cpp`
+      CUDA
+      dispatcher
+      (one new
+      line),
+      `main.cpp`
+      OptiX
+      dispatcher
+      (one
+      replacement
+      line).
+- This `BUILD_PLAN.md`
+  slice-closing
+  entry.
+
+### What does NOT change
+
+- Every PT-P.x
+  artefact:
+  byte-
+  identical.
+- The
+  CUDA-OPTIX-
+  VERIFY
+  report:
+  byte-
+  identical
+  (this slice
+  ships only
+  a task
+  brief; the
+  runtime
+  verification
+  doesn't
+  fire until
+  the impl
+  slice +
+  the operator
+  session).
+- Build
+  configs:
+  byte-
+  identical.
+  ctest
+  remains 7/7
+  OFF and 8/8
+  ON-audit-
+  host with
+  no rebuild
+  needed.
+- All other
+  docs: this
+  slice only
+  ADDS
+  `FIREFLY_CLAMP_CLI_TASK.md`;
+  no edits to
+  any
+  pre-existing
+  doc.
+
+### Master rule compliance
+
+- **Documentation
+  only**: this
+  slice ships
+  one new
+  doc + one
+  BUILD_PLAN
+  entry. Zero
+  source
+  changes.
+- **Build
+  incrementally /
+  every step
+  compilable**:
+  docs-only
+  slice; build
+  is trivially
+  preserved.
+- **Update
+  BUILD_PLAN**:
+  this entry,
+  per master
+  rule 8.
+
+### Verified at the build
+
+- `cmake --build
+  build` + `cmake
+  --build
+  build-ON` were
+  already green
+  at the end of
+  the CUDA +
+  OptiX host
+  verification
+  attempt and
+  remain green;
+  this slice
+  changed no
+  build-relevant
+  files. ctest
+  7/7 OFF and
+  8/8 ON re-
+  confirmed
+  with no work
+  needed.
+- The task
+  doc's source
+  citations
+  (the
+  `--beta`
+  parser
+  precedent at
+  `CommandLine.cpp:423`,
+  the `Config::beta`
+  field at
+  `Config.h:45`,
+  the
+  `run_render_pathtrace`
+  pcfg
+  initialisation,
+  the
+  `run_render_optix_pathtrace`
+  literal-
+  0.0f-pass-
+  through at
+  `main.cpp:1576`)
+  resolve to
+  the current
+  source byte-
+  for-byte
+  post-PT-P.24.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
