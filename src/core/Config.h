@@ -44,6 +44,20 @@ struct Config {
     // design (see tests/relativity_tests.cpp #6).
     float       beta             = -1.0f;
 
+    // Modifier flag. Per-channel firefly clamp on the path
+    // tracer's per-sample radiance. Read by
+    // `--render-pathtrace` (CUDA dispatcher) and
+    // `--render-optix-pathtrace` (OptiX dispatcher); other
+    // actions ignore it. Default 0.0f matches
+    // `PathTraceConfig::firefly_clamp`'s PT-P.21 default
+    // exactly so a caller that does NOT pass
+    // `--firefly-clamp` sees byte-identical behaviour with
+    // the pre-CLI build. See `docs/FIREFLY_CLAMP_CLI_TASK.md`
+    // §1 for the canonical contract; the `--firefly-clamp`
+    // parser at `CommandLine.cpp` rejects negative values at
+    // parse time so this field is always >= 0.
+    float       firefly_clamp    = 0.0f;
+
     // Returns an empty string when the configuration is internally
     // consistent. Otherwise returns a human-readable description of
     // the first problem.

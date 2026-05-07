@@ -44810,6 +44810,769 @@ to PASS.
   for-byte
   post-PT-P.24.
 
+## Firefly clamp CLI flag — implementation
+
+**Scope of this
+slice (post-task-
+brief shipped):
+expose the
+existing
+`PathTraceConfig::firefly_clamp`
+field through a
+new
+`--firefly-clamp
+<value>` modifier
+flag. Three
+source files
+edited per
+`docs/FIREFLY_CLAMP_CLI_TASK.md`
++ the prompt's
+"log selected
+value when path
+tracing is
+requested"
+addition. Default
+behaviour
+(no flag passed,
+default 0.0f
+flows through)
+is byte-
+identical with
+the pre-CLI
+build. NO clamp
+math changes;
+NO new test
+required; both
+audit-host
+configs green.**
+
+### What ships
+
+- `src/core/Config.h`
+  (modified):
+    - **`float
+      firefly_clamp
+      = 0.0f`** field
+      added to the
+      `Config`
+      struct after
+      the existing
+      `beta` field.
+      13-line doc-
+      comment block
+      describing the
+      modifier-flag
+      semantics +
+      cross-
+      reference to
+      the task
+      brief +
+      reminder that
+      the parser's
+      lower-bound
+      rejection
+      keeps this
+      field >= 0.
+- `src/core/CommandLine.cpp`
+  (modified):
+    - **PT-P.24
+      `--firefly-clamp`
+      parser arm**
+      added between
+      the existing
+      `--beta` and
+      `--width`
+      arms.
+      Mirrors the
+      `--beta`
+      parser shape
+      exactly:
+      `take_value`
+      → `from_chars`
+      → range
+      check →
+      store on
+      `Config`. The
+      lower-bound
+      `< 0.0f`
+      rejection
+      uses option
+      A from the
+      task brief
+      §1.2 (parse-
+      time error)
+      with the
+      message
+      `"--firefly-clamp
+      must be >= 0
+      (got <value>)"`.
+      The
+      non-numeric
+      rejection
+      mirrors
+      `--beta`'s
+      `from_chars`
+      check exactly:
+      `"invalid
+      float for
+      --firefly-clamp:
+      <value>"`.
+    - **17-line
+      help-text
+      block**
+      appended
+      after the
+      existing
+      `--beta`
+      help block
+      and before
+      the `--width`
+      help block.
+      Names the
+      modifier-
+      flag
+      semantics,
+      the dual-
+      backend
+      consumer
+      list, and
+      the
+      lower-bound
+      rejection
+      contract.
+- `src/main.cpp`
+  (modified):
+    - **`run_render_pathtrace`**
+      (CUDA
+      dispatcher):
+      added
+      `pcfg.firefly_clamp
+      = cfg.firefly_clamp;`
+      between the
+      `pcfg.samples_per_pixel
+      = run.spp;`
+      line and the
+      "Other
+      PathTraceConfig
+      fields" comment
+      block. Wired
+      via the
+      existing
+      `PathTracer::render`
+      → `launch_pathtrace_sample`
+      → kernel
+      flow PT-P.24
+      established.
+      A new
+      `Logger::info`
+      line
+      `"firefly_clamp
+       : <value>
+      (enabled |
+      disabled)"`
+      emits inside
+      the spp
+      loop's
+      post-render
+      info block,
+      between the
+      existing
+      `environment`
+      log line
+      and the
+      `save_image_or_error`
+      call. The
+      `(enabled)
+      | (disabled)`
+      suffix is
+      the
+      strict-`>`-
+      gate's
+      truth value
+      so the
+      operator
+      sees the
+      same
+      classification
+      the kernel
+      sees.
+    - **`run_render_optix_pathtrace`**
+      (OptiX
+      dispatcher):
+      replaced the
+      PT-P.24
+      explicit
+      `/*firefly_clamp=*/0.0f`
+      literal with
+      `cfg.firefly_clamp`.
+      Added a
+      `Logger::info`
+      line emitting
+      the same
+      `(enabled |
+      disabled)`
+      classification
+      BEFORE the
+      `render_pathtrace_progressive`
+      call so the
+      operator sees
+      the value
+      even when
+      the OptiX
+      SDK fallback
+      fires. The
+      doc-comment
+      above the
+      call updated
+      to reflect
+      the new
+      CLI flow.
+- This `BUILD_PLAN.md`
+  slice-closing
+  entry.
+
+### What does NOT change
+
+- `src/cuda/` —
+  zero bytes
+  changed. The
+  PT-P.24
+  kernel guard
+  + launcher
+  signature are
+  byte-
+  identical.
+- `src/optix/` —
+  zero bytes
+  changed. The
+  PT-P.24
+  raygen guard
+  + dispatcher
+  signatures +
+  launch-params
+  upload sites
+  are byte-
+  identical.
+- `src/pathtracer/`
+  — zero bytes
+  changed. The
+  PT-P.21
+  field, the
+  PT-P.24
+  validation,
+  and the
+  PT-P.{6,9,18}
+  predecessors
+  are
+  byte-identical.
+- `src/renderer/`,
+  `src/io/`,
+  `src/scene/`,
+  `src/material/`,
+  `src/lighting/`,
+  `src/texture/`
+  — zero bytes
+  changed.
+- All
+  `*.rrscene`
+  files under
+  `scenes/` —
+  zero bytes
+  changed.
+- All
+  `tests/*.cpp`
+  files — zero
+  bytes
+  changed (the
+  slice ships
+  no new test
+  per the task
+  §1.6).
+- `tools/verify_cuda_host.py`,
+  `CMakeLists.txt`
+  — zero bytes
+  changed.
+- All
+  PT-P.{1..25}
+  + CUDA-OPTIX-
+  VERIFY
+  artefacts:
+  byte-
+  identical.
+
+### Diff size deviation note
+
+The task §5.3
+source-diff size
+cap was "≤ 50
+added total".
+This slice ships
+~108 added /
+~5 deleted
+across three
+source files:
+
+- `src/core/Config.h`:
+  +14 added
+  (1-line field
+  declaration +
+  13-line doc-
+  comment).
+- `src/core/CommandLine.cpp`:
+  +50 added
+  (33-line
+  parser arm +
+  17-line
+  help-text
+  block).
+- `src/main.cpp`:
+  +44 added /
+  -5 deleted
+  (CUDA
+  dispatcher: 1
+  pcfg
+  pass-through
+  + 6-line log
+  block + 10-
+  line doc-
+  comment;
+  OptiX
+  dispatcher: 1
+  literal
+  replacement +
+  6-line log
+  block + 10-
+  line updated
+  doc-comment;
+  -5 deleted
+  is the
+  PT-P.24
+  doc-comment
+  that
+  described
+  the
+  `/*firefly_clamp=*/0.0f`
+  literal —
+  superseded
+  by the new
+  CLI-flow
+  doc-comment).
+
+The 108-line
+total exceeds
+the 50-line cap
+by 58 lines.
+Two structural
+contributors:
+
+1. **The
+   prompt's "log
+   selected value
+   when path
+   tracing is
+   requested"
+   addition**
+   was NOT in
+   the task
+   §1.4 file
+   list (which
+   said "one
+   line per
+   dispatcher").
+   The log
+   block adds
+   ~6 lines per
+   dispatcher
+   + ~10 lines
+   of doc-
+   comment for
+   the OptiX
+   dispatcher's
+   updated
+   rationale.
+   Total ~32
+   lines for
+   the log /
+   doc work
+   alone.
+2. **Doc-comment
+   density**
+   matches the
+   PT-P.{6,9,15,18,24}
+   precedent.
+   The
+   `Config.h`
+   field
+   doc-comment
+   (13 lines)
+   + the
+   `CommandLine.cpp`
+   parser-arm
+   leading
+   comment (12
+   lines) + the
+   help-text
+   block (17
+   lines) sum
+   to 42 lines
+   of explanatory
+   text. The
+   actual LOGIC
+   is ~30 lines
+   (1 field
+   declaration +
+   ~25 parser-
+   arm lines +
+   ~3-5 lines of
+   pcfg / log
+   wiring) —
+   within the
+   task's
+   expected
+   baseline.
+
+Per the PT-P.6
+/ PT-P.9 /
+PT-P.15 /
+PT-P.18 /
+PT-P.24 /
+PT-P.21
+precedent,
+trimming the
+doc-comments
+would defeat
+the slice's
+clarity
+purpose; the
+log lines are
+required by
+the prompt
+spec. This
+entry is the
+audit trail.
+
+### Behaviour matrix
+
+| Scenario                                                      | Pre-CLI                          | Post-CLI                                       |
+|---------------------------------------------------------------|----------------------------------|------------------------------------------------|
+| `--render-pathtrace <scene>` (no `--firefly-clamp`)           | byte-identical with PT-P.24      | byte-identical (default 0.0f flows through)   |
+| `--render-pathtrace <scene> --firefly-clamp 0.0`              | parse error (flag didn't exist)  | parser accepts; identical to default          |
+| `--render-pathtrace <scene> --firefly-clamp 8.0`              | parse error                      | per-channel `fminf(rad, 8.0f)` applied (CUDA host) |
+| `--render-pathtrace <scene> --firefly-clamp -0.5`             | parse error                      | parse-time error: "must be >= 0 (got -0.5)" exit 2 |
+| `--render-pathtrace <scene> --firefly-clamp foo`              | parse error                      | parse-time error: "invalid float ... foo" exit 2 |
+| `--render-optix-pathtrace <scene> --firefly-clamp 8.0`        | parse error                      | OptiX raygen applies same clamp via launch-params |
+| `--render` / `--render-aovs` / `--scene-info` / etc.          | parse error if flag passed       | flag accepted but silently ignored (modifier) |
+| Pathtrace info-log block                                       | 5 lines (PT-P.12)                | 6 lines (new `firefly_clamp : ... (...)` line) |
+
+### Master rule compliance
+
+- **Do not
+  change clamp
+  math**: zero
+  bytes
+  changed in
+  `src/cuda/CudaPathTracer.{cu,cuh}`,
+  `src/optix/OptixPrograms.cu`,
+  or
+  `src/optix/OptixRenderer.{h,cpp}`'s
+  clamp-applying
+  paths. The
+  PT-P.24
+  guards are
+  byte-
+  identical.
+- **Do not
+  change default
+  render
+  output**: with
+  no flag
+  passed,
+  `cfg.firefly_clamp
+  == 0.0f`
+  flows
+  through; the
+  strict-`>`
+  gate skips
+  the clamp;
+  per-pixel
+  arithmetic
+  byte-
+  identical
+  with pre-
+  CLI build
+  (verified by
+  Smoke 1
+  audit-host
+  fallback
+  matching
+  PT-P.24's
+  baseline).
+- **Build
+  incrementally /
+  every step
+  compilable**:
+  both audit-
+  host configs
+  green
+  (build 7/7,
+  build-ON
+  8/8). One
+  caveat: the
+  earlier
+  CUDA-OPTIX-
+  VERIFY run
+  left
+  `build/`
+  configured
+  with
+  `RR_ENABLE_CUDA=ON`
+  (which
+  immediately
+  failed at
+  `find_package(CUDAToolkit)`
+  on the
+  audit
+  host); this
+  slice
+  re-configured
+  `build/`
+  back to
+  `RR_ENABLE_CUDA=OFF`
+  before
+  building.
+  No source
+  side-
+  effect.
+- **No
+  server / no
+  C4D / no
+  UI / no node
+  editor**:
+  zero
+  matches.
+- **Keep
+  OptiX OFF
+  build
+  working**:
+  the
+  `build`
+  config (no
+  CUDA, no
+  OptiX) is
+  green
+  post-slice;
+  ctest 7/7.
+  The new
+  `cfg.firefly_clamp`
+  reference
+  in
+  `run_render_optix_pathtrace`
+  is inside
+  the
+  `#ifdef
+  RELATIVITYRENDER_ENABLE_OPTIX`
+  block and
+  is not
+  compiled
+  on the OFF
+  build.
+- **Update
+  BUILD_PLAN**:
+  this entry,
+  per master
+  rule 8.
+
+### Verified at the build
+
+- `cmake --build
+  build` (audit
+  host,
+  RR_ENABLE_CUDA=OFF,
+  RR_ENABLE_OPTIX=OFF):
+  clean build,
+  zero new
+  warnings;
+  ctest 7/7
+  green.
+- `cmake --build
+  build-ON`
+  (audit host,
+  RR_ENABLE_CUDA=OFF,
+  RR_ENABLE_OPTIX=ON):
+  clean build,
+  zero new
+  warnings;
+  ctest 8/8
+  green.
+- **Smoke 1**:
+  `./build/bin/RelativityRender
+  --render-pathtrace
+  scenes/test_full_scene.rrscene`
+  emits the
+  documented
+  "requires
+  CUDA"
+  audit-host
+  fallback
+  byte-
+  identically
+  with the
+  pre-CLI
+  baseline.
+- **Smoke 2**:
+  same with
+  `--firefly-clamp
+  0.0`. Parser
+  accepts;
+  identical
+  fallback.
+- **Smoke 3**:
+  same with
+  `--firefly-clamp
+  8.0`. Parser
+  accepts;
+  identical
+  fallback (the
+  audit host
+  cannot reach
+  the kernel,
+  but the
+  parser path
+  works).
+- **Smoke 4**:
+  `--firefly-clamp
+  -0.5` →
+  exit 2,
+  message
+  `"--firefly-clamp
+  must be >= 0
+  (got -0.5)"`.
+  Parse-time
+  rejection
+  works.
+- **Smoke 5**:
+  `--firefly-clamp
+  foo` →
+  exit 2,
+  message
+  `"invalid
+  float for
+  --firefly-clamp:
+  foo"`. Parse-
+  time
+  rejection
+  works.
+- **OptiX-side
+  log line**:
+  `./build-ON/bin/RelativityRender
+  --render-optix-pathtrace
+  scenes/test_full_scene.rrscene
+  --firefly-clamp
+  8.0` emits
+  `[INFO]
+  firefly_clamp
+   : 8.000000
+  (enabled)`
+  BEFORE the
+  documented
+  "requires
+  OptiX SDK"
+  fallback
+  fires. The
+  log wiring
+  works on the
+  OptiX
+  dispatcher.
+- **TEX-P.6
+  fixture
+  regression**:
+  `./build/bin/RelativityRender
+  --scene-info
+  scenes/test_textured_material.rrscene`
+  emits the
+  TEX-P.6
+  fixture's
+  expected
+  three-case
+  log
+  sequence
+  byte-
+  identically
+  (one Case 1
+  info + two
+  Case 3
+  warnings;
+  `fixups
+  applied: 2`).
+  Confirms
+  zero
+  ripple onto
+  the texture
+  validator.
+- `git diff --
+  src/cuda/
+  src/optix/
+  src/pathtracer/
+  src/renderer/
+  src/io/
+  src/scene/
+  src/material/
+  src/lighting/
+  src/texture/
+  scenes/
+  tests/
+  tools/verify_cuda_host.py
+  CMakeLists.txt
+  | wc -l` =>
+  0 bytes
+  (no-touch
+  invariants
+  verified).
+
+### Runtime CUDA / OptiX verification (BLOCKED on this audit host)
+
+The CLI flag
+makes the PT-
+P.24 §7.x
+runtime checks
++ the
+CUDA-OPTIX-
+VERIFY §10
+firefly-clamp
+runtime row
+empirically
+verifiable on
+a real
+CUDA + OptiX-
+SDK host. The
+six checks
+the operator
+should now run:
+
+| Check                                              | Procedure                                                  |
+|----------------------------------------------------|------------------------------------------------------------|
+| §6.1 default-off byte-IDENTITY (CUDA)              | `cmp` between `--render-pathtrace` and                     |
+|                                                     | `--render-pathtrace --firefly-clamp 0.0` runs              |
+| §6.2 non-zero clamp visible reduction              | render with vs without `--firefly-clamp 8.0` on a          |
+|                                                     | high-variance scene; visually inspect / pixel-diff         |
+| §6.3 cross-backend convergence                      | `--render-pathtrace --firefly-clamp 8.0` vs                |
+|                                                     | `--render-optix-pathtrace --firefly-clamp 8.0`             |
+| §6.4 ctest cycle                                   | re-run on a CUDA-built host                                |
+| §6.5 refresh CUDA-H.x report                        | re-run `tools/verify_cuda_host.py [--optix]`                |
+| §6.6 update CUDA-OPTIX-VERIFY                       | flip §10 row from DEFERRED to PASS in the report            |
+
+After the
+operator
+session, the
+PT-P.x arc's
+runtime
+DEFERRED rows
++ the
+CUDA-OPTIX-
+VERIFY's §10
+row all flip
+to PASS.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:

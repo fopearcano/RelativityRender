@@ -1566,14 +1566,27 @@ int run_render_optix_pathtrace(const rr::core::Config& cfg) {
     constexpr unsigned int kSeed = 0u;
     const std::vector<int> kCheckpoints = { 1, 16 };
 
-    // PT-P.24: explicit `firefly_clamp = 0.0f` so a future
-    // reader sees the field is intentionally defaulted. The
-    // signature default-arg matches; passing it explicitly
-    // documents the dispatcher's choice.
+    // The firefly-clamp value comes from the --firefly-clamp
+    // CLI modifier (default 0.0f = disabled). Same value
+    // flows through both backends via PT-P.24's wiring; the
+    // OptiX raygen reads `optixLaunchParams.firefly_clamp`
+    // and applies the per-channel `fminf` clamp pre-
+    // accumulation symmetrically with the CUDA kernel. A
+    // negative `cfg.firefly_clamp` cannot reach this point
+    // (the parser's lower-bound rejection at
+    // CommandLine.cpp's --firefly-clamp arm catches it);
+    // the renderer's defence-in-depth check at
+    // OptixRenderer.cpp:1502 rejects it again if a non-CLI
+    // caller bypasses the parser.
+    Logger::info(std::string("firefly_clamp    : ")
+               + std::to_string(cfg.firefly_clamp)
+               + (cfg.firefly_clamp > 0.0f
+                      ? " (enabled)"
+                      : " (disabled)"));
     auto pr = rr::optix::OptixRenderer::render_pathtrace_progressive(
         load.scene, cfg.width, cfg.height,
         kMaxBounces, kSeed, kCheckpoints,
-        /*firefly_clamp=*/0.0f);
+        /*firefly_clamp=*/cfg.firefly_clamp);
     if (!pr.ok) {
         Logger::error("optix path-trace progressive render failed: "
                     + pr.message);
@@ -2387,6 +2400,15 @@ int run_render_pathtrace(const rr::core::Config& cfg) {
     for (const auto& run : kRuns) {
         rr::pathtracer::PathTraceConfig pcfg;
         pcfg.samples_per_pixel = run.spp;
+        // Wire the --firefly-clamp value from the CLI into the
+        // path-tracer config. Default 0.0f flows through when
+        // the operator does not pass --firefly-clamp; positive
+        // values enable the per-channel clamp PT-P.24 wired
+        // through both backends. The renderer's lower-bound
+        // rejection at PathTracer.cpp:84 is defence in depth
+        // against a non-CLI caller bypassing the parser's
+        // negative-value rejection.
+        pcfg.firefly_clamp = cfg.firefly_clamp;
         // Other PathTraceConfig fields (max_bounces, seed,
         // environment_color, environment_intensity) keep their
         // defaults. The defaults produce a moderate cool sky tint
@@ -2426,6 +2448,18 @@ int run_render_pathtrace(const rr::core::Config& cfg) {
         Logger::info(std::string("environment      : ")
                    + fmt_vec3(pcfg.environment_color) + " * "
                    + std::to_string(pcfg.environment_intensity));
+        // Echo the --firefly-clamp value (default 0.0f =
+        // disabled). When the operator passes a non-zero
+        // value, both backends apply the per-channel
+        // `fminf(radiance, firefly_clamp)` clamp before the
+        // accumulator-add (PT-P.24). The line emits
+        // unconditionally so an operator can confirm the
+        // default is firing without reading source.
+        Logger::info(std::string("firefly_clamp    : ")
+                   + std::to_string(pcfg.firefly_clamp)
+                   + (pcfg.firefly_clamp > 0.0f
+                          ? " (enabled)"
+                          : " (disabled)"));
 
         if (!save_image_or_error(r.image, run.path, run.label,
                                  width, height)) {

@@ -441,6 +441,39 @@ CommandLine::ParseResult CommandLine::parse(int argc, char** argv) {
                 return r;
             }
             r.config.beta = beta_value;
+        } else if (a == "--firefly-clamp") {
+            // Modifier flag. Stores the per-channel firefly
+            // clamp value on Config; only `--render-pathtrace`
+            // (CUDA dispatcher) and `--render-optix-pathtrace`
+            // (OptiX dispatcher) read it. Negative values are
+            // rejected at parse time per
+            // FIREFLY_CLAMP_CLI_TASK.md §1.2 option A — the
+            // renderer's existing lower-bound rejections at
+            // PathTracer.cpp:84, CudaPathTracer.cu:282,
+            // OptixRenderer.cpp:1243+1502 are defence in depth,
+            // but rejecting at parse time produces a clearer
+            // operator error message + faster exit (no GPU
+            // resource allocated).
+            if (!take_value(argc, argv, i, a, value, r.error_message)) {
+                r.action = Action::Error;
+                return r;
+            }
+            float clamp_value = 0.0f;
+            const auto* end = value.data() + value.size();
+            const auto  res = std::from_chars(value.data(), end, clamp_value);
+            if (res.ec != std::errc{} || res.ptr != end) {
+                r.action        = Action::Error;
+                r.error_message = "invalid float for --firefly-clamp: "
+                                + std::string(value);
+                return r;
+            }
+            if (clamp_value < 0.0f) {
+                r.action        = Action::Error;
+                r.error_message = "--firefly-clamp must be >= 0 (got "
+                                + std::string(value) + ")";
+                return r;
+            }
+            r.config.firefly_clamp = clamp_value;
         } else if (a == "--width") {
             if (!take_value(argc, argv, i, a, value, r.error_message)) {
                 r.action = Action::Error;
@@ -903,6 +936,23 @@ std::string CommandLine::usage(std::string_view argv0) {
                                   "the consumer (both consumers\n"
        << "                        point the observer along the "
                                   "camera's forward axis -Z).\n"
+       << "  --firefly-clamp <float>\n"
+       << "                        Modifier flag (not an action). Sets "
+                                  "the per-channel firefly\n"
+       << "                        clamp on the path tracer's "
+                                  "per-sample radiance. Default 0.0\n"
+       << "                        disables the clamp (the integrator "
+                                  "stays unbiased); values > 0\n"
+       << "                        enable a `fminf(radiance.x|y|z, "
+                                  "firefly_clamp)` per channel\n"
+       << "                        symmetrically on both CUDA and "
+                                  "OptiX backends. Read by\n"
+       << "                        --render-pathtrace and "
+                                  "--render-optix-pathtrace; ignored\n"
+       << "                        by every other action. Negative "
+                                  "values are rejected at parse\n"
+       << "                        time (\"--firefly-clamp must be "
+                                  ">= 0\").\n"
        << "  --width  <int>        Render width in pixels "
                                   "(default 1280).\n"
        << "  --height <int>        Render height in pixels "
