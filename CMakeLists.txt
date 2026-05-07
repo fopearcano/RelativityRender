@@ -678,6 +678,27 @@ if(RR_BUILD_TESTS)
     rr_apply_warnings(pathtracer_nee_tests)
     add_test(NAME pathtracer_nee_tests COMMAND pathtracer_nee_tests)
 
+    # cli_tests (NEE.5 test expansion) covers the
+    # `rr::core::CommandLine::parse` parser arms relevant to the
+    # `--enable-nee` modifier flag. Per the task brief
+    # `docs/PATH_TRACER_ENABLE_NEE_CLI_TASK.md` §4.1, the test
+    # uses Option B (re-compile `src/core/CommandLine.cpp` +
+    # `src/core/Config.cpp` directly into the test binary)
+    # rather than Option A (extract `rr_core_cli` library).
+    # Option B is the minimal-ripple choice; Option A is
+    # acceptable in a future cleanup if CLI-test growth makes
+    # the source-list duplication painful. CommandLine.cpp does
+    # not depend on Logger or any other module in src/core, so
+    # re-compiling Config.cpp + CommandLine.cpp is sufficient.
+    # Pure host code; no CUDA or OptiX runtime requirement.
+    add_executable(cli_tests
+        tests/cli_tests.cpp
+        src/core/CommandLine.cpp
+        src/core/Config.cpp)
+    target_include_directories(cli_tests PRIVATE src)
+    rr_apply_warnings(cli_tests)
+    add_test(NAME cli_tests COMMAND cli_tests)
+
     # relativity_tests (Stage 19E.1) covers the relativity math
     # leaf in `src/relativity/RelativityMath.h`: identity at
     # |beta| = 0; forward (parallel-to-beta) blueshift /

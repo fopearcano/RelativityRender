@@ -44,6 +44,7 @@
 
 #include <cmath>
 #include <cstdio>
+#include <cstring>      // NEE.5 (test expansion): std::memcmp for byte-identity
 
 namespace {
 
@@ -289,6 +290,78 @@ void test_uniform_selection_walks_bin_centres() {
     RR_CHECK(approx(s_top.distance, 4.0f));
 }
 
+// ---------- NEE.5 (test expansion) byte-identity anchors ----------
+//
+// Per `docs/PATH_TRACER_ENABLE_NEE_CLI_TASK.md` §4.2 Option A
+// (host-only deterministic-arithmetic anchor) — the audit host
+// cannot run the kernel, so a runtime PPM `cmp` (Option B) is
+// recorded as runtime-deferred in the BUILD_PLAN. These two
+// host-only cases are the runnable byte-identity proxy for the
+// default-OFF path: the helper is the kernel's only stateful
+// per-bounce consumer of the NEE flag, so anchoring its
+// determinism + the bit-equal-default null-guard output anchors
+// the kernel-level byte-identity argument by extension.
+
+// Determinism anchor: calling the helper twice with the same
+// inputs produces bit-equal samples. Anchors that the helper
+// is a pure function of its arguments (no hidden global / TLS
+// state); a future regression that introduces non-determinism
+// (e.g. caching, threading) is caught at host-build time.
+void test_helper_determinism() {
+    const Light L = make_point(Vec3{1.0f, 2.0f, 3.0f},
+                               Vec3{0.4f, 0.6f, 0.9f},
+                               /*intensity=*/1.5f);
+    const DirectLightSample s1 = sample_direct_light_uniform(
+        &L, /*count=*/1,
+        Vec3{0.0f, 0.0f, 0.0f},
+        Vec3{0.0f, 1.0f, 0.0f},
+        /*u_select=*/0.5f);
+    const DirectLightSample s2 = sample_direct_light_uniform(
+        &L, /*count=*/1,
+        Vec3{0.0f, 0.0f, 0.0f},
+        Vec3{0.0f, 1.0f, 0.0f},
+        /*u_select=*/0.5f);
+    RR_CHECK(std::memcmp(&s1, &s2, sizeof(DirectLightSample)) == 0);
+}
+
+// Bit-equal-default anchor: the zero-contribution sample
+// produced by the helper's `lights == nullptr || count <= 0`
+// guard is bit-equal with a default-constructed
+// `DirectLightSample`. This is the formal byte-identity proxy
+// for the default-OFF code path: when `enable_nee == false` (or
+// `enable_nee == true` on a no-lights scene), the kernel guard
+// short-circuits and the per-pixel `radiance` accumulator
+// receives nothing. Bit-equality with the default constructor
+// ensures the helper does not emit subtle FP noise (e.g.
+// negative-zero `-0.0f` vs `+0.0f`) that could in principle
+// disagree with the static IEEE-754 byte-identity argument
+// from `PATH_TRACER_NEE_AUDIT.md` §1.2. memcmp distinguishes
+// `+0.0f` from `-0.0f`; if a future regression introduces
+// negative-zero into the zero path, this case fails.
+void test_zero_contribution_is_bit_default() {
+    const DirectLightSample default_constructed;  // {0,0,0; 0; 0,0,0; 0}
+
+    // Null-pointer guard.
+    const DirectLightSample s_null = sample_direct_light_uniform(
+        /*lights=*/nullptr, /*count=*/3,
+        Vec3{0.0f, 0.0f, 0.0f},
+        Vec3{0.0f, 1.0f, 0.0f},
+        /*u_select=*/0.5f);
+    RR_CHECK(std::memcmp(&s_null, &default_constructed,
+                         sizeof(DirectLightSample)) == 0);
+
+    // Zero-count guard.
+    const Light dummy = make_point(Vec3{1.0f, 0.0f, 0.0f},
+                                   Vec3{1.0f, 1.0f, 1.0f}, 1.0f);
+    const DirectLightSample s_zero = sample_direct_light_uniform(
+        &dummy, /*count=*/0,
+        Vec3{0.0f, 0.0f, 0.0f},
+        Vec3{0.0f, 1.0f, 0.0f},
+        /*u_select=*/0.5f);
+    RR_CHECK(std::memcmp(&s_zero, &default_constructed,
+                         sizeof(DirectLightSample)) == 0);
+}
+
 }  // namespace
 
 int main() {
@@ -303,6 +376,8 @@ int main() {
     test_area_light_placeholder_returns_zero();
     test_environment_light_placeholder_returns_zero();
     test_uniform_selection_walks_bin_centres();
+    test_helper_determinism();                    // NEE.5
+    test_zero_contribution_is_bit_default();      // NEE.5
 
     std::fprintf(stderr, "pathtracer_nee_tests: %d/%d passed\n",
                  g_total - g_failed, g_total);

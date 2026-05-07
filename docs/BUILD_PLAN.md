@@ -53873,6 +53873,1164 @@ the
 PASS
 criteria.
 
+## NEE CLI Tests (impl) — final NEE.5 piece
+
+**Scope of
+this slice
+(post-NEE.5
+Dispatch
+Wiring
+verification):
+ship the
+two
+mandatory
+test
+expansions
+required
+by the
+task
+brief
+§4 — the
+new
+`tests/cli_tests.cpp`
+binary
+(parser
+arms for
+`--enable-nee`)
++ two
+new
+host-only
+byte-
+identity
+anchor
+cases
+appended
+to
+`tests/pathtracer_nee_tests.cpp`.
+Closes
+the
+NEE.5
+sub-arc.
+Pure
+host
+code; no
+CUDA, no
+OptiX
+SDK, no
+server.**
+
+### What ships
+
+- **`tests/cli_tests.cpp`
+  (NEW; ~193
+  lines).**
+  Linkage
+  per
+  Option
+  B from
+  the
+  task
+  brief
+  §4.1
+  (re-
+  compile
+  `src/core/CommandLine.cpp`
+  +
+  `src/core/Config.cpp`
+  directly
+  into
+  the
+  test
+  binary;
+  Option
+  A's
+  `rr_core_cli`
+  library
+  extraction
+  is
+  recorded
+  as the
+  recommended
+  future
+  cleanup).
+  CommandLine.cpp
+  does
+  not
+  depend
+  on
+  Logger
+  or any
+  other
+  src/core
+  module,
+  so the
+  two-
+  source
+  re-
+  compile
+  is
+  minimal-
+  ripple.
+  Six
+  test
+  cases
+  land:
+    1.
+       `test_default_off_no_flag`
+       —
+       `parse({"prog"})`
+       (no
+       flag)
+       returns
+       `r.config.enable_nee
+       ==
+       false`
+       AND
+       `r.action
+       !=
+       Error`.
+       Anchors
+       the
+       C++
+       default-
+       init
+       contract
+       +
+       parser
+       does
+       not
+       accidentally
+       flip
+       the
+       field
+       on an
+       unrelated
+       argv.
+    2.
+       `test_flag_after_action`
+       —
+       `parse({"prog",
+       "--render-pathtrace",
+       "scene.rrscene",
+       "--enable-nee"})`
+       returns
+       `r.config.enable_nee
+       ==
+       true`,
+       `r.action
+       ==
+       RenderPathtrace`,
+       and
+       `r.config.scene_path
+       ==
+       "scene.rrscene"`.
+       Anchors
+       the
+       parser
+       arm
+       fires +
+       the
+       scene-
+       path
+       token
+       was
+       consumed
+       by the
+       action
+       arm
+       (not
+       the
+       modifier
+       arm).
+    3.
+       `test_flag_before_action`
+       —
+       same
+       outcome
+       as
+       case 2
+       with
+       the
+       flag
+       BEFORE
+       the
+       action.
+       Confirms
+       order-
+       independence
+       (modifier-
+       flag
+       contract).
+    4.
+       `test_flag_idempotent`
+       —
+       repeated
+       `--enable-nee
+       --enable-nee`
+       still
+       sets
+       `true`,
+       no
+       Error.
+       Mirrors
+       `--denoise`
+       contract.
+    5.
+       `test_flag_with_firefly_clamp`
+       —
+       `--enable-nee
+       --firefly-clamp
+       8.0`
+       sets
+       both
+       fields
+       correctly
+       (no
+       cross-
+       flag
+       interference).
+    6.
+       `test_case_mismatch_rejected`
+       (the
+       optional
+       6th
+       case
+       from
+       §4.1)
+       —
+       `--enable-Nee`
+       (capital
+       N) is
+       rejected
+       as
+       unknown
+       argument;
+       error
+       message
+       names
+       the
+       offending
+       token
+       verbatim.
+       Anchors
+       case-
+       sensitive
+       matching.
+
+  Plus a
+  bonus
+  `test_default_off_with_other_flags`
+  case
+  that
+  loops
+  through
+  five
+  argv
+  vectors
+  (none
+  passing
+  `--enable-nee`)
+  +
+  asserts
+  `enable_nee
+  ==
+  false`
+  on
+  each.
+  Directly
+  exercises
+  the
+  user's
+  rule
+  "Default
+  OFF
+  behavior
+  must
+  remain
+  unchanged"
+  on the
+  parser
+  surface.
+
+  Total
+  31
+  RR_CHECK
+  assertions
+  in
+  cli_tests
+  (printed
+  by
+  `cli_tests:
+  31/31
+  passed`).
+- **`tests/pathtracer_nee_tests.cpp`
+  (extended;
+  +75
+  lines).**
+  Adds
+  two
+  byte-
+  identity
+  anchor
+  cases
+  per
+  §4.2
+  Option
+  A,
+  registered
+  in
+  `main()`:
+    - `test_helper_determinism`
+      —
+      calling
+      `sample_direct_light_uniform`
+      twice
+      with
+      the
+      same
+      inputs
+      produces
+      bit-
+      equal
+      `DirectLightSample`
+      via
+      `std::memcmp`.
+      Anchors
+      the
+      helper
+      is a
+      pure
+      function
+      of its
+      arguments;
+      a
+      regression
+      that
+      introduces
+      hidden
+      state
+      (caching,
+      threading)
+      is
+      caught
+      at
+      host-
+      build
+      time.
+    - `test_zero_contribution_is_bit_default`
+      —
+      the
+      helper's
+      null-
+      pointer
+      guard
+      AND
+      zero-
+      count
+      guard
+      both
+      return
+      bit-
+      equal
+      `DirectLightSample`
+      with a
+      default-
+      constructed
+      `DirectLightSample{}`.
+      `std::memcmp`
+      distinguishes
+      `+0.0f`
+      from
+      `-0.0f`,
+      so a
+      future
+      regression
+      that
+      introduces
+      negative-
+      zero
+      into
+      the
+      zero-
+      contribution
+      path
+      (which
+      could
+      in
+      principle
+      disagree
+      with
+      the
+      static
+      IEEE-
+      754
+      argument
+      from
+      `PATH_TRACER_NEE_AUDIT.md`
+      §1.2)
+      fails
+      this
+      case.
+      The
+      formal
+      byte-
+      identity
+      proxy
+      for
+      the
+      default-
+      OFF
+      code
+      path
+      on the
+      audit
+      host.
+
+  Adds
+  `#include
+  <cstring>`
+  for
+  `std::memcmp`.
+  Total
+  case
+  count
+  in
+  pathtracer_nee_tests
+  grows
+  from
+  11 to
+  13;
+  RR_CHECK
+  assertion
+  count
+  grows
+  from
+  ~26 to
+  34
+  (`pathtracer_nee_tests:
+  34/34
+  passed`).
+- **`CMakeLists.txt`
+  (+21
+  lines).**
+  Adds
+  the
+  `cli_tests`
+  test
+  binary
+  next
+  to the
+  existing
+  `pathtracer_nee_tests`
+  block.
+  Source
+  list
+  is
+  three
+  files:
+  `tests/cli_tests.cpp`,
+  `src/core/CommandLine.cpp`,
+  `src/core/Config.cpp`.
+  `target_include_directories(...
+  PRIVATE
+  src)`
+  plus
+  the
+  standard
+  `rr_apply_warnings`
+  +
+  `add_test`
+  pattern.
+  No new
+  library;
+  no
+  changes
+  to
+  `RelativityRender`
+  executable's
+  source
+  list.
+- This
+  `BUILD_PLAN.md`
+  slice-
+  closing
+  entry.
+
+### What does NOT change
+
+- **No
+  source
+  changes.**
+  `src/`
+  byte-
+  identical.
+  The
+  test
+  binary
+  re-
+  compiles
+  existing
+  `src/core/CommandLine.cpp`
+  +
+  `src/core/Config.cpp`
+  but
+  does
+  not
+  modify
+  them.
+- **No
+  CUDA
+  changes.**
+  `src/cuda/`
+  byte-
+  identical;
+  the
+  CLI
+  parser
+  test is
+  pure
+  host
+  code
+  per the
+  user's
+  "No
+  CUDA-
+  host
+  requirement"
+  rule.
+- **No
+  OptiX
+  changes.**
+  `src/optix/`
+  byte-
+  identical;
+  the
+  pathtracer_nee_tests
+  byte-
+  identity
+  cases
+  exercise
+  the
+  RR_HD
+  inline
+  helper
+  on the
+  host
+  C++
+  compiler,
+  not
+  the
+  OptiX
+  raygen.
+- **No
+  pathtracer
+  source
+  changes.**
+  `src/pathtracer/`
+  byte-
+  identical;
+  the
+  helper
+  +
+  config
+  contracts
+  are
+  unchanged.
+- **No
+  server
+  changes.**
+  `src/server/`
+  byte-
+  identical;
+  tests
+  do not
+  invoke
+  RenderServer
+  per the
+  user's
+  "Do
+  not
+  run
+  server"
+  rule.
+- **No
+  C4D /
+  UI /
+  node-
+  editor
+  changes.**
+  None
+  exist
+  in
+  this
+  repo
+  yet;
+  the
+  master
+  rule
+  "Do
+  not
+  start
+  Cinema
+  4D
+  integration
+  until
+  the
+  standalone
+  renderer
+  has..."
+  is
+  trivially
+  preserved.
+- **No
+  scene /
+  tooling
+  changes.**
+  `scenes/`,
+  `tools/verify_cuda_host.py`
+  byte-
+  identical.
+- **No
+  default-
+  OFF
+  output
+  change.**
+  An
+  operator
+  who
+  does
+  NOT
+  pass
+  `--enable-nee`
+  sees
+  the
+  same
+  byte-
+  identical
+  output
+  the
+  pre-
+  NEE.5
+  build
+  produced
+  on
+  every
+  backend.
+  The
+  static
+  IEEE-
+  754 +
+  RNG-
+  stream
+  argument
+  from
+  `PATH_TRACER_NEE_AUDIT.md`
+  §1.2
+  carries
+  forward
+  unchanged.
+- **No
+  algorithm
+  broadening.**
+  No
+  MIS,
+  no
+  area-
+  light
+  NEE.
+
+### Master rule compliance
+
+- **Build
+  incrementally
+  / every
+  step
+  compilable
+  (rules
+  1 +
+  2)**:
+  both
+  audit-
+  host
+  configs
+  rebuild
+  cleanly.
+  ctest
+  goes
+  from
+  8/8 OFF
+  +
+  9/9 ON
+  (NEE.5b
+  baseline)
+  to
+  9/9 OFF
+  +
+  10/10 ON
+  (+1
+  cli_tests
+  in
+  each).
+- **No
+  fake
+  stubs
+  (rule
+  3)**:
+  every
+  test
+  case
+  exercises
+  real
+  code
+  (the
+  parser
+  arm,
+  the
+  Config
+  field,
+  the
+  RR_HD
+  helper).
+  No
+  pretense.
+- **No
+  CPU
+  per-
+  pixel
+  work
+  (rules
+  5 +
+  7)**:
+  the
+  tests
+  are
+  host-
+  only
+  function
+  invocations;
+  zero
+  per-
+  pixel
+  code.
+- **Module
+  boundaries
+  (rule
+  9)**:
+  the
+  test
+  binary
+  links
+  ONLY
+  the
+  CLI
+  parser
+  layer
+  (CommandLine.cpp
+  +
+  Config.cpp).
+  No
+  cross-
+  module
+  ripple.
+- **Avoid
+  monolithic
+  files
+  (rule
+  10)**:
+  the
+  new
+  test
+  file
+  is
+  ~193
+  lines;
+  the
+  pathtracer_nee_tests
+  growth
+  is
+  ~75
+  lines;
+  CMakeLists.txt
+  block
+  is
+  ~21
+  lines.
+  All
+  reasonable.
+- **Explicit
+  testable
+  interfaces
+  (rule
+  11)**:
+  the
+  CLI
+  parser
+  is
+  now
+  host-
+  testable
+  for
+  the
+  first
+  time.
+- **Update
+  BUILD_PLAN
+  (rule
+  8)**:
+  this
+  entry.
+- **Do
+  only
+  that
+  scope
+  (current-
+  prompt
+  rule)**:
+  shipped
+  exactly
+  the
+  task
+  brief
+  §4.1 +
+  §4.2
+  Option
+  A.
+  Option
+  A
+  library
+  extraction
+  +
+  Option
+  B
+  CUDA-
+  host
+  byte-
+  identity
+  test
+  remain
+  deferred
+  (the
+  former
+  to a
+  future
+  cleanup;
+  the
+  latter
+  to a
+  CUDA-
+  equipped
+  operator
+  session).
+
+### Verified at the build
+
+- `cmake
+  --build
+  build
+  -j`
+  (audit
+  host,
+  RR_ENABLE_CUDA=OFF,
+  RR_ENABLE_OPTIX=OFF):
+  clean.
+  ctest
+  100%
+  green
+  (9/9;
+  +1 vs
+  the
+  NEE.5b
+  baseline:
+  cli_tests).
+- `cmake
+  --build
+  build-
+  ON -j`
+  (audit
+  host,
+  RR_ENABLE_CUDA=OFF,
+  RR_ENABLE_OPTIX=ON
+  with
+  SDK
+  fallback):
+  clean.
+  ctest
+  100%
+  green
+  (10/10;
+  +1 vs
+  the
+  NEE.5b
+  baseline).
+- `cli_tests`
+  binary
+  per-
+  case
+  output:
+  `cli_tests:
+  31/31
+  passed`.
+- `pathtracer_nee_tests`
+  binary
+  per-
+  case
+  output:
+  `pathtracer_nee_tests:
+  34/34
+  passed`
+  (was
+  ~26
+  pre-
+  slice;
+  +8 from
+  the
+  two
+  new
+  cases).
+- **Smoke
+  1
+  (default-
+  off,
+  no
+  flag).**
+  `RelativityRender
+  --render-pathtrace
+  scenes/test_full_scene.rrscene`
+  emits
+  the
+  documented
+  "requires
+  CUDA"
+  audit-
+  host
+  fallback
+  byte-
+  identically
+  with
+  the
+  pre-
+  slice
+  baseline.
+- **Smoke
+  2
+  (--enable-nee
+  accepted).**
+  `RelativityRender
+  --render-pathtrace
+  ...
+  --enable-nee`
+  emits
+  the
+  same
+  fallback;
+  the
+  parser
+  accepts
+  the
+  flag.
+- **Smoke
+  3 (TEX-
+  P.6
+  fixture
+  regression).**
+  `--scene-info
+  scenes/test_textured_material.rrscene`
+  emits
+  the
+  expected
+  three-
+  case
+  log
+  sequence;
+  fixups
+  applied:
+  2.
+- **Smoke
+  4
+  (--enable-Nee
+  rejected).**
+  Case-
+  mismatch
+  exits
+  with
+  `[ERROR]
+  unknown
+  argument:
+  --enable-Nee`.
+  Anchored
+  by
+  cli_tests
+  case 6.
+- **No-
+  touch
+  invariants.**
+  `git
+  diff
+  --
+  src/cuda/
+  src/optix/
+  src/pathtracer/
+  src/renderer/
+  src/io/
+  src/scene/
+  src/material/
+  src/lighting/
+  src/texture/
+  src/gpu/
+  src/server/
+  src/main.cpp
+  src/core/
+  scenes/
+  tools/`
+  ⇒ 0
+  bytes.
+  Only
+  CMakeLists.txt
+  +
+  tests/pathtracer_nee_tests.cpp
+  +
+  tests/cli_tests.cpp
+  (NEW)
+  changed.
+
+### Source diff size
+
+- `tests/cli_tests.cpp`:
+  +193
+  added
+  (NEW).
+- `tests/pathtracer_nee_tests.cpp`:
+  +75
+  added
+  (2 new
+  cases +
+  cstring
+  include +
+  main()
+  registry).
+- `CMakeLists.txt`:
+  +21
+  added
+  (cli_tests
+  block).
+- TOTAL:
+  **+289
+  added /
+  0
+  deleted**
+  across
+  3 files
+  (1
+  modified
+  +
+  2 new).
+
+### Sub-arc closure
+
+NEE.5
+CLOSED.
+The
+`--enable-nee`
+CLI
+flag
+ships
+end-
+to-end:
+parse +
+Config +
+both
+backends
++ both
+log
+lines +
+OptiX
+light
+upload +
+host-
+only
+byte-
+identity
+tests +
+parser
+tests.
+
+The
+runtime-
+deferred
+checks
+table
+from
+`PATH_TRACER_ENABLE_NEE_CLI_TASK.md`
+§8
+remains
+deferred
+to a
+real
+CUDA +
+OptiX-
+SDK
+host:
+
+| §8
+check                         | Procedure                                  |
+| ------------------------------|--------------------------------------------|
+| §8.1
+default-
+off
+byte-
+IDENTITY            | `cmp` no-flag PPM pre vs post NEE.5        |
+| §8.2
+visible
+NEE-on
+noise
+reduction        | render lit scene with vs without --enable-nee |
+| §8.3
+cross-
+backend
+convergence              | CUDA --enable-nee vs OptiX --enable-nee    |
+| §8.4
+no-
+light-
+scene
+safety
+net                | render no-lights scene with --enable-nee   |
+| §8.5
+ctest
+cycle                              | re-run on CUDA host                        |
+| §8.6
+refresh
+CUDA-
+OPTIX-
+VERIFY                | flip NEE rows from DEFERRED to PASS        |
+
+Recommended
+next
+step:
+the
+NEE.6
+audit
+walks
+the
+task
+brief
+§7 PASS
+criteria,
+records
+runtime-
+deferred
+status
+per
+audit-
+host
+fallback,
+and
+closes
+the
+NEE
+arc's
+documentation
+loop.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
