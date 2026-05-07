@@ -55031,6 +55031,792 @@ arc's
 documentation
 loop.
 
+## Enable NEE CLI Audit (NEE.6) — docs only
+
+**Scope of
+this slice
+(post-NEE.5
+sub-arc
+closure):
+walk the
+ten audit
+items the
+user
+enumerated
++ record a
+PASS /
+REPAIR /
+DEFERRED /
+BLOCKED
+verdict
+per item +
+a closing
+verdict
+for the
+NEE.5 CLI
+sub-arc.
+Documentation
+only; zero
+source
+changes.
+The
+canonical
+audit
+matches
+the shape
+of every
+prior
+PT-P.x /
+TEX-P.x /
+firefly-
+clamp-CLI /
+NEE-skeleton
+audit.**
+
+### What ships
+
+- `docs/PATH_TRACER_ENABLE_NEE_CLI_AUDIT.md`
+  (NEW;
+  ~950
+  lines).
+  Twelve-
+  section
+  audit
+  walking
+  the
+  user's
+  ten
+  enumerated
+  checks +
+  the
+  closing
+  verdict +
+  a
+  REPAIR
+  candidate
+  list +
+  a sub-
+  arc
+  closure
+  note:
+    - **§0
+      Header.**
+      Date,
+      branch,
+      HEAD
+      commit
+      (`8d9e75f`),
+      plan
+      source
+      (`PATH_TRACER_ENABLE_NEE_CLI_TASK.md`),
+      audit-
+      host
+      fingerprint
+      (no
+      CUDA
+      Toolkit;
+      no
+      `/usr/local/cuda`;
+      OptiX-
+      SDK
+      fallback
+      on the
+      ON
+      build),
+      verdict
+      legend,
+      NEE
+      arc
+      cadence
+      table.
+    - **§1
+      `--enable-nee`
+      exists.**
+      PASS.
+      Parser
+      arm at
+      `CommandLine.cpp:417-433`;
+      help-
+      text
+      block
+      at
+      `:974-993`;
+      grep-
+      verified
+      uniqueness.
+    - **§2
+      Default
+      is OFF.**
+      PASS.
+      Three
+      sites:
+      `Config.h:89`,
+      `PathTracer.h:172`,
+      `OptixLaunchParams.h:252`,
+      all
+      `=
+      false`.
+      Defence-
+      in-
+      depth
+      across
+      four
+      flow-
+      through
+      sites.
+      Static
+      IEEE-
+      754 +
+      RNG-
+      stream
+      argument
+      from
+      `PATH_TRACER_NEE_AUDIT.md`
+      §1.2
+      carries
+      forward.
+    - **§3
+      `PathTraceConfig::enable_nee`
+      wired.**
+      PASS.
+      Five-
+      step
+      chain
+      verified:
+      field
+      decl →
+      `PathTracer.cpp:137`
+      passes
+      `cfg.enable_nee`
+      → CUDA
+      launcher
+      signature
+      at
+      `CudaPathTracer.cuh:94`
+      → impl
+      at
+      `CudaPathTracer.cu:186`
+      →
+      kernel
+      guard
+      at
+      `:276`.
+    - **§4
+      CUDA
+      dispatch
+      receives
+      `enable_nee`.**
+      PASS.
+      `pcfg.enable_nee
+      =
+      cfg.enable_nee`
+      at
+      `main.cpp:2437`
+      +
+      Logger
+      info
+      line
+      at
+      `:2493-2497`.
+      Empirical
+      smoke:
+      audit-
+      host
+      fallback
+      byte-
+      identical
+      with
+      no-
+      flag
+      invocation.
+    - **§5
+      OptiX
+      dispatch
+      receives
+      `enable_nee`.**
+      PASS.
+      `/*enable_nee=*/cfg.enable_nee`
+      at
+      `main.cpp:1601`;
+      log
+      line
+      at
+      `:1594-1596`;
+      both
+      `OptixRenderer::render_pathtrace*`
+      signatures
+      grew
+      at
+      NEE.4;
+      `params.enable_nee`
+      written
+      at
+      `OptixRenderer.cpp:1451`
+      (single)
+      +
+      `:1804`
+      (progressive).
+      Empirical
+      smoke
+      during
+      the
+      audit
+      shows
+      `[INFO]
+      enable_nee
+           :
+      true
+      (enabled)`
+      log
+      line
+      at
+      the
+      expected
+      pre-
+      fallback
+      position.
+    - **§6
+      OptiX
+      light-
+      upload
+      wiring
+      status.**
+      PASS.
+      Both
+      dispatchers
+      mirror
+      `render_direct_lighting:1965-1996`.
+      `render_pathtrace`
+      lines
+      1411-
+      1529
+      (six
+      free-
+      sites);
+      `render_pathtrace_progressive`
+      lines
+      1725-
+      1810
+      (cleanup
+      lambda
+      pattern;
+      lights
+      uploaded
+      ONCE
+      before
+      the
+      spp
+      loop).
+      No-
+      light-
+      scene
+      safety
+      net
+      structurally
+      preserved.
+    - **§7
+      CLI
+      parser
+      test
+      status.**
+      PASS.
+      `tests/cli_tests.cpp`
+      (193
+      lines)
+      ships
+      seven
+      cases
+      (six
+      mandatory
+      §4.1 +
+      one
+      bonus).
+      31/31
+      RR_CHECK
+      passes
+      verified
+      directly
+      during
+      the
+      audit.
+      Linkage:
+      Option
+      B from
+      §4.1
+      (re-
+      compile
+      `CommandLine.cpp`
+      +
+      `Config.cpp`
+      directly).
+    - **§8
+      Default-
+      OFF
+      byte-
+      identity
+      test
+      status.**
+      PASS
+      structurally
+      (static
+      argument
+      from
+      `PATH_TRACER_NEE_AUDIT.md`
+      §1.2)
+      +
+      PASS
+      host-
+      only
+      Option
+      A
+      (`test_helper_determinism`
+      +
+      `test_zero_contribution_is_bit_default`
+      in
+      `pathtracer_nee_tests.cpp`,
+      lines
+      310 +
+      341);
+      DEFERRED
+      CUDA-
+      host
+      Option
+      B
+      (PPM
+      `cmp`
+      between
+      pre-
+      NEE.5
+      and
+      post-
+      NEE.5
+      no-
+      flag
+      runs).
+      34/34
+      RR_CHECK
+      passes
+      verified.
+    - **§9
+      CUDA /
+      OptiX
+      runtime
+      status.**
+      DEFERRED
+      on
+      six
+      checks:
+      §9.1
+      default-
+      off
+      byte-
+      IDENTITY
+      runtime,
+      §9.2
+      visible
+      NEE-on
+      noise
+      reduction,
+      §9.3
+      cross-
+      backend
+      convergence,
+      §9.4
+      no-
+      light-
+      scene
+      safety
+      net,
+      §9.5
+      ctest
+      cycle,
+      §9.6
+      refresh
+      `CUDA-OPTIX-VERIFY`
+      report.
+      All
+      runnable
+      on a
+      CUDA +
+      OptiX-
+      SDK
+      host;
+      blocked
+      on
+      this
+      audit
+      host.
+    - **§10
+      Verdict
+      table:
+      PASS.**
+      Closing
+      verdict
+      for
+      the
+      NEE.5
+      CLI
+      sub-
+      arc.
+      Master-
+      rule
+      compliance
+      walked.
+      Smoke
+      matrix
+      re-
+      verified
+      during
+      the
+      audit
+      (8
+      smokes;
+      all
+      green).
+    - **§11
+      REPAIR
+      candidates.**
+      One
+      cosmetic-
+      only
+      REPAIR
+      identified:
+      the
+      `--enable-nee`
+      help-
+      text
+      at
+      `CommandLine.cpp:980-981`
+      still
+      says
+      "the
+      OptiX
+      dispatcher
+      consumption
+      is
+      deferred
+      to a
+      follow-
+      up
+      slice"
+      (authored
+      at
+      NEE.5a
+      when
+      the
+      OptiX
+      side
+      was
+      pending;
+      stale
+      now
+      that
+      NEE.5b
+      shipped).
+      Recommended
+      fix
+      documented;
+      not
+      blocking;
+      defer
+      to a
+      future
+      cleanup
+      slice.
+      Audit
+      mode
+      reminder:
+      "Documentation
+      only" —
+      the
+      REPAIR
+      is
+      recorded,
+      not
+      fixed
+      in
+      this
+      audit.
+    - **§12
+      Sub-
+      arc
+      closure.**
+      The
+      NEE.5
+      CLI
+      sub-
+      arc
+      closes
+      here.
+      Three
+      next-
+      step
+      options
+      enumerated:
+      (1)
+      trigger
+      CUDA +
+      OptiX-
+      SDK
+      host
+      run to
+      flip
+      runtime
+      DEFERRED
+      rows,
+      (2)
+      fix
+      the
+      §11.1
+      help-
+      text
+      REPAIR,
+      (3)
+      pivot
+      to
+      master
+      order
+      #16+
+      (area-
+      light /
+      MIS).
+- This
+  `BUILD_PLAN.md`
+  slice-
+  closing
+  entry.
+
+### What does NOT change
+
+- Source:
+  byte-
+  identical.
+  `git
+  diff --
+  src/
+  tests/
+  scenes/
+  tools/
+  CMakeLists.txt`
+  ⇒ 0
+  bytes.
+- Build
+  configs:
+  unchanged.
+  ctest
+  remains
+  9/9 OFF
+  +
+  10/10 ON
+  at the
+  NEE.5
+  baseline;
+  the
+  audit's
+  build
+  invocations
+  re-
+  verified
+  greenness
+  but
+  did not
+  modify
+  any
+  build
+  artefact.
+- All
+  other
+  docs:
+  this
+  audit
+  only
+  ADDS
+  `PATH_TRACER_ENABLE_NEE_CLI_AUDIT.md`;
+  no
+  edits
+  to any
+  other
+  doc.
+
+### Master rule compliance
+
+- **Build
+  incrementally
+  / every
+  step
+  compilable
+  (rules
+  1 +
+  2)**:
+  docs-
+  only
+  slice;
+  preserved
+  trivially.
+  Both
+  audit-
+  host
+  configs
+  re-
+  verified
+  green
+  during
+  the
+  audit
+  (9/9
+  OFF +
+  10/10
+  ON).
+- **No
+  fake
+  stubs
+  (rule
+  3)**:
+  every
+  audit
+  finding
+  is a
+  read-
+  only
+  observation
+  cited
+  to a
+  source
+  line
+  number;
+  zero
+  pretense.
+- **No
+  CPU
+  per-
+  pixel
+  work
+  (rules
+  5 +
+  7)**:
+  no
+  changes;
+  trivially
+  preserved.
+- **Update
+  BUILD_PLAN
+  (rule
+  8)**:
+  this
+  entry.
+- **Documentation
+  only;
+  do not
+  modify
+  source
+  code
+  (current-
+  prompt
+  rule)**:
+  zero
+  source
+  edits;
+  the
+  REPAIR
+  list is
+  a
+  one-
+  line
+  cosmetic
+  candidate
+  recorded
+  for a
+  future
+  slice,
+  not
+  fixed
+  here.
+
+### Verified at the build
+
+- `cmake
+  --build
+  build
+  -j`
+  (RR_ENABLE_CUDA=OFF,
+  RR_ENABLE_OPTIX=OFF):
+  no-op;
+  ctest
+  9/9.
+- `cmake
+  --build
+  build-
+  ON -j`
+  (RR_ENABLE_CUDA=OFF,
+  RR_ENABLE_OPTIX=ON):
+  no-op;
+  ctest
+  10/10.
+- Smoke
+  matrix
+  during
+  the
+  audit
+  re-
+  verified
+  the
+  eight
+  cells
+  of
+  §10.2
+  (cli_tests
+  31/31,
+  pathtracer_nee_tests
+  34/34,
+  TEX-
+  P.6
+  fixture
+  intact,
+  --help
+  shows
+  the
+  block,
+  etc.).
+
+### Sub-arc status
+
+NEE.5
+CLI
+sub-arc
+CLOSED.
+NEE.6
+audit
+ships
+with a
+PASS
+verdict +
+one
+cosmetic-
+only
+REPAIR
+candidate
+(stale
+help-
+text
+wording;
+non-
+blocking).
+The
+NEE arc
+runtime-
+deferred
+checklist
+remains
+deferred
+to a
+real
+CUDA +
+OptiX-
+SDK
+host
+operator
+session.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
