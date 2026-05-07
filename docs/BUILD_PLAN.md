@@ -57013,6 +57013,771 @@ host
 operator
 session.
 
+## MIS.1 — Multiple Importance Sampling plan (docs only)
+
+**Scope of
+this slice
+(post-NEE
+arc
+closure):
+ship the
+canonical
+multi-
+slice
+design
+brief for
+the MIS
+arc.
+Documentation
+only;
+zero
+source
+changes.
+Defines
+the
+contract
+that
+MIS.{2..7}
+will
+ship
+incrementally
+without
+re-
+deriving
+the
+problem /
+scope /
+helper-
+shape
+reasoning.
+Pattern
+mirrors
+`docs/PATH_TRACER_NEE_TASK.md`
+(the
+canonical
+multi-
+slice
+design
+brief
+this
+repository
+already
+established
+for the
+NEE arc).**
+
+### What ships
+
+- `docs/PATH_TRACER_MIS_PLAN.md`
+  (NEW;
+  ~1198
+  lines).
+  Nine-
+  section
+  brief
+  walking
+  the
+  user's
+  seven
+  enumerated
+  topics
+  +
+  cadence
+  +
+  closure:
+    - **§1
+      Problem.**
+      Two
+      estimators
+      (NEE +
+      BSDF-
+      sampling)
+      double-
+      count
+      paths
+      they
+      both
+      reach.
+      Current
+      v1
+      Point +
+      Directional
+      scope
+      avoids
+      the
+      window
+      (delta
+      lights
+      have
+      zero
+      measure
+      under
+      BSDF
+      sampling);
+      area
+      lights
+      will
+      open
+      the
+      window.
+      Ships
+      MIS as
+      the
+      architectural
+      prerequisite
+      for the
+      area-
+      light
+      arc;
+      at v1
+      MIS
+      collapses
+      to a
+      no-op
+      so
+      byte-
+      identity
+      is
+      trivially
+      preserved.
+    - **§2
+      Scope.**
+      In:
+      direct-
+      light
+      MIS,
+      Point +
+      Directional
+      first,
+      Lambert
+      BSDF
+      only,
+      both
+      backends
+      symmetric.
+      Out:
+      area-
+      light
+      MIS,
+      full
+      spectral,
+      BDPT,
+      volumetric,
+      env-IBL
+      MIS,
+      MIS-
+      aware
+      denoising,
+      non-
+      Lambert
+      BSDFs.
+    - **§3
+      Required
+      concepts.**
+      §3.1
+      BSDF
+      PDF
+      (Lambert
+      uses
+      existing
+      `pdf_cosine_hemisphere`),
+      §3.2
+      Light
+      PDF
+      (Dirac
+      sentinel
+      for
+      delta
+      lights;
+      area-
+      to-
+      solid-
+      angle
+      Jacobian
+      for
+      future
+      area
+      lights),
+      §3.3
+      power
+      heuristic
+      (Veach
+      β=2;
+      collapses
+      to
+      `p_i² /
+      (p_i²
+      + p_j²)`
+      with
+      one
+      sample
+      each),
+      §3.4
+      `DirectLightSample`
+      extension
+      (`pdf_solid_angle`
+      field
+      via
+      `is_delta`
+      flag
+      to
+      preserve
+      bit-
+      default
+      memcmp
+      anchor),
+      §3.5
+      `BsdfSample`
+      POD +
+      `sample_bsdf`
+      helper
+      mirroring
+      `DirectLight.{h,cuh}`
+      shape.
+    - **§4
+      Integration
+      points.**
+      §4.1
+      CUDA
+      `k_pathtrace_sample`
+      MIS-
+      aware
+      shape
+      (NEE +
+      BSDF-
+      bounce-
+      as-
+      light
+      gates;
+      v1
+      math
+      collapses
+      cleanly
+      to the
+      existing
+      arithmetic
+      via
+      Dirac
+      short-
+      circuit),
+      §4.2
+      OptiX
+      `__raygen__pathtrace`
+      mirrors
+      §4.1,
+      §4.3
+      new
+      `pathtracer/Bsdf.{h,cuh}`
+      module
+      mirroring
+      `DirectLight`'s
+      `.h /
+      .cuh`
+      split,
+      §4.4
+      NEE
+      branch
+      consumption
+      via
+      `pdf_solid_angle`.
+      Operator-
+      facing
+      CLI
+      surface
+      unchanged;
+      no
+      `--no-mis`
+      flag.
+    - **§5
+      Stage
+      order.**
+      Six
+      slices +
+      audit:
+      MIS.2
+      BSDF
+      data
+      model
+      (~250
+      lines),
+      MIS.3
+      Light
+      data
+      model
+      (~100
+      lines),
+      MIS.4
+      MIS
+      helper
+      (~200
+      lines),
+      MIS.5
+      CUDA
+      integrator
+      (~200
+      lines),
+      MIS.6
+      OptiX
+      integrator
+      (~200
+      lines),
+      MIS.7
+      audit
+      (~500-
+      800
+      docs).
+      MIS.{2,3,4}
+      are
+      independent
+      leaves;
+      MIS.5
+      depends
+      on all
+      three;
+      MIS.6
+      depends
+      on
+      MIS.5;
+      MIS.7
+      depends
+      on all
+      prior.
+    - **§6
+      Non-
+      goals.**
+      Ten
+      explicit
+      out-
+      of-
+      scope
+      items
+      (area-
+      light
+      MIS,
+      BDPT,
+      spectral,
+      volumetric,
+      env-
+      IBL,
+      denoise-
+      aware,
+      non-
+      Lambert,
+      `--no-mis`
+      flag,
+      specular
+      delta,
+      transient).
+    - **§7
+      PASS
+      criteria
+      for
+      future
+      implementation.**
+      §7.1
+      build
+      both
+      configs
+      clean,
+      §7.2
+      ctest
+      100%
+      green
+      (+1
+      binary
+      at
+      MIS.2,
+      +1 at
+      MIS.4),
+      §7.3
+      diff-
+      size
+      budget
+      table,
+      §7.4
+      default-
+      OFF
+      byte-
+      identity
+      preserved,
+      §7.5
+      default-
+      ON-at-
+      v1
+      byte-
+      identity
+      (the
+      Dirac
+      short-
+      circuit
+      argument),
+      §7.6
+      no-
+      touch
+      invariants
+      list
+      (RNG /
+      Sampling /
+      PathTracer /
+      Config /
+      CommandLine /
+      main.cpp /
+      Light /
+      MaterialTypes
+      all
+      byte-
+      identical),
+      §7.7
+      cross-
+      backend
+      symmetry,
+      §7.8
+      documentation,
+      §7.9
+      master-
+      rule
+      compliance
+      checklist.
+    - **§8
+      Implementation
+      cadence +
+      sequencing.**
+      Recommended
+      order:
+      MIS.2
+      first
+      (concrete
+      data
+      model
+      informs
+      MIS.5
+      shape),
+      then
+      MIS.3
+      (trivial
+      ripple),
+      then
+      MIS.4
+      (pure-
+      math
+      helper),
+      then
+      MIS.5
+      (CUDA
+      integrator),
+      then
+      MIS.6
+      (OptiX
+      mirror),
+      then
+      MIS.7
+      (audit).
+      Independent
+      leaves
+      may
+      interleave
+      with
+      other
+      arcs.
+    - **§9
+      Sub-
+      arc
+      closure.**
+      Three
+      next-
+      step
+      options
+      after
+      MIS.7
+      closes:
+      (1)
+      runtime
+      verification
+      session,
+      (2)
+      pivot
+      to
+      area-
+      light
+      arc
+      (the
+      natural
+      successor
+      consuming
+      the
+      MIS
+      foundation),
+      (3)
+      pivot
+      to a
+      different
+      master-
+      #16+
+      arc.
+      Recommended:
+      (2).
+- This
+  `BUILD_PLAN.md`
+  slice-
+  closing
+  entry.
+
+### What does NOT change
+
+- Source:
+  byte-
+  identical.
+  `git
+  diff --
+  src/
+  tests/
+  scenes/
+  tools/
+  CMakeLists.txt`
+  ⇒ 0
+  bytes.
+- Build
+  configs:
+  unchanged
+  at the
+  `827f5de`
+  baseline
+  (9/9
+  OFF +
+  10/10
+  ON
+  ctest;
+  the
+  plan's
+  authoring
+  did not
+  invoke
+  the
+  build
+  system).
+- All
+  other
+  docs:
+  this
+  plan
+  only
+  ADDS
+  `PATH_TRACER_MIS_PLAN.md`;
+  no
+  edits
+  to
+  prior
+  task
+  briefs /
+  audit
+  docs /
+  PT-P.x /
+  TEX-P.x /
+  NEE.x /
+  firefly-
+  clamp
+  artefacts.
+
+### Master rule compliance
+
+- **Build
+  incrementally
+  / every
+  step
+  compilable
+  (rules
+  1 +
+  2)**:
+  docs-
+  only
+  slice;
+  preserved
+  trivially.
+- **No
+  fake
+  stubs
+  (rule
+  3)**:
+  the
+  plan
+  defines
+  real
+  contracts
+  (signatures
+  with
+  return
+  types,
+  field
+  semantics,
+  PDF
+  formulas)
+  +
+  cross-
+  references
+  the
+  existing
+  helpers
+  the MIS
+  arc
+  reuses
+  (`pdf_cosine_hemisphere`,
+  `sample_cosine_hemisphere`,
+  `DirectLightSample`).
+  No
+  hand-
+  waving;
+  every
+  helper's
+  scope
+  is
+  explicit.
+- **No
+  CPU
+  per-
+  pixel
+  work
+  (rules
+  5 +
+  7)**:
+  the
+  plan
+  describes
+  device-
+  side
+  per-
+  bounce
+  decisions
+  only.
+  No
+  per-
+  pixel
+  host
+  code.
+- **Module
+  boundaries
+  (rule
+  9)**:
+  the
+  plan
+  scopes
+  new
+  modules
+  (`pathtracer/Bsdf.{h,cuh}`,
+  `pathtracer/Mis.{h,cuh}`)
+  alongside
+  the
+  existing
+  `pathtracer/{DirectLight,RNG,Sampling}.{h,cuh}`
+  cleanly.
+  No
+  cross-
+  module
+  ripple.
+- **Update
+  BUILD_PLAN
+  (rule
+  8)**:
+  this
+  entry.
+- **Documentation
+  only;
+  do not
+  modify
+  source
+  code;
+  do not
+  implement
+  MIS
+  yet
+  (current-
+  prompt
+  rules)**:
+  zero
+  source
+  edits;
+  zero
+  MIS
+  helpers
+  shipped;
+  the
+  plan is
+  the
+  spec,
+  not the
+  impl.
+
+### Verified at the build
+
+- Trivially
+  preserved.
+  The
+  authoring
+  of this
+  plan
+  did
+  not
+  invoke
+  the
+  build
+  system.
+  Both
+  audit-
+  host
+  configs
+  remain
+  green
+  at the
+  post-
+  NEE-
+  arc
+  baseline:
+  `build`
+  (RR_ENABLE_CUDA=OFF,
+  RR_ENABLE_OPTIX=OFF)
+  ctest
+  9/9;
+  `build-ON`
+  (RR_ENABLE_CUDA=OFF,
+  RR_ENABLE_OPTIX=ON)
+  ctest
+  10/10.
+
+### Sub-arc status
+
+MIS.1
+plan
+shipped.
+The
+contract
+for the
+MIS
+arc is
+now
+canonical;
+the
+next
+six
+slices
+(MIS.{2..7})
+ship
+the
+diff.
+The
+NEE
+arc's
+"future
+area-
+light
+slice"
+is now
+properly
+gated
+behind
+MIS as
+the
+architectural
+prerequisite.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
