@@ -58,6 +58,36 @@ struct Config {
     // parse time so this field is always >= 0.
     float       firefly_clamp    = 0.0f;
 
+    // Modifier flag. Enables explicit direct-light sampling
+    // (Next Event Estimation, NEE) at every bounce vertex of
+    // the path tracer. Read by `--render-pathtrace` (CUDA
+    // dispatcher) and `--render-optix-pathtrace` (OptiX
+    // dispatcher); other actions ignore it. Presence-only
+    // switch — same shape as `denoise_enabled`; the parser
+    // sets `true` on `--enable-nee` and never consumes a
+    // following value. Default `false` matches
+    // `PathTraceConfig::enable_nee`'s NEE.2 default exactly so
+    // a caller that does NOT pass `--enable-nee` sees byte-
+    // identical behaviour with the pre-CLI build (the kernel
+    // guards in both backends short-circuit at `false`).
+    //
+    // Cross-references:
+    //   `PathTraceConfig::enable_nee` (CUDA-side contract).
+    //   `OptixLaunchParams::enable_nee` (OptiX-side mirror,
+    //     NEE.4).
+    //   `docs/PATH_TRACER_ENABLE_NEE_CLI_TASK.md` §1.1
+    //     (canonical brief for this field).
+    //
+    // The `PATH_TRACER_NEE_AUDIT.md` §3.2 sequencing
+    // constraint ("the OptiX-side mirror MUST land before any
+    // caller flips the flag") is satisfied by the NEE.4
+    // commit `b29daae`, so flipping the field via this CLI is
+    // safe and produces convergence-equivalent CUDA + OptiX
+    // output once the OptiX dispatcher consumes it (deferred
+    // to a follow-up slice; this slice ships only the CUDA-
+    // side wiring per the user's narrow scope).
+    bool        enable_nee       = false;
+
     // Returns an empty string when the configuration is internally
     // consistent. Otherwise returns a human-readable description of
     // the first problem.

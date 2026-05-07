@@ -2409,6 +2409,20 @@ int run_render_pathtrace(const rr::core::Config& cfg) {
         // against a non-CLI caller bypassing the parser's
         // negative-value rejection.
         pcfg.firefly_clamp = cfg.firefly_clamp;
+        // NEE.5 CLI carve-out: thread the operator's
+        // `--enable-nee` choice through to the path tracer.
+        // Default `false` preserves byte-identity with the
+        // pre-CLI build (the kernel guard at
+        // CudaPathTracer.cu:276 short-circuits at false; no
+        // shadow ray is traced; no extra RNG draw fires; the
+        // cosine-bounce sampler pulls from a bit-identical
+        // RNG state). The OptiX dispatcher's analogous wiring
+        // is deferred to a follow-up slice per the user's
+        // narrow scope; on this slice the OptiX path's
+        // `OptixLaunchParams::enable_nee` continues to read
+        // its dispatcher-default `false` regardless of CLI
+        // input.
+        pcfg.enable_nee = cfg.enable_nee;
         // Other PathTraceConfig fields (max_bounces, seed,
         // environment_color, environment_intensity) keep their
         // defaults. The defaults produce a moderate cool sky tint
@@ -2460,6 +2474,13 @@ int run_render_pathtrace(const rr::core::Config& cfg) {
                    + (pcfg.firefly_clamp > 0.0f
                           ? " (enabled)"
                           : " (disabled)"));
+        // NEE.5 CLI carve-out: log the operator's selected
+        // NEE state so it is visible alongside the
+        // firefly_clamp line above. Same 17-column label
+        // width + parenthesised classification idiom.
+        Logger::info(std::string("enable_nee       : ")
+                   + (pcfg.enable_nee ? "true (enabled)"
+                                      : "false (disabled)"));
 
         if (!save_image_or_error(r.image, run.path, run.label,
                                  width, height)) {

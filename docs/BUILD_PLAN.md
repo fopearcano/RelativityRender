@@ -50645,6 +50645,1135 @@ the spec.**
   ctest
   9/9.
 
+## Enable NEE CLI Parse + Config (impl, CUDA-side only)
+
+**Scope of
+this slice
+(post-NEE.5
+task brief):
+ship ONLY
+the
+`--enable-nee`
+CLI parse
++ Config
+field +
+CUDA
+dispatcher
+mapping +
+log line.
+Per the
+user's
+explicit
+narrow
+scope:
+"Do not
+alter
+CUDA
+kernel
+behavior
+yet" + "Do
+not alter
+OptiX
+path yet"
++ "Default
+OFF
+behavior
+must
+remain
+unchanged".
+Carves
+the NEE.5
+task brief
+into TWO
+slices:
+this one
+(CUDA-side
+parse +
+config
+mapping)
+and a
+follow-up
+(OptiX
+dispatcher
+wiring +
+light
+upload +
+tests).
+The
+follow-up
+is
+required
+before
+`--enable-nee`
+produces
+NEE
+contribution
+on the
+OptiX
+backend;
+this slice
+makes the
+flag
+parseable
++ visible
+on the
+CUDA
+backend.**
+
+### What ships
+
+- **`src/core/Config.h`.**
+  Adds
+  `bool
+  enable_nee
+  =
+  false;`
+  field
+  after
+  the
+  existing
+  `firefly_clamp`
+  field
+  with a
+  ~25-
+  line
+  doc-
+  comment
+  block
+  per the
+  task
+  brief
+  §1.1.
+  Documents:
+  modifier-
+  flag
+  semantics
+  (read by
+  `--render-pathtrace`
+  /
+  `--render-optix-pathtrace`;
+  others
+  ignore),
+  cross-
+  references
+  to
+  `PathTraceConfig::enable_nee`
+  +
+  `OptixLaunchParams::enable_nee`
+  +
+  `PATH_TRACER_ENABLE_NEE_CLI_TASK.md`
+  §1.1,
+  the §3.2
+  sequencing-
+  constraint
+  closure
+  via
+  NEE.4
+  (`b29daae`),
+  and the
+  presence-
+  only
+  switch
+  shape
+  (mirrors
+  `denoise_enabled`).
+- **`src/core/CommandLine.cpp`.**
+  Inserts
+  a new
+  `else if
+  (a ==
+  "--enable-nee")`
+  parser
+  arm
+  immediately
+  after
+  the
+  `--denoise`
+  arm at
+  line
+  409-416.
+  Sets
+  `r.config.enable_nee
+  = true`
+  with no
+  value-
+  take, no
+  range
+  validation —
+  presence-
+  only
+  shape
+  per the
+  task
+  brief
+  §1.2.
+  Adds a
+  ~10-
+  line
+  multi-
+  line
+  help-
+  text
+  block
+  appended
+  AFTER
+  the
+  existing
+  `--firefly-clamp`
+  block
+  and
+  BEFORE
+  the
+  `--width`
+  /
+  `--height`
+  blocks.
+- **`src/main.cpp`
+  (only
+  `run_render_pathtrace`).**
+  Adds
+  ONE
+  passthrough
+  line
+  after
+  the
+  existing
+  `pcfg.firefly_clamp
+  =
+  cfg.firefly_clamp;`
+  in the
+  spp
+  loop:
+  `pcfg.enable_nee
+  =
+  cfg.enable_nee;`
+  (with a
+  ~13-
+  line
+  inline
+  doc-
+  comment
+  documenting
+  the
+  default-
+  off
+  byte-
+  identity
+  argument
+  +
+  noting
+  the
+  OptiX
+  dispatcher
+  wiring
+  is
+  deferred).
+  Adds
+  ONE
+  `Logger::info`
+  line
+  AFTER
+  the
+  existing
+  `firefly_clamp
+      :
+  ...`
+  log
+  line:
+  `enable_nee
+       :
+  true|false
+  (enabled|disabled)`
+  with the
+  same
+  17-
+  column
+  label
+  width.
+  `run_render_optix_pathtrace`
+  is NOT
+  touched.
+- This
+  `BUILD_PLAN.md`
+  slice-
+  closing
+  entry.
+
+### What does NOT change
+
+- **No
+  CUDA
+  kernel
+  changes.**
+  `src/cuda/CudaPathTracer.{cu,cuh}`
+  byte-
+  identical.
+  `pcfg.enable_nee`
+  flows
+  through
+  `PathTracer::render`
+  →
+  `launch_pathtrace_sample`
+  →
+  `k_pathtrace_sample`'s
+  existing
+  `enable_nee`
+  parameter
+  →
+  the
+  NEE.2
+  kernel
+  guard
+  at
+  `CudaPathTracer.cu:276`.
+  The
+  guard
+  +
+  helper
+  call
+  +
+  shadow-
+  ray
+  walk
+  +
+  Lambert
+  contribution
+  add
+  were
+  all
+  shipped
+  at
+  NEE.2;
+  this
+  slice
+  only
+  adds a
+  caller
+  that
+  flips
+  the
+  flag
+  value
+  through
+  to the
+  existing
+  guard.
+- **No
+  OptiX
+  changes.**
+  `src/optix/`
+  byte-
+  identical.
+  The
+  OptiX
+  dispatcher's
+  `bool
+  enable_nee
+  =
+  false`
+  trailing
+  default-
+  arg
+  (NEE.4)
+  continues
+  to read
+  its
+  default
+  `false`
+  regardless
+  of
+  CLI
+  input.
+  An
+  operator
+  passing
+  `--enable-nee`
+  on the
+  OptiX
+  backend
+  sees
+  the
+  same
+  pre-
+  CLI
+  output
+  byte-
+  for-
+  byte;
+  the
+  OptiX
+  consumption
+  is
+  reserved
+  for the
+  follow-
+  up
+  slice.
+- **No
+  pathtracer
+  /
+  renderer
+  /
+  scene /
+  IO
+  changes.**
+  `src/pathtracer/`,
+  `src/renderer/`,
+  `src/scene/`,
+  `src/io/`,
+  `src/material/`,
+  `src/lighting/`,
+  `src/texture/`,
+  `src/gpu/`
+  byte-
+  identical.
+- **No
+  tests
+  added.**
+  `tests/`
+  byte-
+  identical;
+  ctest
+  counts
+  unchanged
+  (8/8 OFF
+  +
+  9/9 ON).
+  The
+  CLI
+  parser
+  test +
+  dynamic
+  byte-
+  identity
+  test
+  required
+  by the
+  full
+  NEE.5
+  brief
+  §4 are
+  reserved
+  for
+  the
+  follow-
+  up
+  slice
+  alongside
+  the
+  OptiX
+  wiring.
+- **No
+  build /
+  scene /
+  tooling
+  changes.**
+  `CMakeLists.txt`,
+  `scenes/*.rrscene`,
+  `tools/verify_cuda_host.py`
+  byte-
+  identical.
+- **Default-OFF
+  behaviour
+  byte-
+  identical.**
+  An
+  operator
+  who
+  does
+  NOT
+  pass
+  `--enable-nee`
+  sees:
+  `cfg.enable_nee
+  ==
+  false`
+  (default-
+  constructed),
+  `pcfg.enable_nee
+  ==
+  false`
+  (mapped
+  through),
+  the
+  CUDA
+  kernel
+  guard
+  short-
+  circuits
+  at
+  `false`,
+  and the
+  per-
+  pixel
+  write
+  is
+  bit-
+  identical
+  with
+  the
+  pre-CLI
+  build.
+  The
+  static
+  IEEE-
+  754 +
+  RNG-
+  stream
+  argument
+  from
+  `PATH_TRACER_NEE_AUDIT.md`
+  §1.2
+  carries
+  forward
+  unchanged
+  (this
+  slice
+  did
+  not
+  touch
+  any of
+  the
+  three
+  contributors:
+  the
+  kernel
+  guard's
+  IN-
+  guard
+  `next_float`
+  draw,
+  the
+  cosine-
+  bounce
+  `next_vec2`
+  pull,
+  or the
+  `radiance`
+  accumulator
+  arithmetic).
+
+### Master rule compliance
+
+- **Build
+  incrementally
+  / every
+  step
+  compilable
+  (rules
+  1 + 2)**:
+  both
+  audit-
+  host
+  configs
+  rebuild
+  cleanly.
+  ctest
+  remains
+  8/8 OFF
+  +
+  9/9 ON
+  (no
+  test
+  count
+  change).
+- **No
+  fake
+  stubs
+  (rule
+  3)**:
+  the
+  parser
+  arm,
+  the
+  Config
+  field,
+  and
+  the
+  CUDA
+  dispatcher
+  pass-
+  through
+  are
+  all
+  real
+  code
+  with a
+  real
+  effect
+  on the
+  CUDA
+  backend
+  (the
+  flag
+  flips
+  the
+  kernel
+  guard
+  via
+  the
+  existing
+  NEE.2
+  wiring).
+  The
+  OptiX
+  side is
+  HONESTLY
+  declared
+  unwired
+  in the
+  field's
+  doc-
+  comment +
+  the help
+  text +
+  the
+  inline
+  comment
+  on the
+  passthrough
+  line.
+  No
+  pretense.
+- **No
+  CPU
+  per-
+  pixel
+  work
+  (rules
+  5 + 7)**:
+  the
+  flag
+  is
+  parsed
+  ONCE
+  at
+  startup;
+  the
+  per-
+  pixel
+  work
+  remains
+  device-
+  side at
+  the
+  CUDA
+  kernel
+  guard.
+  Zero
+  new
+  host-
+  side
+  per-
+  pixel
+  code.
+- **Module
+  boundaries
+  (rule
+  9)**:
+  the
+  parser
+  arm
+  lives
+  in
+  `src/core/`;
+  the
+  field
+  lives
+  in
+  `src/core/Config.h`;
+  the
+  dispatcher
+  mapping
+  lives
+  in
+  `src/main.cpp`.
+  No
+  cross-
+  module
+  ripple.
+- **Update
+  BUILD_PLAN
+  (rule
+  8)**:
+  this
+  entry.
+- **Do
+  only
+  that
+  scope
+  (current-
+  prompt
+  rule)**:
+  the
+  user's
+  task
+  description
+  enumerated
+  exactly
+  four
+  items;
+  this
+  slice
+  ships
+  exactly
+  those
+  four
+  +
+  the
+  Config
+  field
+  required
+  to
+  thread
+  the
+  parser's
+  output
+  through
+  to the
+  dispatcher.
+  No
+  silent
+  addition
+  of the
+  OptiX
+  side or
+  tests.
+
+### Verified at the build
+
+- `cmake
+  --build
+  build
+  -j`
+  (audit
+  host,
+  RR_ENABLE_CUDA=OFF,
+  RR_ENABLE_OPTIX=OFF):
+  clean.
+  ctest
+  100%
+  green
+  (8/8;
+  unchanged
+  from
+  baseline).
+- `cmake
+  --build
+  build-
+  ON -j`
+  (audit
+  host,
+  RR_ENABLE_CUDA=OFF,
+  RR_ENABLE_OPTIX=ON
+  with
+  SDK
+  fallback):
+  clean.
+  ctest
+  100%
+  green
+  (9/9;
+  unchanged).
+- **Smoke
+  1 (`--help`).**
+  `RelativityRender
+  --help
+  | grep
+  -A 9
+  enable-nee`
+  prints
+  the
+  new
+  9-line
+  block.
+  Operator
+  finds
+  the
+  flag's
+  documentation
+  without
+  reading
+  source.
+- **Smoke
+  2 (CUDA
+  dispatcher,
+  default-
+  off).**
+  `RelativityRender
+  --render-pathtrace
+  scenes/test_full_scene.rrscene`
+  emits
+  the
+  documented
+  "requires
+  CUDA"
+  audit-
+  host
+  fallback;
+  the
+  in-spp-
+  loop
+  log
+  lines
+  (firefly_clamp
+  +
+  enable_nee)
+  are
+  unreachable
+  on the
+  audit
+  host
+  (same
+  baseline
+  as the
+  firefly-
+  clamp
+  CLI
+  audit
+  §5.2).
+- **Smoke
+  3 (CUDA
+  dispatcher,
+  flag
+  on).**
+  `RelativityRender
+  --render-pathtrace
+  scenes/test_full_scene.rrscene
+  --enable-nee`
+  emits
+  the
+  same
+  fallback
+  byte-
+  identically
+  with
+  smoke 2.
+  Confirms
+  the
+  parser
+  accepts
+  `--enable-nee`
+  +
+  the
+  dispatcher
+  reaches
+  its
+  pre-
+  fallback
+  state
+  with
+  the
+  flag
+  set.
+- **Smoke
+  4 (OptiX
+  dispatcher,
+  flag
+  on).**
+  `RelativityRender
+  --render-optix-pathtrace
+  scenes/test_full_scene.rrscene
+  --enable-nee`
+  emits
+  the
+  existing
+  `firefly_clamp
+       :
+  0.000000
+  (disabled)`
+  log
+  line
+  followed
+  by the
+  documented
+  "requires
+  OptiX
+  SDK"
+  fallback.
+  **No
+  `enable_nee
+       :
+  ...`
+  line** —
+  confirming
+  the
+  OptiX
+  dispatcher
+  is
+  untouched
+  per the
+  "Do not
+  alter
+  OptiX
+  path
+  yet"
+  rule.
+- **Smoke
+  5 (case-
+  mismatch).**
+  `RelativityRender
+  --render-pathtrace
+  ...
+  --enable-Nee`
+  exits
+  with
+  `[ERROR]
+  unknown
+  argument:
+  --enable-Nee`.
+  The
+  parser's
+  case-
+  sensitive
+  matching
+  contract
+  holds.
+- **Smoke
+  6 (TEX-
+  P.6
+  fixture).**
+  `RelativityRender
+  --scene-info
+  scenes/test_textured_material.rrscene`
+  emits
+  the
+  expected
+  three-
+  case
+  log
+  sequence
+  (one
+  Case 1
+  info
+  + two
+  Case 3
+  warnings;
+  `fixups
+  applied:
+  2`).
+  No
+  ripple
+  onto
+  the
+  texture
+  validator.
+- **No-
+  touch
+  invariants.**
+  `git
+  diff
+  --
+  src/cuda/
+  src/optix/
+  src/pathtracer/
+  src/renderer/
+  src/io/
+  src/scene/
+  src/material/
+  src/lighting/
+  src/texture/
+  src/gpu/
+  tests/
+  scenes/
+  tools/
+  CMakeLists.txt
+  | wc
+  -l`
+  ⇒ 0
+  bytes.
+  Only
+  the
+  three
+  authorised
+  files
+  changed
+  (Config.h,
+  CommandLine.cpp,
+  main.cpp).
+
+### Source diff size
+
+- `src/core/Config.h`:
+  +30
+  added
+  (1 field
+  + ~25-
+  line
+  doc-
+  comment).
+- `src/core/CommandLine.cpp`:
+  +38
+  added
+  (parser
+  arm
+  ~17
+  lines +
+  help-
+  text
+  block
+  ~20
+  lines).
+- `src/main.cpp`:
+  +21
+  added
+  (~13-
+  line
+  inline
+  doc-
+  comment
+  + 1
+  passthrough
+  line +
+  ~7-
+  line
+  Logger
+  block).
+- TOTAL:
+  **89
+  added /
+  0
+  deleted**
+  across
+  3 source
+  files.
+  Well
+  within
+  the
+  task
+  brief
+  §7.3
+  budget
+  (≤ 350
+  for
+  the
+  full
+  NEE.5
+  scope;
+  this
+  carve-
+  out
+  ships
+  ~25%
+  of
+  it).
+
+### Follow-up slice scope
+
+The
+follow-
+up
+slice
+(NEE.5b
+or
+similar)
+must
+ship,
+per the
+NEE.5
+task
+brief
+§1.5-
+§1.6 +
+§4:
+
+1.
+   `run_render_optix_pathtrace`
+   wiring:
+   replace
+   the
+   implicit
+   `enable_nee
+   =
+   false`
+   default
+   on the
+   `render_pathtrace_progressive`
+   call
+   with
+   `cfg.enable_nee`
+   +
+   add
+   the
+   matching
+   `Logger::info`
+   line.
+2.
+   OptiX
+   light-
+   upload
+   in
+   BOTH
+   `OptixRenderer::render_pathtrace`
+   AND
+   `render_pathtrace_progressive`,
+   mirroring
+   `render_direct_lighting:1965-1996`.
+3.
+   `tests/cli_tests.cpp`
+   (NEW)
+   with
+   the
+   five
+   mandatory
+   parser
+   cases
+   per
+   the
+   brief
+   §4.1.
+4.
+   ~1-2
+   cases
+   appended
+   to
+   `tests/pathtracer_nee_tests.cpp`
+   per
+   the
+   brief
+   §4.2
+   Option
+   A
+   (host-
+   only
+   determinism
+   anchor).
+5.
+   Optionally
+   the
+   `rr_core_cli`
+   library
+   extraction
+   per
+   the
+   brief
+   §4.1
+   Option
+   A.
+
+After
+the
+follow-
+up
+slice
+lands,
+the
+NEE.5
+sub-arc
+closes;
+NEE.6
+audit
+walks
+the §7
+PASS
+criteria
++ the
+§8
+runtime-
+deferred
+checks
+table.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:

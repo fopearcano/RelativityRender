@@ -414,6 +414,24 @@ CommandLine::ParseResult CommandLine::parse(int argc, char** argv) {
             // Config; the per-action handler decides whether
             // to honour it.
             r.config.denoise_enabled = true;
+        } else if (a == "--enable-nee") {
+            // NEE.5 modifier flag. NOT an action - it does
+            // not call set_action; combining it with any
+            // action flag is allowed (and required for it to
+            // do anything). Sets the enable_nee bit on
+            // Config; only `--render-pathtrace` (CUDA) and
+            // `--render-optix-pathtrace` (OptiX) read it.
+            // Other actions ignore it. Presence-only switch
+            // (no value-take), mirroring `--denoise` above.
+            // Per `docs/PATH_TRACER_NEE_AUDIT.md` §3.2,
+            // NEE.4's OptiX-side mirror (commit b29daae)
+            // unblocks the field-flip contract: at default
+            // `false` both backends are byte-identical with
+            // the pre-NEE build; at `true` both backends
+            // produce convergence-equivalent NEE renders
+            // (once the OptiX dispatcher consumes the field;
+            // deferred to a follow-up slice).
+            r.config.enable_nee = true;
         } else if (a == "--output") {
             if (!take_value(argc, argv, i, a, value, r.error_message)) {
                 r.action = Action::Error;
@@ -953,6 +971,26 @@ std::string CommandLine::usage(std::string_view argv0) {
                                   "values are rejected at parse\n"
        << "                        time (\"--firefly-clamp must be "
                                   ">= 0\").\n"
+       << "  --enable-nee          NEE.5 modifier flag (not an action). "
+                                  "Enables\n"
+       << "                        explicit direct-light sampling (Next "
+                                  "Event\n"
+       << "                        Estimation) at every bounce vertex of "
+                                  "the path\n"
+       << "                        tracer. Default off matches the pre-"
+                                  "NEE.5\n"
+       << "                        emission + environment-only behaviour "
+                                  "byte-for-byte.\n"
+       << "                        Read by --render-pathtrace; the OptiX "
+                                  "dispatcher\n"
+       << "                        consumption is deferred to a follow-up "
+                                  "slice.\n"
+       << "                        Light-type scope: Point + Directional "
+                                  "contribute;\n"
+       << "                        Area / Environment are placeholder and "
+                                  "contribute\n"
+       << "                        zero through the NEE branch (no MIS "
+                                  "yet).\n"
        << "  --width  <int>        Render width in pixels "
                                   "(default 1280).\n"
        << "  --height <int>        Render height in pixels "
