@@ -52869,6 +52869,1010 @@ OptiX-
 SDK
 host).
 
+## NEE Dispatch Wiring — verification slice (docs only)
+
+**Scope of
+this slice:
+the user's
+"NEE
+Dispatch
+Wiring"
+task
+description
+matches
+EXACTLY
+what
+NEE.5a
+(commit
+`122b81c`)
+and
+NEE.5b
+(commit
+`f0bf3e9`)
+already
+shipped.
+Per the
+master
+rule
+"Do only
+that
+scope" +
+"Do not
+silently
+add
+future
+systems",
+this
+slice
+ships NO
+source
+changes.
+The
+BUILD_PLAN
+entry
+records
+the
+verification
+that the
+three
+task
+items
+are
+already
+in place,
+both
+audit-
+host
+builds
+remain
+green,
+and the
+four
+rules
+the user
+listed
+are
+honoured.**
+
+### What was requested
+
+The user
+asked
+for
+three
+task
+items:
+
+1.
+   "pass
+   `PathTraceConfig::enable_nee`
+   into
+   CUDA
+   path-
+   trace
+   dispatch"
+2.
+   "pass
+   `enable_nee`
+   into
+   `OptixRenderer::render_pathtrace*`
+   calls"
+3.
+   "ensure
+   OptiX
+   path-
+   tracer
+   light-
+   upload
+   wiring
+   is
+   present
+   enough
+   for
+   `enable_nee`
+   to
+   exercise
+   the
+   branch"
+
+### Where each item already lives
+
+1. **CUDA
+   dispatcher
+   passes
+   `pcfg.enable_nee
+   =
+   cfg.enable_nee`.**
+   Shipped
+   at
+   NEE.5a
+   (commit
+   `122b81c`).
+   Source
+   anchor:
+   `src/main.cpp:2437`
+   inside
+   `run_render_pathtrace`'s
+   spp
+   loop.
+   The
+   line
+   sits
+   AFTER
+   the
+   existing
+   `pcfg.firefly_clamp
+   =
+   cfg.firefly_clamp;`
+   (PT-
+   P.24
+   wiring)
+   and
+   BEFORE
+   the
+   `pt.render(gpu_scene,
+   width,
+   height,
+   pcfg)`
+   call.
+   `pcfg.enable_nee`
+   flows
+   through
+   `PathTracer::render`
+   →
+   `launch_pathtrace_sample`
+   (NEE.2
+   signature)
+   →
+   `k_pathtrace_sample`'s
+   existing
+   `enable_nee`
+   parameter
+   →
+   the
+   NEE.2
+   kernel
+   guard
+   at
+   `CudaPathTracer.cu:276`.
+2. **OptiX
+   dispatcher
+   passes
+   `/*enable_nee=*/cfg.enable_nee`.**
+   Shipped
+   at
+   NEE.5b
+   (commit
+   `f0bf3e9`).
+   Source
+   anchor:
+   `src/main.cpp:1601`
+   inside
+   `run_render_optix_pathtrace`,
+   on the
+   `OptixRenderer::render_pathtrace_progressive`
+   call.
+   The
+   trailing
+   `bool
+   enable_nee
+   =
+   false`
+   parameter
+   was
+   added
+   to the
+   dispatcher's
+   signature
+   at
+   NEE.4
+   (`b29daae`);
+   NEE.5b
+   replaced
+   the
+   implicit
+   default
+   with
+   the
+   CLI
+   value.
+   `cfg.enable_nee`
+   flows
+   to
+   `params.enable_nee`
+   on
+   every
+   per-
+   launch
+   params
+   write
+   inside
+   the
+   spp
+   loop
+   (`OptixRenderer.cpp:1804`).
+   The
+   single-
+   launch
+   `OptixRenderer::render_pathtrace`
+   variant
+   has
+   the
+   same
+   trailing
+   parameter
+   (NEE.4)
+   but
+   no
+   live
+   caller
+   in
+   `src/main.cpp`
+   today;
+   the
+   parameter
+   exists
+   for
+   API
+   completeness
+   and is
+   exercised
+   by
+   the
+   parallel
+   `params.enable_nee
+   =
+   enable_nee`
+   assignment
+   in
+   that
+   variant.
+3. **OptiX
+   light
+   upload
+   in
+   BOTH
+   `render_pathtrace*`
+   variants.**
+   Shipped
+   at
+   NEE.5b
+   (commit
+   `f0bf3e9`).
+   Source
+   anchors:
+     - `OptixRenderer::render_pathtrace`
+       (single-
+       launch):
+       `void*
+       d_lights
+       =
+       nullptr;
+       const
+       int
+       light_count`
+       block
+       at
+       `OptixRenderer.cpp:1411-1432`;
+       `params.lights
+       /
+       params.light_count`
+       at
+       `:1457-1458`;
+       `if
+       (d_lights)
+       ::cudaFree(d_lights);`
+       on
+       every
+       error
+       path +
+       success
+       path
+       (lines
+       1468,
+       1495,
+       1507,
+       1520,
+       1529).
+     - `OptixRenderer::render_pathtrace_progressive`
+       (multi-
+       launch):
+       `d_lights`
+       declared
+       at
+       `OptixRenderer.cpp:1725`
+       next
+       to
+       `d_framebuffer
+       /
+       d_accumulator
+       /
+       d_display`;
+       added
+       to
+       the
+       existing
+       `cleanup`
+       lambda
+       at
+       `:1729`;
+       upload
+       block
+       (cudaMalloc
+       +
+       cudaMemcpy
+       gated
+       on
+       `light_count
+       >
+       0`)
+       at
+       `:1737-1758`;
+       `params.lights
+       /
+       params.light_count`
+       written
+       inside
+       the
+       spp
+       loop
+       at
+       `:1810-1811`
+       (lights
+       constant
+       across
+       the
+       loop;
+       uploaded
+       ONCE
+       before
+       the
+       loop).
+   Both
+   variants
+   mirror
+   the
+   canonical
+   `OptixRenderer::render_direct_lighting:2048-2074`
+   pattern
+   verbatim
+   per
+   the
+   task
+   brief
+   §1.6.
+
+### What does NOT change
+
+- **No
+  source
+  files
+  modified
+  in
+  this
+  slice.**
+  `git
+  diff
+  HEAD`
+  for
+  any
+  source /
+  test /
+  scene /
+  tooling
+  path
+  ⇒ 0
+  bytes.
+  The
+  prior
+  commits
+  already
+  ship
+  the
+  requested
+  wiring;
+  duplicating
+  it
+  would
+  violate
+  the
+  master
+  rule
+  "Do
+  only
+  that
+  scope".
+- **No
+  build
+  config
+  changes.**
+  `CMakeLists.txt`
+  byte-
+  identical.
+- **No
+  test
+  count
+  change.**
+  ctest
+  remains
+  8/8 OFF
+  +
+  9/9 ON
+  (the
+  test
+  expansion
+  required
+  by
+  the
+  task
+  brief
+  §4
+  remains
+  deferred
+  to a
+  follow-
+  up
+  slice).
+- **No
+  default-
+  OFF
+  output
+  change.**
+  An
+  operator
+  who
+  does
+  NOT
+  pass
+  `--enable-nee`
+  sees
+  the
+  same
+  byte-
+  identical
+  output
+  the
+  pre-
+  NEE.5
+  build
+  produced
+  on
+  every
+  backend.
+  The
+  static
+  IEEE-
+  754 +
+  RNG-
+  stream
+  argument
+  from
+  `PATH_TRACER_NEE_AUDIT.md`
+  §1.2
+  carries
+  forward
+  unchanged.
+- **No
+  algorithm
+  broadening.**
+  The
+  NEE
+  branch
+  remains
+  exactly
+  what
+  NEE.2 +
+  NEE.4
+  shipped:
+  uniform
+  light
+  selection
+  via
+  `sample_direct_light_uniform`,
+  one
+  shadow-
+  ray
+  visibility
+  query,
+  Lambert
+  BRDF
+  +
+  cosine
+  +
+  throughput-
+  modulated
+  contribution.
+  Light-
+  type
+  scope
+  is
+  Point +
+  Directional
+  only
+  (Area /
+  Environment
+  remain
+  PLACEHOLDER).
+- **No
+  MIS.**
+  The
+  v1
+  "no
+  double-
+  count
+  window"
+  argument
+  from
+  `PATH_TRACER_NEE_TASK.md`
+  §1
+  still
+  holds
+  because
+  Point
+  +
+  Directional
+  lights
+  have
+  no
+  mesh.
+  MIS
+  is
+  reserved
+  for
+  the
+  future
+  area-
+  light
+  slice.
+
+### Master rule compliance
+
+- **Build
+  incrementally /
+  every
+  step
+  compilable
+  (rules
+  1 +
+  2)**:
+  preserved
+  trivially.
+  Both
+  audit-
+  host
+  configs
+  rebuild
+  cleanly
+  at
+  HEAD;
+  ctest
+  remains
+  100%
+  green
+  on
+  both
+  (8/8
+  OFF +
+  9/9
+  ON).
+- **No
+  fake
+  stubs
+  (rule
+  3)**:
+  the
+  three
+  items
+  the
+  user
+  asked
+  for
+  are
+  all
+  real
+  code
+  with
+  real
+  effect.
+  No
+  pretense
+  here;
+  the
+  honest
+  observation
+  is
+  that
+  prior
+  slices
+  already
+  did
+  the
+  work.
+- **No
+  CPU
+  per-
+  pixel
+  work
+  (rules
+  5 +
+  7)**:
+  no
+  changes,
+  so
+  trivially
+  preserved.
+- **Module
+  boundaries
+  (rule
+  9)**:
+  no
+  changes.
+- **Update
+  BUILD_PLAN
+  (rule
+  8)**:
+  this
+  entry.
+- **Do
+  only
+  that
+  scope
+  (current-
+  prompt
+  rule)**:
+  the
+  scope
+  is
+  already
+  satisfied;
+  shipping
+  duplicate
+  source
+  changes
+  would
+  silently
+  broaden.
+  Honest
+  reporting
+  +
+  BUILD_PLAN
+  documentation
+  is
+  the
+  master-
+  rule-
+  compliant
+  response.
+- **Keep
+  OptiX
+  OFF
+  build
+  working
+  (user
+  rule)**:
+  verified.
+  `cmake
+  --build
+  build
+  -j`
+  (RR_ENABLE_OPTIX=OFF)
+  rebuilt
+  cleanly;
+  smoke
+  `--render-optix-pathtrace
+  ...`
+  emits
+  the
+  documented
+  "requires
+  OptiX"
+  fallback
+  byte-
+  identically
+  with
+  the
+  pre-
+  slice
+  baseline.
+
+### Verified at the build
+
+- `cmake
+  --build
+  build
+  -j`
+  (RR_ENABLE_CUDA=OFF,
+  RR_ENABLE_OPTIX=OFF):
+  clean
+  (no-
+  op,
+  no
+  source
+  changed);
+  ctest
+  8/8.
+- `cmake
+  --build
+  build-
+  ON -j`
+  (RR_ENABLE_CUDA=OFF,
+  RR_ENABLE_OPTIX=ON
+  with
+  SDK
+  fallback):
+  clean
+  (no-
+  op);
+  ctest
+  9/9.
+- **Verification
+  greps**
+  ran
+  during
+  this
+  slice
+  confirm:
+    - `grep
+      pcfg.enable_nee
+      src/main.cpp`
+      ⇒
+      hits
+      at
+      lines
+      2437
+      (the
+      assignment)
+      +
+      2494
+      (the
+      log-
+      line
+      classification).
+    - `grep
+      "/\\*enable_nee=\\*/"
+      src/main.cpp`
+      ⇒
+      hit
+      at
+      line
+      1601
+      (`render_pathtrace_progressive`
+      call
+      site).
+    - `grep
+      d_lights
+      src/optix/OptixRenderer.cpp`
+      ⇒
+      32
+      hits
+      across
+      `render_pathtrace`
+      (lines
+      1411-1529),
+      `render_pathtrace_progressive`
+      (lines
+      1725-1811),
+      and
+      the
+      pre-
+      existing
+      `render_direct_lighting`
+      (lines
+      2048-2074;
+      unchanged).
+- **Smoke
+  1
+  (CUDA
+  default-
+  off
+  fallback).**
+  `RelativityRender
+  --render-pathtrace
+  scenes/test_full_scene.rrscene`
+  emits
+  the
+  documented
+  "requires
+  CUDA"
+  audit-
+  host
+  fallback;
+  byte-
+  identical
+  with
+  the
+  pre-
+  slice
+  baseline.
+- **Smoke
+  2
+  (OptiX
+  OFF
+  build
+  still
+  works).**
+  `RelativityRender
+  --render-optix-pathtrace
+  scenes/test_full_scene.rrscene`
+  on
+  the
+  RR_ENABLE_OPTIX=OFF
+  build
+  emits
+  the
+  documented
+  "requires
+  OptiX"
+  fallback;
+  byte-
+  identical
+  with
+  the
+  pre-
+  slice
+  baseline.
+- **Smoke
+  3
+  (flag
+  flows
+  on
+  OptiX
+  ON-
+  audit-
+  host).**
+  `RelativityRender
+  --render-optix-pathtrace
+  ...
+  --enable-nee`
+  on
+  the
+  RR_ENABLE_OPTIX=ON
+  build
+  emits
+  `firefly_clamp
+       :
+  0.000000
+  (disabled)`
+  +
+  `enable_nee
+       :
+  true
+  (enabled)`
+  +
+  the
+  documented
+  "requires
+  OptiX
+  SDK"
+  fallback.
+  Confirms
+  the
+  flag
+  reaches
+  the
+  OptiX
+  dispatcher
+  at
+  HEAD.
+- **MIS
+  audit.**
+  `grep
+  -ri
+  "MIS\|multiple
+  importance"
+  src/cuda/CudaPathTracer.cu
+  src/optix/OptixPrograms.cu
+  src/pathtracer/DirectLight.cuh
+  src/pathtracer/PathTracer.h`
+  returns
+  ONLY
+  pre-
+  existing
+  `__miss__radiance`
+  /
+  `__miss__pathtrace`
+  doc-
+  comment
+  substring
+  matches
+  in
+  `OptixPrograms.cu`'s
+  Stage-
+  17 /
+  20
+  history
+  block.
+  No
+  MIS
+  algorithm
+  in
+  source.
+
+### Source diff size
+
+**0
+added /
+0
+deleted
+across
+0
+source
+files.**
+Only
+`docs/BUILD_PLAN.md`
+grew
+by
+this
+entry.
+
+### Follow-up slice scope
+
+The
+remaining
+NEE.5
+follow-
+up
+(per
+the
+task
+brief
+§4) is
+the
+test
+expansion:
+
+1.
+   `tests/cli_tests.cpp`
+   (NEW)
+   with
+   five
+   mandatory
+   parser
+   cases
+   per
+   §4.1.
+2.
+   1-2
+   cases
+   appended
+   to
+   `tests/pathtracer_nee_tests.cpp`
+   per
+   §4.2
+   Option
+   A
+   (host-
+   only
+   determinism
+   anchor).
+3.
+   Optionally
+   the
+   `rr_core_cli`
+   library
+   extraction
+   per
+   §4.1
+   Option
+   A.
+
+After
+that
+slice
+lands,
+the
+NEE.5
+sub-arc
+closes
+and
+NEE.6
+audit
+walks
+the
+§7
+PASS
+criteria.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
