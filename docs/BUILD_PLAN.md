@@ -55817,6 +55817,653 @@ host
 operator
 session.
 
+## NEE Help Text Repair (impl, cosmetic only)
+
+**Scope of
+this slice
+(post-NEE.6
+audit):
+fix the
+single
+cosmetic
+REPAIR
+candidate
+identified
+by
+`PATH_TRACER_ENABLE_NEE_CLI_AUDIT.md`
+§11.1 —
+the stale
+"OptiX
+dispatcher
+consumption
+is
+deferred
+to a
+follow-
+up slice"
+wording
+in the
+`--enable-nee`
+help-text
+block at
+`src/core/CommandLine.cpp:984-987`.
+The
+phrase
+was
+authored
+at
+NEE.5a
+when the
+OptiX
+side was
+still
+pending;
+NEE.5b
+shipped
+the
+OptiX
+dispatcher
+wiring +
+light
+upload at
+commit
+`f0bf3e9`,
+making
+the help
+text
+stale.
+Pure
+cosmetic
+edit;
+zero
+behaviour
+change.**
+
+### What ships
+
+- **`src/core/CommandLine.cpp`
+  (+4 /
+  -4
+  lines).**
+  Replaces
+  the two
+  stale
+  `<<`
+  statements
+  (the
+  "Read
+  by
+  --render-pathtrace;
+  the
+  OptiX
+  dispatcher
+  /
+  consumption
+  is
+  deferred
+  to a
+  follow-
+  up
+  slice"
+  text)
+  with
+  three
+  new
+  `<<`
+  statements
+  matching
+  the
+  audit's
+  §11.1
+  recommended
+  wording
+  exactly:
+
+  ```
+  Read by --render-pathtrace and
+  --render-optix-pathtrace; ignored by every other
+  action.
+  ```
+
+  Mirrors
+  the
+  `--firefly-clamp`
+  help-
+  text
+  idiom
+  ("Read
+  by\n--X
+  and
+  --Y;
+  ignored\nby
+  every
+  other
+  action.")
+  at
+  `CommandLine.cpp:967-970`,
+  modulo
+  the
+  three-
+  line
+  vs
+  four-
+  line
+  break
+  to
+  fit
+  the
+  shorter
+  --enable-
+  nee
+  sentence.
+- This
+  `BUILD_PLAN.md`
+  slice-
+  closing
+  entry.
+
+### What does NOT change
+
+- **No
+  renderer
+  logic
+  changes.**
+  `src/cuda/`,
+  `src/optix/`,
+  `src/pathtracer/`,
+  `src/renderer/`,
+  `src/io/`,
+  `src/scene/`,
+  `src/material/`,
+  `src/lighting/`,
+  `src/texture/`,
+  `src/gpu/`,
+  `src/server/`,
+  `src/main.cpp`
+  byte-
+  identical.
+- **No
+  CUDA
+  changes.**
+  No
+  `.cu`,
+  `.cuh`
+  modified.
+- **No
+  OptiX
+  changes.**
+  No
+  `OptixRenderer*`,
+  `OptixPrograms.cu`,
+  `OptixLaunchParams.h`
+  modified.
+- **No
+  C4D /
+  server /
+  UI /
+  node-
+  editor
+  changes.**
+  None
+  exist
+  in
+  this
+  repo
+  yet;
+  the
+  master
+  rule
+  carries
+  forward
+  trivially.
+- **No
+  test
+  changes.**
+  `tests/`
+  byte-
+  identical.
+  `cli_tests`
+  31/31
+  +
+  `pathtracer_nee_tests`
+  34/34
+  remain
+  passing
+  unchanged.
+- **No
+  build /
+  scene /
+  tooling
+  changes.**
+  `CMakeLists.txt`,
+  `scenes/*.rrscene`,
+  `tools/verify_cuda_host.py`
+  byte-
+  identical.
+- **No
+  Config /
+  parser
+  contract
+  change.**
+  `src/core/Config.h`,
+  `src/core/CommandLine.h`,
+  `src/core/Config.cpp`,
+  `src/core/Logger.{h,cpp}`
+  byte-
+  identical.
+  Only
+  the
+  `usage()`
+  text
+  emitter
+  in
+  `CommandLine.cpp`
+  changed;
+  the
+  parser's
+  argument
+  acceptance
+  +
+  field
+  semantics
+  are
+  unchanged.
+- **No
+  parser /
+  Config
+  semantics
+  change.**
+  The
+  parser
+  still
+  recognises
+  `--enable-nee`
+  identically;
+  cli_tests
+  continue
+  to pass
+  31/31.
+- **Default-
+  OFF
+  byte-
+  identity
+  preserved.**
+  The
+  static
+  IEEE-
+  754 +
+  RNG-
+  stream
+  argument
+  from
+  `PATH_TRACER_NEE_AUDIT.md`
+  §1.2
+  is a
+  source-
+  level
+  argument;
+  this
+  slice
+  did
+  not
+  touch
+  any of
+  its
+  three
+  contributors.
+
+### Master rule compliance
+
+- **Build
+  incrementally
+  / every
+  step
+  compilable
+  (rules
+  1 +
+  2)**:
+  both
+  audit-
+  host
+  configs
+  rebuild
+  cleanly.
+  ctest
+  remains
+  9/9 OFF
+  +
+  10/10 ON
+  (counts
+  unchanged).
+- **No
+  fake
+  stubs
+  (rule
+  3)**:
+  the
+  fix is
+  a
+  three-
+  line
+  text-
+  emitter
+  edit
+  that
+  produces
+  visibly
+  correct
+  output
+  (verified
+  by
+  smoke
+  1).
+- **No
+  CPU
+  per-
+  pixel
+  work
+  (rules
+  5 +
+  7)**:
+  no
+  per-
+  pixel
+  code
+  touched.
+  The
+  edit
+  is in
+  the
+  CLI
+  parser's
+  help-
+  text
+  emitter.
+- **Module
+  boundaries
+  (rule
+  9)**:
+  edit
+  scoped
+  to a
+  single
+  function
+  (`usage()`)
+  in a
+  single
+  file
+  (`CommandLine.cpp`).
+  No
+  cross-
+  module
+  ripple.
+- **Update
+  BUILD_PLAN
+  (rule
+  8)**:
+  this
+  entry.
+- **Do
+  only
+  that
+  scope
+  (current-
+  prompt
+  rule)**:
+  shipped
+  exactly
+  the
+  audit's
+  §11.1
+  REPAIR;
+  no
+  silent
+  broadening.
+
+### Verified at the build
+
+- `cmake
+  --build
+  build
+  -j`
+  (RR_ENABLE_CUDA=OFF,
+  RR_ENABLE_OPTIX=OFF):
+  clean.
+  ctest
+  9/9.
+- `cmake
+  --build
+  build-
+  ON -j`
+  (RR_ENABLE_CUDA=OFF,
+  RR_ENABLE_OPTIX=ON):
+  clean.
+  ctest
+  10/10.
+- **Smoke
+  1
+  (`--help`).**
+  `RelativityRender
+  --help
+  | grep
+  -A 9
+  enable-nee`
+  prints
+  the
+  corrected
+  block:
+
+  ```
+    --enable-nee          NEE.5 modifier flag (not an action). Enables
+                          explicit direct-light sampling (Next Event
+                          Estimation) at every bounce vertex of the path
+                          tracer. Default off matches the pre-NEE.5
+                          emission + environment-only behaviour byte-for-byte.
+                          Read by --render-pathtrace and
+                          --render-optix-pathtrace; ignored by every other
+                          action.
+                          Light-type scope: Point + Directional contribute;
+                          Area / Environment are placeholder and contribute
+  ```
+
+  The
+  three
+  lines
+  ("Read
+  by
+  --render-pathtrace
+  and",
+  "--render-optix-pathtrace;
+  ignored
+  by
+  every
+  other",
+  "action.")
+  match
+  the
+  audit's
+  §11.1
+  recommended
+  wording
+  exactly.
+- **Smoke
+  2
+  (`cli_tests`).**
+  `./build/bin/cli_tests`
+  ⇒
+  `cli_tests:
+  31/31
+  passed`.
+  The
+  parser's
+  argument
+  acceptance
+  is
+  unchanged;
+  the
+  edit
+  is
+  pure
+  text
+  emission.
+- **Smoke
+  3 (TEX-
+  P.6
+  fixture
+  regression).**
+  `--scene-info
+  scenes/test_textured_material.rrscene`
+  emits
+  the
+  expected
+  three-
+  case
+  log
+  sequence
+  (one
+  Case 1
+  info +
+  two
+  Case 3
+  warnings;
+  fixups
+  applied:
+  2). No
+  ripple
+  onto
+  the
+  texture
+  validator.
+- **Smoke
+  4
+  (stale
+  phrase
+  removed).**
+  `--help
+  | grep
+  "deferred
+  to a
+  follow-
+  up"`
+  ⇒
+  empty.
+  The
+  stale
+  wording
+  is
+  gone.
+- **Smoke
+  5
+  (OptiX
+  listed).**
+  `--help
+  | grep
+  -A 9
+  enable-nee
+  | grep
+  -q
+  render-optix-pathtrace`
+  ⇒
+  PASS.
+  The
+  OptiX
+  dispatcher
+  is now
+  documented
+  as a
+  consumer
+  of the
+  flag.
+
+### Source diff size
+
+**+4 /
+-4
+across
+1 file
+(`src/core/CommandLine.cpp`).**
+Two
+old
+`<<`
+statements
+removed;
+three
+new
+`<<`
+statements
+added
+(net
++1
+`<<`
+statement,
+0 net
+output-
+text-
+line
+delta —
+old
+text
+was
+2
+output
+lines,
+new
+text
+is 3
+output
+lines,
+matching
+the
+audit's
+§11.1
+recommended
+shape).
+
+### Sub-arc closure
+
+The
+NEE.6
+audit
+identified
+ONE
+REPAIR
+candidate
+(§11.1);
+this
+slice
+fixes
+it.
+The
+NEE.5
+CLI
+sub-arc
++ NEE.6
+audit's
+REPAIR
+list
+both
+close
+fully.
+The
+NEE
+arc's
+runtime-
+deferred
+checks
+(NEE.6
+§9.1-§9.6;
+six
+checks
+runnable
+on a
+real
+CUDA +
+OptiX-
+SDK
+host)
+remain
+deferred.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
