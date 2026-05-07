@@ -58508,6 +58508,918 @@ the
 MIS.2
 impl.
 
+## MIS.2 — BSDF sample data structure (impl, structure-only)
+
+**Scope of
+this slice
+(post-MIS.2
+task
+brief):
+ship the
+narrow-
+scope
+BSDF
+sample
+POD per
+the
+user's
+explicit
+field
+list
+(direction,
+bsdfValue,
+pdf,
+valid).
+This is
+TIGHTER
+than the
+full
+task
+brief
+§2 — the
+brief
+included
+a fifth
+`is_delta`
+field
+(forward-
+looking
+specular
+placeholder);
+this
+slice
+ships
+ONLY the
+four
+fields
+the user
+named.
+`is_delta`
+can land
+in a
+future
+slice if
+/ when
+specular
+BSDFs
+need it.
+Per the
+master
+rule "Do
+only
+that
+scope":
+strict
+interpretation
+of the
+user's
+prompt.**
+
+**Helper
+implementation
+(`sample_bsdf`,
+`bsdf_pdf`,
+`bsdf_eval`)
++ tests
++
+CMakeLists
+block —
+all
+deferred
+to a
+follow-
+up
+slice.
+This
+slice is
+header-
+only +
+runtime-
+inert.**
+
+### What ships
+
+- **`src/pathtracer/Bsdf.h`
+  (NEW;
+  172
+  lines).**
+  POD
+  defining
+  `BsdfSample`
+  with
+  the
+  four
+  fields
+  the
+  user
+  named:
+    - `wo`
+      (direction;
+      world-
+      space
+      unit
+      vector;
+      `rr::math::Vec3`;
+      defaults
+      to
+      `(0,0,0)`),
+    - `value`
+      (BSDF
+      value
+      / RGB
+      BRDF
+      eval;
+      `rr::math::Vec3`;
+      defaults
+      to
+      `(0,0,0)`),
+    - `pdf`
+      (per-
+      steradian
+      density;
+      `float`;
+      defaults
+      to
+      `0.0f`),
+    - `valid`
+      (gate
+      flag;
+      `bool`;
+      defaults
+      to
+      `false`).
+
+  ~150
+  lines
+  of doc-
+  comments
+  walking
+  the
+  per-
+  field
+  semantics
+  per the
+  task
+  brief
+  §2 +
+  the
+  future-
+  MIS-
+  usage
+  contract
+  (how
+  MIS.5 /
+  MIS.6
+  will
+  consume
+  the
+  POD).
+  The
+  doc-
+  comment
+  block
+  cross-
+  references
+  `docs/PATH_TRACER_MIS_PLAN.md`
+  for the
+  arc-
+  level
+  context
+  +
+  `docs/PATH_TRACER_MIS_BSDF_PDF_TASK.md`
+  for the
+  field-
+  level
+  semantics.
+
+  Default-
+  constructed
+  `BsdfSample{}`
+  is the
+  no-
+  contribution
+  sentinel:
+  `valid
+  ==
+  false`
+  short-
+  circuits
+  the
+  integrator,
+  matching
+  `DirectLightSample{}`'s
+  `pdf_inv
+  ==
+  0.0f`
+  short-
+  circuit
+  on the
+  NEE
+  side.
+  Both
+  PODs
+  are
+  bit-
+  zero
+  by
+  default,
+  preserving
+  the
+  NEE.5
+  memcmp-
+  anchor
+  test
+  pattern
+  for any
+  future
+  MIS.x
+  test
+  expansion.
+- This
+  `BUILD_PLAN.md`
+  slice-
+  closing
+  entry.
+
+### What does NOT change
+
+- **No
+  helpers
+  shipped.**
+  `sample_bsdf`,
+  `bsdf_pdf`,
+  `bsdf_eval`
+  are
+  reserved
+  for a
+  follow-
+  up
+  slice
+  that
+  adds
+  `pathtracer/Bsdf.cuh`.
+- **No
+  caller.**
+  `BsdfSample`
+  has
+  zero
+  consumers
+  in
+  this
+  slice.
+  Verified
+  via
+  `grep
+  -rn
+  "BsdfSample"
+  src/`
+  (would
+  return
+  only
+  the
+  new
+  file's
+  declaration
+  + the
+  doc-
+  comment
+  paraphrase
+  block).
+- **No
+  rendering
+  behaviour
+  change.**
+  Both
+  integrators
+  (`k_pathtrace_sample`
+  in
+  `src/cuda/CudaPathTracer.cu`
+  and
+  `__raygen__pathtrace`
+  in
+  `src/optix/OptixPrograms.cu`)
+  continue
+  to use
+  their
+  existing
+  inline
+  cosine-
+  bounce
+  arithmetic.
+  Per-
+  pixel
+  output
+  is
+  byte-
+  identical
+  with
+  the
+  post-
+  NEE-
+  arc
+  baseline
+  at
+  `827f5de`.
+- **No
+  MIS
+  weighting.**
+  `power_heuristic`
+  helper
+  not
+  shipped
+  (reserved
+  for
+  MIS.4).
+- **No
+  NEE
+  changes.**
+  `DirectLightSample`,
+  `sample_direct_light_uniform`,
+  the
+  CUDA +
+  OptiX
+  NEE
+  branches —
+  every
+  byte-
+  identical.
+- **No
+  CUDA /
+  OptiX
+  algorithm
+  changes.**
+  No
+  `.cu`,
+  `.cuh`
+  modified.
+  No
+  POD-
+  layout
+  /
+  pipeline
+  /
+  dispatcher
+  change.
+- **No
+  C4D /
+  server /
+  UI /
+  node-
+  editor
+  changes.**
+  None
+  exist
+  in
+  this
+  repo
+  yet;
+  trivially
+  preserved.
+- **No
+  test
+  changes.**
+  `tests/`
+  byte-
+  identical;
+  ctest
+  remains
+  9/9 OFF
+  +
+  10/10
+  ON
+  (counts
+  unchanged).
+  The
+  helper-
+  host
+  Monte
+  Carlo
+  test
+  list
+  from
+  the
+  task
+  brief
+  §5.5 is
+  reserved
+  for the
+  follow-
+  up
+  helper
+  slice.
+- **No
+  build
+  config
+  change.**
+  `CMakeLists.txt`
+  byte-
+  identical.
+  The
+  new
+  header
+  is in
+  the
+  `rr_pathtracer`
+  INTERFACE
+  library;
+  no
+  `.cpp`
+  registration
+  needed.
+  No
+  test
+  binary
+  added
+  in
+  this
+  slice
+  (no
+  helpers
+  to
+  test
+  yet).
+- **No
+  scene /
+  tooling
+  changes.**
+  `scenes/*.rrscene`,
+  `tools/verify_cuda_host.py`
+  byte-
+  identical.
+
+### Scope deviation from MIS.2 task brief
+
+The
+follow-
+up
+slice
+that
+ships
+the
+helpers
+will
+correspondingly
+narrow
+its
+scope:
+the
+POD is
+already
+shipped,
+so the
+helper
+slice
+ships
+ONLY
+`Bsdf.cuh`
+(the
+helpers)
++ the
+test
+file +
+CMakeLists
+block.
+The
+task
+brief's
+§5
+PASS
+criteria
+remain
+the
+canonical
+target
+for the
+combined
+MIS.2
+arc;
+this
+slice
+satisfies
+the
+"data
+type
+exists +
+fields
+documented"
+half,
+the
+follow-
+up
+slice
+satisfies
+the
+"helpers
+exist +
+tests
+pass"
+half.
+
+The
+`is_delta`
+field
+the
+task
+brief
+§2.4.2
+specified
+is
+**deferred**
+because
+the
+user's
+narrow-
+scope
+prompt
+enumerated
+only
+four
+fields
+(no
+`is_delta`).
+v1
+Lambert
+never
+sets
+`is_delta
+== true`
+(only
+specular
+delta
+lobes
+do),
+and
+the v1
+MIS arc
+has no
+specular
+BSDFs,
+so
+`is_delta`
+is
+never
+read at
+v1 — its
+absence
+is
+inert.
+A
+future
+slice
+that
+adds
+specular
+BSDFs
+(or the
+helper
+slice
+itself,
+under
+operator
+direction)
+can
+add
+`is_delta`
+without
+breaking
+any
+existing
+caller.
+
+### Master rule compliance
+
+- **Build
+  incrementally
+  / every
+  step
+  compilable
+  (rules
+  1 +
+  2)**:
+  both
+  audit-
+  host
+  configs
+  rebuild
+  cleanly.
+  ctest
+  remains
+  9/9 OFF
+  +
+  10/10
+  ON
+  (counts
+  unchanged).
+- **No
+  fake
+  stubs
+  (rule
+  3)**:
+  the
+  POD is
+  a real
+  data
+  type
+  with a
+  forward-
+  compatible
+  contract
+  + a
+  documented
+  caller
+  shape
+  the
+  follow-
+  up
+  helper
+  slice
+  consumes.
+  No
+  TODO /
+  unimplemented
+  branches.
+- **No
+  CPU
+  per-
+  pixel
+  work
+  (rules
+  5 +
+  7)**:
+  the
+  POD is
+  device-
+  side-
+  consumable
+  (RR_HD
+  inline
+  helpers
+  in the
+  follow-
+  up
+  slice
+  will
+  produce
+  +
+  consume
+  it);
+  no
+  per-
+  pixel
+  host
+  code.
+- **Module
+  boundaries
+  (rule
+  9)**:
+  `src/pathtracer/Bsdf.h`
+  sits
+  cleanly
+  alongside
+  `src/pathtracer/{DirectLight,RNG,Sampling}.h`.
+  No
+  cross-
+  module
+  ripple.
+- **Avoid
+  monolithic
+  files
+  (rule
+  10)**:
+  the
+  new
+  file
+  is
+  172
+  lines
+  (mostly
+  doc-
+  comments;
+  ~10
+  lines
+  of POD
+  declaration).
+- **Update
+  BUILD_PLAN
+  (rule
+  8)**:
+  this
+  entry.
+- **Do
+  only
+  that
+  scope
+  (current-
+  prompt
+  rule)**:
+  shipped
+  exactly
+  the
+  user's
+  four-
+  field
+  POD +
+  doc-
+  comments;
+  no
+  helpers,
+  no
+  tests,
+  no
+  `is_delta`
+  silently
+  added.
+
+### Verified at the build
+
+- `cmake
+  --build
+  build
+  -j`
+  (RR_ENABLE_CUDA=OFF,
+  RR_ENABLE_OPTIX=OFF):
+  clean
+  rebuild;
+  ctest
+  9/9
+  green
+  (unchanged).
+- `cmake
+  --build
+  build-
+  ON -j`
+  (RR_ENABLE_CUDA=OFF,
+  RR_ENABLE_OPTIX=ON
+  with
+  SDK
+  fallback):
+  clean
+  rebuild;
+  ctest
+  10/10
+  green
+  (unchanged).
+- The
+  new
+  header
+  has
+  zero
+  callers
+  in this
+  slice;
+  the
+  build
+  system
+  does
+  not
+  compile
+  it on
+  its
+  own
+  (it's
+  in the
+  `rr_pathtracer`
+  INTERFACE
+  library).
+  Structural
+  validity
+  is
+  inferred
+  from
+  the
+  pattern
+  match
+  with
+  `pathtracer/DirectLight.h`
+  (same
+  POD
+  shape,
+  same
+  default-
+  init
+  syntax).
+  The
+  follow-
+  up
+  helper
+  slice
+  will
+  exercise
+  the
+  header
+  by
+  including
+  it.
+- `git
+  diff
+  --
+  src/cuda/
+  src/optix/
+  src/renderer/
+  src/io/
+  src/scene/
+  src/material/
+  src/lighting/
+  src/texture/
+  src/gpu/
+  src/server/
+  src/main.cpp
+  src/core/
+  src/pathtracer/{RNG.h,RNG.cuh,Sampling.h,Sampling.cuh,DirectLight.h,DirectLight.cuh,PathTracer.h,PathTracer.cpp}
+  tests/
+  scenes/
+  tools/
+  CMakeLists.txt`
+  ⇒ 0
+  bytes.
+  Only
+  `src/pathtracer/Bsdf.h`
+  (NEW)
+  added.
+
+### Source diff size
+
+**+172
+added /
+0
+deleted
+across
+1 NEW
+file**
+(`src/pathtracer/Bsdf.h`).
+Within
+the
+task
+brief
+§5.3
+budget
+(≤
+250
+for
+the
+combined
+MIS.2
+data-
+model +
+helpers +
+tests
+slice;
+this
+structure-
+only
+half
+ships
+~70%
+of the
+budget
+in
+documentation +
+~5%
+in
+declarations).
+
+### Sub-arc status
+
+MIS.2
+data-
+model
+half
+shipped.
+The
+follow-
+up
+slice
+(MIS.2
+helpers
+or
+similar
+naming)
+ships
+the
+remaining
+helpers +
+tests +
+CMake
+block to
+close
+the
+MIS.2
+sub-arc
+fully.
+MIS.3
+(Light
+data
+model)
++ MIS.4
+(MIS
+helper)
+remain
+independent
+leaves
+that
+may
+interleave.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
