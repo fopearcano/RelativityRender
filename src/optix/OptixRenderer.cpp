@@ -1392,6 +1392,52 @@ OptixRenderer::render_pathtrace(const rr::scene::Scene& scene,
         return r;
     }
 
+    // NEE.5b: upload scene.lights so the
+    // `__raygen__pathtrace` NEE branch (NEE.4) has lights
+    // to sample when `enable_nee == true`. Mirrors
+    // `render_direct_lighting:1965-1996` verbatim. At
+    // `enable_nee == false` the raygen never reads
+    // `optixLaunchParams.lights`, but uploading
+    // unconditionally preserves byte-identity for the
+    // default-OFF path: the upload is host-side and the
+    // kernel's per-pixel arithmetic is untouched. At
+    // `light_count == 0` the upload is skipped and
+    // `d_lights` stays `nullptr`; the kernel guard
+    // (`enable_nee && light_count > 0`) short-circuits at
+    // false regardless of the flag value, so a no-lights
+    // scene with `--enable-nee` produces the same
+    // emission + environment image as without the flag
+    // (the §3.3 safety-net contract from the task brief).
+    void*       d_lights    = nullptr;
+    const int   light_count = static_cast<int>(scene.lights.size());
+    if (light_count > 0) {
+        const std::size_t bytes =
+            static_cast<std::size_t>(light_count) * sizeof(rr::lighting::Light);
+        if (::cudaMalloc(&d_lights, bytes) != cudaSuccess) {
+            ::cudaFree(d_framebuffer);
+            ::cudaFree(d_indices);
+            ::cudaFree(d_positions);
+            r.message = "OptixRenderer::render_pathtrace: "
+                        "cudaMalloc(lights) failed";
+            return r;
+        }
+        std::vector<rr::lighting::Light> light_pods;
+        light_pods.reserve(scene.lights.size());
+        for (const auto& sl : scene.lights) {
+            light_pods.push_back(sl.data);
+        }
+        if (::cudaMemcpy(d_lights, light_pods.data(), bytes,
+                         cudaMemcpyHostToDevice) != cudaSuccess) {
+            ::cudaFree(d_lights);
+            ::cudaFree(d_framebuffer);
+            ::cudaFree(d_indices);
+            ::cudaFree(d_positions);
+            r.message = "OptixRenderer::render_pathtrace: "
+                        "cudaMemcpy(lights) failed";
+            return r;
+        }
+    }
+
     OptixLaunchParams params{};
     params.framebuffer  = static_cast<float*>(d_framebuffer);
     params.width        = width;
@@ -1403,35 +1449,23 @@ OptixRenderer::render_pathtrace(const rr::scene::Scene& scene,
     params.seed          = seed;
     params.firefly_clamp = firefly_clamp;  // PT-P.24
     params.enable_nee    = enable_nee;     // NEE.4
+    // NEE.5b: upload-pointer + count plumbed from the
+    // light-upload block above; the `__raygen__pathtrace`
+    // NEE branch reads these when the kernel guard fires.
+    // At `light_count == 0` `d_lights` is `nullptr` and
+    // the helper's null-guard short-circuits.
+    params.lights        = static_cast<const rr::lighting::Light*>(d_lights);
+    params.light_count   = light_count;
     // Default `observer` + `params` (|beta| = 0) keep the
     // Doppler / searchlight stack at identity. Caller-driven
     // observer setup lives in a future slice.
-
-    // NEE.4: the NEE branch in `__raygen__pathtrace` reads
-    // `optixLaunchParams.lights` + `light_count`. The current
-    // `render_pathtrace` dispatcher does NOT upload the
-    // scene's light array (the path-tracer entry has
-    // historically rendered an environment-only image; the
-    // direct-lighting closest-hit at `shading_mode == 2` is
-    // the one that consumes lights). At default
-    // (`enable_nee == false`) the raygen never reads the
-    // pointer, so leaving `params.lights == nullptr` is safe
-    // and preserves byte-identity. When a caller flips
-    // `enable_nee == true` without first uploading lights,
-    // the helper's `lights == nullptr || count <= 0` guard
-    // returns the default zero-contribution sample and the
-    // NEE branch contributes nothing — the integrator is
-    // unbiased and produces an emission-only image, the same
-    // way the CUDA path's NEE branch behaves on a no-lights
-    // scene. The light-upload wiring for the path-tracer
-    // dispatcher is reserved for the same slice that adds
-    // the CLI flag (NEE.5+).
 
     {
         const ::cudaError_t e = ::cudaMemcpy(
             pipeline.launch_params_device_ptr(),
             &params, sizeof(params), cudaMemcpyHostToDevice);
         if (e != cudaSuccess) {
+            if (d_lights) ::cudaFree(d_lights);
             ::cudaFree(d_framebuffer);
             ::cudaFree(d_indices);
             ::cudaFree(d_positions);
@@ -1458,6 +1492,7 @@ OptixRenderer::render_pathtrace(const rr::scene::Scene& scene,
             /*depth=*/1u);
         timer.stop();
         if (res != OPTIX_SUCCESS) {
+            if (d_lights) ::cudaFree(d_lights);
             ::cudaFree(d_framebuffer);
             ::cudaFree(d_indices);
             ::cudaFree(d_positions);
@@ -1469,6 +1504,7 @@ OptixRenderer::render_pathtrace(const rr::scene::Scene& scene,
     }
 
     if (::cudaDeviceSynchronize() != cudaSuccess) {
+        if (d_lights) ::cudaFree(d_lights);
         ::cudaFree(d_framebuffer);
         ::cudaFree(d_indices);
         ::cudaFree(d_positions);
@@ -1481,6 +1517,7 @@ OptixRenderer::render_pathtrace(const rr::scene::Scene& scene,
     rr::image::Image img(width, height, rr::image::PixelFormat::Rgba32F);
     if (::cudaMemcpy(img.data(), d_framebuffer, framebuffer_bytes,
                      cudaMemcpyDeviceToHost) != cudaSuccess) {
+        if (d_lights) ::cudaFree(d_lights);
         ::cudaFree(d_framebuffer);
         ::cudaFree(d_indices);
         ::cudaFree(d_positions);
@@ -1489,6 +1526,7 @@ OptixRenderer::render_pathtrace(const rr::scene::Scene& scene,
         return r;
     }
 
+    if (d_lights) ::cudaFree(d_lights);
     ::cudaFree(d_framebuffer);
     ::cudaFree(d_indices);
     ::cudaFree(d_positions);
@@ -1674,14 +1712,50 @@ OptixRenderer::render_pathtrace_progressive(
     void* d_framebuffer = nullptr;
     void* d_accumulator = nullptr;
     void* d_display     = nullptr;
+    // NEE.5b: light upload buffer. Uploaded ONCE before
+    // the spp loop (lights are constant across the loop)
+    // and freed via the cleanup lambda alongside the
+    // existing framebuffer / accumulator / display
+    // buffers. At `enable_nee == false` the raygen never
+    // reads `optixLaunchParams.lights`, so the upload is
+    // a host-side no-op for the byte-identity contract.
+    // At `light_count == 0` the upload is skipped and
+    // `d_lights` stays `nullptr`; the kernel guard
+    // short-circuits regardless of the flag value.
+    void* d_lights      = nullptr;
+    const int light_count = static_cast<int>(scene.lights.size());
 
     auto cleanup = [&]() {
+        if (d_lights)      ::cudaFree(d_lights);
         if (d_display)     ::cudaFree(d_display);
         if (d_accumulator) ::cudaFree(d_accumulator);
         if (d_framebuffer) ::cudaFree(d_framebuffer);
         ::cudaFree(d_indices);
         ::cudaFree(d_positions);
     };
+
+    if (light_count > 0) {
+        const std::size_t bytes =
+            static_cast<std::size_t>(light_count) * sizeof(rr::lighting::Light);
+        if (::cudaMalloc(&d_lights, bytes) != cudaSuccess) {
+            cleanup();
+            R.message = "render_pathtrace_progressive: "
+                        "cudaMalloc(lights) failed";
+            return R;
+        }
+        std::vector<rr::lighting::Light> light_pods;
+        light_pods.reserve(scene.lights.size());
+        for (const auto& sl : scene.lights) {
+            light_pods.push_back(sl.data);
+        }
+        if (::cudaMemcpy(d_lights, light_pods.data(), bytes,
+                         cudaMemcpyHostToDevice) != cudaSuccess) {
+            cleanup();
+            R.message = "render_pathtrace_progressive: "
+                        "cudaMemcpy(lights) failed";
+            return R;
+        }
+    }
 
     if (::cudaMalloc(&d_framebuffer, buffer_bytes) != cudaSuccess) {
         cleanup();
@@ -1728,6 +1802,13 @@ OptixRenderer::render_pathtrace_progressive(
         params.seed          = seed;
         params.firefly_clamp = firefly_clamp;  // PT-P.24
         params.enable_nee    = enable_nee;     // NEE.4
+        // NEE.5b: lights uploaded once before the spp
+        // loop (see `d_lights` block above). Same pointer
+        // + count for every per-launch params write; the
+        // `__raygen__pathtrace` NEE branch reads these
+        // when the kernel guard fires.
+        params.lights        = static_cast<const rr::lighting::Light*>(d_lights);
+        params.light_count   = light_count;
         params.sample_index =
             static_cast<std::uint32_t>(sample_index);
 

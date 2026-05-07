@@ -1583,10 +1583,22 @@ int run_render_optix_pathtrace(const rr::core::Config& cfg) {
                + (cfg.firefly_clamp > 0.0f
                       ? " (enabled)"
                       : " (disabled)"));
+    // NEE.5b: log the operator's selected NEE state
+    // BEFORE the renderer is invoked so the value is
+    // visible even when the renderer fails on the
+    // audit-host (no OptiX SDK) fallback. Same 17-column
+    // label width + parenthesised classification idiom as
+    // the firefly_clamp line above; mirrors the CUDA
+    // dispatcher's enable_nee log line in
+    // run_render_pathtrace.
+    Logger::info(std::string("enable_nee       : ")
+               + (cfg.enable_nee ? "true (enabled)"
+                                 : "false (disabled)"));
     auto pr = rr::optix::OptixRenderer::render_pathtrace_progressive(
         load.scene, cfg.width, cfg.height,
         kMaxBounces, kSeed, kCheckpoints,
-        /*firefly_clamp=*/cfg.firefly_clamp);
+        /*firefly_clamp=*/cfg.firefly_clamp,
+        /*enable_nee=*/cfg.enable_nee);  // NEE.5b: from --enable-nee
     if (!pr.ok) {
         Logger::error("optix path-trace progressive render failed: "
                     + pr.message);
