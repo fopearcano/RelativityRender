@@ -57778,6 +57778,736 @@ the
 architectural
 prerequisite.
 
+## MIS.2 — BSDF PDF data model task definition (docs only)
+
+**Scope of
+this slice
+(post-MIS.1
+plan):
+ship the
+self-
+contained
+task brief
+specifying
+the
+`BsdfSample`
+POD +
+`sample_bsdf`
+/
+`bsdf_pdf`
+/
+`bsdf_eval`
+helper
+contracts
++
+required
+tests.
+Documentation
+only;
+zero
+source
+changes.
+Closes
+the "task
+definition"
+half of
+the MIS.2
+sub-arc
+so the
+next
+slice
+(impl)
+can ship
+the diff
+without
+re-
+deriving
+the
+helper-
+shape
+reasoning.**
+
+### What ships
+
+- `docs/PATH_TRACER_MIS_BSDF_PDF_TASK.md`
+  (NEW;
+  ~972
+  lines).
+  Nine-
+  section
+  brief
+  walking
+  the
+  user's
+  six
+  enumerated
+  topics +
+  out-of-
+  scope +
+  sub-arc
+  context +
+  closing
+  verdict.
+  Pattern
+  mirrors
+  `docs/PATH_TRACER_NEE_TASK.md` /
+  `docs/PATH_TRACER_ENABLE_NEE_CLI_TASK.md`
+  (the
+  canonical
+  task-
+  brief
+  shape):
+    - **§1
+      Exact
+      goal.**
+      Define
+      data +
+      ship
+      Lambert
+      helpers
+      +
+      host-
+      only
+      tests.
+      MIS.2
+      is a
+      runtime
+      no-op;
+      no
+      caller
+      invokes
+      the
+      helpers
+      yet.
+      The
+      integrators
+      get
+      wired
+      at
+      MIS.5
+      (CUDA)
+      +
+      MIS.6
+      (OptiX).
+      Lambert
+      only
+      because
+      it's
+      the
+      v1
+      BSDF;
+      future
+      BSDFs
+      extend
+      `Bsdf.{h,cuh}`
+      without
+      integrator
+      change.
+    - **§2
+      Required
+      concepts.**
+      Four
+      sub-
+      sections,
+      one
+      per
+      `BsdfSample`
+      field:
+      §2.1
+      sampled
+      direction
+      `wo`
+      (world-
+      space,
+      upper-
+      hemisphere
+      via
+      tangent-
+      frame
+      align),
+      §2.2
+      BSDF
+      value
+      /
+      throughput
+      `value`
+      (Lambert
+      = `baseColor
+      / π`;
+      throughput
+      simplification
+      cancels
+      to
+      `baseColor`
+      preserving
+      v1
+      byte-
+      identity),
+      §2.3
+      BSDF
+      PDF
+      `pdf`
+      (Lambert
+      reuses
+      `pdf_cosine_hemisphere`;
+      `BsdfSample::pdf
+      ==
+      bsdf_pdf(material,
+      wo,
+      normal)`
+      consistency
+      invariant),
+      §2.4
+      valid
+      sample +
+      delta
+      classification
+      (`valid`
+      gates
+      the
+      integrator
+      against
+      degenerate
+      inputs;
+      `is_delta`
+      future-
+      proofs
+      specular
+      lobes
+      with a
+      table
+      of the
+      four
+      reachable
+      states).
+    - **§3
+      Files
+      likely
+      involved.**
+      Three
+      NEW
+      files
+      (`Bsdf.h`,
+      `Bsdf.cuh`,
+      `tests/pathtracer_bsdf_tests.cpp`)
+      +
+      CMakeLists.txt
+      block.
+      Helper
+      signatures
+      specified
+      with
+      target
+      shapes;
+      tangent-
+      frame
+      alignment
+      idiom
+      cited
+      against
+      the
+      existing
+      CUDA /
+      OptiX
+      inline
+      copies;
+      test
+      file
+      shape
+      mirrors
+      `pathtracer_nee_tests.cpp`.
+    - **§4
+      What
+      must
+      not be
+      touched.**
+      Eight
+      sub-
+      sections
+      covering
+      the
+      integrators
+      (CUDA +
+      OptiX
+      every
+      byte-
+      identical),
+      the
+      pathtracer
+      module's
+      existing
+      surfaces
+      (RNG,
+      Sampling,
+      DirectLight,
+      PathTracer),
+      the CLI /
+      Config /
+      main.cpp
+      surfaces,
+      the
+      renderer /
+      scene /
+      material
+      modules,
+      tests +
+      scenes +
+      tooling,
+      documentation,
+      build
+      configs,
+      default
+      behaviour.
+    - **§5
+      PASS
+      criteria.**
+      Seven-
+      sub-
+      section
+      gate:
+      §5.1
+      build
+      both
+      configs
+      clean,
+      §5.2
+      ctest
+      9/9 → 10/10
+      OFF +
+      10/10 → 11/11
+      ON
+      (+1
+      `pathtracer_bsdf_tests`
+      binary;
+      ≥10
+      RR_CHECK
+      cases),
+      §5.3
+      diff
+      ≤ 250
+      lines,
+      §5.4
+      no-
+      touch
+      invariants,
+      §5.5
+      ten
+      mandatory
+      test
+      cases
+      (default-
+      constructed,
+      upper-
+      hemisphere,
+      pdf-
+      matches-
+      sampler
+      via
+      memcmp,
+      pdf-
+      below-
+      horizon-
+      zero,
+      eval-
+      matches-
+      `baseColor·kInvPi`,
+      throughput-
+      simplification,
+      Monte
+      Carlo
+      pdf-
+      normalisation,
+      cos-
+      weighted
+      mean
+      `dz=2/3`,
+      degenerate-
+      normal-
+      invalid,
+      determinism),
+      §5.6
+      documentation,
+      §5.7
+      master-
+      rule
+      compliance.
+    - **§6
+      Runtime-
+      deferred
+      checks.**
+      None.
+      MIS.2
+      is a
+      runtime
+      no-op
+      (no
+      caller
+      invokes
+      the
+      helpers);
+      the
+      host-
+      only
+      Monte
+      Carlo
+      test
+      fully
+      anchors
+      the
+      contract
+      on the
+      audit
+      host.
+      Runtime
+      verification
+      of
+      MIS-on
+      byte-
+      identity
+      belongs
+      to
+      MIS.5 /
+      MIS.6 /
+      MIS.7,
+      not
+      this
+      slice.
+    - **§7
+      Out-
+      of-
+      scope.**
+      Eight
+      explicit
+      items:
+      non-
+      Lambert
+      BSDFs,
+      specular
+      delta
+      lobes,
+      `MaterialParams`
+      extension,
+      integrator
+      changes,
+      NEE
+      branch
+      consumption,
+      tangent-
+      frame
+      helper
+      module
+      extraction,
+      CLI
+      flag,
+      AOV
+      exposure.
+    - **§8
+      Sub-
+      arc
+      context.**
+      §8.1
+      MIS arc
+      cadence
+      (MIS.2
+      is the
+      first
+      independent
+      leaf;
+      MIS.{3,4}
+      may
+      interleave),
+      §8.2
+      what
+      this
+      slice
+      unblocks
+      (MIS.5 /
+      MIS.6
+      gain
+      the
+      data
+      model;
+      MIS.4
+      gains
+      easier
+      tests;
+      future
+      BSDF
+      arcs
+      gain
+      template),
+      §8.3
+      what it
+      does
+      NOT
+      unblock
+      (area-
+      light
+      NEE,
+      cross-
+      backend
+      MIS
+      verification).
+    - **§9
+      Verdict.**
+      Brief
+      complete;
+      mode
+      reminder.
+- This
+  `BUILD_PLAN.md`
+  slice-
+  closing
+  entry.
+
+### What does NOT change
+
+- Source:
+  byte-
+  identical.
+  `git
+  diff --
+  src/
+  tests/
+  scenes/
+  tools/
+  CMakeLists.txt`
+  ⇒ 0
+  bytes.
+- Build
+  configs:
+  unchanged
+  at the
+  post-
+  MIS.1
+  baseline
+  (9/9
+  OFF +
+  10/10
+  ON
+  ctest;
+  the
+  brief's
+  authoring
+  did not
+  invoke
+  the
+  build
+  system).
+- All
+  other
+  docs:
+  this
+  brief
+  only
+  ADDS
+  `PATH_TRACER_MIS_BSDF_PDF_TASK.md`;
+  no
+  edits
+  to
+  prior
+  PT-P.x /
+  TEX-P.x /
+  NEE.x /
+  firefly-
+  clamp /
+  CUDA-H.x /
+  MIS.1
+  artefacts.
+
+### Master rule compliance
+
+- **Build
+  incrementally
+  / every
+  step
+  compilable
+  (rules
+  1 +
+  2)**:
+  docs-
+  only
+  slice;
+  preserved
+  trivially.
+- **No
+  fake
+  stubs
+  (rule
+  3)**:
+  the
+  brief
+  defines
+  real
+  contracts
+  (POD
+  shape +
+  field
+  types,
+  helper
+  signatures,
+  consistency
+  invariants,
+  PASS-
+  criterion
+  test
+  list)
+  +
+  cross-
+  references
+  the
+  existing
+  helpers
+  the
+  Bsdf
+  module
+  reuses
+  (`pdf_cosine_hemisphere`,
+  `sample_cosine_hemisphere`,
+  the
+  inline
+  `align_to_normal`
+  copies
+  in CUDA
+  + OptiX
+  integrators).
+- **No
+  CPU
+  per-
+  pixel
+  work
+  (rules
+  5 +
+  7)**:
+  the
+  brief
+  describes
+  RR_HD
+  inline
+  helpers +
+  host-
+  only
+  tests;
+  no per-
+  pixel
+  host
+  code.
+- **Module
+  boundaries
+  (rule
+  9)**:
+  scopes
+  the new
+  module
+  (`pathtracer/Bsdf.{h,cuh}`)
+  alongside
+  the
+  existing
+  pathtracer
+  modules
+  cleanly.
+  No
+  cross-
+  module
+  ripple.
+- **Update
+  BUILD_PLAN
+  (rule
+  8)**:
+  this
+  entry.
+- **Documentation
+  only;
+  do not
+  modify
+  source
+  code
+  (current-
+  prompt
+  rules)**:
+  zero
+  source
+  edits.
+
+### Verified at the build
+
+- Trivially
+  preserved.
+  The
+  authoring
+  of this
+  task
+  brief
+  did
+  not
+  invoke
+  the
+  build
+  system.
+  Both
+  audit-
+  host
+  configs
+  remain
+  green
+  at the
+  post-
+  MIS.1
+  baseline:
+  `build`
+  (RR_ENABLE_CUDA=OFF,
+  RR_ENABLE_OPTIX=OFF)
+  ctest
+  9/9;
+  `build-ON`
+  (RR_ENABLE_CUDA=OFF,
+  RR_ENABLE_OPTIX=ON)
+  ctest
+  10/10.
+
+### Sub-arc status
+
+MIS.2
+task
+brief
+shipped.
+The
+contract
+for the
+MIS.2
+impl
+slice is
+canonical;
+the
+implementer
+can ship
+the
+diff
+end-to-
+end
+without
+re-
+deriving
+the
+design.
+MIS.3
+(Light
+data
+model)
++ MIS.4
+(MIS
+helper)
+remain
+independent
+leaves
+that
+may
+interleave
+with
+the
+MIS.2
+impl.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
