@@ -49980,6 +49980,671 @@ divergence.**
   for
   NEE.5).
 
+## Enable NEE CLI Flag — task definition (docs only)
+
+**Scope of
+this slice
+(post-NEE.4
+OptiX
+mirror):
+ship the
+task brief
+specifying
+the
+`--enable-nee`
+CLI flag,
+its config
+field, the
+required
+OptiX
+light-
+upload
+work, and
+the two
+mandatory
+tests
+(parser
+test +
+dynamic
+byte-
+identity
+test).
+Documentation
+only; zero
+source
+changes.
+Closes the
+"task
+definition"
+half of
+the NEE.5
+sub-arc
+so the
+next slice
+(impl)
+can ship
+the diff
+without
+re-
+deriving
+the spec.**
+
+### What ships
+
+- `docs/PATH_TRACER_ENABLE_NEE_CLI_TASK.md`
+  (NEW).
+  Eleven-
+  section
+  brief
+  mirroring
+  `docs/FIREFLY_CLAMP_CLI_TASK.md`'s
+  shape
+  with
+  three
+  deliberate
+  deviations
+  called
+  out
+  inline:
+  boolean
+  modifier
+  flag
+  vs
+  value-
+  bearing;
+  OptiX
+  light-
+  upload
+  wiring
+  required
+  this
+  slice
+  (mirroring
+  `render_direct_lighting:1965-1996`);
+  CLI
+  parser
+  test
+  +
+  dynamic
+  byte-
+  identity
+  test
+  mandatory.
+    - **§1
+      Exact
+      CLI
+      flag.**
+      `--enable-nee`
+      mirrors
+      `--denoise`'s
+      presence-
+      only
+      shape
+      (parser
+      sets
+      `r.config.enable_nee
+      = true`
+      with
+      no
+      `take_value`).
+      Sub-
+      sections:
+      §1.1
+      `Config::enable_nee`
+      field,
+      §1.2
+      parser
+      arm,
+      §1.3
+      help-
+      text
+      entry,
+      §1.4
+      CUDA
+      dispatcher
+      wiring,
+      §1.5
+      OptiX
+      dispatcher
+      wiring,
+      §1.6
+      OptiX
+      light
+      upload
+      (the
+      slice-
+      specific
+      new
+      work),
+      §1.7
+      no-
+      kernel-
+      changes
+      contract.
+    - **§2
+      Expected
+      behavior.**
+      Default
+      OFF;
+      flag
+      sets
+      `PathTraceConfig::enable_nee
+      =
+      true`;
+      OptiX
+      receives
+      `enable_nee`;
+      idempotency
+      +
+      invalid
+      usage
+      conventions;
+      log-
+      line
+      classification.
+    - **§3
+      Required
+      OptiX
+      wiring.**
+      Dispatcher
+      signature
+      already
+      grew
+      with
+      `enable_nee`
+      at
+      NEE.4;
+      light
+      upload
+      is the
+      new
+      work
+      this
+      slice
+      (mirrors
+      `render_direct_lighting:1965-1996`);
+      no-
+      light-
+      scene
+      safety
+      net
+      preserved;
+      cross-
+      backend
+      convergence
+      contract.
+    - **§4
+      Required
+      tests.**
+      §4.1
+      CLI
+      parser
+      test
+      (new
+      `tests/cli_tests.cpp`;
+      five
+      mandatory
+      cases;
+      Option
+      A
+      library-
+      extraction
+      vs
+      Option
+      B
+      re-
+      compile-
+      in-
+      test
+      both
+      acceptable;
+      Option
+      A
+      recommended
+      per
+      master
+      rules
+      9 +
+      11);
+      §4.2
+      dynamic
+      byte-
+      identity
+      test
+      (host-
+      only
+      Option
+      A
+      anchored
+      in
+      `tests/pathtracer_nee_tests.cpp`
+      +
+      CUDA-
+      host
+      Option
+      B
+      runtime-
+      deferred);
+      §4.3
+      ctest
+      counts
+      go
+      from
+      8/8 OFF
+      +
+      9/9 ON
+      to
+      9/9 OFF
+      +
+      10/10 ON.
+    - **§5
+      Files
+      likely
+      involved.**
+      Six-
+      source-
+      file
+      table
+      (`Config.h`,
+      `CommandLine.cpp`,
+      `main.cpp`,
+      `OptixRenderer.cpp`,
+      `tests/cli_tests.cpp`
+      NEW,
+      `tests/pathtracer_nee_tests.cpp`
+      optional
+      growth)
+      +
+      `CMakeLists.txt`
+      +
+      BUILD_PLAN.
+    - **§6
+      What
+      must
+      not
+      be
+      touched.**
+      Nine
+      sub-
+      sections:
+      kernel /
+      launcher
+      code,
+      path-
+      tracer
+      host
+      orchestration,
+      other
+      CLI /
+      Config
+      infrastructure,
+      other
+      dispatchers,
+      other
+      OptiX
+      dispatchers,
+      path-
+      tracer
+      output
+      at
+      default-
+      OFF,
+      OptiX
+      OFF
+      build,
+      other
+      audits /
+      plans,
+      scenes.
+    - **§7
+      PASS
+      criteria.**
+      Seven-
+      sub-
+      section
+      gate:
+      build,
+      tests
+      (9/9 OFF
+      +
+      10/10 ON),
+      source
+      diff
+      ≤ 350
+      lines,
+      no-
+      touch
+      invariants
+      (`git
+      diff |
+      wc
+      -l` ⇒
+      0),
+      five
+      smokes
+      +
+      TEX-
+      P.6
+      regression,
+      documentation,
+      master-
+      rule
+      compliance.
+    - **§8
+      Runtime-
+      deferred
+      checks.**
+      Six
+      runnable
+      on a
+      CUDA +
+      OptiX-
+      SDK
+      host
+      after
+      the
+      slice:
+      default-
+      off
+      byte-
+      identity,
+      visible
+      NEE-on
+      noise
+      reduction,
+      cross-
+      backend
+      convergence,
+      no-
+      light-
+      scene
+      safety
+      net,
+      ctest
+      cycle,
+      refresh
+      `CUDA-OPTIX-VERIFY`
+      report.
+    - **§9
+      Out-
+      of-
+      scope.**
+      MIS,
+      Area /
+      Environment
+      NEE,
+      runner
+      extension,
+      `--no-enable-nee`,
+      `--render-direct-lighting`
+      consumption,
+      per-
+      light-
+      type
+      switches.
+    - **§10
+      Sub-
+      arc
+      context.**
+      §10.1
+      NEE
+      arc
+      cadence
+      table
+      (NEE.{1..4}
+      shipped;
+      NEE.5
+      this
+      brief;
+      NEE.6
+      audit
+      recommended);
+      §10.2
+      what
+      this
+      slice
+      unblocks
+      (the
+      §3.3
+      NEE.5
+      row
+      from
+      DEFERRED
+      to
+      PASS;
+      five
+      §6.x
+      runtime
+      DEFERRED
+      rows
+      become
+      runnable;
+      §3.2
+      sequencing
+      constraint
+      closes);
+      §10.3
+      what
+      this
+      slice
+      does
+      NOT
+      unblock.
+    - **§11
+      Verdict.**
+      Brief
+      complete;
+      mode
+      reminder.
+- This
+  `BUILD_PLAN.md`
+  slice-
+  closing
+  entry.
+
+### What does NOT change
+
+- Every
+  prior
+  artefact
+  (PT-
+  P.{1..25}
+  + the
+  CUDA-
+  OPTIX-
+  VERIFY
+  report
+  +
+  firefly-
+  clamp
+  CLI
+  task /
+  impl /
+  audit
+  + the
+  NEE.{1,2,3,4}
+  task /
+  impl /
+  audit /
+  mirror
+  artefacts):
+  byte-
+  identical
+  (this
+  task
+  brief
+  is
+  documentation
+  only;
+  it
+  touches
+  no
+  `.cu`,
+  `.cpp`,
+  `.h`,
+  `.cuh`,
+  `.rrscene`,
+  `cmake`,
+  or
+  `tests/`
+  file).
+- Build
+  configs:
+  byte-
+  identical.
+  ctest
+  remains
+  8/8 OFF
+  and
+  9/9 ON-
+  audit-
+  host
+  at the
+  NEE.4
+  baseline.
+- All
+  other
+  docs:
+  this
+  brief
+  only
+  ADDS
+  `PATH_TRACER_ENABLE_NEE_CLI_TASK.md`;
+  no
+  edits
+  to any
+  PT-P.x
+  doc,
+  the
+  TEX-P.x
+  arc,
+  the
+  CUDA-H.x
+  arc,
+  the
+  CUDA-
+  OPTIX-
+  VERIFY
+  report,
+  the
+  firefly-
+  clamp
+  CLI
+  task /
+  impl /
+  audit,
+  the
+  NEE.{1,2,3,4}
+  artefacts,
+  or any
+  other
+  doc.
+- Source
+  +
+  scenes:
+  byte-
+  identical.
+
+### Master rule compliance
+
+- **Build
+  incrementally
+  / every
+  step
+  compilable**:
+  docs-
+  only
+  slice;
+  build
+  is
+  trivially
+  preserved.
+- **Documentation
+  only;
+  do not
+  modify
+  source
+  code**:
+  zero
+  source
+  edits
+  in
+  this
+  slice.
+- **No
+  CPU
+  per-
+  pixel
+  work**:
+  the
+  brief
+  introduces
+  zero
+  per-
+  pixel
+  code.
+  The
+  NEE.4
+  kernel
+  guards
+  remain
+  the
+  only
+  NEE
+  consumers
+  device-
+  side;
+  this
+  slice
+  describes
+  but
+  does
+  not
+  modify
+  them.
+- **Update
+  BUILD_PLAN**:
+  this
+  entry,
+  per
+  master
+  rule 8.
+
+### Verified at the build
+
+- Trivially
+  preserved.
+  The
+  authoring
+  of this
+  task
+  brief
+  did
+  not
+  invoke
+  the
+  build
+  system.
+  Both
+  audit-
+  host
+  configs
+  remain
+  green
+  at the
+  NEE.4
+  baseline:
+  `build`
+  (RR_ENABLE_CUDA=OFF,
+  RR_ENABLE_OPTIX=OFF)
+  ctest
+  8/8;
+  `build-ON`
+  (RR_ENABLE_CUDA=OFF,
+  RR_ENABLE_OPTIX=ON)
+  ctest
+  9/9.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
