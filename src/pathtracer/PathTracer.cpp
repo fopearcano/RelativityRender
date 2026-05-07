@@ -133,7 +133,8 @@ PathTraceResult PathTracer::render(const rr::gpu::GpuScene& scene,
                 static_cast<unsigned int>(s),
                 cfg.environment_color,
                 cfg.environment_intensity,
-                cfg.firefly_clamp)) {
+                cfg.firefly_clamp,
+                cfg.enable_nee)) {
             result.message =
                 "pathtrace sample-kernel launch failed at iteration "
                 + std::to_string(s);

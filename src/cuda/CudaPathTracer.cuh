@@ -56,6 +56,26 @@ namespace rr::cuda {
 //                      backend mirrors the same clamp via
 //                      `OptixLaunchParams::firefly_clamp`.
 //                      Negative values cause launch failure.
+//   `enable_nee`       NEE.2: enable explicit direct-light
+//                      sampling at every bounce vertex.
+//                      `false` (default for every existing
+//                      caller via `PathTraceConfig::enable_nee
+//                      = false`) keeps the kernel emission +
+//                      environment-only — the kernel-side
+//                      guard `if (enable_nee && light_count
+//                      > 0)` is not entered, no shadow ray
+//                      is traced, no extra RNG draw is
+//                      performed, and the per-pixel
+//                      arithmetic is byte-identical with the
+//                      pre-NEE build. `true` invokes
+//                      `pathtracer::sample_direct_light_uniform`
+//                      against the scene's `lights` array
+//                      and traces an any-hit shadow ray per
+//                      vertex; the visibility-modulated
+//                      contribution is added to `radiance`
+//                      before the firefly-clamp + per-pixel
+//                      write. See `PathTraceConfig::enable_nee`
+//                      for the full design contract.
 //
 // Returns false on launch failure (drains the sticky
 // `cudaGetLastError` so a later real CUDA call sees a clean
@@ -70,6 +90,7 @@ namespace rr::cuda {
                                            unsigned int             sample_index,
                                            rr::math::Vec3           env_color,
                                            float                    env_intensity,
-                                           float                    firefly_clamp);
+                                           float                    firefly_clamp,
+                                           bool                     enable_nee);
 
 }  // namespace rr::cuda

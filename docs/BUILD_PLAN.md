@@ -47067,6 +47067,1048 @@ refactoring it.
   field
   mirrors.
 
+## NEE.2 — CUDA NEE skeleton (impl)
+
+**Scope of this
+slice (post-NEE.1
+task definition):
+add the CUDA-side
+Next Event
+Estimation
+skeleton —
+helper module +
+shadow-ray any-
+hit traversal +
+guarded kernel
+integration
+point + config
+field — without
+changing the
+default path-
+trace output.
+The skeleton
+compiles end-to-
+end; no caller
+flips the flag,
+so every
+existing
+fixture / golden
+remains byte-
+identical with
+the pre-NEE
+build.**
+
+The skeleton is
+the first half
+of the NEE
+implementation
+arc per
+`docs/PATH_TRACER_NEE_TASK.md`
+§8 (NEE.1 task
+brief → NEE.2
+CUDA skeleton →
+[future] NEE.3
+host-side flag
++ tests →
+[future] NEE.4
+OptiX-side
+mirror →
+[future] NEE.5
+audit). NEE.2
+deliberately
+ships ONLY the
+CUDA half so
+the byte-
+identity
+invariant for
+the default
+path remains
+provable
+without depending
+on the OptiX-side
+landing.
+
+### What ships
+
+- `src/pathtracer/DirectLight.h`
+  (NEW). The
+  `DirectLightSample`
+  POD: four
+  fields (`wi`,
+  `distance`,
+  `li_unattenuated`,
+  `pdf_inv`)
+  with a long
+  doc-comment
+  block. Every
+  field defaults
+  to "no
+  contribution"
+  so a default-
+  constructed
+  sample
+  naturally
+  multiplies
+  through the
+  caller's
+  arithmetic to
+  zero. Plain
+  data; host-
+  and device-
+  readable.
+- `src/pathtracer/DirectLight.cuh`
+  (NEW). The
+  `RR_HD inline`
+  helper
+  `sample_direct_light_uniform(
+  lights, count,
+  hit_position,
+  normal,
+  u_select)`.
+  Picks one
+  light
+  uniformly via
+  `int li =
+  static_cast<int>(u_select
+  * count)` (with
+  defence-in-
+  depth bounds-
+  clamp), then:
+    - `LightType::Point`:
+      computes
+      `to_light =
+      light.position
+      - hit_position`,
+      `r = sqrtf(r²)`,
+      `wi =
+      to_light /
+      r`,
+      attenuates
+      `color *
+      intensity` by
+      `1/r²`,
+      returns the
+      sample with
+      `distance = r`
+      and `pdf_inv
+      = count`.
+    - `LightType::Directional`:
+      computes
+      `wi =
+      -normalize(L.direction)`,
+      no
+      attenuation,
+      returns the
+      sample with
+      `distance =
+      kDirectionalShadowTMax
+      = 1e30f` and
+      `pdf_inv =
+      count`.
+    - PLACEHOLDER
+      `LightType::Area`
+      and
+      `LightType::Environment`
+      (`Light.h:
+      20-31`):
+      silently
+      return the
+      default
+      zero-
+      contribution
+      sample.
+    - Degenerate
+      cases
+      (coincident
+      receiver+light,
+      zero-length
+      directional,
+      back-facing
+      cosine):
+      return the
+      default
+      zero-
+      contribution
+      sample.
+  - Two
+    `inline
+    constexpr`
+    constants
+    in the
+    namespace
+    header for
+    cross-helper
+    reuse:
+    `kShadowEps =
+    1.0e-3f` (the
+    receiver-
+    end + light-
+    end shadow-
+    ray
+    epsilon),
+    `kDirectionalShadowTMax
+    = 1.0e30f`
+    (matches
+    `closest_hit`'s
+    `t_max`
+    sentinel).
+- `src/pathtracer/PathTracer.h`.
+  Append `bool
+  enable_nee =
+  false;` to
+  `PathTraceConfig`.
+  Doc-comment
+  block (~50
+  lines) cites
+  the byte-
+  identity
+  invariant
+  (static
+  argument: the
+  guard's two
+  operands are
+  zero / false
+  at default,
+  so the branch
+  is never
+  executed; no
+  FP add ever
+  touches the
+  accumulator),
+  the OptiX
+  divergence
+  warning (the
+  OptiX path-
+  trace raygen
+  has no NEE
+  wiring yet;
+  mixing
+  `enable_nee
+  = true` with
+  the OptiX
+  backend
+  silently
+  produces
+  emission-
+  only output
+  while the
+  CUDA backend
+  produces NEE
+  output —
+  the two
+  backends DO
+  NOT converge
+  until the
+  OptiX-side
+  slice
+  lands), the
+  no-MIS
+  decision +
+  the v1
+  "no double-
+  count
+  window"
+  argument for
+  Point +
+  Directional
+  lights, and
+  the cross-
+  reference to
+  `docs/PATH_TRACER_NEE_TASK.md`.
+- `src/cuda/CudaPathTracer.cuh`.
+  Append `bool
+  enable_nee` to
+  `launch_pathtrace_sample`'s
+  signature
+  (last
+  parameter, in
+  the
+  `firefly_clamp`
+  position
+  precedent).
+  Doc-comment
+  block on the
+  new parameter
+  (~25 lines)
+  cites the
+  default-off
+  byte-identity
+  argument and
+  the future-
+  CLI deferral.
+- `src/cuda/CudaPathTracer.cu`:
+    - **New
+      `__device__
+      inline`
+      helper
+      `trace_shadow_ray_pt(ray,
+      scene,
+      t_max)`.**
+      Any-hit
+      traversal
+      mirroring
+      `closest_hit`'s
+      sphere-loop
+      + triangle-
+      loop, but
+      bails on
+      the first
+      hit and
+      returns
+      0.0f
+      (occluded)
+      / 1.0f
+      (unoccluded)
+      without
+      consulting
+      the actual
+      `t` or
+      material.
+      `t_min =
+      pathtracer::kShadowEps`
+      from
+      `DirectLight.cuh`.
+    - **Kernel
+      signature
+      gets a
+      trailing
+      `bool
+      enable_nee`
+      parameter.**
+      Mirrors
+      the
+      `firefly_clamp`
+      precedent
+      (PT-P.24).
+    - **Guarded
+      NEE call
+      site
+      inserted
+      between
+      the
+      emission
+      add and
+      the
+      "if (bounce
+      + 1 >=
+      max_bounces)
+      break"
+      bounce
+      check.**
+      The guard
+      is `if
+      (enable_nee
+      && scene.light_count
+      > 0)`;
+      both
+      operands
+      are zero /
+      false at
+      default,
+      so the
+      whole
+      branch is
+      skipped.
+      When
+      entered,
+      the
+      sequence
+      is: draw
+      one
+      `next_float(rng)`
+      for the
+      light
+      index,
+      call
+      `sample_direct_light_uniform`,
+      bail on
+      `pdf_inv
+      == 0.0f`
+      (placeholder
+      light or
+      back-
+      facing
+      receiver),
+      build a
+      shadow
+      ray with
+      origin
+      offset
+      `hit.position
+      + hit.normal
+      * 1e-4f`
+      (matches
+      the
+      diffuse-
+      bounce
+      origin
+      offset
+      below), set
+      `t_max =
+      sample.distance
+      - kShadowEps`
+      (subtracting
+      from
+      `1e30f` is
+      a no-op
+      in float
+      so
+      Directional
+      shadow
+      rays still
+      walk
+      every
+      primitive),
+      trace
+      `trace_shadow_ray_pt`,
+      and on
+      `vis >
+      0.0f`
+      compute
+      `cos_th =
+      dot(normal,
+      sample.wi)`
+      (re-tested
+      `> 0` as
+      defence-
+      in-depth
+      since the
+      helper
+      already
+      bailed on
+      back-
+      facing),
+      build the
+      Lambert
+      BRDF
+      `m.baseColor
+      * kInvPi`,
+      and add
+      `throughput *
+      sample.li_unattenuated
+      * brdf *
+      (cos_th *
+      vis *
+      sample.pdf_inv)`
+      to
+      `radiance`.
+    - **Kernel
+      launch
+      site at
+      the
+      bottom of
+      the TU
+      passes
+      `enable_nee`
+      through.**
+- `src/pathtracer/PathTracer.cpp`.
+  The host-
+  side
+  `PathTracer::render`
+  loop reads
+  `cfg.enable_nee`
+  and passes
+  it as the
+  trailing
+  argument to
+  `launch_pathtrace_sample`.
+  No
+  validation
+  is needed
+  (any bool
+  is valid;
+  the kernel
+  guard
+  handles
+  both
+  states).
+- This `BUILD_PLAN.md`
+  slice-closing
+  entry.
+
+### What does NOT change
+
+- The OptiX
+  backend.
+  `src/optix/`
+  is
+  untouched
+  in this
+  slice. The
+  OptiX
+  pathtrace
+  dispatcher
+  (`OptixRenderer::render_pathtrace`)
+  takes
+  individual
+  arguments
+  (not a
+  whole
+  `PathTraceConfig`
+  reference),
+  so adding
+  `enable_nee`
+  to
+  `PathTraceConfig`
+  does not
+  reach the
+  OptiX
+  signature.
+  Until the
+  OptiX-side
+  slice
+  lands,
+  flipping
+  `cfg.enable_nee
+  = true`
+  produces
+  divergent
+  output
+  between
+  CUDA and
+  OptiX
+  backends —
+  this is
+  documented
+  in the
+  `PathTraceConfig::enable_nee`
+  field's
+  doc-comment
+  and is
+  the
+  motivating
+  reason
+  NEE.2 ships
+  ONLY the
+  CUDA half:
+  while no
+  caller
+  flips the
+  flag, the
+  divergence
+  is latent
+  and both
+  backends
+  remain
+  byte-
+  identical
+  with the
+  pre-NEE
+  build.
+- The
+  existing
+  emission
+  handling
+  (PT-P.15
+  commit
+  `dd98d90`).
+  The
+  `is_emissive(m)`
+  guard +
+  emission-
+  add at
+  `CudaPathTracer.cu:201-212`
+  is
+  byte-
+  identical
+  with the
+  pre-NEE
+  build. The
+  NEE call
+  site is
+  inserted
+  *after*
+  the
+  emission
+  add and
+  *before*
+  the "last
+  allowed
+  bounce"
+  short-
+  circuit;
+  no
+  existing
+  arithmetic
+  is moved
+  or re-
+  ordered.
+- The
+  existing
+  RNG (PT-P.18
+  commit
+  `d2af0c5`).
+  `make_pixel_rng`
+  + the
+  per-pixel
+  RNG
+  stream
+  are
+  untouched.
+  The new
+  `next_float(rng)`
+  draw for
+  the light-
+  index
+  selection
+  lives
+  *inside*
+  the
+  `enable_nee`
+  guard, so
+  at default
+  it is
+  never
+  executed
+  and the
+  RNG
+  sequence
+  feeding
+  the
+  cosine-
+  bounce
+  sampler is
+  bit-
+  identical
+  with the
+  pre-NEE
+  build.
+- The
+  firefly-
+  clamp
+  wiring
+  (PT-P.24
+  commit
+  `0a06d0d`).
+  The
+  per-channel
+  `fminf`
+  clamp at
+  `CudaPathTracer.cu:251-255`
+  applies
+  to the
+  *sum* of
+  emission +
+  NEE +
+  indirect
+  terms; the
+  NEE add is
+  inserted
+  *upstream*
+  of the
+  clamp so
+  the clamp
+  bounds the
+  worst-case
+  per-sample
+  variance
+  (the
+  intended
+  semantics).
+  The clamp
+  position is
+  not moved.
+- `GpuScene::upload_lights`.
+  No new
+  fields,
+  strides,
+  or
+  alignment.
+  The same
+  `Light*` +
+  `light_count`
+  pair the
+  `--render-direct-lighting`
+  action
+  consumes
+  is read
+  by the
+  NEE
+  branch as-
+  is.
+- The
+  existing
+  `__closesthit__
+  shading_mode
+  == 2`
+  branch in
+  `OptixPrograms.cu:393-527`
+  (the v1
+  Point +
+  Directional
+  + shadow-
+  ray
+  reference
+  implementation
+  used by
+  `--render-optix-direct-lighting`).
+  NEE.2's
+  CUDA
+  helper is
+  structurally
+  parallel
+  but
+  intentionally
+  separate;
+  the
+  `OptixPrograms.cu`
+  branch is
+  not
+  touched.
+- All
+  existing
+  fixtures /
+  scenes /
+  goldens.
+  No re-
+  bake. No
+  caller
+  passes
+  `enable_nee
+  == true`
+  in this
+  slice.
+
+### Master rule compliance
+
+- **Build
+  incrementally /
+  every step
+  compilable**:
+  both audit-
+  host build
+  configs
+  (OFF / OFF
+  and OFF /
+  ON-with-
+  OptiX-SDK-
+  fallback)
+  rebuild
+  cleanly
+  during
+  this slice;
+  ctest
+  passes
+  7/7 (OFF)
+  and 8/8
+  (ON) with
+  no test
+  changes.
+- **No fake
+  stubs**:
+  the
+  helper +
+  shadow
+  ray are
+  *real*
+  Point +
+  Directional
+  direct-
+  lighting
+  estimators;
+  they do
+  the
+  correct
+  Monte
+  Carlo
+  math
+  with the
+  correct
+  Lambert
+  BRDF.
+  The only
+  reason
+  they do
+  not
+  affect
+  output
+  today is
+  that no
+  caller
+  flips
+  `enable_nee`,
+  matching
+  the
+  PT-P.21 /
+  PT-P.24
+  default-
+  off
+  precedent.
+- **No CPU
+  per-pixel
+  work**:
+  all NEE
+  per-vertex
+  arithmetic
+  runs in
+  `k_pathtrace_sample`
+  (CUDA
+  kernel)
+  via the
+  `RR_HD
+  inline`
+  helper;
+  the host
+  orchestration
+  passes
+  the bool
+  through
+  unchanged.
+- **No
+  premature
+  systems**
+  (UI, C4D,
+  node
+  editor):
+  the
+  slice
+  touches
+  five
+  files (two
+  new, three
+  modified);
+  no UI /
+  bridge /
+  editor
+  surface.
+- **Update
+  BUILD_PLAN**:
+  this
+  entry,
+  per
+  master
+  rule 8.
+
+### Diff size
+
+- `git diff
+  --stat HEAD~1..HEAD
+  -- src/`:
+  ~191
+  lines
+  added
+  across
+  five
+  files;
+  matches
+  the §5.6
+  budget
+  ("~120
+  lines
+  across
+  all
+  files")
+  in
+  `docs/PATH_TRACER_NEE_TASK.md`
+  with a
+  ~70-line
+  deviation
+  that is
+  entirely
+  doc-
+  comment
+  text on
+  the
+  helper
+  + the
+  guarded
+  call
+  site +
+  the
+  field's
+  doc-
+  block.
+  The
+  pure
+  *logic*
+  diff is
+  ~70
+  lines
+  (helper
+  body +
+  shadow-
+  ray
+  helper
+  body +
+  guarded
+  branch +
+  signature
+  threading)
+  which
+  is
+  inside
+  the
+  budget.
+  The
+  doc-
+  comment
+  density
+  follows
+  the
+  PT-P.x
+  precedent
+  on
+  inline
+  documentation
+  density.
+- Two new
+  files
+  under
+  `src/pathtracer/`
+  (`DirectLight.h`,
+  `DirectLight.cuh`).
+  Both are
+  header-
+  only;
+  no
+  `CMakeLists.txt`
+  change is
+  needed
+  because
+  `rr_pathtracer`
+  is an
+  INTERFACE
+  library.
+
+### Verified at the build
+
+- `cmake
+  --build
+  build`
+  (audit
+  host,
+  RR_ENABLE_CUDA=OFF,
+  RR_ENABLE_OPTIX=OFF):
+  rebuilt
+  cleanly;
+  ctest
+  7/7
+  green.
+- `cmake
+  --build
+  build-ON`
+  (audit
+  host,
+  RR_ENABLE_CUDA=OFF,
+  RR_ENABLE_OPTIX=ON):
+  rebuilt
+  cleanly;
+  ctest
+  8/8
+  green.
+- Audit-
+  host
+  smoke
+  surface
+  unchanged:
+  `--render-pathtrace
+  scenes/test_textured_material.rrscene`
+  emits
+  the
+  documented
+  "requires
+  CUDA"
+  fallback
+  on both
+  build
+  trees;
+  `--render-optix-pathtrace
+  scenes/test_textured_material.rrscene`
+  on the
+  ON build
+  emits
+  the
+  `firefly_clamp:
+  0.000000
+  (disabled)`
+  log line
+  followed
+  by the
+  documented
+  "requires
+  the
+  OptiX
+  SDK"
+  fallback
+  (NEE.2
+  adds no
+  log
+  line —
+  there is
+  no CLI
+  surface
+  yet).
+- Static
+  byte-
+  identity
+  argument:
+  the new
+  field
+  defaults
+  to
+  `false`;
+  the
+  kernel
+  guard
+  `if
+  (enable_nee
+  && scene.light_count
+  > 0)` is
+  the only
+  consumer;
+  both
+  guard
+  operands
+  are
+  zero /
+  false at
+  default,
+  so the
+  whole
+  branch
+  is
+  un-
+  executed
+  and no
+  FP add
+  ever
+  reaches
+  the
+  radiance
+  accumulator.
+  The
+  default-
+  off
+  per-pixel
+  arithmetic
+  is
+  bit-
+  identical
+  with the
+  pre-NEE
+  build.
+- Runtime
+  byte-
+  identity
+  verification
+  is
+  DEFERRED
+  to a
+  CUDA-
+  equipped
+  host per
+  `docs/CUDA_HOST_VERIFICATION_PLAN.md`;
+  the
+  audit-
+  host
+  fallback
+  is the
+  established
+  pattern
+  (PT-P.{15,18,21,24}
+  audits +
+  `FIREFLY_CLAMP_CLI_AUDIT.md`).
+
 ## Next stage
 
 When prompted, the natural follow-ups are:

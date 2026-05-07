@@ -101,6 +101,63 @@ struct PathTraceConfig {
     // future kernel-wiring slice has a stable forward-compatible
     // anchor to attach itself to.
     float firefly_clamp = 0.0f;
+
+    // NEE.2 skeleton: enable explicit direct-light sampling
+    // (Next Event Estimation) at every bounce vertex. Default
+    // `false` keeps the path tracer emission + environment-
+    // only — the kernel-side guard
+    // `if (enable_nee && light_count > 0)` is not entered, no
+    // shadow ray is traced, no extra RNG draw is performed,
+    // and the per-pixel arithmetic is byte-identical with
+    // the pre-NEE build. The byte-identity invariant is
+    // verified statically (the guard is the only consumer of
+    // the field; both halves are zero at default) and
+    // dynamically (the existing fixture goldens are
+    // unchanged by this slice).
+    //
+    // When `true`, the CUDA path-trace kernel
+    // (`k_pathtrace_sample` in `CudaPathTracer.cu`) picks
+    // one light uniformly per bounce vertex via
+    // `pathtracer::sample_direct_light_uniform`
+    // (`pathtracer/DirectLight.cuh`), traces an any-hit
+    // shadow ray, and adds the visibility-modulated, BRDF-
+    // modulated, throughput-modulated contribution to the
+    // running radiance. Supported light types are
+    // `LightType::Point` and `LightType::Directional`;
+    // `LightType::Area` and `LightType::Environment` are
+    // PLACEHOLDER per `Light.h:20-31` and contribute zero
+    // through the NEE branch.
+    //
+    // OptiX backend status: `OptixRenderer::render_pathtrace`
+    // currently IGNORES this field — the OptiX path-trace
+    // raygen has no NEE wiring yet (the next sub-arc slice
+    // adds it). Until then, mixing `enable_nee == true`
+    // with the OptiX backend silently produces an emission-
+    // only render from OptiX while the CUDA backend
+    // produces a NEE render; the two backends DO NOT
+    // converge to the same image until the OptiX-side NEE
+    // slice lands. The CUDA-only landing of NEE.2 is safe
+    // because `enable_nee == false` (the default for every
+    // existing caller) keeps both backends byte-identical
+    // with the pre-NEE build — the divergence only appears
+    // when a future caller flips the flag.
+    //
+    // No MIS yet. v1 sums the existing emission term and
+    // the new NEE term naively. The "no double-count
+    // window" argument from
+    // `docs/PATH_TRACER_NEE_TASK.md` §1 holds because
+    // Point + Directional lights have no mesh — the
+    // emission term and the NEE term sample disjoint
+    // contributions for the v1 light-type scope. MIS is
+    // reserved for the future area-light slice, where
+    // double-counting becomes real.
+    //
+    // See `docs/PATH_TRACER_NEE_TASK.md` for the full
+    // design contract; the current slice (NEE.2 — CUDA NEE
+    // skeleton) ships only the CUDA-side helper shells and
+    // the guarded call site so the wiring compiles end-to-
+    // end. No caller passes `true` today.
+    bool enable_nee = false;
 };
 
 // Result of a path-trace render. Mirrors the shape used by every

@@ -34,9 +34,11 @@
 #include "cuda/CudaIntersection.cuh"
 #include "cuda/CudaScene.cuh"
 #include "gpu/GpuScene.h"
+#include "pathtracer/DirectLight.cuh"   // NEE.2 helper + epsilons
 #include "pathtracer/RNG.cuh"
 #include "pathtracer/Sampling.cuh"
 
+#include "math/MathUtils.h"             // kInvPi
 #include "math/Vec3.h"
 #include "renderer/Hit.h"
 
@@ -141,6 +143,35 @@ generate_primary_ray(const rr::camera::GpuCamera& cam,
     return rr::camera::CameraRay{cam.position, dir};
 }
 
+// NEE.2 any-hit shadow ray. Returns 0.0f if any primitive
+// intersects `ray` in (kShadowEps, t_max), 1.0f otherwise.
+// Mirrors `closest_hit`'s scene walk (sphere loop then
+// triangle loop) but bails on the first hit; the actual `t`
+// and material are not consulted. Called by the kernel only
+// inside the `enable_nee` guard, so when NEE is off this
+// helper is never invoked.
+__device__ inline float trace_shadow_ray_pt(const rr::camera::CameraRay& ray,
+                                            const CudaSceneView&         scene,
+                                            float                        t_max) {
+    constexpr float t_min = rr::pathtracer::kShadowEps;
+    for (int i = 0; i < scene.sphere_count; ++i) {
+        const auto h = intersect_sphere(ray, scene.spheres[i],
+                                        t_min, t_max);
+        if (h.hit) return 0.0f;
+    }
+    const auto& mesh = scene.mesh;
+    for (int i = 0; i < mesh.triangle_count; ++i) {
+        const auto tri = mesh.triangles[i];
+        const auto v0  = mesh.vertices[tri.v0].position;
+        const auto v1  = mesh.vertices[tri.v1].position;
+        const auto v2  = mesh.vertices[tri.v2].position;
+        const auto h   = intersect_triangle(ray, v0, v1, v2,
+                                            t_min, t_max);
+        if (h.hit) return 0.0f;
+    }
+    return 1.0f;
+}
+
 // One sample per pixel.
 __global__ void k_pathtrace_sample(float*           pixels,
                                    int              width,
@@ -151,7 +182,8 @@ __global__ void k_pathtrace_sample(float*           pixels,
                                    unsigned int     sample_index,
                                    Vec3             env_color,
                                    float            env_intensity,
-                                   float            firefly_clamp) {
+                                   float            firefly_clamp,
+                                   bool             enable_nee) {
     const int x = blockIdx.x * blockDim.x + threadIdx.x;
     const int y = blockIdx.y * blockDim.y + threadIdx.y;
     if (x >= width || y >= height) return;
@@ -209,6 +241,79 @@ __global__ void k_pathtrace_sample(float*           pixels,
             radiance = radiance + Vec3{throughput.x * emission.x,
                                        throughput.y * emission.y,
                                        throughput.z * emission.z};
+        }
+
+        // NEE.2 skeleton. When `enable_nee == false` (the
+        // PathTraceConfig default for every existing caller),
+        // this branch is never entered: no shadow ray is
+        // traced, no extra RNG draw is performed, the
+        // cos-weighted hemisphere sample below pulls from
+        // the same RNG stream as the pre-NEE build, and the
+        // per-pixel write is bit-exact with the pre-NEE
+        // arithmetic. The IEEE-754 byte-identity argument is
+        // the same as PT-P.21 / PT-P.24's: with the branch
+        // un-executed, no FP add ever touches the radiance
+        // accumulator at default.
+        //
+        // When entered (a future slice flips
+        // `PathTraceConfig::enable_nee` via a CLI flag —
+        // the current slice has none), the kernel picks one
+        // light uniformly via
+        // `pathtracer::sample_direct_light_uniform`, traces
+        // a single any-hit shadow ray with `trace_shadow_ray_pt`,
+        // and adds the visibility-modulated, BRDF-modulated,
+        // throughput-modulated direct contribution to
+        // `radiance`. No MIS yet — the existing emission
+        // term and this new NEE term are summed naively
+        // (the v1 "no double-count window" argument from
+        // `docs/PATH_TRACER_NEE_TASK.md` §1 holds because
+        // Point + Directional lights have no mesh).
+        //
+        // The branch is uniform per-warp (every pixel in a
+        // launch reads the same `enable_nee` /
+        // `scene.light_count`), so no warp divergence is
+        // introduced at default.
+        if (enable_nee && scene.light_count > 0) {
+            const float u_select = rr::pathtracer::next_float(rng);
+            const auto sample = rr::pathtracer::sample_direct_light_uniform(
+                scene.lights, scene.light_count,
+                hit.position, hit.normal, u_select);
+            if (sample.pdf_inv > 0.0f) {
+                // Offset the shadow-ray origin off the
+                // surface along the normal to dodge
+                // self-intersection at the receiver end
+                // (matches the diffuse-bounce origin
+                // offset just below). The light-end
+                // epsilon comes from subtracting
+                // `kShadowEps` from `sample.distance`;
+                // for Directional lights the helper
+                // already encoded `kDirectionalShadowTMax`
+                // so the subtraction is irrelevant
+                // (1e30 - 1e-3 == 1e30 in float).
+                const float t_max =
+                    sample.distance - rr::pathtracer::kShadowEps;
+                const rr::camera::CameraRay shadow{
+                    hit.position + hit.normal * 1.0e-4f,
+                    sample.wi};
+                const float vis =
+                    trace_shadow_ray_pt(shadow, scene, t_max);
+                if (vis > 0.0f) {
+                    const float cos_th =
+                        rr::math::dot(hit.normal, sample.wi);
+                    if (cos_th > 0.0f) {
+                        // Lambert BRDF: baseColor / pi.
+                        const Vec3 brdf = m.baseColor * rr::math::kInvPi;
+                        const float k =
+                            cos_th * vis * sample.pdf_inv;
+                        const Vec3 contrib = Vec3{
+                            throughput.x * sample.li_unattenuated.x * brdf.x,
+                            throughput.y * sample.li_unattenuated.y * brdf.y,
+                            throughput.z * sample.li_unattenuated.z * brdf.z}
+                            * k;
+                        radiance = radiance + contrib;
+                    }
+                }
+            }
         }
 
         // If this was the last allowed bounce, stop - no point
@@ -272,7 +377,8 @@ bool launch_pathtrace_sample(float*                   device_sample_pixels,
                              unsigned int             sample_index,
                              rr::math::Vec3           env_color,
                              float                    env_intensity,
-                             float                    firefly_clamp) {
+                             float                    firefly_clamp,
+                             bool                     enable_nee) {
     // PT-P.24: defence-in-depth on the host validator's
     // `firefly_clamp >= 0.0f` rejection. The host-side
     // `PathTracer::render` already returns an error message
@@ -314,7 +420,8 @@ bool launch_pathtrace_sample(float*                   device_sample_pixels,
                                         view, max_bounces, seed,
                                         sample_index,
                                         env_color, env_intensity,
-                                        firefly_clamp);
+                                        firefly_clamp,
+                                        enable_nee);
     if (cudaGetLastError() != cudaSuccess) {
         (void)cudaGetLastError();
         return false;
