@@ -56464,6 +56464,555 @@ host)
 remain
 deferred.
 
+## NEE Help Text Repair Audit — docs only
+
+**Scope of
+this slice
+(post-help-
+text-
+repair
+commit
+`fc4c482`):
+walk the
+five
+audit
+items
+the user
+enumerated +
+record a
+PASS /
+REPAIR /
+BLOCKED
+verdict
+per item.
+Documentation
+only;
+zero
+source
+changes.
+Verifies
+the
+single
+cosmetic
+REPAIR
+identified
+by
+`PATH_TRACER_ENABLE_NEE_CLI_AUDIT.md`
+§11.1
+was
+resolved
+cleanly
+without
+any
+renderer /
+kernel /
+dispatcher
+side
+effects.**
+
+### What ships
+
+- `docs/PATH_TRACER_ENABLE_NEE_HELP_REPAIR_AUDIT.md`
+  (NEW;
+  ~502
+  lines).
+  Six-
+  section
+  audit:
+    - **§0
+      Header.**
+      Date,
+      branch,
+      HEAD
+      commit
+      (`fc4c482`),
+      plan
+      source
+      (`PATH_TRACER_ENABLE_NEE_CLI_AUDIT.md`
+      §11.1),
+      audit-
+      host
+      fingerprint
+      (no
+      CUDA
+      Toolkit;
+      same
+      as
+      NEE.6),
+      verdict
+      legend.
+    - **§1
+      `--help`
+      documents
+      `--enable-nee`.**
+      PASS.
+      Empirically
+      verifies
+      the
+      corrected
+      10-
+      line
+      block
+      prints;
+      the
+      stale
+      "deferred
+      to a
+      follow-
+      up
+      slice"
+      phrase
+      is
+      gone;
+      the
+      OptiX
+      dispatcher
+      is now
+      explicitly
+      listed.
+    - **§2
+      Wording
+      matches
+      existing
+      CLI
+      style.**
+      PASS.
+      Source-
+      level
+      comparison
+      with
+      `--firefly-clamp`
+      shows
+      identical
+      "Read
+      by\n--X
+      and
+      --Y;
+      ignored\nby
+      every
+      other
+      action."
+      idiom;
+      column-
+      width +
+      sentence-
+      shape
+      consistency
+      verified
+      against
+      `--denoise`,
+      `--beta`,
+      `--firefly-clamp`,
+      and
+      every
+      other
+      modifier-
+      flag
+      block.
+    - **§3
+      No
+      renderer
+      behaviour
+      changed.**
+      PASS.
+      `git
+      diff
+      fc4c482~1..fc4c482
+      --
+      src/`
+      shows
+      +4 /
+      -4
+      across
+      ONE
+      file
+      (`src/core/CommandLine.cpp`),
+      contained
+      inside
+      the
+      `usage()`
+      function.
+      No-
+      touch
+      invariants
+      table
+      verifies
+      0
+      bytes
+      of
+      diff
+      across
+      every
+      kernel /
+      dispatcher /
+      renderer /
+      test /
+      scene /
+      tooling
+      path.
+      Behavioural
+      argument:
+      `usage()`
+      is the
+      only
+      function
+      whose
+      output
+      changed;
+      the
+      only
+      consumer
+      of
+      `usage()`
+      is the
+      `--help`
+      print
+      path;
+      therefore
+      no
+      kernel /
+      dispatcher /
+      renderer
+      behaviour
+      can
+      change.
+      Default-
+      OFF
+      byte-
+      identity
+      preserved
+      (no
+      kernel
+      contributors
+      touched).
+    - **§4
+      Build /
+      test
+      status.**
+      PASS.
+      Both
+      audit-
+      host
+      configs
+      rebuild
+      cleanly
+      at
+      HEAD;
+      ctest
+      9/9 OFF
+      +
+      10/10 ON
+      (counts
+      unchanged).
+      cli_tests
+      31/31;
+      pathtracer_nee_tests
+      34/34.
+      Eight-
+      cell
+      smoke
+      matrix
+      all
+      green.
+    - **§5
+      Verdict:
+      PASS.**
+      All
+      five
+      enumerated
+      items
+      PASS.
+      Master-
+      rule
+      compliance
+      walked.
+      No
+      new
+      REPAIR
+      candidates
+      found;
+      the
+      cosmetic
+      REPAIR
+      list
+      closes
+      fully
+      (NEE.6
+      §11.1
+      identified;
+      `fc4c482`
+      fixed;
+      this
+      audit
+      verifies).
+    - **§6
+      Sub-
+      arc
+      closure.**
+      Twelve-
+      slice
+      cadence
+      table
+      from
+      NEE.1
+      through
+      this
+      audit;
+      `PATH_TRACER_NEE_TASK.md`
+      §1's
+      operator-
+      facing
+      contract
+      fully
+      shipped +
+      audited;
+      the
+      runtime-
+      deferred
+      checklist
+      remains
+      deferred
+      to a
+      real
+      CUDA +
+      OptiX-
+      SDK
+      host
+      operator
+      session.
+      Three
+      next-
+      step
+      options:
+      (1)
+      runtime
+      operator
+      session,
+      (2)
+      pivot
+      to
+      master
+      order
+      #16+
+      (BSDFs /
+      area-
+      light
+      NEE /
+      MIS),
+      (3)
+      pivot
+      to
+      #18+
+      (textures /
+      beyond).
+- This
+  `BUILD_PLAN.md`
+  slice-
+  closing
+  entry.
+
+### What does NOT change
+
+- Source:
+  byte-
+  identical.
+  `git
+  diff --
+  src/
+  tests/
+  scenes/
+  tools/
+  CMakeLists.txt`
+  ⇒ 0
+  bytes.
+- Build
+  configs:
+  unchanged.
+  ctest
+  remains
+  9/9 OFF
+  +
+  10/10 ON
+  at the
+  `fc4c482`
+  baseline.
+- All
+  other
+  docs:
+  this
+  audit
+  only
+  ADDS
+  `PATH_TRACER_ENABLE_NEE_HELP_REPAIR_AUDIT.md`;
+  no
+  edits
+  to any
+  prior
+  audit
+  doc /
+  task
+  brief /
+  PT-P.x /
+  NEE.x
+  artefact.
+
+### Master rule compliance
+
+- **Build
+  incrementally
+  / every
+  step
+  compilable
+  (rules
+  1 +
+  2)**:
+  docs-
+  only
+  slice;
+  preserved
+  trivially.
+- **No
+  fake
+  stubs
+  (rule
+  3)**:
+  every
+  audit
+  finding
+  is a
+  read-
+  only
+  observation
+  cited
+  to a
+  source
+  line
+  number /
+  smoke
+  output;
+  zero
+  pretense.
+- **No
+  CPU
+  per-
+  pixel
+  work
+  (rules
+  5 +
+  7)**:
+  no
+  changes;
+  trivially
+  preserved.
+- **Update
+  BUILD_PLAN
+  (rule
+  8)**:
+  this
+  entry.
+- **Documentation
+  only;
+  do not
+  modify
+  source
+  code
+  (current-
+  prompt
+  rule)**:
+  zero
+  source
+  edits.
+
+### Verified at the build
+
+- `cmake
+  --build
+  build
+  -j`
+  (RR_ENABLE_CUDA=OFF,
+  RR_ENABLE_OPTIX=OFF):
+  no-
+  op;
+  ctest
+  9/9
+  green.
+- `cmake
+  --build
+  build-
+  ON -j`
+  (RR_ENABLE_CUDA=OFF,
+  RR_ENABLE_OPTIX=ON):
+  no-
+  op;
+  ctest
+  10/10
+  green.
+- Smoke
+  matrix
+  during
+  the
+  audit
+  re-
+  verified
+  the
+  eight
+  cells
+  of
+  §4.2
+  (cli_tests
+  31/31,
+  pathtracer_nee_tests
+  34/34,
+  TEX-
+  P.6
+  fixture
+  intact,
+  --help
+  block
+  prints
+  corrected
+  wording,
+  stale
+  phrase
+  gone,
+  OptiX
+  dispatcher
+  listed,
+  ctest
+  both
+  configs
+  green).
+
+### Sub-arc status
+
+NEE.6
+audit's
+REPAIR
+list
+fully
+closed.
+NEE
+arc's
+REPAIR
+list
+empty.
+Runtime-
+deferred
+checklist
+(NEE.6
+§9.1-
+§9.6)
+remains
+deferred
+to a
+real
+CUDA +
+OptiX-
+SDK
+host
+operator
+session.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
