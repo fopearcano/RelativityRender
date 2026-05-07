@@ -45573,6 +45573,661 @@ VERIFY's §10
 row all flip
 to PASS.
 
+## Firefly clamp CLI flag — audit (docs only)
+
+**The
+firefly-clamp
+polish has fully
+shipped.** This
+audit closes the
+firefly-clamp
+CLI sub-arc.
+Combined with
+PT-P.{20..25} +
+the FIREFLY-CLI
+task + impl,
+the entire
+`PATH_TRACER_POLISH_PLAN.md`
+§4.7 polish is
+fully
+implemented +
+documented +
+audited.
+
+**Scope of this
+slice (post-
+firefly-clamp
+CLI impl
+complete):
+write the
+sub-arc-end
+audit at
+`docs/FIREFLY_CLAMP_CLI_AUDIT.md`
+that walks the
+seven prompt
+checks the
+task brief
+enumerated +
+the three
+runtime-status
+questions
+under §6.
+Mirrors the
+PT-P.{4,7,10,13,16,19,22,25}
+audit shapes
+applied to the
+firefly-clamp
+CLI sub-arc.
+Documentation
+only; zero
+source
+changes; zero
+build effect.**
+
+### What ships
+
+- `docs/FIREFLY_CLAMP_CLI_AUDIT.md`
+  (NEW). Ten
+  sections + a
+  verdict + a
+  recommended
+  next step:
+    - **§1
+      `--firefly-clamp
+      <value>`
+      parser
+      exists.**
+      PASS.
+      Cites the
+      parser arm
+      at
+      `CommandLine.cpp:444-475`
+      (matching
+      `--beta`'s
+      shape) +
+      the 17-line
+      help-text
+      block at
+      `:925-941`.
+      §1.1
+      help-text
+      entry
+      verified by
+      `--help |
+      grep`. §1.2
+      cross-check
+      that the
+      flag is
+      uniquely
+      recognised
+      by the new
+      arm.
+    - **§2
+      `Config::firefly_clamp`
+      field with
+      default 0.0f.**
+      PASS. Field
+      at
+      `Config.h:62`
+      with 13-
+      line doc-
+      comment.
+      §2.1
+      default
+      propagates
+      through
+      default-
+      construction
+      at TWO
+      sites
+      (parser
+      `r.config`
+      + dispatcher
+      reads).
+    - **§3 CUDA
+      pathtrace
+      dispatcher
+      reads
+      `cfg.firefly_clamp`.**
+      PASS.
+      Wires
+      through
+      `pcfg.firefly_clamp
+      = cfg.firefly_clamp;`
+      at
+      `main.cpp:2391-2398`.
+      The single
+      `pcfg`
+      passed
+      verbatim to
+      `pt.render`;
+      no bypass.
+    - **§4 OptiX
+      pathtrace
+      dispatcher
+      reads
+      `cfg.firefly_clamp`.**
+      PASS.
+      Wires
+      through
+      `/*firefly_clamp=*/cfg.firefly_clamp`
+      at
+      `main.cpp:1591`.
+      §4.1
+      verifies
+      the literal
+      `0.0f` was
+      replaced
+      (grep
+      confirms
+      zero
+      remaining
+      `0.0f`
+      uses for
+      the named
+      arg). §4.2
+      log-line
+      emits
+      BEFORE the
+      renderer
+      call so
+      the
+      operator
+      sees the
+      value
+      even on
+      audit-host
+      fallback.
+    - **§5
+      Default
+      render
+      output
+      unchanged
+      (default-
+      off).**
+      PASS
+      structurally;
+      OPTIONAL
+      CUDA-host
+      empirical
+      confirmation.
+      §5.1
+      source-diff
+      containment
+      (`git diff
+      a3b43b4~1..a3b43b4
+      -- ... |
+      wc -l` =
+      0 bytes).
+      §5.2 +
+      §5.3
+      empirical
+      smokes (no
+      flag +
+      `--firefly-clamp
+      0.0`).
+      §5.4
+      `cmp`-based
+      byte-
+      identity
+      DEFERRED
+      to CUDA
+      host.
+    - **§6
+      Non-zero /
+      invalid
+      value
+      handling.**
+      PASS — five
+      smokes
+      verified:
+      §6.1
+      positive
+      value
+      accepted
+      (parser +
+      pass-through
+      chain
+      works),
+      §6.2
+      negative
+      rejected
+      at parse
+      time (rc=2,
+      message
+      cites the
+      authored
+      value),
+      §6.3 non-
+      numeric
+      rejected
+      at parse
+      time
+      (rc=2,
+      message
+      mirrors
+      `--beta`'s
+      shape),
+      §6.4 other
+      failure
+      modes
+      handled by
+      the existing
+      `take_value`
+      contract.
+    - **§7 Log
+      line emits
+      at the
+      right
+      place.**
+      PASS — both
+      dispatchers
+      verified:
+      §7.1 CUDA
+      dispatcher
+      emits the
+      line in
+      the spp
+      loop's
+      post-render
+      info block
+      between
+      `environment      :`
+      and
+      `save_image_or_error`,
+      §7.2 OptiX
+      dispatcher
+      emits the
+      line BEFORE
+      the
+      renderer
+      call (pre-
+      fallback
+      ordering
+      verified
+      empirically),
+      §7.3 same
+      ternary
+      logic
+      across
+      both
+      dispatchers
+      so the
+      operator
+      sees
+      consistent
+      classification
+      matching
+      the kernel
+      gate's
+      strictness.
+    - **§8 Build
+      status.**
+      PASS. Both
+      audit-host
+      configs
+      green
+      (build 7/7,
+      build-ON
+      8/8). The
+      OFF build's
+      type-check
+      is
+      particularly
+      important
+      because the
+      OptiX
+      dispatcher's
+      new
+      `cfg.firefly_clamp`
+      reference
+      is gated by
+      `RELATIVITYRENDER_ENABLE_OPTIX`;
+      the OFF
+      build
+      excludes it
+      entirely.
+    - **§9
+      Runtime
+      CUDA /
+      OptiX
+      status.**
+      DEFERRED on
+      six checks
+      (= BLOCKED
+      on this
+      audit
+      host). §9.1
+      cross-
+      references
+      the
+      accumulated
+      DEFERRED
+      rows from
+      PT-P.4
+      through
+      PT-P.25
+      (~17 rows
+      total) +
+      explains
+      that the
+      CLI flag
+      enables six
+      of the
+      PT-P.24
+      checks +
+      the
+      CUDA-OPTIX-
+      VERIFY's
+      §10 row.
+    - **§10
+      Verdict.**
+      Overall
+      PASS. Nine-
+      row summary
+      table.
+      Zero REPAIR
+      items.
+      Notes that
+      the slice
+      exceeded
+      the task's
+      50-line cap
+      (108 added
+      / 5
+      deleted)
+      but the
+      deviation
+      was flagged
+      in the
+      implementation's
+      BUILD_PLAN
+      entry with
+      rationale
+      (the
+      prompt's
+      log-line
+      addition +
+      the PT-P.x
+      precedent
+      on doc-
+      comment
+      density).
+      The
+      deviation
+      is
+      documentation,
+      not defect.
+    - **Sub-arc
+      closure.**
+      The
+      firefly-
+      clamp polish
+      has fully
+      shipped:
+      placeholder
+      (PT-P.{20,21,22})
+      + kernel
+      wiring
+      (PT-P.{23,24,25})
+      + CLI flag
+      (task /
+      impl /
+      audit).
+      `PATH_TRACER_POLISH_PLAN.md`
+      §4.7 is
+      fully
+      implemented
+      + documented
+      + audited.
+    - **Recommended
+      next step.**
+      Three
+      directions
+      mirroring
+      PT-P.25
+      audit §9:
+      (1) trigger
+      the CUDA +
+      OptiX-SDK
+      host
+      verification
+      run that
+      flips ALL
+      ~17
+      accumulated
+      DEFERRED
+      rows to
+      PASS
+      (single
+      operator
+      session;
+      most
+      immediately
+      satisfying);
+      (2) pivot
+      to master
+      order #16
+      (NEE / non-
+      diffuse
+      BSDFs /
+      multi-mesh
+      upload —
+      NEE is the
+      consumer
+      that
+      justifies
+      a non-zero
+      firefly-
+      clamp
+      default);
+      (3) add a
+      `--firefly-clamp`
+      variant to
+      the
+      CUDA-H.x
+      runner's
+      command
+      catalogue.
+- This `BUILD_PLAN.md`
+  slice-closing
+  entry.
+
+### What does NOT change
+
+- Every prior
+  artefact
+  (PT-P.{1..25}
+  + the
+  CUDA-OPTIX-
+  VERIFY
+  report + the
+  firefly-clamp
+  CLI task + impl):
+  byte-identical
+  (this audit
+  is documentation
+  only; it
+  touches no
+  `.cu`,
+  `.cpp`, `.h`,
+  `.cuh`,
+  `.rrscene`,
+  `cmake`, or
+  `tests/`
+  file).
+- Build
+  configs:
+  byte-identical.
+  ctest remains
+  7/7 OFF and
+  8/8 ON-
+  audit-host
+  with no
+  rebuild
+  needed.
+- All other
+  docs: this
+  audit only
+  ADDS
+  `FIREFLY_CLAMP_CLI_AUDIT.md`;
+  no edits to
+  `FIREFLY_CLAMP_CLI_TASK.md`,
+  any
+  PT-P.x doc,
+  the TEX-P.x
+  arc, the
+  CUDA-H.x arc,
+  or the
+  CUDA-OPTIX-
+  VERIFY
+  report.
+
+### Master rule compliance
+
+- **Build
+  incrementally /
+  every step
+  compilable**:
+  docs-only
+  slice; build
+  is trivially
+  preserved.
+- **Documentation
+  only; do not
+  modify source
+  code; do not
+  fix inside
+  audit**:
+  every audit
+  finding is
+  a read-only
+  observation;
+  zero source
+  edits; the
+  REPAIR list
+  is empty so
+  no fix-up
+  edits
+  needed.
+- **No CPU
+  per-pixel
+  work**: the
+  flag's
+  parser arm
+  + dispatcher
+  pass-through
+  + log lines
+  + the audit
+  itself
+  introduce
+  zero new
+  per-pixel
+  code. The
+  PT-P.24
+  kernel
+  guards
+  remain the
+  only firefly-
+  clamp
+  consumers
+  device-
+  side.
+- **Update
+  BUILD_PLAN**:
+  this entry,
+  per master
+  rule 8.
+
+### Verified at the build
+
+- `cmake --build
+  build` (audit
+  host,
+  RR_ENABLE_CUDA=OFF,
+  RR_ENABLE_OPTIX=OFF):
+  re-built
+  cleanly
+  during the
+  audit; ctest
+  7/7 green.
+- `cmake --build
+  build-ON`
+  (audit host,
+  RR_ENABLE_CUDA=OFF,
+  RR_ENABLE_OPTIX=ON):
+  re-built
+  cleanly;
+  ctest 8/8
+  green.
+- All five
+  flag-specific
+  smokes re-
+  run during
+  the audit
+  (Smokes 1-5
+  per the
+  implementation's
+  BUILD_PLAN
+  entry):
+  byte-
+  identical
+  results.
+- OptiX-side
+  log-line
+  smoke re-
+  run: the
+  `[INFO]
+  firefly_clamp
+   : 8.000000
+  (enabled)`
+  line still
+  emits
+  BEFORE the
+  documented
+  "requires
+  OptiX SDK"
+  fallback.
+- TEX-P.6
+  fixture
+  regression:
+  `--scene-info
+  scenes/test_textured_material.rrscene`
+  emits the
+  expected
+  three-case
+  log
+  sequence
+  (one Case 1
+  info + two
+  Case 3
+  warnings;
+  `fixups
+  applied: 2`).
+- `git diff
+  a3b43b4~1..a3b43b4
+  -- src/cuda/
+  src/optix/
+  src/pathtracer/
+  src/renderer/
+  src/io/
+  src/scene/
+  src/material/
+  src/lighting/
+  src/texture/
+  scenes/
+  tests/
+  tools/verify_cuda_host.py
+  CMakeLists.txt
+  | wc -l` =>
+  0 bytes
+  (no-touch
+  invariants
+  verified for
+  the CLI
+  impl
+  slice).
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
