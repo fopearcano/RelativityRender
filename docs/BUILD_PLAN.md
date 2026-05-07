@@ -44003,6 +44003,290 @@ effect.**
   authorised
   source file.
 
+## CUDA + OptiX host verification (audit-host attempt)
+
+**Scope of this
+slice (post-PT-P.25
+arc-end audit):
+attempt the
+deferred runtime
+verification suite
+on this host. The
+audit host has no
+NVIDIA driver, no
+CUDA Toolkit, and
+no OptiX SDK; the
+runner's
+`cmake-configure`
+step fails fast
+(no `nvcc`) and
+every subsequent
+command is
+SKIPPED. The
+combined verdict
+is BLOCKED — not
+REPAIR — because
+nothing in the
+renderer is
+broken; the host
+just lacks the
+hardware.**
+
+**Mode**: runtime
+verification only.
+No source code
+changes; no
+renderer behaviour
+changes; no new
+CLI flags.
+
+### What ships
+
+- `docs/CUDA_OPTIX_HOST_VERIFICATION_REPORT.md`
+  (NEW). Eleven
+  per-prompt
+  rows + an
+  Environment
+  block + a
+  Runner-outcome
+  block + a
+  detailed
+  Operator-
+  instructions
+  section for a
+  real CUDA +
+  OptiX-SDK
+  host. The
+  report's
+  status table:
+
+| # | Item                                  | Status                  |
+|---|---------------------------------------|-------------------------|
+| 1 | GPU detected                          | FAIL (none)             |
+| 2 | CUDA status                           | BLOCKED (no nvcc)       |
+| 3 | OptiX SDK status                      | BLOCKED (no optix.h)    |
+| 4-9| CUDA / OptiX / texture / AOV /        | SKIPPED (build failed)  |
+|   | pathtrace / denoiser outputs          |                         |
+| 10| Firefly clamp runtime status          | DEFERRED                |
+| 11| Overall verdict                       | **BLOCKED**             |
+
+  The Operator-
+  instructions
+  section
+  documents the
+  five-step
+  procedure a
+  CUDA +
+  OptiX-SDK
+  operator
+  follows to
+  flip the
+  verdict to
+  PASS:
+    - (1) install
+      pre-
+      requisites,
+    - (2) re-run
+      the runner,
+    - (3) inspect
+      the
+      refreshed
+      CUDA-H.x
+      report,
+    - (4) PT-P.18
+      byte-
+      DIFFERENCE
+      check on
+      `pathtrace_spp_*.ppm`,
+    - (5) PT-P.24
+      byte-
+      IDENTITY
+      check on
+      both
+      backends,
+    - (6) replace
+      this
+      BLOCKED
+      report.
+- This `BUILD_PLAN.md`
+  slice-closing entry.
+
+### What does NOT change
+
+- Every PT-P.x
+  artefact: byte-
+  identical (this
+  slice runs the
+  runner; it
+  does not edit
+  source).
+- The existing
+  `docs/CUDA_HOST_VERIFICATION_REPORT.md`:
+  byte-identical.
+  The new
+  `_OPTIX_` report
+  is a SEPARATE
+  artefact for
+  the `--optix`-
+  enabled run;
+  the existing
+  report covers
+  the
+  `RR_ENABLE_CUDA=OFF`
+  baseline.
+- Build configs:
+  byte-identical.
+  ctest remains
+  7/7 OFF and
+  8/8 ON-audit-
+  host with no
+  rebuild needed.
+- `tools/verify_cuda_host.py`:
+  zero bytes
+  changed. The
+  runner produced
+  the `FAIL` /
+  `SKIPPED`
+  outcome
+  honestly per
+  its existing
+  contract; no
+  runner update
+  is needed for
+  the new
+  report.
+
+### Master rule compliance
+
+- **Do not modify
+  renderer code /
+  no CLI flags /
+  no server / no
+  C4D / no UI /
+  runtime
+  verification
+  only**: this
+  slice runs the
+  runner and
+  produces a
+  documentation
+  artefact. Zero
+  source changes.
+- **Build
+  incrementally /
+  every step
+  compilable**:
+  the existing
+  audit-host
+  configs
+  (`build` +
+  `build-ON`)
+  remain green.
+  The runner's
+  attempted
+  `RR_ENABLE_CUDA=ON`
+  build failed
+  at the
+  `find_package(CUDAToolkit)`
+  step before
+  altering
+  anything; the
+  audit-host
+  configs are
+  unaffected.
+- **Update
+  BUILD_PLAN**:
+  this entry,
+  per master
+  rule 8.
+
+### Verified at the build
+
+- `cmake --build
+  build` (audit
+  host,
+  RR_ENABLE_CUDA=OFF,
+  RR_ENABLE_OPTIX=OFF):
+  unchanged from
+  PT-P.25 +
+  PT-P.24; ctest
+  7/7 green.
+- `cmake --build
+  build-ON`
+  (audit host,
+  RR_ENABLE_CUDA=OFF,
+  RR_ENABLE_OPTIX=ON):
+  unchanged;
+  ctest 8/8
+  green.
+- `tools/verify_cuda_host.py
+  --optix`: ran;
+  produced the
+  documented
+  `cmake-configure
+  FAIL` outcome;
+  recorded in
+  the new
+  report's
+  "Runner
+  outcome"
+  section
+  verbatim.
+- The audit-
+  host
+  fallbacks for
+  `--render-pathtrace`
+  + `--render-optix-pathtrace`
+  + `--scene-info`
+  on the TEX-P.6
+  fixture remain
+  byte-identical
+  with the
+  pre-PT-P.25
+  baseline; no
+  ripple onto
+  the texture
+  validator or
+  any prior
+  artefact.
+
+### Carried-forward DEFERRED rows
+
+Eleven runtime
+DEFERRED rows
+accumulate from
+the PT-P.x arc;
+all remain
+DEFERRED post-
+this-run:
+
+- PT-P.4: six
+  PPM artefacts
+  (gpu_rng_test,
+  gpu_accumulation_test,
+  pathtrace_spp_{1,16},
+  optix_pathtrace_spp{1,16}).
+- PT-P.18 §6.x:
+  five RNG-
+  stability
+  byte-DIFFERENCE
+  checks.
+- PT-P.24 §7.x:
+  six firefly-
+  clamp byte-
+  IDENTITY +
+  cross-backend
+  checks.
+
+The new report
+records all of
+them under §10
+(firefly clamp
+runtime status)
++ §4-§9 (the
+broader runtime
+SKIPPED rows).
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
