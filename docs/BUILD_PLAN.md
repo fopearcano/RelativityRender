@@ -46228,6 +46228,845 @@ build effect.**
   impl
   slice).
 
+## NEE.1 — Next event estimation task definition (docs only)
+
+**Scope of this
+slice (post-firefly-
+clamp CLI audit;
+opens a new
+sub-arc for
+path-tracer
+feature breadth):
+produce the task
+brief for explicit
+direct-light
+sampling (Next
+Event Estimation)
+in both backends'
+path-trace
+raygens, scoped
+to `LightType::Point`
++ `LightType::Directional`
+with no MIS yet.
+Documentation
+only; zero source
+changes.**
+
+The new sub-arc
+picks up the
+`docs/PATH_TRACER_POLISH_PLAN.md`
+§"Out of scope"
+deferral (master
+#16 follow-up
+"No direct-light
+sampling (NEE)")
+and this
+`BUILD_PLAN.md`'s
+"Next stage"
+§"feature
+breadth" bullet
+("direct-light
+sampling (NEE),
+non-diffuse
+materials, multi-
+mesh upload, or
+relativistic-
+perception
+integration into
+the path
+tracer"). The
+firefly-clamp
+polish is closed
+(`FIREFLY_CLAMP_CLI_AUDIT.md`
+§"Sub-arc
+closure"); the
+next slice is
+free to start a
+new sub-arc.
+
+Path-tracer
+status today: the
+two raygens
+(`CudaPathTracer.cu`'s
+`k_pathtrace_sample`
+and
+`OptixPrograms.cu`'s
+`__raygen__pathtrace`)
+are emission +
+environment-only
+— they consume
+the
+`GpuScene::upload_lights`
+device array
+through the
+launch params
+but never sample
+it (explicit
+"no-MIS-yet"
+comment at
+`CudaPathTracer.cu:
+26` and
+`PathTracer.h:
+140-146`). The
+`__closesthit__
+shading_mode == 2`
+branch
+(`OptixPrograms.cu:
+393-527`)
+already
+implements
+explicit Point
++ Directional +
+Environment
+direct lighting
+with shadow
+rays, used by
+`--render-optix-direct-lighting`.
+NEE.1's brief
+mirrors that
+existing
+infrastructure
+into the path-
+trace raygens
+without
+refactoring it.
+
+### What ships
+
+- `docs/PATH_TRACER_NEE_TASK.md`
+  (NEW). Eleven
+  sections + a
+  cadence
+  blueprint:
+    - **§0 One-
+      paragraph
+      summary.**
+      Cites the
+      emission-only
+      status, the
+      v1 scope
+      (Point +
+      Directional;
+      one sample
+      per vertex;
+      no MIS),
+      the default-
+      off
+      `enable_nee`
+      gate, and
+      the byte-
+      identity
+      invariant
+      for existing
+      scenes.
+    - **§1 Purpose.**
+      Direct-
+      lighting
+      convergence
+      argument:
+      point lights
+      converge
+      with very
+      high variance
+      via random
+      bounces;
+      directional
+      lights have
+      no surface
+      and emit
+      *zero*
+      light
+      through the
+      emission-
+      only
+      integrator.
+      Documents
+      the v1
+      "no double-
+      count
+      window"
+      invariant
+      (point /
+      directional
+      lights have
+      no mesh, so
+      the existing
+      emission term
+      and the new
+      NEE term
+      sample
+      disjoint
+      contributions;
+      MIS is
+      reserved for
+      the future
+      area-light
+      slice).
+    - **§2 Initial
+      scope.**
+      §2.1 Point
+      (with
+      `1/r²` +
+      shadow ray
+      to
+      `light.position`)
+      + Directional
+      (no
+      attenuation +
+      shadow ray
+      to `t_max =
+      1e30f`);
+      Area +
+      Environment
+      explicitly
+      DEFERRED
+      (PLACEHOLDER
+      per
+      `Light.h:
+      28-31`).
+      §2.2 one
+      sample per
+      vertex
+      (rejects
+      the first-
+      bounce-only
+      simplification
+      with a cost-
+      ratio
+      argument).
+      §2.3 shadow
+      rays — CUDA
+      gets a new
+      `__device__
+      trace_shadow_ray`
+      helper next
+      to the
+      existing
+      `intersect_*`
+      helpers;
+      OptiX reuses
+      the existing
+      `__miss__shadow`
+      / `__closesthit__shadow`
+      programs
+      already in
+      the SBT.
+      §2.4 no
+      MIS. §2.5
+      default-off
+      gate
+      (`bool
+      enable_nee
+      = false`
+      mirrors
+      `firefly_clamp
+      = 0.0f`).
+      §2.6 CLI
+      exposure
+      (`--enable-nee`,
+      modifier
+      flag, no
+      value).
+    - **§3 Files
+      likely
+      involved.**
+      Headers:
+      `PathTracer.h`
+      (config
+      field),
+      `OptixLaunchParams.h`
+      (`enable_nee`
+      bool),
+      `OptixRenderer.h`
+      (dispatcher
+      signature),
+      `Config.h`
+      (CLI bool).
+      Kernels:
+      `CudaPathTracer.cu`
+      (helper +
+      bounce-loop
+      integration),
+      `OptixPrograms.cu`
+      (same in
+      `__raygen__pathtrace`,
+      structurally
+      identical to
+      the
+      `shading_mode
+      == 2`
+      branch but
+      NOT
+      refactored).
+      CLI:
+      `CommandLine.cpp`
+      (parser arm
+      + help-text
+      line),
+      `main.cpp`
+      (dispatcher
+      wiring for
+      both
+      pathtrace
+      backends).
+      Tests:
+      byte-identity
+      test +
+      CLI parser
+      test.
+    - **§4 What
+      must not be
+      touched.**
+      Seven sub-
+      sections,
+      each with an
+      explicit
+      "why":
+      §4.1 the
+      existing
+      `shading_mode
+      == 2`
+      branch (no
+      refactor;
+      the cost-
+      ratio
+      argument
+      lives here),
+      §4.2 PT-P.15
+      emission
+      handling
+      (the double-
+      count
+      argument
+      hinges on
+      this staying
+      untouched),
+      §4.3 PT-P.18
+      RNG (the
+      `next_uint`
+      calls live
+      *inside*
+      the
+      `enable_nee`
+      guard so the
+      default-off
+      RNG sequence
+      is bit-
+      identical),
+      §4.4 PT-P.24
+      firefly-
+      clamp (clamp
+      position is
+      not moved;
+      NEE add is
+      upstream of
+      the clamp),
+      §4.5
+      `GpuScene::upload_lights`
+      (no new
+      fields,
+      strides, or
+      alignment),
+      §4.6
+      existing
+      fixtures /
+      golden
+      images (no
+      re-bake; no
+      fixture
+      passes
+      `--enable-nee`),
+      §4.7 cross-
+      backend
+      convergence
+      (atomic
+      landing of
+      both
+      backends in
+      the same
+      commit per
+      the PT-P.24
+      precedent;
+      half-landed
+      NEE = audit
+      REPAIR).
+    - **§5 PASS
+      criteria.**
+      Eight sub-
+      sections:
+      §5.1 build
+      green on
+      both audit-
+      host
+      configs
+      (CUDA-
+      configure
+      DEFERRED on
+      audit host),
+      §5.2
+      default-off
+      byte-identity
+      (static
+      IEEE-754
+      argument +
+      dynamic in-
+      build test),
+      §5.3 CLI
+      flag end-to-
+      end (parses,
+      `validate`
+      accepts,
+      `--help`
+      lists,
+      silently
+      ignored on
+      non-pathtrace
+      actions per
+      the
+      `--firefly-clamp`
+      precedent),
+      §5.4 light-
+      array
+      consumption
+      invariants,
+      §5.5
+      atomicity
+      (both
+      backends
+      same
+      commit),
+      §5.6 diff-
+      size budget
+      (~120 lines
+      across all
+      files;
+      deviation-
+      note
+      pattern),
+      §5.7 test
+      expansion,
+      §5.8 no-
+      touch
+      invariants
+      verified
+      with the
+      `git diff
+      --stat`
+      output
+      filtering
+      shape used
+      by the
+      firefly-
+      clamp CLI
+      impl entry.
+    - **§6
+      Runtime-
+      deferred
+      CUDA / OptiX
+      checks.**
+      Five
+      checks, all
+      DEFERRED to
+      a CUDA-
+      equipped
+      host:
+      §6.1 visible
+      noise
+      reduction at
+      low spp
+      (target
+      ≥4×
+      variance
+      drop in
+      directly-lit
+      regions),
+      §6.2 cross-
+      backend
+      convergence
+      (MSE <
+      `1e-4` on
+      linear-space
+      RGB, matches
+      PT-P.24
+      tolerance),
+      §6.3
+      default-off
+      bit-identity
+      runtime
+      check, §6.4
+      no-light
+      scene smoke
+      test
+      (catches
+      guard-
+      inversion
+      bugs), §6.5
+      directional-
+      light smoke
+      test (16
+      spp NEE-on
+      visibly
+      smoother
+      than NEE-
+      off; NEE-off
+      directional
+      scene is
+      black).
+    - **§7 Out-
+      of-scope /
+      sequencing
+      rationale.**
+      Nine-row
+      "deferred"
+      table with a
+      one-line
+      "why later"
+      for each:
+      MIS, area-
+      lights,
+      environment-
+      IS, multi-
+      sample-per-
+      vertex,
+      Russian
+      roulette,
+      first-
+      bounce-only,
+      shadow-helper
+      consolidation,
+      light-array
+      filtering at
+      upload time,
+      golden re-
+      bake.
+    - **§8 Slice
+      cadence.**
+      NEE.1 (this
+      brief) →
+      NEE.2 (impl)
+      → NEE.3
+      (audit).
+      Commit-
+      message
+      shapes per
+      slice.
+    - **§9 Open
+      questions
+      for the
+      implementor.**
+      Four non-
+      blockers:
+      `kShadowEps`
+      value (must
+      match the
+      existing
+      `shading_mode
+      == 2`
+      branch
+      exactly),
+      RNG-call
+      placement
+      (test the
+      bit-identity
+      invariant),
+      helper TU
+      placement
+      (per-TU
+      duplicate vs
+      shared
+      `RR_HD
+      inline`
+      header —
+      brief
+      recommends
+      duplicate
+      for v1 due
+      to
+      `intersect_*`
+      not being
+      host/device-
+      shared),
+      `--enable-nee`
+      flag
+      spelling
+      (alternatives
+      considered;
+      deviation
+      requires
+      one-sentence
+      rationale).
+    - **§10
+      Sign-off.**
+      Brief is
+      complete;
+      implementor
+      should not
+      need to
+      consult any
+      other doc
+      beyond the
+      four must-
+      not-touch
+      referents
+      named
+      inline.
+- This `BUILD_PLAN.md`
+  slice-closing
+  entry.
+
+### What does NOT change
+
+- Every prior
+  artefact
+  (PT-P.{1..25}
+  + the
+  CUDA-OPTIX-
+  VERIFY
+  report + the
+  firefly-clamp
+  CLI task /
+  impl /
+  audit):
+  byte-identical
+  (this task
+  brief is
+  documentation
+  only; it
+  touches no
+  `.cu`,
+  `.cpp`, `.h`,
+  `.cuh`,
+  `.rrscene`,
+  `cmake`, or
+  `tests/`
+  file).
+- Build
+  configs:
+  byte-identical.
+  ctest remains
+  7/7 OFF and
+  8/8 ON-
+  audit-host
+  with no
+  rebuild
+  needed (this
+  slice does
+  not even
+  invoke the
+  build).
+- All other
+  docs: this
+  slice only
+  ADDS
+  `PATH_TRACER_NEE_TASK.md`;
+  no edits to
+  any PT-P.x
+  doc, the
+  TEX-P.x arc,
+  the CUDA-
+  H.x arc, the
+  CUDA-OPTIX-
+  VERIFY
+  report, or
+  the
+  firefly-clamp
+  CLI task /
+  impl / audit.
+
+### Master rule compliance
+
+- **Build
+  incrementally /
+  every step
+  compilable**:
+  docs-only
+  slice; build
+  is trivially
+  preserved.
+- **Documentation
+  only; do not
+  modify source
+  code; do not
+  fix inside
+  task brief**:
+  every brief
+  finding is a
+  read-only
+  observation
+  of the
+  current
+  emission-only
+  state + a
+  forward-
+  looking spec;
+  zero source
+  edits.
+- **No CPU
+  per-pixel
+  work**: the
+  brief
+  mandates
+  GPU-side NEE
+  in both
+  backends'
+  path-trace
+  raygens; no
+  CPU fallback
+  introduced.
+- **No fake
+  stubs**: the
+  brief
+  explicitly
+  marks the
+  `enable_nee`
+  config field
+  as a *real
+  gate*
+  (default
+  false; the
+  kernel guard
+  fires only
+  when true
+  AND
+  `light_count
+  > 0`), not a
+  placeholder.
+  The kernel-
+  side helpers
+  the impl
+  slice will
+  add are
+  *real
+  helpers*
+  that consume
+  the existing
+  light upload;
+  no scaffold-
+  only files.
+- **Update
+  BUILD_PLAN**:
+  this entry,
+  per master
+  rule 8.
+
+### Diff size
+
+- `git diff
+  --stat HEAD~1..HEAD
+  -- docs/PATH_TRACER_NEE_TASK.md
+  docs/BUILD_PLAN.md`:
+  one new
+  doc file
+  (~700
+  lines; the
+  brief shape
+  matches the
+  PT-P.x +
+  firefly-
+  clamp CLI
+  task brief
+  precedent on
+  inline
+  documentation
+  density) +
+  this
+  BUILD_PLAN
+  entry.
+- Source diff
+  (under
+  `src/`,
+  `tests/`,
+  `scenes/`,
+  `tools/`,
+  `CMakeLists.txt`):
+  ZERO bytes.
+  The brief is
+  a spec for
+  the NEE.2
+  implementation
+  slice and
+  introduces
+  no source
+  changes.
+
+### Verified at the build
+
+- Brief was
+  authored
+  against the
+  *current*
+  source state;
+  the
+  must-not-
+  touch
+  referents
+  (§4.1 →
+  `OptixPrograms.cu:
+  393-527`;
+  §4.2 →
+  PT-P.15
+  commit
+  `dd98d90`;
+  §4.3 →
+  PT-P.18
+  commit
+  `d2af0c5`;
+  §4.4 →
+  PT-P.24
+  commit
+  `0a06d0d`)
+  were re-
+  verified to
+  exist in-
+  tree before
+  the brief
+  cited them.
+- The `lights`
+  + `light_count`
+  +
+  `enable_shadows`
+  fields the
+  brief reuses
+  exist
+  (`OptixLaunchParams.h:
+  166-198`).
+  The
+  `LightType`
+  enum's
+  Point=0 /
+  Directional=1
+  / Area=2
+  PLACEHOLDER /
+  Environment=3
+  PLACEHOLDER
+  shape
+  (`Light.h:
+  20-31`) was
+  re-verified
+  before the
+  brief scoped
+  to Point +
+  Directional
+  only.
+- The
+  `PathTraceConfig::firefly_clamp`
+  field
+  (`PathTracer.h:
+  103`) and
+  the
+  `Config::firefly_clamp`
+  field
+  (`Config.h:
+  59`) were
+  re-verified
+  as the
+  default-off
+  precedent
+  the new
+  `enable_nee`
+  field
+  mirrors.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
