@@ -48109,6 +48109,607 @@ landing.
   audits +
   `FIREFLY_CLAMP_CLI_AUDIT.md`).
 
+## NEE.3 — CUDA NEE skeleton audit (docs only)
+
+**Scope of this
+slice (post-NEE.2
+skeleton impl):
+walk the
+docs/PATH_TRACER_NEE_TASK.md
+§5 PASS criteria
+against the
+NEE.2 commit
+`6f49c55` and
+record the
+verdict.
+Documentation
+only; zero
+source changes.
+Closes the NEE
+skeleton sub-
+arc cleanly so
+the next slice
+can pick up
+EITHER the
+OptiX-side
+mirror OR a
+pivot to
+another
+master-#16
+follow-up.**
+
+### What ships
+
+- `docs/PATH_TRACER_NEE_AUDIT.md`
+  (NEW). Five-
+  section audit:
+    - **§0 Slice
+      scope
+      reminder.**
+      Documents
+      that NEE.2
+      ships only
+      the CUDA
+      half (the
+      user sub-
+      divided the
+      original
+      atomic
+      NEE.1
+      proposal
+      into four
+      slices).
+      The §5.5
+      atomicity
+      criterion
+      is
+      interpreted
+      against the
+      sub-divided
+      scope — the
+      byte-
+      identity
+      invariant
+      substitutes
+      for the
+      divergence
+      safeguard
+      so long as
+      no caller
+      flips the
+      flag.
+    - **§1 PASS
+      criteria
+      walk.**
+      Eight sub-
+      sections,
+      one per
+      §5 item:
+      §1.1 build
+      green
+      (PASS;
+      7/7 OFF +
+      8/8 ON
+      re-verified
+      during the
+      audit;
+      CUDA
+      configure
+      DEFERRED on
+      audit
+      host),
+      §1.2
+      default-
+      off byte-
+      identity
+      (PASS
+      static
+      IEEE-754
+      argument
+      citing the
+      kernel
+      guard at
+      `CudaPathTracer.cu:213`
+      with both
+      operands
+      zero /
+      false at
+      default; +
+      static
+      RNG-stream
+      identity
+      argument
+      citing the
+      `next_float`
+      draw
+      placement
+      inside the
+      guard at
+      `:214`;
+      DEFERRED
+      runtime
+      bit-
+      identity +
+      DEFERRED
+      dynamic
+      test),
+      §1.3 CLI
+      end-to-
+      end
+      (DEFERRED;
+      no CLI in
+      NEE.2 by
+      design),
+      §1.4 light-
+      array
+      consumption
+      invariants
+      (PASS;
+      bounded
+      reads with
+      defence-
+      in-depth
+      clamp at
+      `DirectLight.cuh:124-129`;
+      placeholder
+      types
+      silently
+      zeroed at
+      `:188-198`;
+      0-byte
+      diff on
+      `Light.h`
+      / `GpuScene`
+      / `CudaScene.cuh`
+      light
+      fields),
+      §1.5
+      atomicity
+      (deliberate
+      DEVIATION;
+      the user-
+      driven
+      sub-arc
+      sub-
+      division
+      replaces
+      the
+      "single
+      atomic
+      commit"
+      gate with
+      a
+      sequencing
+      gate "no
+      caller
+      flips the
+      flag
+      until the
+      OptiX-
+      side
+      mirror
+      lands";
+      verified
+      via
+      `grep -rn
+      "enable_nee"
+      src/`
+      finding no
+      `cfg.enable_nee
+      = true`
+      assignment
+      anywhere),
+      §1.6 diff-
+      size
+      (DEVIATION
+      within
+      precedent;
+      pure-logic
+      diff
+      ~155
+      lines vs
+      ~120
+      target,
+      doc-comment
+      density
+      matches
+      PT-P.x +
+      firefly-
+      clamp
+      precedent),
+      §1.7 test
+      expansion
+      (DEFERRED;
+      §5.7's
+      three
+      proposed
+      tests not
+      shipped;
+      §3.3
+      recommends
+      the host-
+      side
+      helper
+      test for
+      the next
+      slice),
+      §1.8 no-
+      touch
+      invariants
+      (PASS;
+      table of
+      twelve
+      must-not-
+      touch
+      paths all
+      at 0
+      bytes
+      diff;
+      TEX-P.6
+      regression
+      intact;
+      adjacent
+      PT-P.15
+      emission +
+      PT-P.24
+      firefly-
+      clamp
+      character-
+      identical).
+    - **§2
+      Runtime-
+      deferred
+      §6
+      checks.**
+      Five-row
+      table of
+      §6 checks
+      with their
+      "when
+      unblocked"
+      preconditions
+      (§6.3
+      cheapest /
+      first,
+      then §6.4
+      / §6.5 /
+      §6.1 /
+      §6.2 in
+      sequencing
+      order
+      gated by
+      OptiX +
+      CLI
+      slice
+      arrival).
+    - **§3
+      Sub-arc
+      status &
+      next
+      steps.**
+      §3.1
+      sub-arc
+      status
+      (skeleton
+      closed
+      with
+      PASS;
+      no
+      REPAIR;
+      two
+      DEVIATIONs
+      +
+      DEFERRALs
+      documented),
+      §3.2
+      sequencing
+      constraints
+      (the
+      OptiX
+      mirror
+      MUST
+      land
+      before
+      any
+      caller
+      flips
+      the
+      flag),
+      §3.3
+      three
+      next-
+      slice
+      options
+      (NEE.4
+      OptiX
+      mirror,
+      NEE.5
+      CLI +
+      tests
+      after
+      NEE.4,
+      or
+      pivot
+      away
+      from the
+      arc).
+    - **§4
+      Verdict.**
+      PASS for
+      the NEE.2
+      scope.
+      Both
+      audit-
+      host
+      configs
+      re-
+      verified
+      green;
+      no
+      REPAIR
+      items.
+    - **§5
+      Sub-arc
+      closure
+      note.**
+      The
+      project
+      can
+      pause
+      the arc
+      here at
+      zero
+      risk to
+      existing
+      fixtures /
+      goldens
+      thanks to
+      the
+      default-
+      off byte-
+      identity
+      invariant.
+- This
+  `BUILD_PLAN.md`
+  slice-closing
+  entry.
+
+### What does NOT change
+
+- Every prior
+  artefact
+  (PT-P.{1..25}
+  + the
+  CUDA-OPTIX-
+  VERIFY
+  report + the
+  firefly-
+  clamp CLI
+  task / impl /
+  audit + the
+  NEE.1 task
+  brief + the
+  NEE.2
+  skeleton
+  impl):
+  byte-
+  identical
+  (this audit
+  is
+  documentation
+  only; it
+  touches no
+  `.cu`,
+  `.cpp`, `.h`,
+  `.cuh`,
+  `.rrscene`,
+  `cmake`, or
+  `tests/`
+  file).
+- Build
+  configs:
+  byte-
+  identical.
+  ctest remains
+  7/7 OFF and
+  8/8 ON-
+  audit-host;
+  the audit
+  invoked the
+  build only
+  to re-verify
+  greenness,
+  not to
+  modify any
+  build
+  artefact.
+- All other
+  docs: this
+  audit only
+  ADDS
+  `PATH_TRACER_NEE_AUDIT.md`;
+  no edits to
+  `PATH_TRACER_NEE_TASK.md`,
+  any PT-P.x
+  doc, the
+  TEX-P.x
+  arc, the
+  CUDA-H.x
+  arc, the
+  CUDA-OPTIX-
+  VERIFY
+  report, or
+  the
+  firefly-
+  clamp CLI
+  task / impl /
+  audit.
+
+### Master rule compliance
+
+- **Build
+  incrementally /
+  every step
+  compilable**:
+  docs-only
+  slice; build
+  is trivially
+  preserved.
+  Both
+  configs
+  re-built +
+  re-tested
+  during the
+  audit
+  itself
+  (re-build
+  + re-ctest
+  is the
+  audit's
+  evidence
+  for §5.1).
+- **Documentation
+  only; do
+  not modify
+  source code;
+  do not fix
+  inside
+  audit**:
+  every audit
+  finding is
+  a read-only
+  observation;
+  zero source
+  edits; the
+  REPAIR list
+  is empty so
+  no fix-up
+  edits
+  needed.
+- **No CPU
+  per-pixel
+  work**: the
+  audit
+  introduces
+  zero
+  per-pixel
+  code. The
+  NEE.2 kernel
+  guards
+  remain the
+  only NEE
+  consumers
+  device-
+  side.
+- **Update
+  BUILD_PLAN**:
+  this entry,
+  per master
+  rule 8.
+
+### Verified at the build
+
+- `cmake --build
+  build` (audit
+  host,
+  RR_ENABLE_CUDA=OFF,
+  RR_ENABLE_OPTIX=OFF):
+  re-built
+  cleanly
+  during the
+  audit; ctest
+  7/7 green.
+- `cmake --build
+  build-ON`
+  (audit host,
+  RR_ENABLE_CUDA=OFF,
+  RR_ENABLE_OPTIX=ON):
+  re-built
+  cleanly;
+  ctest 8/8
+  green.
+- Audit-host
+  smoke
+  surface
+  unchanged:
+  `--render-pathtrace`
+  emits the
+  documented
+  "requires
+  CUDA"
+  fallback;
+  `--render-optix-pathtrace`
+  emits the
+  `firefly_clamp:
+  0.000000
+  (disabled)`
+  log line
+  followed by
+  the
+  documented
+  "requires
+  the OptiX
+  SDK"
+  fallback.
+  NEE.2 added
+  no log
+  line — the
+  NEE skeleton
+  has no CLI
+  surface
+  yet — and
+  the audit
+  re-verified
+  that
+  invariant.
+- TEX-P.6
+  fixture
+  regression
+  re-verified
+  during the
+  audit:
+  `--scene-info
+  scenes/test_textured_material.rrscene`
+  emits the
+  expected
+  three-case
+  log
+  sequence
+  (one Case 1
+  info + two
+  Case 3
+  warnings;
+  `fixups
+  applied: 2`).
+- `git diff
+  --stat
+  6f49c55~1..6f49c55
+  -- src/optix/
+  src/lighting/
+  src/gpu/GpuScene.cpp
+  src/gpu/GpuScene.h
+  src/pathtracer/RNG.h
+  src/pathtracer/RNG.cuh
+  src/pathtracer/Sampling.h
+  src/pathtracer/Sampling.cuh
+  src/cuda/CudaIntersection.cuh
+  src/cuda/CudaScene.cuh
+  src/cuda/CudaRenderer.cu
+  src/cuda/CudaRenderer.cuh
+  src/cuda/CudaRenderer.cpp
+  tests/
+  scenes/
+  tools/verify_cuda_host.py
+  CMakeLists.txt
+  | wc -l` =>
+  0 bytes
+  (no-touch
+  invariants
+  verified for
+  the NEE.2
+  impl
+  slice).
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
