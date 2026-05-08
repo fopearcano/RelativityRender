@@ -64728,6 +64728,772 @@ MIS.7
 if
 preferred.
 
+## MIS.5 — CUDA MIS integrator task definition (docs only)
+
+**Scope of
+this slice
+(post-MIS.4
+impl):
+ship the
+self-
+contained
+task brief
+specifying
+how the
+three MIS
+leaves
+(BsdfSample /
+DirectLightSample
+PDF +
+delta
+flag /
+power_heuristic)
+wire into
+the CUDA
+path
+tracer's
+NEE
+branch.
+Documentation
+only;
+zero
+source
+changes.
+The brief
+specifies
+the
+MINIMUM-
+RISK
+wiring
+that
+preserves
+byte-
+identity
+at v1
+delta-
+light
+scope:
+delta
+short-
+circuit
+to
+mis_weight
+= 1.0f
+(IEEE-754
+identity
+multiplication);
+no BSDF
+bounce
+swap
+(deferred
+per §1.3
+#1); no
+MIS-on-
+emission-
+add
+(deferred
+per §1.3
+#2).**
+
+### What ships
+
+- `docs/PATH_TRACER_MIS_CUDA_INTEGRATOR_TASK.md`
+  (NEW;
+  ~1134
+  lines).
+  Nine-
+  section
+  brief
+  walking
+  the
+  user's
+  six
+  enumerated
+  topics +
+  out-of-
+  scope +
+  sub-arc
+  context +
+  recommended
+  audit
+  cadence +
+  verdict.
+  Pattern
+  mirrors
+  the
+  canonical
+  MIS.x
+  task-
+  brief
+  shape
+  established
+  at
+  MIS.{2,3,4}.
+  Notable
+  design
+  decisions:
+    - **§1
+      The
+      single
+      architectural
+      change.**
+      Inside
+      the
+      existing
+      NEE
+      branch
+      at
+      `CudaPathTracer.cu:276-317`,
+      multiply
+      the
+      NEE
+      contribution
+      by
+      `mis_weight_nee
+      =
+      sample.is_delta
+      ? 1.0f
+      :
+      power_heuristic(sample.pdf_solid_angle,
+      bsdf_pdf(m,
+      sample.wi,
+      hit.normal))`.
+      §1.2
+      Why
+      the
+      change
+      is
+      minimal:
+      delta
+      short-
+      circuit +
+      `power_heuristic`
+      unreachable
+      at v1
+      (always
+      delta).
+      §1.3
+      What
+      MIS.5
+      DOES
+      NOT
+      include:
+      BSDF
+      bounce
+      swap
+      (sub-
+      ULP
+      framebuffer
+      drift
+      from
+      Lambert
+      cancellation;
+      deferred);
+      MIS-
+      on-
+      emission-
+      add
+      (architectural
+      tracking
+      pointless
+      at v1);
+      per-
+      bounce
+      relativity-
+      on-
+      throughput
+      (not a
+      MIS
+      concern).
+    - **§2
+      v1
+      behavior.**
+      Four
+      sub-
+      sections
+      matching
+      the
+      user's
+      bullets.
+      §2.3
+      output
+      byte-
+      identical
+      via the
+      IEEE-
+      754
+      identity-
+      multiplication
+      argument:
+      `x *
+      1.0f ==
+      x` for
+      finite
+      non-NaN
+      `x` per
+      IEEE-754
+      §6.
+    - **§3
+      Files
+      likely
+      involved.**
+      `src/cuda/CudaPathTracer.cu`
+      (+~25-40
+      lines:
+      includes +
+      MIS-
+      weight
+      composition
+      inside
+      the
+      existing
+      NEE
+      branch),
+      `tests/pathtracer_nee_tests.cpp`
+      (+~30-50
+      lines:
+      one
+      mandatory
+      case +
+      registry
+      line),
+      `docs/BUILD_PLAN.md`.
+      `CMakeLists.txt`
+      NOT
+      touched;
+      no new
+      test
+      binary.
+      §3.1
+      provides
+      the
+      target
+      shape
+      for the
+      integrator
+      change;
+      §3.2
+      provides
+      the
+      target
+      shape
+      for the
+      test
+      case.
+    - **§4
+      What
+      must
+      not be
+      touched.**
+      Seven
+      sub-
+      sections.
+      Notable:
+      the
+      OptiX
+      integrator
+      is byte-
+      identical
+      (MIS.6
+      future
+      slice);
+      the
+      pathtracer
+      module's
+      sibling
+      surfaces
+      (RNG,
+      Sampling,
+      DirectLight,
+      Bsdf,
+      Mis,
+      PathTracer)
+      are
+      ALL
+      byte-
+      identical;
+      the CUDA
+      kernel
+      structure
+      (signature,
+      launcher,
+      enable_nee
+      guard,
+      shadow
+      ray,
+      bounce,
+      emission-
+      add,
+      firefly
+      clamp,
+      relativity
+      stack)
+      is ALL
+      unchanged
+      except
+      the
+      ~10-line
+      MIS-
+      weight
+      arithmetic
+      block
+      inside
+      the
+      existing
+      `if
+      (cos_th
+      > 0.0f)`
+      branch.
+    - **§5
+      PASS
+      criteria.**
+      Eight-
+      sub-
+      section
+      gate:
+      §5.1
+      build,
+      §5.2
+      ctest
+      counts
+      UNCHANGED
+      at 11/11
+      OFF +
+      12/12
+      ON,
+      §5.3
+      diff ≤
+      200
+      (pure-
+      logic
+      ~55-90),
+      §5.4
+      no-touch
+      invariants,
+      §5.5
+      one
+      mandatory
+      case
+      (test_mis_weight_delta_short_circuits_to_one),
+      §5.6
+      existing
+      NEE.5 +
+      MIS.{2,3,4}
+      test
+      invariants
+      preserved,
+      §5.7
+      documentation,
+      §5.8
+      master-
+      rule
+      compliance.
+    - **§6
+      Runtime-
+      deferred
+      CUDA-
+      host
+      checks.**
+      Five
+      checks.
+      §6.1 is
+      the KEY
+      check:
+      `cmp`
+      pre-
+      MIS.5
+      vs
+      post-
+      MIS.5
+      PPM
+      with
+      `--enable-nee`
+      against
+      delta-
+      light
+      scene —
+      should
+      be bit-
+      identical.
+      Plus
+      default-
+      OFF
+      carry-
+      forward,
+      visible
+      behaviour
+      check,
+      ctest
+      cycle
+      on CUDA
+      host,
+      MIS.3
+      audit
+      DEFERRED
+      list
+      carry-
+      forward.
+    - **§7
+      Out-of-
+      scope.**
+      Ten
+      explicit
+      items
+      (OptiX
+      integrator,
+      BSDF
+      bounce
+      swap,
+      MIS-on-
+      emission-
+      add,
+      area-
+      light
+      NEE,
+      specular-
+      delta
+      BSDFs,
+      env-IBL
+      NEE,
+      CLI
+      flag,
+      MIS-
+      weight
+      AOV,
+      per-
+      bounce
+      relativity-
+      on-
+      throughput,
+      cross-
+      backend
+      MIS
+      convergence).
+    - **§8
+      Sub-arc
+      context.**
+      MIS.5
+      is the
+      FIRST
+      INTEGRATING
+      slice
+      (consumes
+      all three
+      leaves);
+      §8.4
+      audit
+      cadence:
+      MIS.5
+      audit
+      RECOMMENDED
+      but not
+      a hard
+      PASS
+      criterion;
+      operator
+      may
+      bundle
+      with
+      MIS.6 /
+      MIS.7.
+    - **§9
+      Verdict.**
+      Brief
+      complete;
+      mode
+      reminder.
+
+  Note on
+  the
+  user's
+  referenced
+  `PATH_TRACER_MIS_BSDF_PDF_AUDIT.md`:
+  that
+  doc was
+  not
+  shipped —
+  MIS.2
+  closed
+  via two
+  BUILD_PLAN
+  entries
+  (`d9fa6e3`
+  +
+  `5a1c772`),
+  not via
+  a
+  separate
+  audit
+  doc, as
+  recorded
+  in the
+  MIS.3
+  audit's
+  §0
+  header
+  note.
+  This
+  brief
+  proceeds
+  from the
+  plan +
+  the
+  MIS.2
+  BSDF
+  task
+  brief +
+  the
+  MIS.3 /
+  MIS.4
+  audits
+  as the
+  source
+  of
+  truth.
+- This
+  `BUILD_PLAN.md`
+  slice-
+  closing
+  entry.
+
+### What does NOT change
+
+- Source:
+  byte-
+  identical.
+  `git
+  diff --
+  src/
+  tests/
+  scenes/
+  tools/
+  CMakeLists.txt`
+  ⇒ 0
+  bytes.
+- Build
+  configs:
+  unchanged
+  at the
+  post-
+  MIS.4
+  baseline
+  (11/11
+  OFF +
+  12/12
+  ON
+  ctest;
+  the
+  brief's
+  authoring
+  did not
+  invoke
+  the
+  build
+  system).
+- All
+  other
+  docs:
+  this
+  brief
+  only
+  ADDS
+  `PATH_TRACER_MIS_CUDA_INTEGRATOR_TASK.md`;
+  no
+  edits
+  to
+  prior
+  PT-P.x /
+  TEX-P.x /
+  NEE.x /
+  firefly-
+  clamp /
+  CUDA-H.x /
+  MIS.{1,2,3,4}
+  artefacts.
+
+### Master rule compliance
+
+- **Build
+  incrementally
+  / every
+  step
+  compilable
+  (rules
+  1 +
+  2)**:
+  docs-
+  only;
+  preserved
+  trivially.
+- **No
+  fake
+  stubs
+  (rule
+  3)**:
+  brief
+  defines
+  real
+  contracts
+  (helper
+  composition +
+  byte-
+  identity
+  argument +
+  PASS-
+  criterion
+  test) +
+  cross-
+  references
+  the
+  Veach
+  1995
+  source +
+  the
+  shipped
+  MIS.{2,3,4}
+  helper
+  APIs.
+- **No
+  CPU
+  per-
+  pixel
+  work
+  (rules
+  5 +
+  7)**:
+  brief
+  describes
+  device-
+  side
+  per-
+  pixel
+  decisions
+  only.
+- **Module
+  boundaries
+  (rule
+  9)**:
+  brief
+  scopes
+  the
+  integrator
+  consumption
+  to the
+  existing
+  `CudaPathTracer.cu`
+  →
+  `pathtracer/*`
+  consumer
+  pattern;
+  no
+  cross-
+  module
+  ripple.
+- **Update
+  BUILD_PLAN
+  (rule
+  8)**:
+  this
+  entry.
+- **Documentation
+  only;
+  do not
+  modify
+  source
+  code
+  (current-
+  prompt
+  rules)**:
+  zero
+  source
+  edits.
+
+### Verified at the build
+
+- Trivially
+  preserved.
+  The
+  authoring
+  of this
+  task
+  brief
+  did not
+  invoke
+  the
+  build
+  system.
+  Both
+  audit-
+  host
+  configs
+  remain
+  green at
+  the
+  post-
+  MIS.4
+  baseline:
+  `build`
+  (RR_ENABLE_CUDA=OFF,
+  RR_ENABLE_OPTIX=OFF)
+  ctest
+  11/11;
+  `build-ON`
+  (RR_ENABLE_CUDA=OFF,
+  RR_ENABLE_OPTIX=ON)
+  ctest
+  12/12.
+
+### Sub-arc status
+
+MIS.5
+task
+brief
+shipped.
+The
+contract
+for the
+MIS.5
+impl
+slice is
+canonical;
+the
+implementer
+can ship
+the diff
+end-to-
+end
+without
+re-
+deriving
+the
+design.
+MIS.5 is
+the
+FIRST
+INTEGRATING
+slice in
+the MIS
+arc;
+after
+its
+impl +
+optional
+audit
+land,
+MIS.6
+(OptiX
+integrator)
+follows
+the
+MIS.5
+pattern,
+then
+MIS.7
+audits
+the
+entire
+arc.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
