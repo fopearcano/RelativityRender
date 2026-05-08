@@ -161,6 +161,14 @@ RR_HD inline DirectLightSample sample_direct_light_uniform(
                                  L.color.y * (L.intensity * inv_r2),
                                  L.color.z * (L.intensity * inv_r2)};
         s.pdf_inv         = static_cast<float>(count);
+        // MIS.3: a Point light is a Dirac delta in direction.
+        // `pdf_solid_angle` is a sentinel `0.0f` here; the
+        // future MIS helper short-circuits on `is_delta` and
+        // never reads this field for delta lights. See
+        // `pathtracer/DirectLight.h` doc-comment for the
+        // contract.
+        s.pdf_solid_angle = 0.0f;
+        s.is_delta        = true;
         return s;
     }
 
@@ -189,6 +197,13 @@ RR_HD inline DirectLightSample sample_direct_light_uniform(
                                  L.color.y * L.intensity,
                                  L.color.z * L.intensity};
         s.pdf_inv         = static_cast<float>(count);
+        // MIS.3: a Directional light is a Dirac delta on the
+        // unit sphere. Same sentinel pattern as the Point
+        // branch above: `pdf_solid_angle = 0.0f` is unread;
+        // `is_delta = true` is the discriminator the future
+        // MIS helper consumes.
+        s.pdf_solid_angle = 0.0f;
+        s.is_delta        = true;
         return s;
     }
 

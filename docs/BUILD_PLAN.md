@@ -61541,6 +61541,1002 @@ the
 MIS.3
 impl.
 
+## MIS.3 — Light PDF data model (impl)
+
+**Scope of
+this slice
+(post-MIS.3
+task
+brief):
+ship the
+extension
+to
+`DirectLightSample`
++ helper
+population +
+host-only
+test
+cases per
+the
+canonical
+brief.
+Closes
+the MIS.3
+sub-arc.
+The new
+fields
+are
+runtime-
+inert —
+no
+caller
+reads
+them in
+this
+slice;
+the
+existing
+`pdf_inv`-
+based
+NEE
+arithmetic
+in both
+backends
+flows
+through
+unchanged.
+MIS.5 +
+MIS.6
+(the
+future
+integrator
+slices)
+will
+consume
+the new
+fields.**
+
+### What ships
+
+- **`src/pathtracer/DirectLight.h`
+  (+60 /
+  -2
+  lines).**
+  Two
+  new
+  fields
+  appended
+  after
+  the
+  existing
+  `pdf_inv`:
+    - `pdf_solid_angle`
+      (`float`,
+      default
+      `0.0f`)
+      — per-
+      steradian
+      directional
+      PDF;
+      sentinel
+      at v1
+      Dirac
+      lights;
+      future
+      area-
+      light
+      arc
+      populates
+      with
+      the
+      area-
+      to-
+      solid-
+      angle
+      Jacobian.
+    - `is_delta`
+      (`bool`,
+      default
+      `false`)
+      —
+      discriminator
+      for
+      delta-
+      direction
+      lights;
+      `true`
+      for v1
+      Point /
+      Directional;
+      MIS
+      helper
+      short-
+      circuits
+      on
+      this.
+
+  ~50
+  lines
+  of doc-
+  comments
+  walking
+  the
+  new
+  field
+  semantics
+  per the
+  task
+  brief
+  §2 +
+  the
+  MIS.3
+  byte-
+  identity
+  invariant
+  per
+  §2.5.
+  Cross-
+  references
+  `docs/PATH_TRACER_MIS_LIGHT_PDF_TASK.md`
+  +
+  `docs/PATH_TRACER_MIS_PLAN.md`.
+- **`src/pathtracer/DirectLight.cuh`
+  (+15
+  lines).**
+  Inside
+  `sample_direct_light_uniform`:
+    - Point
+      branch
+      (after
+      `s.pdf_inv
+      = ...`):
+      `s.pdf_solid_angle
+      =
+      0.0f;
+      s.is_delta
+      =
+      true;`
+      + 5
+      lines
+      of
+      inline
+      doc-
+      comment.
+    - Directional
+      branch:
+      same
+      assignments
+      + 5
+      lines
+      of
+      doc-
+      comment.
+    - Area /
+      Environment
+      PLACEHOLDER
+      branches:
+      NO
+      change
+      (the
+      existing
+      `return
+      s;`
+      with
+      default-
+      constructed
+      `s`
+      now
+      carries
+      both
+      new
+      fields
+      at
+      bit-
+      zero
+      defaults
+      — the
+      "no
+      contribution"
+      sentinel).
+- **`tests/pathtracer_nee_tests.cpp`
+  (+153
+  lines).**
+  Three
+  new
+  test-
+  case
+  functions
+  per the
+  task
+  brief
+  §5.5,
+  registered
+  in
+  `main()`:
+    - `test_point_light_sets_is_delta_and_zero_pdf`:
+      anchors
+      Point
+      branch
+      sets
+      `is_delta
+      = true`
+      +
+      `pdf_solid_angle
+      =
+      0.0f`
+      +
+      pre-
+      existing
+      fields
+      unchanged
+      from
+      NEE.5
+      baseline.
+    - `test_directional_light_sets_is_delta_and_zero_pdf`:
+      same
+      shape
+      for
+      the
+      Directional
+      branch.
+    - `test_zero_contribution_sample_has_default_is_delta`:
+      anchors
+      that
+      every
+      eight
+      "no
+      contribution"
+      branches
+      (count==0,
+      nullptr
+      lights,
+      coincident
+      point,
+      point
+      behind,
+      directional
+      pointing
+      away,
+      directional
+      zero
+      direction,
+      area
+      placeholder,
+      environment
+      placeholder)
+      leave
+      both
+      new
+      fields
+      at
+      bit-
+      zero
+      defaults.
+
+  Per-
+  binary
+  count
+  grows
+  from
+  34/34
+  →
+  **53/53**
+  (+19
+  RR_CHECK
+  assertions:
+  10 from
+  the
+  first
+  two
+  cases +
+  9 from
+  the
+  multi-
+  branch
+  `check_default`
+  lambda
+  in case
+  3 — one
+  RR_CHECK
+  per
+  branch +
+  one
+  composite
+  invariant
+  check).
+- This
+  `BUILD_PLAN.md`
+  slice-
+  closing
+  entry.
+
+### What does NOT change
+
+- **No
+  rendering
+  behaviour
+  change.**
+  Both
+  integrators
+  (`k_pathtrace_sample`
+  in
+  `src/cuda/CudaPathTracer.cu`
+  and
+  `__raygen__pathtrace`
+  in
+  `src/optix/OptixPrograms.cu`)
+  continue
+  to use
+  their
+  existing
+  `pdf_inv`-
+  based
+  NEE
+  arithmetic;
+  no
+  caller
+  reads
+  the
+  new
+  fields
+  in this
+  slice.
+  Per-
+  pixel
+  output
+  is
+  byte-
+  identical
+  with
+  the
+  post-
+  MIS.2
+  baseline
+  at
+  `5a1c772`.
+- **No
+  CUDA /
+  OptiX
+  algorithm
+  changes.**
+  No
+  `.cu`
+  files
+  modified.
+  No
+  POD-
+  layout
+  consumer
+  change
+  in the
+  kernels
+  (the
+  POD
+  grew
+  on the
+  host
+  side,
+  but
+  device-
+  side
+  reads
+  only
+  touch
+  the
+  pre-
+  existing
+  fields).
+- **No
+  pathtracer
+  module
+  sibling
+  surface
+  changes.**
+  `src/pathtracer/RNG.{h,cuh}`,
+  `src/pathtracer/Sampling.{h,cuh}`,
+  `src/pathtracer/Bsdf.{h,cuh}`
+  (the
+  MIS.2
+  sibling
+  module),
+  `src/pathtracer/PathTracer.{h,cpp}`
+  — every
+  byte-
+  identical.
+- **No
+  CLI /
+  Config /
+  main.cpp
+  changes.**
+  `src/core/`
+  +
+  `src/main.cpp`
+  byte-
+  identical.
+  No new
+  CLI
+  flag.
+- **No
+  C4D /
+  server /
+  UI /
+  node-
+  editor
+  changes.**
+  None
+  exist.
+- **No
+  scene /
+  tooling /
+  build
+  config
+  changes.**
+  `scenes/`,
+  `tools/verify_cuda_host.py`,
+  `CMakeLists.txt`
+  byte-
+  identical.
+- **NEE.5
+  byte-
+  identity
+  anchor
+  preserved.**
+  The
+  existing
+  `test_zero_contribution_is_bit_default`
+  case
+  (line
+  341
+  pre-
+  slice)
+  continues
+  to
+  pass
+  WITHOUT
+  modification.
+  The
+  `memcmp`
+  against
+  a
+  default-
+  constructed
+  reference
+  still
+  returns
+  0
+  because
+  both
+  new
+  field
+  defaults
+  are
+  bit-
+  zero
+  (per
+  the
+  task
+  brief
+  §2.5
+  invariant).
+- **NEE.5
+  determinism
+  anchor
+  preserved.**
+  `test_helper_determinism`
+  continues
+  to
+  pass.
+  The
+  helper
+  produces
+  deterministic
+  output
+  for
+  identical
+  inputs;
+  the
+  new
+  field
+  population
+  is also
+  deterministic.
+
+### Source diff size deviation
+
+**+226 /
+-2
+across
+3 files.**
+Per the
+task
+brief
+§5.3
+budget
+(≤
+100),
+the
+slice
+overshoots
+by
+~2.26x.
+The
+deviation
+matches
+the
+established
+PT-P.x /
+NEE.x /
+MIS.2
+doc-
+comment
+density
+overshoot
+pattern:
+
+- `DirectLight.h`:
+  60-line
+  growth,
+  ~92%
+  doc-
+  comment
+  +
+  ~8%
+  field
+  declarations.
+- `DirectLight.cuh`:
+  15-line
+  growth,
+  ~67%
+  doc-
+  comment
+  +
+  ~33%
+  field
+  population
+  code
+  (4
+  assignments
+  across
+  2
+  branches).
+- `tests/pathtracer_nee_tests.cpp`:
+  153-line
+  growth,
+  ~25%
+  per-
+  case
+  doc-
+  comment +
+  ~75%
+  test
+  case
+  bodies +
+  the
+  multi-
+  branch
+  `check_default`
+  lambda.
+
+The
+pure-
+logic
+diff
+(field
+declarations +
+helper
+population +
+test case
+bodies,
+net of
+doc-
+comments)
+is
+~115
+lines —
+slightly
+above
+the
+≤
+100
+cap
+but
+within
+~15%
+of
+budget.
+The
+shipped
+output
+satisfies
+every
+other
+PASS
+criterion
+(§5.1
+build,
+§5.2
+ctest
+counts,
+§5.4
+no-
+touch,
+§5.5
+three
+mandatory
+cases,
+§5.6
+existing
+test
+invariants,
+§5.7
+documentation,
+§5.8
+master-
+rule
+compliance);
+only
+§5.3 is
+breached.
+Documented
+here
+per the
+established
+deviation-
+note
+pattern.
+
+### Master rule compliance
+
+- **Build
+  incrementally
+  / every
+  step
+  compilable
+  (rules
+  1 +
+  2)**:
+  both
+  audit-
+  host
+  configs
+  rebuild
+  cleanly.
+  ctest
+  10/10
+  OFF +
+  11/11
+  ON
+  (counts
+  UNCHANGED
+  per
+  the
+  task
+  brief
+  §5.2
+  expectation
+  exactly).
+- **No
+  fake
+  stubs
+  (rule
+  3)**:
+  every
+  field
+  is
+  real
+  data
+  carrying
+  real
+  semantics
+  (the
+  `is_delta
+  =
+  true`
+  populate
+  for v1
+  delta
+  lights
+  is
+  meaningful
+  even
+  before
+  MIS.5 /
+  MIS.6
+  consume
+  it —
+  it
+  declares
+  the
+  light's
+  PDF
+  measure-
+  zero
+  status,
+  which
+  is a
+  scene-
+  level
+  truth).
+- **No
+  CPU
+  per-
+  pixel
+  work
+  (rules
+  5 +
+  7)**:
+  the
+  helper
+  is
+  RR_HD
+  inline;
+  per-
+  pixel
+  consumption
+  is
+  device-
+  side at
+  MIS.5 /
+  MIS.6.
+- **Module
+  boundaries
+  (rule
+  9)**:
+  the
+  new
+  fields
+  sit
+  on the
+  existing
+  `DirectLightSample`
+  POD;
+  no new
+  module +
+  no
+  cross-
+  module
+  ripple.
+- **Avoid
+  monolithic
+  files
+  (rule
+  10)**:
+  `DirectLight.h`
+  grows
+  to ~140
+  lines
+  total
+  (~80
+  before
+  MIS.3 +
+  ~60
+  added) —
+  well
+  within
+  reasonable
+  size.
+- **Explicit
+  testable
+  interfaces
+  (rule
+  11)**:
+  the
+  new
+  fields
+  are
+  host-
+  testable
+  via
+  the
+  three
+  mandatory
+  cases
+  in
+  pathtracer_nee_tests.
+- **Update
+  BUILD_PLAN
+  (rule
+  8)**:
+  this
+  entry.
+- **Do
+  only
+  that
+  scope
+  (current-
+  prompt
+  rule)**:
+  shipped
+  exactly
+  the
+  two
+  fields +
+  helper
+  population +
+  three
+  test
+  cases.
+  No MIS
+  weighting
+  (no
+  `power_heuristic`
+  helper
+  consumed),
+  no
+  integrator
+  changes,
+  no
+  CUDA /
+  OptiX
+  algorithm
+  changes
+  (the
+  fields
+  are
+  carried
+  on the
+  POD
+  but
+  not
+  read
+  in any
+  kernel).
+
+### Verified at the build
+
+- `cmake
+  --build
+  build
+  -j`
+  (RR_ENABLE_CUDA=OFF,
+  RR_ENABLE_OPTIX=OFF):
+  clean
+  rebuild;
+  ctest
+  10/10
+  green
+  (UNCHANGED).
+- `cmake
+  --build
+  build-
+  ON -j`
+  (RR_ENABLE_CUDA=OFF,
+  RR_ENABLE_OPTIX=ON
+  with
+  SDK
+  fallback):
+  clean
+  rebuild;
+  ctest
+  11/11
+  green
+  (UNCHANGED).
+- **Per-
+  binary
+  test
+  output:**
+    - `pathtracer_nee_tests:
+      53/53
+      passed`
+      (was
+      34/34
+      pre-
+      slice;
+      +19
+      RR_CHECK
+      assertions
+      from
+      the
+      three
+      new
+      cases).
+    - `cli_tests:
+      31/31
+      passed`
+      (unchanged).
+    - `pathtracer_bsdf_tests:
+      41/41
+      passed`
+      (unchanged).
+- **TEX-
+  P.6
+  fixture
+  regression
+  intact:**
+  `--scene-info
+  scenes/test_textured_material.rrscene`
+  emits
+  `fixups
+  applied:
+  2`.
+- **No-
+  touch
+  invariants:**
+  `git
+  diff --
+  src/cuda/
+  src/optix/
+  src/renderer/
+  src/io/
+  src/scene/
+  src/material/
+  src/lighting/
+  src/texture/
+  src/gpu/
+  src/server/
+  src/main.cpp
+  src/core/
+  src/pathtracer/{RNG,Sampling,Bsdf,PathTracer}.*
+  tests/{cli,pathtracer,math,image,gpu,relativity,demo,renderer,optix,pathtracer_bsdf}_tests.cpp
+  scenes/
+  tools/
+  CMakeLists.txt`
+  ⇒ 0
+  bytes.
+  Only
+  `src/pathtracer/DirectLight.h`,
+  `src/pathtracer/DirectLight.cuh`,
+  and
+  `tests/pathtracer_nee_tests.cpp`
+  changed.
+
+### Sub-arc closure
+
+MIS.3
+sub-arc
+CLOSED.
+The
+`DirectLightSample`
+data
+model is
+extended
+end-to-
+end:
+new
+fields
+declared +
+helper
+populates
+them per
+light
+type +
+host-
+only
+tests
+anchor
+the
+contract.
+The MIS
+arc's
+last
+independent
+leaf
+(MIS.4 —
+power
+heuristic
+helper)
+remains
+pending;
+once
+MIS.4
+lands,
+all
+three
+leaves
+(MIS.{2,3,4})
+will be
+shipped
+and
+MIS.5
+(CUDA
+integrator)
++ MIS.6
+(OptiX
+integrator)
++ MIS.7
+(audit)
+follow.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:

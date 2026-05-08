@@ -362,6 +362,156 @@ void test_zero_contribution_is_bit_default() {
                          sizeof(DirectLightSample)) == 0);
 }
 
+// ---------- MIS.3 light PDF data model anchors ----------
+//
+// Per `docs/PATH_TRACER_MIS_LIGHT_PDF_TASK.md` §5.5 (three
+// mandatory cases). The new fields are inert at v1 — no
+// caller reads them — so these cases anchor the
+// data-model contract: Point + Directional set
+// `is_delta == true` + sentinel `pdf_solid_angle == 0.0f`;
+// every "no contribution" branch leaves both fields at
+// their bit-zero defaults. Future MIS-aware integrator
+// slices (MIS.5 CUDA, MIS.6 OptiX) consume these fields;
+// a regression that flips `is_delta` to false for v1
+// delta lights would silently break the future MIS
+// helper's short-circuit, producing biased renders. The
+// host-only test catches it at host-build time.
+
+void test_point_light_sets_is_delta_and_zero_pdf() {
+    // Reuse the same fixture as
+    // test_point_light_in_front: receiver at origin,
+    // normal +Y, light at (0, 5, 0), intensity 2.
+    const Light L = make_point(Vec3{0.0f, 5.0f, 0.0f},
+                               Vec3{1.0f, 1.0f, 1.0f}, 2.0f);
+    const DirectLightSample s = sample_direct_light_uniform(
+        &L, /*count=*/1,
+        Vec3{0.0f, 0.0f, 0.0f},
+        Vec3{0.0f, 1.0f, 0.0f},
+        0.0f);
+
+    // MIS.3 contract: Point light is a Dirac delta.
+    RR_CHECK(s.is_delta == true);
+    RR_CHECK(s.pdf_solid_angle == 0.0f);
+
+    // The four pre-existing fields are unchanged from the
+    // NEE.5 byte-identity baseline (cross-check against
+    // test_point_light_in_front's expected values).
+    RR_CHECK(approx(s.pdf_inv, 1.0f));
+    RR_CHECK(approx(s.distance, 5.0f));
+    RR_CHECK(approx(s.wi.y, 1.0f));
+    // li = intensity * (1/r²) = 2 * 1/25 = 0.08.
+    RR_CHECK(approx(s.li_unattenuated.x, 0.08f));
+}
+
+void test_directional_light_sets_is_delta_and_zero_pdf() {
+    // Reuse the test_directional_light_toward_surface
+    // fixture: light direction (0, -1, 0); receiver
+    // normal +Y; expected wi = (0, +1, 0).
+    const Light L = make_directional(Vec3{0.0f, -1.0f, 0.0f},
+                                     Vec3{1.0f, 0.95f, 0.85f},
+                                     0.9f);
+    const DirectLightSample s = sample_direct_light_uniform(
+        &L, /*count=*/1,
+        Vec3{0.0f, 0.0f, 0.0f},
+        Vec3{0.0f, 1.0f, 0.0f},
+        0.0f);
+
+    // MIS.3 contract: Directional light is a Dirac delta.
+    RR_CHECK(s.is_delta == true);
+    RR_CHECK(s.pdf_solid_angle == 0.0f);
+
+    // Pre-existing fields unchanged from NEE.5 baseline.
+    RR_CHECK(approx(s.pdf_inv, 1.0f));
+    RR_CHECK(approx(s.distance, kDirectionalShadowTMax));
+    RR_CHECK(approx(s.wi.y, 1.0f));
+}
+
+void test_zero_contribution_sample_has_default_is_delta() {
+    // Every "no contribution" branch must leave both new
+    // fields at bit-zero defaults so the existing NEE.5
+    // bit-default memcmp anchor continues to pass. This
+    // case directly verifies eight zero-contribution
+    // branches against the field-by-field expectation.
+
+    // Helper to assert both new fields are at defaults.
+    auto check_default = [](const DirectLightSample& s,
+                            const char* tag) {
+        if (!(s.is_delta == false)) {
+            std::fprintf(stderr,
+                         "FAIL: %s leaked is_delta == true\n", tag);
+            ++g_failed; ++g_total; return;
+        }
+        if (!(s.pdf_solid_angle == 0.0f)) {
+            std::fprintf(stderr,
+                         "FAIL: %s leaked pdf_solid_angle != 0\n",
+                         tag);
+            ++g_failed; ++g_total; return;
+        }
+        ++g_total;  // recorded as a passing assertion.
+    };
+
+    // 1. count == 0.
+    Light dummy = make_point(Vec3{1.0f, 0.0f, 0.0f},
+                             Vec3{1.0f, 1.0f, 1.0f}, 1.0f);
+    check_default(sample_direct_light_uniform(
+        &dummy, /*count=*/0,
+        Vec3{0.0f, 0.0f, 0.0f}, Vec3{0.0f, 1.0f, 0.0f}, 0.5f),
+        "count==0");
+
+    // 2. lights == nullptr.
+    check_default(sample_direct_light_uniform(
+        nullptr, /*count=*/3,
+        Vec3{0.0f, 0.0f, 0.0f}, Vec3{0.0f, 1.0f, 0.0f}, 0.5f),
+        "nullptr lights");
+
+    // 3. Point light coincident with receiver (r² == 0).
+    const Light coincident = make_point(Vec3{0.0f, 0.0f, 0.0f},
+                                        Vec3{1.0f, 1.0f, 1.0f}, 1.0f);
+    check_default(sample_direct_light_uniform(
+        &coincident, /*count=*/1,
+        Vec3{0.0f, 0.0f, 0.0f}, Vec3{0.0f, 1.0f, 0.0f}, 0.0f),
+        "coincident point");
+
+    // 4. Point light behind receiver.
+    const Light behind = make_point(Vec3{0.0f, -5.0f, 0.0f},
+                                    Vec3{1.0f, 1.0f, 1.0f}, 1.0f);
+    check_default(sample_direct_light_uniform(
+        &behind, /*count=*/1,
+        Vec3{0.0f, 0.0f, 0.0f}, Vec3{0.0f, 1.0f, 0.0f}, 0.0f),
+        "point behind");
+
+    // 5. Directional pointing away (toward-light below
+    //    horizon).
+    const Light dir_away = make_directional(Vec3{0.0f, 1.0f, 0.0f},
+                                            Vec3{1.0f, 1.0f, 1.0f}, 1.0f);
+    check_default(sample_direct_light_uniform(
+        &dir_away, /*count=*/1,
+        Vec3{0.0f, 0.0f, 0.0f}, Vec3{0.0f, 1.0f, 0.0f}, 0.0f),
+        "directional away");
+
+    // 6. Directional with zero-length direction.
+    const Light dir_zero = make_directional(Vec3{0.0f, 0.0f, 0.0f},
+                                            Vec3{1.0f, 1.0f, 1.0f}, 1.0f);
+    check_default(sample_direct_light_uniform(
+        &dir_zero, /*count=*/1,
+        Vec3{0.0f, 0.0f, 0.0f}, Vec3{0.0f, 1.0f, 0.0f}, 0.0f),
+        "directional zero");
+
+    // 7. Area-light PLACEHOLDER.
+    const Light area = make_area();
+    check_default(sample_direct_light_uniform(
+        &area, /*count=*/1,
+        Vec3{0.0f, 0.0f, 0.0f}, Vec3{0.0f, 1.0f, 0.0f}, 0.0f),
+        "area placeholder");
+
+    // 8. Environment-light PLACEHOLDER.
+    const Light env = make_environment(Vec3{0.4f, 0.6f, 0.9f}, 1.0f);
+    check_default(sample_direct_light_uniform(
+        &env, /*count=*/1,
+        Vec3{0.0f, 0.0f, 0.0f}, Vec3{0.0f, 1.0f, 0.0f}, 0.0f),
+        "environment placeholder");
+}
+
 }  // namespace
 
 int main() {
@@ -378,6 +528,9 @@ int main() {
     test_uniform_selection_walks_bin_centres();
     test_helper_determinism();                    // NEE.5
     test_zero_contribution_is_bit_default();      // NEE.5
+    test_point_light_sets_is_delta_and_zero_pdf();           // MIS.3
+    test_directional_light_sets_is_delta_and_zero_pdf();     // MIS.3
+    test_zero_contribution_sample_has_default_is_delta();    // MIS.3
 
     std::fprintf(stderr, "pathtracer_nee_tests: %d/%d passed\n",
                  g_total - g_failed, g_total);

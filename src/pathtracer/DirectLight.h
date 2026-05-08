@@ -68,14 +68,70 @@ namespace rr::pathtracer {
 //                     (Area / Environment), or the light is
 //                     behind the receiver (`cos_theta <= 0`).
 //
-// All four fields default to "no contribution" so a default-
+//   `pdf_solid_angle` (MIS.3) Per-steradian directional PDF of
+//                     choosing the returned `wi`. Read by the
+//                     future MIS-aware integrator
+//                     (`pathtracer::power_heuristic`, MIS.4) to
+//                     weight the NEE-side estimator against the
+//                     BSDF-side estimator. For Point and
+//                     Directional lights at v1 this is a Dirac
+//                     delta — the field carries the sentinel
+//                     `0.0f` and the MIS helper short-circuits
+//                     on `is_delta == true` without reading
+//                     this value. For future area lights this
+//                     carries the area-to-solid-angle Jacobian
+//                     `(1/light_count) · (1/area) · r² /
+//                     cos(theta_light)` and `is_delta == false`.
+//                     Default `0.0f` matches the bit-zero
+//                     "no contribution" convention the four
+//                     pre-existing fields share.
+//
+//   `is_delta`        (MIS.3) `true` iff the light is a Dirac
+//                     delta in direction (Point or Directional);
+//                     `false` for finite-PDF lights (future
+//                     area / IBL). The MIS helper checks this
+//                     flag FIRST: on `true` the NEE-side
+//                     estimator gets MIS weight = 1.0 (Veach
+//                     1995 §10.3 delta-light convention), and
+//                     the BSDF-bounce-as-light contribution to
+//                     this light is zero (zero measure). On
+//                     `false` the helper computes the power
+//                     heuristic from `pdf_solid_angle`.
+//                     Default `false` flows through every
+//                     "no contribution" branch unchanged so a
+//                     default-constructed `DirectLightSample`
+//                     remains the bit-zero "no contribution"
+//                     sentinel.
+//
+// All six fields default to "no contribution" so a default-
 // constructed sample naturally adds zero to the radiance
-// accumulator.
+// accumulator. **The default-constructed bit pattern is also
+// preserved across the MIS.3 field addition** (both new fields
+// have bit-zero defaults: `pdf_solid_angle = 0.0f` and
+// `is_delta = false`), which keeps the NEE.5 byte-identity
+// anchor at `tests/pathtracer_nee_tests.cpp::test_zero_
+// contribution_is_bit_default` passing without modification.
+//
+// MIS.3 ships ONLY the data-model extension. No caller reads
+// `pdf_solid_angle` or `is_delta` in this slice; the existing
+// `pdf_inv`-based NEE arithmetic in both backends'
+// integrators is unchanged. The MIS-aware integrator slices
+// (MIS.5 CUDA, MIS.6 OptiX) consume both new fields. See
+// `docs/PATH_TRACER_MIS_LIGHT_PDF_TASK.md` for the canonical
+// per-field contract + `docs/PATH_TRACER_MIS_PLAN.md` for the
+// arc-level design.
 struct DirectLightSample {
     rr::math::Vec3 wi              = {0.0f, 0.0f, 0.0f};
     float          distance        = 0.0f;
     rr::math::Vec3 li_unattenuated = {0.0f, 0.0f, 0.0f};
     float          pdf_inv         = 0.0f;
+    // MIS.3 additions: directional PDF + delta-light flag for
+    // future MIS-aware integrator consumption (MIS.5 CUDA,
+    // MIS.6 OptiX). Inert in this slice — no caller reads
+    // these fields. Bit-zero defaults preserve the NEE.5
+    // byte-identity anchor.
+    float          pdf_solid_angle = 0.0f;
+    bool           is_delta        = false;
 };
 
 }  // namespace rr::pathtracer
