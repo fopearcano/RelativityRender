@@ -60689,6 +60689,858 @@ three
 leaves
 land.
 
+## MIS.3 — Light PDF data model task definition (docs only)
+
+**Scope of
+this slice
+(post-MIS.2
+sub-arc
+closure):
+ship the
+self-
+contained
+task brief
+specifying
+the
+`DirectLightSample`
+extension
+with two
+new fields
+(`pdf_solid_angle`
++
+`is_delta`),
+the helper
+population
+contract
+per light
+type, and
+three
+mandatory
+host-only
+test cases.
+Documentation
+only;
+zero
+source
+changes.
+Closes
+the "task
+definition"
+half of
+the MIS.3
+sub-arc
+so the
+next
+slice
+(impl)
+can ship
+the diff
+without
+re-
+deriving
+the field-
+shape
+reasoning.**
+
+### What ships
+
+- `docs/PATH_TRACER_MIS_LIGHT_PDF_TASK.md`
+  (NEW;
+  ~784
+  lines).
+  Eight-
+  section
+  brief
+  walking
+  the
+  user's
+  five
+  enumerated
+  topics
+  + out-
+  of-
+  scope +
+  sub-arc
+  context
+  + verdict.
+  Pattern
+  mirrors
+  `docs/PATH_TRACER_MIS_BSDF_PDF_TASK.md`
+  (the
+  canonical
+  MIS.x
+  task-
+  brief
+  shape
+  established
+  at MIS.2):
+    - **§1
+      Exact
+      goal.**
+      Extend
+      `DirectLightSample`
+      with
+      MIS-
+      required
+      PDF
+      info.
+      MIS.3
+      is a
+      runtime
+      no-op:
+      no
+      caller
+      reads
+      the
+      new
+      fields;
+      the
+      existing
+      `pdf_inv`-
+      based
+      NEE
+      arithmetic
+      is
+      unchanged.
+      Future
+      MIS.5 +
+      MIS.6
+      consume
+      both
+      new
+      fields.
+    - **§2
+      Required
+      fields.**
+      Two
+      sub-
+      sections:
+      §2.1
+      `pdf_solid_angle`
+      (per-
+      steradian
+      directional
+      PDF;
+      sentinel
+      `0.0f`
+      at v1
+      Dirac
+      lights),
+      §2.2
+      `is_delta`
+      (boolean
+      discriminator;
+      `true`
+      for
+      Point /
+      Directional;
+      MIS
+      helper
+      short-
+      circuits
+      on
+      this).
+      §2.3
+      explains
+      why
+      `is_delta`
+      is
+      INCLUDED
+      this
+      slice
+      (vs
+      deferred
+      at MIS.2):
+      v1
+      lights
+      ALWAYS
+      set it
+      true,
+      so the
+      field
+      is
+      mandatory
+      for the
+      MIS
+      helper's
+      delta-
+      light
+      short-
+      circuit;
+      this
+      brief
+      asks
+      the
+      user to
+      flip
+      the
+      MIS.2
+      defer
+      decision
+      because
+      v1
+      lights
+      ALWAYS
+      need
+      it,
+      while
+      Lambert
+      NEVER
+      sets
+      it.
+      §2.4
+      field
+      placement
+      (append
+      after
+      `pdf_inv`).
+      §2.5
+      byte-
+      identity
+      invariant
+      (NEE.5
+      memcmp
+      anchor
+      preserved
+      via
+      bit-
+      zero
+      defaults).
+    - **§3
+      Files
+      likely
+      involved.**
+      Three
+      modified
+      files
+      (no
+      NEW):
+      `DirectLight.h`
+      (+~25
+      lines),
+      `DirectLight.cuh`
+      (+~10
+      lines),
+      `tests/pathtracer_nee_tests.cpp`
+      (+~50
+      lines).
+      `CMakeLists.txt`
+      NOT
+      touched.
+      Helper
+      change
+      target
+      shape
+      specified
+      with
+      Point /
+      Directional
+      branches
+      gaining
+      two
+      assignments
+      each;
+      Area /
+      Environment
+      PLACEHOLDER
+      branches
+      unchanged
+      (default-
+      constructed
+      `s` has
+      bit-
+      zero
+      new
+      fields).
+    - **§4
+      What
+      must
+      not be
+      touched.**
+      Eight
+      sub-
+      sections
+      covering
+      the
+      integrators,
+      pathtracer
+      module's
+      sibling
+      surfaces
+      (RNG,
+      Sampling,
+      Bsdf),
+      CLI /
+      Config /
+      main.cpp,
+      renderer /
+      scene /
+      material
+      modules,
+      tests +
+      scenes +
+      tooling,
+      build
+      configs,
+      existing
+      test
+      invariants
+      (NEE.5
+      bit-
+      default
+      anchor
+      preserved
+      structurally),
+      default
+      behaviour.
+    - **§5
+      PASS
+      criteria.**
+      Eight-
+      sub-
+      section
+      gate:
+      §5.1
+      build,
+      §5.2
+      ctest
+      (counts
+      UNCHANGED
+      at
+      10/10
+      OFF +
+      11/11
+      ON;
+      pathtracer_nee_tests
+      grows
+      by 3+
+      cases
+      internally),
+      §5.3
+      diff
+      size
+      (≤
+      100;
+      may
+      overshoot
+      via
+      doc-
+      comments),
+      §5.4
+      no-
+      touch
+      invariants,
+      §5.5
+      three
+      mandatory
+      cases
+      (point-
+      sets-
+      delta-
+      and-
+      zero-
+      pdf,
+      directional-
+      sets-
+      delta-
+      and-
+      zero-
+      pdf,
+      zero-
+      contribution-
+      has-
+      default-
+      is_delta),
+      §5.6
+      existing
+      test
+      invariants
+      preserved
+      (NEE.5
+      bit-
+      default +
+      determinism
+      anchors),
+      §5.7
+      documentation,
+      §5.8
+      master-
+      rule
+      compliance.
+    - **§6
+      Out-
+      of-
+      scope.**
+      Eight
+      explicit
+      items:
+      area-
+      light
+      `pdf_solid_angle`
+      formula,
+      env-
+      light
+      formula,
+      MIS
+      helper
+      consumption,
+      field
+      reordering,
+      `Light`
+      POD
+      extension,
+      per-
+      light-
+      type
+      helper
+      split,
+      `pdf_inv`
+      deprecation,
+      CLI
+      flag.
+    - **§7
+      Sub-
+      arc
+      context.**
+      MIS arc
+      cadence
+      table
+      showing
+      MIS.{1,2}
+      shipped +
+      MIS.3
+      this
+      brief +
+      MIS.4
+      pending
+      leaf;
+      what
+      this
+      slice
+      unblocks
+      (MIS.5 /
+      MIS.6
+      data
+      model;
+      MIS.4
+      tests
+      become
+      less
+      abstract);
+      what it
+      does
+      NOT
+      unblock
+      (area-
+      light
+      NEE,
+      cross-
+      backend
+      MIS,
+      IBL).
+    - **§8
+      Verdict.**
+      Brief
+      complete;
+      mode
+      reminder.
+
+  Notable
+  design
+  decision:
+  the
+  brief
+  ASKS
+  the
+  user to
+  include
+  `is_delta`
+  this
+  slice
+  (vs
+  defer
+  it the
+  way
+  MIS.2
+  did
+  for
+  Lambert).
+  The
+  argument
+  is in
+  §2.3:
+  v1
+  lights
+  ALWAYS
+  set
+  `is_delta
+  ==
+  true`,
+  so
+  omitting
+  the
+  field
+  forces
+  the
+  MIS
+  helper
+  to
+  inspect
+  the
+  `Light::type`
+  enum
+  at
+  every
+  call
+  site,
+  breaking
+  the
+  helper's
+  scene-
+  agnostic
+  contract.
+  Lambert
+  at v1
+  NEVER
+  sets
+  the
+  BSDF
+  `is_delta`
+  to
+  true,
+  so the
+  MIS.2
+  defer
+  was
+  benign;
+  v1
+  lights
+  ALWAYS
+  set
+  the
+  light-
+  side
+  `is_delta`,
+  so
+  deferring
+  here
+  would
+  break
+  the
+  MIS
+  helper.
+
+  Note
+  on the
+  user's
+  referenced
+  `PATH_TRACER_MIS_BSDF_PDF_AUDIT.md`:
+  that
+  doc
+  was
+  not
+  shipped —
+  MIS.2
+  closed
+  via
+  two
+  BUILD_PLAN
+  entries
+  (`d9fa6e3`
+  +
+  `5a1c772`),
+  not via
+  a
+  separate
+  audit
+  doc.
+  The MIS
+  arc to
+  date
+  does
+  not yet
+  have a
+  per-
+  stage
+  audit
+  cadence;
+  the
+  planned
+  MIS.7
+  covers
+  the
+  entire
+  arc
+  once
+  implementation
+  closes.
+  This
+  slice
+  proceeds
+  from
+  the
+  plan +
+  the
+  MIS.2
+  BSDF
+  task
+  brief
+  as the
+  source
+  of
+  truth.
+- This
+  `BUILD_PLAN.md`
+  slice-
+  closing
+  entry.
+
+### What does NOT change
+
+- Source:
+  byte-
+  identical.
+  `git
+  diff --
+  src/
+  tests/
+  scenes/
+  tools/
+  CMakeLists.txt`
+  ⇒ 0
+  bytes.
+- Build
+  configs:
+  unchanged
+  at the
+  post-
+  MIS.2
+  baseline
+  (10/10
+  OFF +
+  11/11
+  ON
+  ctest;
+  the
+  brief's
+  authoring
+  did not
+  invoke
+  the
+  build
+  system).
+- All
+  other
+  docs:
+  this
+  brief
+  only
+  ADDS
+  `PATH_TRACER_MIS_LIGHT_PDF_TASK.md`;
+  no
+  edits
+  to
+  prior
+  PT-P.x /
+  TEX-P.x /
+  NEE.x /
+  firefly-
+  clamp /
+  CUDA-H.x /
+  MIS.{1,2}
+  artefacts.
+
+### Master rule compliance
+
+- **Build
+  incrementally
+  / every
+  step
+  compilable
+  (rules
+  1 +
+  2)**:
+  docs-
+  only
+  slice;
+  preserved
+  trivially.
+- **No
+  fake
+  stubs
+  (rule
+  3)**:
+  the
+  brief
+  defines
+  real
+  contracts
+  (field
+  types +
+  defaults +
+  population
+  contract +
+  consistency
+  invariants
+  + PASS-
+  criterion
+  test
+  list)
+  +
+  cross-
+  references
+  the
+  existing
+  helpers
+  the
+  light-
+  side
+  data
+  model
+  reuses
+  (`sample_direct_light_uniform`'s
+  per-
+  light-
+  type
+  branches).
+- **No
+  CPU
+  per-
+  pixel
+  work
+  (rules
+  5 +
+  7)**:
+  the
+  brief
+  describes
+  RR_HD
+  inline
+  helper
+  changes +
+  host-
+  only
+  tests;
+  no per-
+  pixel
+  host
+  code.
+- **Module
+  boundaries
+  (rule
+  9)**:
+  scopes
+  the
+  field
+  additions
+  to the
+  existing
+  `DirectLightSample`
+  POD;
+  no new
+  module +
+  no
+  cross-
+  module
+  ripple.
+- **Update
+  BUILD_PLAN
+  (rule
+  8)**:
+  this
+  entry.
+- **Documentation
+  only;
+  do not
+  modify
+  source
+  code
+  (current-
+  prompt
+  rules)**:
+  zero
+  source
+  edits.
+
+### Verified at the build
+
+- Trivially
+  preserved.
+  The
+  authoring
+  of this
+  task
+  brief
+  did
+  not
+  invoke
+  the
+  build
+  system.
+  Both
+  audit-
+  host
+  configs
+  remain
+  green
+  at the
+  post-
+  MIS.2
+  baseline:
+  `build`
+  (RR_ENABLE_CUDA=OFF,
+  RR_ENABLE_OPTIX=OFF)
+  ctest
+  10/10;
+  `build-ON`
+  (RR_ENABLE_CUDA=OFF,
+  RR_ENABLE_OPTIX=ON)
+  ctest
+  11/11.
+
+### Sub-arc status
+
+MIS.3
+task
+brief
+shipped.
+The
+contract
+for the
+MIS.3
+impl
+slice is
+canonical;
+the
+implementer
+can ship
+the
+diff
+end-to-
+end
+without
+re-
+deriving
+the
+design.
+MIS.4
+(MIS
+helper —
+power
+heuristic)
+remains
+the
+last
+independent
+leaf
+that
+may
+interleave
+with
+the
+MIS.3
+impl.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
