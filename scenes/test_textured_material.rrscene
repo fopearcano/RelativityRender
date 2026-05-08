@@ -1,0 +1,89 @@
+{
+  "version": "1.0.0",
+
+  "//": "TEX-P.6 fixture. Authored to exercise the three flag/id cases of validate_material_texture_ids (TEX-P.5) at scene-load time. Per TEXTURE_SYSTEM.md sec 4 (Future work), .rrscene v1.0.0 does NOT yet carry inline texture pixel data, so the scene's textures array is implicitly empty and Case 2 (valid in-range id) collapses to Case 3 at validation time on this fixture. The fixture still serves its purpose: all three host-side validator branches are reachable, the loader's new use_base_color_texture / base_color_texture_id parsing is exercised, and the SceneLoader stays byte-identical for scenes that omit the new fields.",
+
+  "render_settings": {
+    "width":             320,
+    "height":            240,
+    "samples_per_pixel": 1,
+    "max_depth":         1
+  },
+
+  "camera": {
+    "position":   [0.0, 0.0,  3.0],
+    "forward":    [0.0, 0.0, -1.0],
+    "up":         [0.0, 1.0,  0.0],
+    "fovDegrees": 45.0
+  },
+
+  "materials": [
+    {
+      "//":                       "Case 2 candidate: flag ON, id 0. Once .rrscene supports inline textures (a future slice), a single texture0 in the scene's textures array makes id 0 valid and the validator passes silently. With v1.0.0's empty textures array this collapses to Case 3 (warning + flag cleared).",
+      "id":                       0,
+      "name":                     "textured-quad-material",
+      "base_color":               [0.65, 0.65, 0.65],
+      "use_base_color_texture":   true,
+      "base_color_texture_id":    0
+    },
+    {
+      "//":                       "Material with no texture binding. The flag defaults to false; base_color_texture_id is left at its sentinel default (-1) by omission. Validator: silent (Case 1 fires the info log only when id >= 0 with flag off; this entry has neither field authored so nothing is logged).",
+      "id":                       1,
+      "name":                     "flat-untextured",
+      "base_color":               [0.20, 0.45, 0.80]
+    },
+    {
+      "//":                       "Case 1 audit: flag OFF but id is set. Validator emits an info log naming this material; state is NOT modified.",
+      "id":                       2,
+      "name":                     "dangling-texture-id",
+      "base_color":               [0.85, 0.40, 0.20],
+      "use_base_color_texture":   false,
+      "base_color_texture_id":    7
+    },
+    {
+      "//":                       "Case 3 audit: flag ON, id 99 is out of range against the empty textures array. Validator emits a warning naming this material, clears use_base_color_texture, and counts the fixup. Kernel-side gate falls back to flat baseColor on subsequent renders.",
+      "id":                       3,
+      "name":                     "out-of-range-texture",
+      "base_color":               [0.30, 0.85, 0.45],
+      "use_base_color_texture":   true,
+      "base_color_texture_id":    99
+    }
+  ],
+
+  "spheres": [
+    {
+      "name":         "sphere-with-textured-material",
+      "center":       [-1.5, 0.0, -3.5],
+      "radius":       0.6,
+      "materialId":   0
+    },
+    {
+      "name":         "sphere-untextured",
+      "center":       [-0.5, 0.0, -3.5],
+      "radius":       0.6,
+      "materialId":   1
+    },
+    {
+      "name":         "sphere-dangling-id",
+      "center":       [ 0.5, 0.0, -3.5],
+      "radius":       0.6,
+      "materialId":   2
+    },
+    {
+      "name":         "sphere-out-of-range-id",
+      "center":       [ 1.5, 0.0, -3.5],
+      "radius":       0.6,
+      "materialId":   3
+    }
+  ],
+
+  "lights": [
+    {
+      "type":      "directional",
+      "name":      "key",
+      "direction": [-0.4, -0.7, -0.6],
+      "color":     [1.00, 0.95, 0.85],
+      "intensity": 0.9
+    }
+  ]
+}

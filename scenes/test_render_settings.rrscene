@@ -1,0 +1,11 @@
+{
+  "version": "1.0.0",
+
+  "render_settings": {
+    "width":             640,
+    "height":            360,
+    "samples_per_pixel": 4,
+    "max_depth":         2,
+    "output_path":       "output/test_render_settings.ppm"
+  }
+}
