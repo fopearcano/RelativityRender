@@ -66492,6 +66492,818 @@ CUDA-
 equipped
 host.
 
+## MIS.5 — CUDA MIS integrator audit (docs only)
+
+**Scope of
+this slice
+(post-MIS.5
+impl):
+walk the
+ten audit
+items the
+user
+enumerated +
+record a
+PASS /
+REPAIR /
+BLOCKED /
+DEFERRED
+verdict
+per item.
+Documentation
+only;
+zero
+source
+changes.
+Ships per
+the MIS.5
+task
+brief
+§8.4
+recommendation
+(audit is
+NICE-TO-
+HAVE; not
+a hard
+PASS
+criterion);
+shipping
+it now
+records
+the
+integrator-
+level
+byte-
+identity
+invariant
+formally
+before
+MIS.6
+mirrors
+on
+OptiX.**
+
+### What ships
+
+- `docs/PATH_TRACER_MIS_CUDA_INTEGRATOR_AUDIT.md`
+  (NEW;
+  ~831
+  lines).
+  Eleven-
+  section
+  audit
+  walking
+  the
+  ten
+  enumerated
+  checks +
+  master-
+  rule
+  compliance +
+  sub-
+  arc
+  context.
+  Pattern
+  mirrors
+  every
+  prior
+  audit
+  in this
+  session
+  (NEE.3 /
+  NEE.6 /
+  NEE.6
+  REPAIR
+  audit /
+  firefly-
+  clamp /
+  TEX-P.x /
+  MIS.3
+  cadence):
+    - **§0
+      Header.**
+      Date,
+      branch,
+      HEAD
+      commit
+      (`35577a6`),
+      plan
+      source,
+      audit-
+      host
+      fingerprint,
+      verdict
+      legend,
+      MIS arc
+      cadence
+      table.
+    - **§1
+      CUDA
+      path
+      consumes
+      `BsdfSample`
+      where
+      appropriate.**
+      PASS
+      with
+      scope
+      clarification:
+      the
+      Bsdf
+      MODULE
+      is
+      consumed
+      via
+      `bsdf_pdf`
+      (line
+      337);
+      the
+      `BsdfSample`
+      POD
+      itself
+      is NOT
+      directly
+      consumed
+      (the
+      BSDF
+      bounce
+      swap
+      that
+      would
+      use
+      `sample_bsdf`
+      is
+      DEFERRED
+      per
+      task
+      brief
+      §1.3
+      #1).
+      The
+      audit
+      judges
+      this
+      "where
+      appropriate"
+      consumption
+      is
+      correct
+      for v1
+      and
+      flags
+      it as
+      a
+      deliberate
+      scope
+      clarification
+      (NOT a
+      REPAIR
+      candidate —
+      a
+      future
+      slice
+      can
+      revisit
+      if the
+      sub-
+      ULP
+      framebuffer
+      drift
+      from
+      the
+      Lambert
+      cancellation
+      is
+      confirmed
+      invisible
+      at
+      8-bit
+      PPM
+      precision).
+    - **§2
+      `pdf_solid_angle`
+      consumed.**
+      PASS
+      at
+      `CudaPathTracer.cu:336`
+      as the
+      first
+      argument
+      to
+      `power_heuristic`.
+      Gated
+      inside
+      the
+      ternary's
+      else-
+      branch
+      (`!is_delta`);
+      sentinel
+      `0.0f`
+      at v1
+      delta
+      lights
+      is
+      never
+      propagated
+      to the
+      radiance
+      accumulator
+      because
+      the
+      else-
+      branch
+      is
+      never
+      reached.
+    - **§3
+      `is_delta`
+      consumed.**
+      PASS
+      at
+      `CudaPathTracer.cu:333`
+      as
+      ternary
+      discriminator.
+      For v1
+      lights
+      every
+      sample
+      sets
+      `is_delta
+      ==
+      true`;
+      the
+      ternary
+      takes
+      the
+      then-
+      branch
+      and
+      `mis_weight_nee
+      ==
+      1.0f`.
+    - **§4
+      `power_heuristic`
+      wired
+      only
+      for
+      non-
+      delta
+      cases.**
+      PASS.
+      The
+      helper
+      is
+      called
+      EXCLUSIVELY
+      in the
+      ternary's
+      else-
+      branch
+      (line
+      335).
+      Verified
+      via
+      grep:
+      single
+      call
+      site;
+      no
+      spurious
+      invocations.
+      At v1
+      the
+      else-
+      branch
+      is
+      unreachable;
+      the
+      helper
+      is
+      WIRED
+      but
+      UNREACHABLE.
+    - **§5
+      Delta-
+      light
+      NEE
+      weight
+      remains
+      1.**
+      PASS.
+      Ternary
+      then-
+      branch
+      yields
+      `1.0f`
+      EXACTLY
+      (literal
+      constant);
+      multiplication
+      `k *
+      1.0f`
+      is the
+      IEEE-
+      754 §6
+      identity
+      operation
+      (`x *
+      1.0f
+      == x`
+      for
+      finite
+      non-
+      NaN
+      x).
+      Anchored
+      empirically
+      by
+      `tests/pathtracer_nee_tests.cpp::test_mis_weight_delta_short_circuits_to_one`
+      (post-
+      slice;
+      6
+      RR_CHECK
+      assertions;
+      59/59).
+    - **§6
+      Default /
+      NEE
+      output
+      unchanged
+      for
+      delta-
+      light
+      scenes.**
+      PASS
+      structurally
+      (three-
+      pronged:
+      default-
+      OFF
+      kernel
+      guard
+      short-
+      circuit;
+      default-
+      ON-at-
+      v1
+      IEEE-
+      754
+      identity
+      multiplication;
+      no-
+      touch
+      invariants
+      table
+      verifies
+      0
+      bytes
+      diff
+      across
+      all
+      kernel /
+      dispatcher /
+      sibling
+      pathtracer
+      module /
+      test
+      paths);
+      runtime
+      DEFERRED
+      (PPM
+      `cmp`
+      requires
+      CUDA
+      host).
+    - **§7
+      OptiX
+      path
+      not
+      modified.**
+      PASS.
+      `git
+      diff
+      35577a6~1..35577a6
+      --
+      src/optix/`
+      ⇒ 0
+      bytes.
+      Every
+      OptiX
+      file
+      byte-
+      identical.
+      MIS.6
+      mirrors
+      the
+      MIS.5
+      pattern
+      as a
+      separate
+      slice.
+    - **§8
+      Build
+      status.**
+      PASS.
+      11/11
+      OFF +
+      12/12
+      ON
+      (counts
+      UNCHANGED
+      per
+      task
+      brief
+      §5.2
+      expectation
+      exactly).
+      Per-
+      binary:
+      `pathtracer_nee_tests`
+      53/53
+      → 59/59
+      (+6
+      RR_CHECK
+      from
+      the
+      new
+      MIS.5
+      case);
+      every
+      other
+      test
+      binary
+      unchanged.
+      9-cell
+      smoke
+      matrix
+      green.
+    - **§9
+      Runtime
+      CUDA-
+      host
+      status.**
+      DEFERRED.
+      Five
+      runtime
+      checks
+      from
+      the
+      task
+      brief
+      §6
+      DEFERRED
+      to a
+      CUDA-
+      equipped
+      operator
+      session.
+      The
+      KEY
+      check
+      (§9.1):
+      `cmp`
+      pre-
+      MIS.5
+      vs
+      post-
+      MIS.5
+      PPM
+      with
+      `--enable-nee`
+      against
+      delta-
+      light
+      scene
+      should
+      be
+      bit-
+      identical,
+      formally
+      verifying
+      the
+      §5
+      IEEE-
+      754
+      argument.
+      No
+      BLOCKED
+      items
+      (the
+      structural
+      argument
+      is
+      strong;
+      runtime
+      check
+      is
+      empirical
+      confirmation).
+    - **§10
+      Verdict:
+      PASS.**
+      Closing
+      verdict.
+      Master-
+      rule
+      compliance
+      walked.
+      Zero
+      new
+      REPAIR
+      candidates.
+      Carry-
+      forward
+      deviations
+      from
+      the
+      impl
+      slice
+      (diff-
+      size,
+      §1.3
+      deferrals)
+      noted
+      as
+      already-
+      documented
+      in the
+      impl
+      commit's
+      BUILD_PLAN
+      entry +
+      commit
+      message;
+      not re-
+      flagged.
+    - **§11
+      Sub-
+      arc
+      context.**
+      What
+      this
+      audit
+      confirms +
+      what it
+      does
+      NOT
+      confirm
+      (cross-
+      backend
+      MIS
+      convergence
+      requires
+      MIS.5 +
+      MIS.6 +
+      CUDA +
+      OptiX-
+      SDK
+      host;
+      DEFERRED
+      to
+      MIS.7).
+      Recommended
+      next
+      step:
+      ship
+      MIS.6
+      (OptiX
+      integrator)
+      mirroring
+      the
+      MIS.5
+      pattern.
+- This
+  `BUILD_PLAN.md`
+  slice-
+  closing
+  entry.
+
+### What does NOT change
+
+- Source:
+  byte-
+  identical.
+  `git
+  diff --
+  src/
+  tests/
+  scenes/
+  tools/
+  CMakeLists.txt`
+  ⇒ 0
+  bytes.
+- Build
+  configs:
+  unchanged
+  at the
+  post-
+  MIS.5-
+  impl
+  baseline
+  (11/11
+  OFF +
+  12/12
+  ON
+  ctest;
+  the
+  audit's
+  build
+  invocations
+  re-
+  verified
+  greenness
+  but did
+  not
+  modify
+  any
+  build
+  artefact).
+- All
+  other
+  docs:
+  this
+  audit
+  only
+  ADDS
+  `PATH_TRACER_MIS_CUDA_INTEGRATOR_AUDIT.md`;
+  no
+  edits
+  to any
+  prior
+  audit
+  doc /
+  task
+  brief /
+  arc
+  artefact.
+
+### Master rule compliance
+
+- **Build
+  incrementally
+  / every
+  step
+  compilable
+  (rules
+  1 +
+  2)**:
+  docs-
+  only
+  slice;
+  preserved
+  trivially.
+  Both
+  audit-
+  host
+  configs
+  re-
+  verified
+  green
+  during
+  the
+  audit
+  (11/11
+  OFF +
+  12/12
+  ON).
+- **No
+  fake
+  stubs
+  (rule
+  3)**:
+  every
+  audit
+  finding
+  is a
+  read-
+  only
+  observation
+  cited
+  to a
+  source
+  line
+  number /
+  smoke
+  output;
+  zero
+  pretense.
+- **No
+  CPU
+  per-
+  pixel
+  work
+  (rules
+  5 +
+  7)**:
+  no
+  changes;
+  trivially
+  preserved.
+- **Update
+  BUILD_PLAN
+  (rule
+  8)**:
+  this
+  entry.
+- **Documentation
+  only;
+  do not
+  modify
+  source
+  code
+  (current-
+  prompt
+  rule)**:
+  zero
+  source
+  edits.
+
+### Verified at the build
+
+- `cmake
+  --build
+  build
+  -j`
+  (RR_ENABLE_CUDA=OFF,
+  RR_ENABLE_OPTIX=OFF):
+  no-op;
+  ctest
+  11/11
+  green.
+- `cmake
+  --build
+  build-
+  ON -j`
+  (RR_ENABLE_CUDA=OFF,
+  RR_ENABLE_OPTIX=ON):
+  no-op;
+  ctest
+  12/12
+  green.
+- Smoke
+  matrix
+  during
+  the
+  audit
+  re-
+  verified
+  the 9
+  cells
+  of
+  §8.2
+  (cli_tests
+  31/31,
+  pathtracer_nee_tests
+  59/59,
+  pathtracer_bsdf_tests
+  41/41,
+  pathtracer_mis_tests
+  34/34,
+  TEX-P.6
+  fixture
+  intact,
+  ctest
+  both
+  configs
+  green).
+
+### Sub-arc status
+
+MIS.5
+sub-arc
+fully
+audited.
+The MIS
+arc's
+remaining
+slices
+are
+**MIS.6**
+(OptiX
+integrator —
+mirrors
+MIS.5
+on
+`__raygen__pathtrace`)
+and
+**MIS.7**
+(arc-
+level
+audit
+walking
+all
+runtime-
+deferred
+checks
+including
+the
+MIS.5
+§6.1
+PPM
+`cmp`).
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
