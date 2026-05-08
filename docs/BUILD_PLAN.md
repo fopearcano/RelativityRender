@@ -68197,6 +68197,1073 @@ MIS
 convergence
 verification.
 
+## MIS.6 — OptiX MIS integrator (impl)
+
+**Scope of
+this slice
+(post-MIS.6
+task brief):
+ship the
+OptiX-side
+MIS
+integrator
+wiring per
+the brief's
+§1.1 single-
+architectural-
+change
+specification.
+Mirrors
+the MIS.5
+CUDA-side
+ternary on
+`__raygen__pathtrace`'s
+existing
+NEE branch
+(added at
+NEE.4).
+The MIS-
+weight
+ternary
+short-
+circuits
+on
+`is_delta
+== true`
+to `1.0f`
+at v1
+delta
+lights;
+the
+`power_heuristic`
++
+`bsdf_pdf`
+helpers
+are
+WIRED
+but
+unreachable
+at v1.
+Byte-
+identical
+output
+preserved
+via the
+IEEE-754
+identity-
+multiplication
+argument.
+NO test
+additions
+(MIS.5
+backend-
+agnostic
+case
+covers
+the
+OptiX
+composition).**
+
+### What ships
+
+- **`src/optix/OptixPrograms.cu`
+  (+57 /
+  -1
+  lines).**
+  Two
+  changes:
+    - **Includes
+      (+2
+      lines).**
+      Adds
+      `#include
+      "pathtracer/Bsdf.cuh"`
+      (for
+      `bsdf_pdf`)
+      and
+      `#include
+      "pathtracer/Mis.h"`
+      (for
+      `power_heuristic`)
+      next to
+      the
+      existing
+      `pathtracer/DirectLight.cuh`
+      include.
+      `material/MaterialTypes.h`
+      is
+      already
+      pulled
+      in
+      transitively
+      via
+      `Bsdf.cuh`,
+      so no
+      additional
+      header
+      is
+      needed
+      for
+      `MaterialParams{}`.
+    - **MIS-
+      weight
+      composition
+      inside
+      the
+      existing
+      NEE
+      branch
+      (+~52
+      lines,
+      ~85%
+      doc-
+      comment
+      density).**
+      Inside
+      the
+      existing
+      `if
+      (cos_th
+      > 0.0f)`
+      block
+      (the
+      OptiX-
+      side
+      mirror
+      of
+      CUDA's
+      same-
+      condition
+      block),
+      computes
+      `mis_weight_nee`
+      via
+      the
+      ternary
+
+      ```cpp
+      const float mis_weight_nee = sample.is_delta
+          ? 1.0f
+          : rr::pathtracer::power_heuristic(
+                sample.pdf_solid_angle,
+                rr::pathtracer::bsdf_pdf(
+                    rr::material::MaterialParams{},
+                    sample.wi, hit_n));
+      ```
+
+      and
+      multiplies
+      it
+      into
+      the
+      contribution
+      multiplier
+      `k =
+      cos_th
+      *
+      sample.pdf_inv
+      *
+      kInvPi
+      *
+      mis_weight_nee`.
+      The
+      ~40-
+      line
+      doc-
+      comment
+      block
+      walks
+      the
+      Veach
+      delta
+      convention,
+      the v1
+      byte-
+      identity
+      argument
+      via
+      IEEE-754
+      identity
+      multiplication,
+      the
+      OptiX-
+      specific
+      `MaterialParams{}`
+      first-
+      argument
+      pattern
+      (per
+      task
+      brief
+      §1.4),
+      and
+      cross-
+      references
+      to the
+      CUDA
+      MIS.5
+      mirror
+      at
+      `CudaPathTracer.cu:333-338`.
+- This
+  `BUILD_PLAN.md`
+  slice-
+  closing
+  entry.
+
+### What does NOT change
+
+- **No
+  test
+  additions.**
+  Per
+  task
+  brief
+  §3 + §5.5,
+  `tests/pathtracer_nee_tests.cpp`
+  is byte-
+  identical.
+  The
+  MIS.5
+  case
+  `test_mis_weight_delta_short_circuits_to_one`
+  is
+  backend-
+  agnostic
+  (uses a
+  lambda
+  to
+  simulate
+  the
+  ternary)
+  and
+  already
+  covers
+  the
+  OptiX
+  composition
+  logic.
+- **No
+  CUDA
+  changes.**
+  `src/cuda/`
+  byte-
+  identical.
+  The MIS.5
+  CUDA-side
+  wiring
+  shipped
+  at
+  `35577a6`
+  is
+  preserved.
+- **No
+  pathtracer
+  module
+  surface
+  changes.**
+  `src/pathtracer/{RNG,Sampling,DirectLight,Bsdf,Mis,PathTracer}.{h,cuh,cpp}`
+  every
+  byte-
+  identical.
+  The
+  OptiX
+  raygen
+  CONSUMES
+  the
+  helpers
+  via
+  their
+  existing
+  APIs.
+- **No
+  OptiX
+  module
+  OTHER
+  surface
+  changes.**
+  `OptixRenderer.{h,cpp}`,
+  `OptixLaunchParams.h`,
+  `OptixPipeline.{h,cpp}`,
+  `OptixSBT.h`,
+  `OptixDenoiser.{h,cpp}`,
+  `OptixBackend.{h,cpp}`,
+  `OptixAccel.{h,cpp}` —
+  every
+  byte-
+  identical.
+  The
+  dispatcher /
+  launch-
+  params /
+  pipeline /
+  SBT /
+  AS
+  config
+  is
+  preserved.
+- **No
+  OptiX
+  raygen
+  structure
+  changes
+  beyond
+  the
+  ~52-line
+  arithmetic +
+  doc-
+  comment
+  block.**
+  The
+  PT-
+  payload
+  helpers
+  (`pt_set_hit`,
+  `pt_set_miss`,
+  `pt_align_to_normal`,
+  `pt_environment_radiance`),
+  `__miss__shadow`,
+  `__closesthit__radiance`,
+  `__raygen__pathtrace`'s
+  spp
+  loop +
+  bounce
+  loop +
+  RNG
+  seeding +
+  kernel
+  guard +
+  shadow
+  ray +
+  cosine-
+  hemisphere
+  bounce +
+  firefly
+  clamp +
+  relativity
+  stack,
+  `__miss__pathtrace`,
+  `__closesthit__pathtrace` —
+  ALL
+  unchanged.
+- **No
+  CLI /
+  Config /
+  main.cpp
+  changes.**
+  `src/core/`
+  +
+  `src/main.cpp`
+  byte-
+  identical.
+- **No
+  C4D /
+  server /
+  UI /
+  node-
+  editor
+  changes.**
+  None
+  exist.
+- **No
+  scene /
+  tooling /
+  build
+  config
+  changes.**
+  `scenes/`,
+  `tools/verify_cuda_host.py`,
+  `CMakeLists.txt`
+  byte-
+  identical.
+- **No
+  changes
+  to
+  existing
+  test
+  binaries.**
+  `cli_tests`
+  31/31,
+  `pathtracer_nee_tests`
+  59/59,
+  `pathtracer_bsdf_tests`
+  41/41,
+  `pathtracer_mis_tests`
+  34/34 —
+  all
+  unchanged.
+
+### Default-OFF + default-ON-at-v1 byte-identity
+
+Two
+arguments
+preserve
+byte-
+identity:
+
+1. **Default-
+   OFF
+   (no
+   `--enable-nee`)**:
+   the
+   kernel
+   guard
+   `if
+   (optixLaunchParams.enable_nee
+   &&
+   optixLaunchParams.light_count
+   > 0)`
+   short-
+   circuits
+   at
+   `enable_nee
+   ==
+   false`.
+   The
+   MIS.6
+   additions
+   live
+   INSIDE
+   this
+   guard;
+   none
+   execute.
+   Bit-
+   identical.
+2. **Default-
+   ON-at-
+   v1
+   (delta
+   lights
+   only)**:
+   `sample.is_delta
+   ==
+   true`
+   for
+   every
+   v1
+   light;
+   the
+   ternary
+   takes
+   the
+   then-
+   branch
+   `1.0f`;
+   the
+   contribution
+   is
+   multiplied
+   by
+   `1.0f`
+   which
+   is the
+   IEEE-754
+   §6
+   identity
+   multiplication
+   (`x *
+   1.0f
+   == x`
+   for
+   any
+   finite
+   non-NaN
+   x).
+   Bit-
+   identical.
+
+The
+runtime
+empirical
+confirmation
+(PPM
+`cmp`
+post-
+MIS.5
+vs
+post-
+MIS.6
+on a
+delta-
+light
+scene)
+is
+DEFERRED
+to a
+CUDA +
+OptiX-
+SDK
+host
+operator
+session
+per
+task
+brief
+§6.1.
+
+### OptiX OFF build preserved
+
+The user's "Keep OptiX OFF build working"
+rule is structurally preserved: the
+MIS.6 changes are inside
+`OptixPrograms.cu` which is compiled to
+PTX ONLY on the ON build (per
+`CMakeLists.txt`'s `RR_ENABLE_OPTIX`
+gating). On the OFF build, the file is
+not compiled, so the MIS.6 changes are
+trivially absent. Verified empirically:
+`cmake --build build -j` with
+`RR_ENABLE_CUDA=OFF` +
+`RR_ENABLE_OPTIX=OFF` rebuilds cleanly
+and `--render-optix-pathtrace` emits
+the expected "requires OptiX" fallback
+unchanged.
+
+### Source diff size
+
+**+57 /
+-1
+across
+1 file**
+(`src/optix/OptixPrograms.cu`).
+Within
+the
+task
+brief
+§5.3
+budget
+(≤
+200);
+pure-
+logic
+diff
+(includes +
+ternary +
+multiplier,
+net of
+doc-
+comments)
+is ~9
+lines —
+much
+smaller
+than
+MIS.5
+(which
+had
+~30
+lines
+of
+pure-
+logic
+diff +
+the
+test
+case).
+Doc-
+comment
+density
+~85% —
+matches
+the
+established
+PT-P.x /
+NEE.x /
+MIS.x
+pattern
+within
+budget.
+
+### Master rule compliance
+
+- **Build
+  incrementally
+  / every
+  step
+  compilable
+  (rules
+  1 +
+  2)**:
+  both
+  audit-
+  host
+  configs
+  rebuild
+  cleanly
+  on the
+  first
+  attempt.
+  ctest
+  11/11
+  OFF +
+  12/12
+  ON
+  (UNCHANGED
+  per
+  task
+  brief
+  §5.2
+  expectation
+  exactly).
+- **No
+  fake
+  stubs
+  (rule
+  3)**:
+  the
+  ternary
+  is real
+  code
+  with
+  real
+  effect
+  (the v1
+  short-
+  circuit
+  hits
+  the
+  `1.0f`
+  branch;
+  the
+  `power_heuristic`
+  call is
+  real
+  for any
+  future
+  non-
+  delta
+  caller).
+- **No
+  CPU
+  per-
+  pixel
+  work
+  (rules
+  5 +
+  7)**:
+  the
+  ternary
+  evaluates
+  device-
+  side at
+  every
+  per-
+  pixel
+  bounce.
+  Host
+  code
+  is
+  test
+  scaffold
+  only.
+- **Module
+  boundaries
+  (rule
+  9)**:
+  the
+  OptiX
+  raygen
+  consumes
+  the
+  three
+  pathtracer
+  module
+  helpers
+  (`is_delta`
+  field,
+  `bsdf_pdf`
+  function,
+  `power_heuristic`
+  function)
+  via
+  their
+  existing
+  APIs;
+  no
+  cross-
+  module
+  ripple.
+- **Avoid
+  monolithic
+  files
+  (rule
+  10)**:
+  changes
+  scoped
+  to a
+  single
+  ~10-
+  line
+  arithmetic
+  block +
+  doc-
+  comment
+  block in
+  `OptixPrograms.cu`.
+- **Update
+  BUILD_PLAN
+  (rule
+  8)**:
+  this
+  entry.
+- **OptiX
+  path
+  only +
+  do not
+  modify
+  CUDA
+  path
+  (current-
+  prompt
+  rules)**:
+  no CUDA
+  changes;
+  verified
+  via
+  `git
+  diff
+  src/cuda/
+  | wc -l`
+  ⇒ 0
+  bytes.
+- **No
+  MIS for
+  area
+  lights
+  yet
+  (current-
+  prompt
+  rule)**:
+  the
+  `power_heuristic`
+  call's
+  `else`
+  branch
+  is
+  unreachable
+  at v1
+  (every
+  v1
+  light
+  sets
+  `is_delta
+  ==
+  true`).
+- **No
+  broad
+  refactor
+  (current-
+  prompt
+  rule)**:
+  changes
+  scoped
+  to the
+  single
+  NEE-
+  branch
+  arithmetic
+  block.
+- **Keep
+  OptiX
+  OFF
+  build
+  working
+  (current-
+  prompt
+  rule)**:
+  preserved
+  structurally
+  (file
+  not
+  compiled
+  on OFF
+  build) +
+  empirically
+  (OFF
+  build
+  re-
+  built
+  cleanly).
+
+### Verified at the build
+
+- `cmake
+  --build
+  build
+  -j`
+  (RR_ENABLE_CUDA=OFF,
+  RR_ENABLE_OPTIX=OFF):
+  clean
+  rebuild;
+  ctest
+  11/11
+  green
+  (UNCHANGED).
+  `OptixPrograms.cu`
+  not
+  compiled
+  on OFF
+  build.
+- `cmake
+  --build
+  build-
+  ON -j`
+  (RR_ENABLE_CUDA=OFF,
+  RR_ENABLE_OPTIX=ON
+  with
+  SDK
+  fallback):
+  clean
+  rebuild
+  including
+  the
+  `OptixPrograms.cu`
+  PTX
+  recompile;
+  ctest
+  12/12
+  green
+  (UNCHANGED).
+- **Per-
+  binary
+  test
+  output:**
+    - `cli_tests:
+      31/31`
+      (unchanged).
+    - `pathtracer_nee_tests:
+      59/59`
+      (unchanged
+      —
+      MIS.5
+      case
+      remains
+      passing).
+    - `pathtracer_bsdf_tests:
+      41/41`
+      (unchanged).
+    - `pathtracer_mis_tests:
+      34/34`
+      (unchanged).
+- **OptiX
+  dispatcher
+  smoke
+  (audit-
+  host
+  fallback):**
+  `--render-optix-pathtrace
+  scenes/test_full_scene.rrscene
+  --enable-nee`
+  emits
+  the
+  documented
+  log
+  lines
+  (`firefly_clamp
+       :
+  0.000000
+  (disabled)`
+  +
+  `enable_nee
+       :
+  true
+  (enabled)`)
+  followed
+  by the
+  "requires
+  OptiX
+  SDK"
+  fallback —
+  byte-
+  identical
+  with
+  the
+  pre-
+  MIS.6
+  baseline
+  (the
+  audit-
+  host
+  fallback
+  fires
+  before
+  the
+  kernel
+  can
+  reach
+  the
+  MIS-
+  weight
+  arithmetic).
+- **OptiX
+  OFF
+  build
+  fallback
+  preserved:**
+  `--render-optix-pathtrace
+  ...`
+  on the
+  OFF
+  build
+  emits
+  the
+  "requires
+  OptiX"
+  fallback
+  byte-
+  identical
+  with
+  the
+  pre-
+  MIS.6
+  baseline.
+- **TEX-
+  P.6
+  fixture
+  regression
+  intact:**
+  `--scene-info
+  scenes/test_textured_material.rrscene`
+  emits
+  `fixups
+  applied:
+  2`.
+- **No-
+  touch
+  invariants:**
+  `git
+  diff --
+  src/cuda/
+  src/optix/{OptixRenderer.{h,cpp},OptixLaunchParams.h,OptixPipeline.{h,cpp},OptixSBT.h,OptixDenoiser.{h,cpp},OptixBackend.{h,cpp},OptixAccel.{h,cpp}}
+  src/renderer/
+  src/io/ src/scene/
+  src/material/ src/lighting/
+  src/texture/ src/gpu/
+  src/server/ src/main.cpp
+  src/core/
+  src/pathtracer/
+  tests/ scenes/ tools/
+  CMakeLists.txt`
+  ⇒ 0
+  bytes.
+  Only
+  `src/optix/OptixPrograms.cu`
+  changed.
+
+### Sub-arc closure
+
+MIS.6
+sub-arc
+CLOSED.
+**Both
+backends
+now
+consume
+the
+three
+MIS
+leaves
+symmetrically:**
+
+| Backend  | Integrator                                | Slice        |
+|----------|-------------------------------------------|--------------|
+| CUDA     | `k_pathtrace_sample` (NEE branch)         | MIS.5 (`35577a6`) |
+| OptiX    | `__raygen__pathtrace` (NEE branch)        | **MIS.6 (this slice)** |
+
+The MIS
+arc's
+remaining
+slice is
+**MIS.7**
+(arc-
+level
+audit —
+walks
+all
+runtime-
+deferred
+checks
+across
+PT-P.x +
+NEE.x +
+firefly-
+clamp-
+CLI +
+MIS.x
+arcs
+for a
+single
+CUDA +
+OptiX-
+SDK host
+operator
+session;
+verifies
+the
+cross-
+backend
+MIS
+convergence
+empirically).
+
+A MIS.6
+audit is
+RECOMMENDED
+per the
+task
+brief
+§8.4
+(consistent
+with the
+MIS.5
+audit
+cadence)
+but not
+a hard
+PASS
+criterion.
+The
+operator
+may
+defer to
+bundle
+with
+MIS.7.
+
+The
+runtime-
+deferred
+checks
+this
+slice
+unblocks
+(per the
+task
+brief
+§6):
+
+| §           | Check                                          | Procedure                                                  |
+|-------------|------------------------------------------------|------------------------------------------------------------|
+| §6.1        | OptiX MIS-on byte-IDENTITY at v1 (runtime)     | `cmp` post-MIS.5 vs post-MIS.6 OptiX PPM (with `--enable-nee`) |
+| §6.2        | OptiX default-OFF byte-IDENTITY (runtime)      | `cmp` no-flag PPM (pre vs post)                            |
+| §6.3        | OptiX NEE-on visible behaviour unchanged       | subsumed by §6.1                                           |
+| §6.4        | Cross-backend MIS convergence at v1            | CUDA `--enable-nee` PPM stats vs OptiX `--enable-nee` PPM (statistically similar; not bit-identical) |
+| §6.5        | ctest cycle on CUDA + OptiX-SDK host           | re-run on host with both backends built                    |
+
+All
+DEFERRED
+on the
+audit
+host;
+runnable
+on a
+CUDA +
+OptiX-
+SDK-
+equipped
+host.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:

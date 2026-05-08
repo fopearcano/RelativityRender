@@ -55,6 +55,8 @@
 #include "optix/OptixLaunchParams.h"
 #include "optix/OptixSBT.h"           // Stage 20G: HitGroupData
 #include "pathtracer/DirectLight.cuh" // NEE.4: sample_direct_light_uniform
+#include "pathtracer/Bsdf.cuh"        // MIS.6: bsdf_pdf for the BSDF-side PDF inside power_heuristic
+#include "pathtracer/Mis.h"           // MIS.6: power_heuristic helper
 #include "pathtracer/RNG.h"           // Stage 20I: RNG seed helper
 #include "pathtracer/Sampling.h"      // Stage 20I: cos-hemisphere
 #include "relativity/RelativityMath.h"
@@ -1021,10 +1023,63 @@ extern "C" __global__ void __raygen__pathtrace() {
                           + hit_n.y * sample.wi.y
                           + hit_n.z * sample.wi.z;
                         if (cos_th > 0.0f) {
+                            // MIS.6: compute the MIS weight on
+                            // the NEE-side estimator. Mirrors
+                            // the CUDA MIS.5 pattern at
+                            // `CudaPathTracer.cu:333-338`.
+                            // Veach 1995 §10.3 delta-light
+                            // convention: when `sample.is_delta
+                            // == true` (v1 Point + Directional
+                            // lights, populated by
+                            // `sample_direct_light_uniform` per
+                            // MIS.3), the BSDF sampler can
+                            // never reach this light (zero
+                            // measure on the unit sphere); the
+                            // NEE-side weight is exactly 1.0f.
+                            // Multiplying the contribution by
+                            // `1.0f` is the IEEE-754 §6
+                            // identity multiplication, so the
+                            // OptiX raygen's per-pixel
+                            // arithmetic is bit-identical with
+                            // the post-MIS.5 baseline at v1
+                            // light-type scope.
+                            //
+                            // For non-delta lights (future
+                            // area-light arc), the weight is
+                            // computed via the Veach β=2 power
+                            // heuristic from
+                            // `sample.pdf_solid_angle` (MIS.3)
+                            // and the BSDF PDF at `sample.wi`
+                            // (`bsdf_pdf` from MIS.2).
+                            //
+                            // OptiX-specific note: the
+                            // `MaterialParams` argument to
+                            // `bsdf_pdf` is unused for Lambert
+                            // (the helper's PDF formula reads
+                            // only the geometry); a default-
+                            // constructed instance is bit-
+                            // equivalent with the CUDA
+                            // caller's `m`. The OptiX raygen
+                            // has only `albedo` available (not
+                            // a full `MaterialParams` POD), so
+                            // passing default-constructed
+                            // `rr::material::MaterialParams{}`
+                            // is the cleanest mirror per the
+                            // task brief §1.4.
+                            const float mis_weight_nee = sample.is_delta
+                                ? 1.0f
+                                : rr::pathtracer::power_heuristic(
+                                      sample.pdf_solid_angle,
+                                      rr::pathtracer::bsdf_pdf(
+                                          rr::material::MaterialParams{},
+                                          sample.wi, hit_n));
+
                             // Lambert BRDF: albedo / pi.
+                            // (kInvPi factored into k below.)
                             const float k = cos_th
                                           * sample.pdf_inv
-                                          * rr::math::kInvPi;
+                                          * rr::math::kInvPi
+                                          * mis_weight_nee;
                             radiance.x += throughput.x
                                 * sample.li_unattenuated.x
                                 * albedo.x * k;
