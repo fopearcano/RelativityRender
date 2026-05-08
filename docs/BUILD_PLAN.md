@@ -63135,6 +63135,708 @@ level
 audit)
 follow.
 
+## MIS.4 — Power heuristic helper task definition (docs only)
+
+**Scope of
+this slice
+(post-MIS.3
+audit):
+ship the
+self-
+contained
+task brief
+specifying
+the
+`power_heuristic(p_a,
+p_b)`
+helper —
+the LAST
+independent
+leaf in
+the MIS
+arc.
+Documentation
+only;
+zero
+source
+changes.
+Closes
+the
+"task
+definition"
+half of
+the
+MIS.4
+sub-arc
+so the
+next
+slice
+(impl)
+can ship
+the
+diff
+without
+re-
+deriving
+the
+helper-
+shape
+reasoning.**
+
+### What ships
+
+- `docs/PATH_TRACER_MIS_POWER_HEURISTIC_TASK.md`
+  (NEW;
+  ~842
+  lines).
+  Eight-
+  section
+  brief
+  walking
+  the
+  user's
+  four
+  enumerated
+  topics +
+  out-of-
+  scope +
+  sub-arc
+  context +
+  recommended
+  audit
+  cadence +
+  closing
+  verdict.
+  Pattern
+  mirrors
+  the
+  canonical
+  MIS.x
+  task-
+  brief
+  shape:
+    - **§1
+      Exact
+      goal.**
+      Add
+      `rr::pathtracer::power_heuristic(float
+      p_a,
+      float
+      p_b)`
+      — pure-
+      math
+      RR_HD
+      inline
+      helper
+      returning
+      the
+      Veach
+      β=2
+      power-
+      heuristic
+      MIS
+      weight
+      `p_a²
+      / (p_a²
+      + p_b²)`.
+      The
+      LAST
+      independent
+      leaf;
+      after
+      it
+      lands,
+      MIS.5
+      gates
+      on
+      all
+      three
+      leaves.
+      §1.3
+      module-
+      split
+      decision:
+      RECOMMENDS
+      single-
+      file
+      `Mis.h`
+      mirroring
+      `Sampling.h`
+      (the
+      closest
+      sibling —
+      pure-
+      math
+      helpers
+      with no
+      POD).
+      `Mis.cuh`
+      OPTIONAL
+      for
+      naming
+      consistency
+      with
+      Bsdf /
+      DirectLight
+      pairs;
+      either
+      passes.
+    - **§2
+      Expected
+      behavior.**
+      Four
+      sub-
+      sections
+      matching
+      the
+      user's
+      bullets:
+      §2.1
+      stable
+      for
+      zero
+      PDFs
+      (the
+      `denom
+      > 0.0f`
+      guard
+      against
+      `0/0
+      = NaN`),
+      §2.2
+      sane
+      weights
+      (range,
+      sum-to-
+      one,
+      equal-
+      pdfs,
+      symmetry,
+      monotonicity,
+      one-
+      dominates
+      limit),
+      §2.3
+      RR_HD
+      inline
+      (host /
+      device
+      usable),
+      §2.4
+      pure
+      function
+      (deterministic;
+      memcmp
+      anchored).
+      §2.5
+      Dirac-
+      sentinel
+      handling
+      LIVES
+      AT THE
+      CALLER —
+      the
+      MIS.3
+      `is_delta`
+      flag is
+      checked
+      by the
+      future
+      MIS-
+      aware
+      integrator
+      BEFORE
+      the
+      `power_heuristic`
+      call;
+      the
+      helper
+      itself
+      is
+      pure
+      math
+      and
+      doesn't
+      know
+      about
+      delta
+      lights.
+    - **§3
+      Files
+      likely
+      involved.**
+      `Mis.h`
+      NEW
+      (~30-60),
+      `Mis.cuh`
+      OPTIONAL
+      (~10-15),
+      `tests/pathtracer_mis_tests.cpp`
+      NEW
+      (~150-250),
+      `CMakeLists.txt`
+      (+~5-10).
+      Helper
+      signature
+      target
+      shape +
+      test
+      file
+      shape +
+      CMake
+      block
+      shape
+      all
+      specified.
+    - **§4
+      What
+      must
+      not
+      be
+      touched.**
+      Six
+      sub-
+      sections
+      covering
+      integrators,
+      pathtracer
+      module's
+      sibling
+      surfaces
+      (RNG,
+      Sampling,
+      Bsdf,
+      DirectLight,
+      PathTracer),
+      CLI /
+      Config /
+      main.cpp,
+      renderer /
+      scene /
+      material
+      modules,
+      tests /
+      scenes /
+      tooling,
+      default
+      behaviour
+      (PPM
+      bit-
+      identical
+      with
+      post-
+      MIS.3-
+      audit
+      baseline
+      `960c523`).
+    - **§5
+      PASS
+      criteria.**
+      Seven-
+      sub-
+      section
+      gate:
+      §5.1
+      build,
+      §5.2
+      ctest
+      10 →
+      11 OFF
+      + 11 →
+      12 ON
+      (+1
+      `pathtracer_mis_tests`
+      binary;
+      ≥8
+      RR_CHECK
+      cases),
+      §5.3
+      diff
+      ≤ 200
+      lines,
+      §5.4
+      no-
+      touch
+      invariants,
+      §5.5
+      eight
+      mandatory
+      test
+      cases
+      (both-
+      zero,
+      p_a-
+      zero,
+      p_b-
+      zero,
+      equal-
+      pdfs,
+      squares-
+      pdfs
+      [β=2
+      anti-
+      regression],
+      one-
+      dominates,
+      sum-to-
+      one
+      memcmp,
+      purity
+      memcmp),
+      §5.6
+      documentation,
+      §5.7
+      master-
+      rule
+      compliance.
+    - **§6
+      Out-
+      of-
+      scope.**
+      Eight
+      explicit
+      items:
+      balance
+      heuristic
+      (β=1),
+      multi-
+      estimator
+      (N>2)
+      power
+      heuristic,
+      variable-
+      sample-
+      count
+      weighting,
+      NaN /
+      inf
+      input
+      handling,
+      overflow
+      protection,
+      integrator
+      wiring,
+      CLI
+      flag,
+      MIS-
+      weight
+      AOV.
+    - **§7
+      Sub-
+      arc
+      context.**
+      MIS arc
+      cadence
+      table
+      showing
+      MIS.{1,2,3}
+      shipped +
+      MIS.4
+      this
+      brief
+      = LAST
+      leaf;
+      what
+      this
+      slice
+      unblocks
+      (MIS.5 +
+      MIS.6
+      integrator
+      wiring;
+      MIS.7
+      arc
+      audit;
+      future
+      MIS-
+      consuming
+      arcs);
+      what
+      it
+      does
+      NOT
+      unblock
+      (area-
+      light
+      NEE,
+      cross-
+      backend
+      MIS
+      convergence,
+      specular
+      delta
+      MIS).
+      §7.4
+      recommended
+      audit
+      cadence:
+      MIS.3
+      established
+      per-
+      stage
+      MIS
+      audits;
+      MIS.4
+      audit
+      is
+      NICE-
+      TO-
+      HAVE,
+      not
+      a
+      hard
+      PASS
+      criterion;
+      operator
+      may
+      defer
+      to
+      bundle
+      with
+      MIS.5
+      /
+      MIS.6
+      / MIS.7
+      if
+      preferred.
+    - **§8
+      Verdict.**
+      Brief
+      complete;
+      mode
+      reminder.
+- This
+  `BUILD_PLAN.md`
+  slice-
+  closing
+  entry.
+
+### What does NOT change
+
+- Source:
+  byte-
+  identical.
+  `git
+  diff --
+  src/
+  tests/
+  scenes/
+  tools/
+  CMakeLists.txt`
+  ⇒ 0
+  bytes.
+- Build
+  configs:
+  unchanged
+  at the
+  post-
+  MIS.3-
+  audit
+  baseline
+  (10/10
+  OFF +
+  11/11
+  ON
+  ctest;
+  the
+  brief's
+  authoring
+  did not
+  invoke
+  the
+  build
+  system).
+- All
+  other
+  docs:
+  this
+  brief
+  only
+  ADDS
+  `PATH_TRACER_MIS_POWER_HEURISTIC_TASK.md`;
+  no
+  edits
+  to
+  prior
+  PT-P.x /
+  TEX-P.x /
+  NEE.x /
+  firefly-
+  clamp /
+  CUDA-H.x /
+  MIS.{1,2,3}
+  artefacts.
+
+### Master rule compliance
+
+- **Build
+  incrementally
+  / every
+  step
+  compilable
+  (rules
+  1 +
+  2)**:
+  docs-
+  only
+  slice;
+  preserved
+  trivially.
+- **No
+  fake
+  stubs
+  (rule
+  3)**:
+  the
+  brief
+  defines
+  real
+  contracts
+  (helper
+  signature +
+  edge-
+  case
+  table +
+  consistency
+  invariants +
+  PASS-
+  criterion
+  test
+  list)
+  +
+  cross-
+  references
+  the
+  Veach
+  1995
+  §9.2.4
+  source.
+- **No
+  CPU
+  per-
+  pixel
+  work
+  (rules
+  5 +
+  7)**:
+  the
+  brief
+  describes
+  RR_HD
+  inline
+  helpers
+  +
+  host-
+  only
+  tests;
+  no
+  per-
+  pixel
+  host
+  code.
+- **Module
+  boundaries
+  (rule
+  9)**:
+  scopes
+  the
+  new
+  module
+  (`pathtracer/Mis.h`)
+  alongside
+  the
+  existing
+  pathtracer
+  modules
+  cleanly.
+- **Update
+  BUILD_PLAN
+  (rule
+  8)**:
+  this
+  entry.
+- **Documentation
+  only;
+  do not
+  modify
+  source
+  code
+  (current-
+  prompt
+  rules)**:
+  zero
+  source
+  edits.
+
+### Verified at the build
+
+- Trivially
+  preserved.
+  The
+  authoring
+  of this
+  task
+  brief
+  did
+  not
+  invoke
+  the
+  build
+  system.
+  Both
+  audit-
+  host
+  configs
+  remain
+  green
+  at the
+  post-
+  MIS.3-
+  audit
+  baseline:
+  `build`
+  (RR_ENABLE_CUDA=OFF,
+  RR_ENABLE_OPTIX=OFF)
+  ctest
+  10/10;
+  `build-ON`
+  (RR_ENABLE_CUDA=OFF,
+  RR_ENABLE_OPTIX=ON)
+  ctest
+  11/11.
+
+### Sub-arc status
+
+MIS.4
+task
+brief
+shipped.
+After
+the
+MIS.4
+impl
+slice
+lands,
+all
+three
+independent
+MIS
+leaves
+(MIS.{2,3,4})
+will be
+shipped
+and
+MIS.5
+(CUDA
+integrator)
++ MIS.6
+(OptiX
+integrator)
++ MIS.7
+(arc
+audit)
+follow.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
