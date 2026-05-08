@@ -63837,6 +63837,897 @@ integrator)
 audit)
 follow.
 
+## MIS.4 — Power heuristic helper (impl)
+
+**Scope of
+this slice
+(post-MIS.4
+task
+brief):
+ship the
+LAST
+independent
+leaf in
+the MIS
+arc — the
+`power_heuristic(p_a,
+p_b)`
+helper +
+8-case
+host-only
+test
+binary +
+CMake
+test-
+binary
+block.
+Closes
+the
+MIS.4
+sub-arc.
+After
+this
+slice,
+all three
+MIS leaves
+(MIS.{2,3,4})
+are
+shipped
+and MIS.5
+(CUDA
+integrator)
+gates on
+all of
+them.**
+
+### What ships
+
+- **`src/pathtracer/Mis.h`
+  (NEW;
+  109
+  lines).**
+  Single-
+  file
+  helper
+  module
+  per the
+  task
+  brief
+  §1.3
+  recommendation
+  (mirrors
+  `Sampling.h`'s
+  pure-
+  math
+  helper
+  shape;
+  no
+  `.cuh`
+  needed
+  since
+  there's
+  no POD
+  to
+  split).
+  The
+  helper:
+
+  ```cpp
+  RR_HD inline float power_heuristic(float p_a, float p_b) {
+      const float pa2   = p_a * p_a;
+      const float pb2   = p_b * p_b;
+      const float denom = pa2 + pb2;
+      return denom > 0.0f ? pa2 / denom : 0.0f;
+  }
+  ```
+
+  ~95
+  lines
+  of doc-
+  comments
+  walking
+  the
+  Veach
+  β=2
+  formula,
+  edge-
+  case
+  table
+  (`(0,0)
+  → 0`,
+  `(0,
+  p_b>0)
+  → 0`,
+  `(p_a>0,
+  0) → 1`,
+  `(x,x)
+  → 0.5`),
+  property
+  list
+  (range,
+  symmetry,
+  monotonicity,
+  one-
+  dominates,
+  purity),
+  caller-
+  responsibility
+  note
+  (Dirac
+  short-
+  circuit
+  via
+  `is_delta`
+  lives
+  at the
+  caller),
+  cross-
+  references
+  to the
+  plan +
+  task
+  brief.
+- **`tests/pathtracer_mis_tests.cpp`
+  (NEW;
+  228
+  lines).**
+  Host-
+  only
+  test
+  binary
+  exercising
+  the
+  helper
+  via the
+  RR_CHECK
+  framework
+  (mirrors
+  `pathtracer_bsdf_tests.cpp`
+  shape).
+  Eight
+  test-
+  case
+  functions
+  totalling
+  34
+  RR_CHECK
+  assertions:
+    1. `test_power_heuristic_both_zero_returns_zero`
+       — strict
+       `==
+       0.0f`
+       (the
+       guard's
+       literal-
+       zero
+       branch).
+    2. `test_power_heuristic_p_a_zero`
+       — 4 x
+       values
+       (0.1,
+       1, 100,
+       1e6);
+       strict
+       `== 0.0f`.
+    3. `test_power_heuristic_p_b_zero`
+       — 4 x
+       values;
+       strict
+       `== 1.0f`.
+    4. `test_power_heuristic_equal_pdfs`
+       — 4 x
+       values;
+       strict
+       `==
+       0.5f`
+       (IEEE-
+       754
+       exact
+       per
+       the
+       inline
+       comment
+       argument).
+    5. `test_power_heuristic_squares_pdfs`
+       (β=2
+       anti-
+       regression):
+       `power_heuristic(2,
+       1) ≈
+       4/5`
+       AND
+       must
+       NOT
+       equal
+       `2/3`
+       (the
+       balance-
+       heuristic
+       result).
+       Catches
+       the
+       β-
+       confusion
+       bug a
+       regression
+       might
+       introduce.
+    6. `test_power_heuristic_one_dominates`
+       —
+       `(1e6,
+       1e-3)
+       >
+       0.999f`
+       and
+       symmetric
+       inverse
+       `< 0.001f`.
+    7. `test_power_heuristic_sum_to_one`
+       — 5
+       (p_a,
+       p_b)
+       pairs;
+       `approx`
+       with
+       1e-5
+       eps
+       (FP
+       sum
+       can
+       differ
+       by ~1
+       ULP
+       due to
+       compounded
+       rounding;
+       inline
+       comment
+       documents
+       the
+       caveat);
+       plus
+       individual
+       in-
+       range
+       checks.
+    8. `test_power_heuristic_purity`
+       —
+       memcmp-
+       anchored
+       determinism
+       across
+       two
+       calls
+       with
+       identical
+       inputs;
+       cross-
+       check
+       that a
+       different
+       input
+       produces
+       a
+       different
+       output
+       (catches
+       a
+       regression
+       that
+       returned
+       a
+       constant).
+
+  Final
+  output:
+  `pathtracer_mis_tests:
+  34/34
+  passed`.
+- **`CMakeLists.txt`
+  (+18
+  lines).**
+  Test-
+  binary
+  block
+  next to
+  the
+  existing
+  `pathtracer_bsdf_tests`
+  block.
+  Linkage:
+  standard
+  `target_link_libraries(...
+  PRIVATE
+  rr_pathtracer)`.
+  No
+  changes
+  to the
+  `RelativityRender`
+  executable
+  source
+  list
+  (the
+  helper
+  is
+  RR_HD
+  inline +
+  in the
+  INTERFACE
+  library;
+  no
+  `.cpp`
+  registration
+  needed).
+- This
+  `BUILD_PLAN.md`
+  slice-
+  closing
+  entry.
+
+### What does NOT change
+
+- **No
+  rendering
+  behaviour
+  change.**
+  No
+  caller
+  invokes
+  the
+  helper
+  in this
+  slice.
+  Both
+  integrators
+  (`k_pathtrace_sample`
+  CUDA,
+  `__raygen__pathtrace`
+  OptiX)
+  byte-
+  identical
+  with
+  the
+  post-
+  MIS.3-
+  audit
+  baseline
+  at
+  `960c523`.
+  PPM
+  output
+  unchanged.
+- **No
+  integrator
+  wiring.**
+  MIS.5 +
+  MIS.6
+  (the
+  future
+  integrator
+  slices)
+  consume
+  the
+  helper.
+  Not
+  this
+  slice.
+- **No
+  CUDA /
+  OptiX
+  algorithm
+  changes.**
+  No
+  `.cu`
+  files
+  modified.
+  No
+  POD-
+  layout /
+  pipeline /
+  dispatcher
+  change.
+- **No
+  pathtracer
+  module
+  sibling
+  surface
+  changes.**
+  `src/pathtracer/{RNG,Sampling,
+  Bsdf,
+  DirectLight,PathTracer}.{h,cuh,cpp}`
+  byte-
+  identical.
+- **No
+  CLI /
+  Config /
+  main.cpp
+  changes.**
+  `src/core/`
+  +
+  `src/main.cpp`
+  byte-
+  identical.
+  No new
+  CLI
+  flag
+  (per
+  task
+  brief
+  §6 #7).
+- **No
+  C4D /
+  server /
+  UI /
+  node-
+  editor
+  changes.**
+  None
+  exist.
+- **No
+  scene /
+  tooling
+  changes.**
+  `scenes/*.rrscene`,
+  `tools/verify_cuda_host.py`
+  byte-
+  identical.
+- **No
+  changes
+  to
+  existing
+  test
+  binaries.**
+  `cli_tests`
+  31/31,
+  `pathtracer_nee_tests`
+  53/53,
+  `pathtracer_bsdf_tests`
+  41/41,
+  every
+  other
+  test —
+  unchanged.
+
+### Source diff size
+
+**+355 /
+0
+across
+3 files
+(2 NEW
++ 1
+modified).**
+Per the
+task
+brief
+§5.3
+budget
+(≤ 200),
+the
+slice
+overshoots
+by
+~1.78x.
+The
+deviation
+matches
+the
+established
+PT-P.x /
+NEE.x /
+MIS.{2,3}
+doc-
+comment
+density
+overshoot
+pattern:
+
+- `Mis.h`:
+  109
+  lines,
+  ~92%
+  doc-
+  comments
+  +
+  ~8%
+  helper
+  body
+  (5-line
+  function).
+- `tests/pathtracer_mis_tests.cpp`:
+  228
+  lines,
+  ~30%
+  per-
+  case
+  doc-
+  comments +
+  ~70%
+  test
+  bodies +
+  framework
+  scaffold.
+- `CMakeLists.txt`:
+  18
+  lines,
+  ~67%
+  doc-
+  comment +
+  ~33%
+  CMake
+  invocations.
+
+The
+pure-
+logic
+diff
+(helper
+body +
+test
+bodies +
+CMake,
+net of
+doc-
+comments)
+is ~110
+lines —
+within
+the
+≤ 200
+cap.
+Documented
+here per
+the
+established
+deviation-
+note
+pattern.
+
+### Master rule compliance
+
+- **Build
+  incrementally
+  / every
+  step
+  compilable
+  (rules
+  1 +
+  2)**:
+  both
+  audit-
+  host
+  configs
+  rebuild
+  cleanly
+  on the
+  first
+  attempt.
+  ctest
+  10/10 →
+  **11/11**
+  OFF +
+  11/11 →
+  **12/12**
+  ON
+  (matches
+  task
+  brief
+  §5.2
+  expectation
+  exactly).
+- **No
+  fake
+  stubs
+  (rule
+  3)**:
+  the
+  helper
+  is a
+  real
+  Veach
+  β=2
+  power-
+  heuristic
+  implementation;
+  no
+  TODO /
+  unimplemented
+  branches.
+  Every
+  test
+  case
+  exercises
+  a real
+  invariant.
+- **No
+  CPU
+  per-
+  pixel
+  work
+  (rules
+  5 +
+  7)**:
+  the
+  helper
+  is RR_HD
+  inline;
+  per-
+  pixel
+  consumption
+  happens
+  device-
+  side at
+  MIS.5 /
+  MIS.6
+  (future
+  slices).
+  Host-
+  side is
+  test
+  scaffold
+  only.
+- **Module
+  boundaries
+  (rule
+  9)**:
+  `src/pathtracer/Mis.h`
+  sits
+  cleanly
+  alongside
+  `pathtracer/{DirectLight,RNG,Sampling,Bsdf}.{h,cuh}`.
+  No
+  cross-
+  module
+  ripple.
+- **Avoid
+  monolithic
+  files
+  (rule
+  10)**:
+  the new
+  files
+  are
+  small
+  (Mis.h
+  109,
+  tests
+  228).
+- **Explicit
+  testable
+  interfaces
+  (rule
+  11)**:
+  the
+  helper
+  is host-
+  callable +
+  host-
+  tested.
+- **Update
+  BUILD_PLAN
+  (rule
+  8)**:
+  this
+  entry.
+- **Do
+  only
+  that
+  scope**:
+  shipped
+  exactly
+  the
+  helper +
+  8 tests +
+  CMake
+  block.
+  No
+  integrator
+  wiring;
+  no
+  caller
+  invocation;
+  no
+  related
+  refactors.
+
+### Verified at the build
+
+- `cmake
+  --build
+  build
+  -j`
+  (RR_ENABLE_CUDA=OFF,
+  RR_ENABLE_OPTIX=OFF):
+  clean
+  rebuild
+  including
+  the new
+  `pathtracer_mis_tests`
+  executable.
+  ctest
+  11/11
+  green
+  (+1
+  from
+  baseline).
+- `cmake
+  --build
+  build-
+  ON -j`
+  (RR_ENABLE_CUDA=OFF,
+  RR_ENABLE_OPTIX=ON
+  with
+  SDK
+  fallback):
+  clean
+  rebuild;
+  ctest
+  12/12
+  green
+  (+1
+  from
+  baseline).
+- **Per-
+  binary
+  test
+  output:**
+    - `pathtracer_mis_tests:
+      34/34
+      passed`
+      (8
+      cases;
+      34
+      RR_CHECK
+      assertions —
+      higher
+      than
+      the
+      ≥ 8
+      minimum
+      because
+      cases
+      2-4 +
+      6 +
+      7 each
+      contain
+      multiple
+      RR_CHECKs
+      across
+      input
+      sweeps).
+    - `pathtracer_bsdf_tests:
+      41/41
+      passed`
+      (unchanged).
+    - `pathtracer_nee_tests:
+      53/53
+      passed`
+      (unchanged).
+    - `cli_tests:
+      31/31
+      passed`
+      (unchanged).
+- **TEX-
+  P.6
+  fixture
+  regression
+  intact:**
+  `--scene-info
+  scenes/test_textured_material.rrscene`
+  emits
+  `fixups
+  applied:
+  2`.
+- **No-
+  touch
+  invariants:**
+  `git
+  diff --
+  src/cuda/
+  src/optix/
+  src/renderer/
+  src/io/
+  src/scene/
+  src/material/
+  src/lighting/
+  src/texture/
+  src/gpu/
+  src/server/
+  src/main.cpp
+  src/core/
+  src/pathtracer/{RNG,Sampling,Bsdf,DirectLight,PathTracer}.*
+  tests/{cli,pathtracer,math,image,gpu,relativity,demo,renderer,optix,pathtracer_nee,pathtracer_bsdf}_tests.cpp
+  scenes/
+  tools/`
+  ⇒ 0
+  bytes.
+  Only
+  `src/pathtracer/Mis.h` +
+  `tests/pathtracer_mis_tests.cpp`
+  (both
+  NEW)
+  and
+  `CMakeLists.txt`
+  (test-
+  binary
+  block)
+  changed.
+
+### Sub-arc closure
+
+MIS.4
+sub-arc
+CLOSED.
+**All
+three
+MIS
+leaves
+(MIS.{2,3,4})
+are
+now
+shipped:**
+
+| Leaf  | Component                 | Status                                                |
+|-------|---------------------------|-------------------------------------------------------|
+| MIS.2 | BSDF data model + helpers | shipped (commits `d9fa6e3` + `5a1c772`)               |
+| MIS.3 | Light data model          | shipped + audited (commits `0dd7d46` + `960c523`)     |
+| MIS.4 | Power heuristic helper    | **shipped this slice**                                 |
+
+The MIS
+arc's
+remaining
+slices
+are:
+MIS.5
+(CUDA
+integrator —
+wires
+the
+three
+leaves
+into
+`k_pathtrace_sample`'s
+NEE
+branch +
+BSDF-
+bounce-
+as-light
+contribution),
+MIS.6
+(OptiX
+integrator —
+mirrors
+MIS.5 on
+`__raygen__pathtrace`),
+MIS.7
+(arc-
+level
+audit).
+
+A MIS.4
+audit is
+NICE-
+TO-HAVE
+per the
+task
+brief
+§7.4 but
+not a
+hard
+PASS
+criterion;
+the
+operator
+may
+defer to
+bundle
+with
+MIS.5 /
+MIS.6 /
+MIS.7
+if
+preferred.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:

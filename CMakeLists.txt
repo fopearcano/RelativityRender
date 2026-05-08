@@ -698,6 +698,24 @@ if(RR_BUILD_TESTS)
     rr_apply_warnings(pathtracer_bsdf_tests)
     add_test(NAME pathtracer_bsdf_tests COMMAND pathtracer_bsdf_tests)
 
+    # pathtracer_mis_tests (MIS.4) covers the host-side
+    # `rr::pathtracer::power_heuristic(float, float)` helper
+    # (`pathtracer/Mis.h`). The helper is RR_HD inline + pure
+    # scalar math (Veach 1995 §9.2.4 power heuristic with
+    # β=2), so the same code path the future MIS.5 (CUDA) and
+    # MIS.6 (OptiX) integrators will execute is exercised
+    # here against the host C++ compiler. Anchors the eight
+    # mandatory cases from
+    # `docs/PATH_TRACER_MIS_POWER_HEURISTIC_TASK.md` §5.5
+    # (both-zero, p_a-zero, p_b-zero, equal-pdfs, squares-
+    # pdfs [β=2 anti-regression], one-dominates, sum-to-one,
+    # purity) so a regression is caught at host-build time
+    # without requiring a CUDA-equipped runtime host.
+    add_executable(pathtracer_mis_tests tests/pathtracer_mis_tests.cpp)
+    target_link_libraries(pathtracer_mis_tests PRIVATE rr_pathtracer)
+    rr_apply_warnings(pathtracer_mis_tests)
+    add_test(NAME pathtracer_mis_tests COMMAND pathtracer_mis_tests)
+
     # cli_tests (NEE.5 test expansion) covers the
     # `rr::core::CommandLine::parse` parser arms relevant to the
     # `--enable-nee` modifier flag. Per the task brief
