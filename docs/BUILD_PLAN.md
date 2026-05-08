@@ -62537,6 +62537,604 @@ integrator)
 (audit)
 follow.
 
+## MIS.3 — Light PDF data model audit (docs only)
+
+**Scope of
+this slice
+(post-MIS.3
+impl):
+walk the
+five
+audit
+items
+the user
+enumerated +
+record a
+PASS /
+REPAIR /
+BLOCKED
+verdict
+per item.
+Documentation
+only;
+zero
+source
+changes.
+Establishes
+the per-
+stage
+audit
+cadence
+for the
+MIS arc
+(MIS.2
+closed
+without
+a
+separate
+audit
+doc;
+MIS.3
+ships
+this
+audit as
+the
+first
+per-
+stage
+MIS
+audit).**
+
+### What ships
+
+- `docs/PATH_TRACER_MIS_LIGHT_PDF_AUDIT.md`
+  (NEW;
+  ~641
+  lines).
+  Six-
+  section
+  audit
+  walking
+  the
+  five
+  enumerated
+  checks +
+  master-
+  rule
+  compliance +
+  sub-
+  arc
+  context.
+  Pattern
+  mirrors
+  every
+  prior
+  audit
+  in this
+  session
+  (NEE.3 /
+  NEE.6 /
+  NEE.6
+  REPAIR
+  audit /
+  firefly-
+  clamp /
+  TEX-P.x
+  cadence):
+    - **§0
+      Header.**
+      Date,
+      branch,
+      HEAD
+      commit
+      (`0dd7d46`),
+      plan
+      source
+      (`PATH_TRACER_MIS_PLAN.md`
+      §3.2 +
+      §5.2
+      and
+      the
+      MIS.3
+      task
+      brief),
+      audit-
+      host
+      fingerprint,
+      verdict
+      legend,
+      MIS arc
+      cadence
+      table.
+    - **§1
+      `pdf_solid_angle`
+      field
+      exists.**
+      PASS.
+      Field
+      at
+      `DirectLight.h:133`;
+      populated
+      at
+      `DirectLight.cuh:170`
+      (Point) +
+      `:205`
+      (Directional);
+      ~17-
+      line
+      doc-
+      comment
+      block;
+      grep-
+      verified
+      uniqueness.
+    - **§2
+      Delta-
+      light
+      marker
+      exists
+      or is
+      explicitly
+      deferred.**
+      PASS —
+      INCLUDED
+      (not
+      deferred).
+      Records
+      the
+      task
+      brief
+      §2.3
+      design
+      rationale
+      (v1
+      lights
+      ALWAYS
+      set
+      `is_delta
+      ==
+      true`,
+      so
+      omitting
+      would
+      break
+      the
+      future
+      MIS
+      helper's
+      scene-
+      agnostic
+      contract).
+      Field
+      at
+      `DirectLight.h:134`;
+      populated
+      at
+      `:171`
+      (Point) +
+      `:206`
+      (Directional);
+      ~17-
+      line
+      doc-
+      comment.
+    - **§3
+      No
+      render
+      behavior
+      changed.**
+      PASS.
+      Source-
+      level
+      diff
+      scoped
+      to 3
+      files
+      (+226 /
+      -2);
+      no-
+      touch
+      invariants
+      table
+      verifies
+      0 bytes
+      diff
+      across
+      all
+      kernel /
+      dispatcher /
+      sibling
+      pathtracer
+      module /
+      test
+      paths;
+      behavioural
+      argument
+      cites
+      the
+      kernels
+      never
+      reading
+      the new
+      fields
+      (verified
+      via
+      `grep`
+      returning
+      empty
+      from
+      `src/cuda/`
+      +
+      `src/optix/`);
+      default-
+      OFF
+      byte-
+      identity
+      preserved
+      structurally;
+      NEE.5
+      memcmp
+      anchor
+      (`test_zero_contribution_is_bit_default`)
+      preserved
+      WITHOUT
+      modification.
+    - **§4
+      Build
+      status.**
+      PASS.
+      10/10
+      OFF +
+      11/11
+      ON
+      (counts
+      UNCHANGED
+      per
+      task
+      brief
+      §5.2
+      expectation
+      exactly).
+      Per-
+      binary:
+      `pathtracer_nee_tests`
+      34/34 →
+      53/53
+      (+19
+      RR_CHECK
+      assertions
+      from
+      the
+      three
+      new
+      MIS.3
+      cases);
+      `cli_tests`
+      31/31 +
+      `pathtracer_bsdf_tests`
+      41/41
+      unchanged.
+      Smoke
+      matrix
+      9 cells
+      green.
+    - **§5
+      Verdict:
+      PASS.**
+      Closing
+      verdict.
+      Master-
+      rule
+      compliance
+      walked.
+      Diff-
+      size
+      deviation
+      from
+      impl
+      slice
+      noted
+      as
+      carried
+      forward
+      (already
+      documented
+      in the
+      impl
+      commit's
+      BUILD_PLAN
+      entry +
+      commit
+      message;
+      not
+      re-
+      flagged
+      as a
+      new
+      issue).
+      Zero
+      new
+      REPAIR
+      candidates.
+    - **§6
+      Sub-
+      arc
+      context.**
+      What
+      this
+      audit
+      confirms +
+      what it
+      does
+      NOT
+      confirm
+      (MIS-
+      aware
+      integrator
+      output
+      requires
+      MIS.5 /
+      MIS.6 +
+      CUDA /
+      OptiX-
+      SDK
+      host;
+      DEFERRED).
+      Recommended
+      next
+      step:
+      ship
+      MIS.4
+      (the
+      last
+      independent
+      leaf;
+      pure-
+      math
+      `power_heuristic`).
+- This
+  `BUILD_PLAN.md`
+  slice-
+  closing
+  entry.
+
+### What does NOT change
+
+- Source:
+  byte-
+  identical.
+  `git
+  diff --
+  src/
+  tests/
+  scenes/
+  tools/
+  CMakeLists.txt`
+  ⇒ 0
+  bytes.
+- Build
+  configs:
+  unchanged
+  at the
+  post-
+  MIS.3
+  impl
+  baseline
+  (10/10
+  OFF +
+  11/11
+  ON
+  ctest;
+  the
+  audit's
+  build
+  invocations
+  re-
+  verified
+  greenness
+  but did
+  not
+  modify
+  any
+  build
+  artefact).
+- All
+  other
+  docs:
+  this
+  audit
+  only
+  ADDS
+  `PATH_TRACER_MIS_LIGHT_PDF_AUDIT.md`;
+  no
+  edits
+  to any
+  prior
+  audit
+  doc /
+  task
+  brief /
+  arc
+  artefact.
+
+### Master rule compliance
+
+- **Build
+  incrementally
+  / every
+  step
+  compilable
+  (rules
+  1 +
+  2)**:
+  docs-
+  only
+  slice;
+  preserved
+  trivially.
+  Both
+  audit-
+  host
+  configs
+  re-
+  verified
+  green
+  during
+  the
+  audit
+  (10/10
+  OFF +
+  11/11
+  ON).
+- **No
+  fake
+  stubs
+  (rule
+  3)**:
+  every
+  audit
+  finding
+  is a
+  read-
+  only
+  observation
+  cited
+  to a
+  source
+  line
+  number /
+  smoke
+  output;
+  zero
+  pretense.
+- **No
+  CPU
+  per-
+  pixel
+  work
+  (rules
+  5 +
+  7)**:
+  no
+  changes;
+  trivially
+  preserved.
+- **Update
+  BUILD_PLAN
+  (rule
+  8)**:
+  this
+  entry.
+- **Documentation
+  only;
+  do not
+  modify
+  source
+  code
+  (current-
+  prompt
+  rule)**:
+  zero
+  source
+  edits.
+
+### Verified at the build
+
+- `cmake
+  --build
+  build
+  -j`
+  (RR_ENABLE_CUDA=OFF,
+  RR_ENABLE_OPTIX=OFF):
+  no-op;
+  ctest
+  10/10
+  green.
+- `cmake
+  --build
+  build-
+  ON -j`
+  (RR_ENABLE_CUDA=OFF,
+  RR_ENABLE_OPTIX=ON):
+  no-op;
+  ctest
+  11/11
+  green.
+- Smoke
+  matrix
+  during
+  the
+  audit
+  re-
+  verified
+  the 9
+  cells
+  of §4.2
+  (cli_tests
+  31/31,
+  pathtracer_nee_tests
+  53/53,
+  pathtracer_bsdf_tests
+  41/41,
+  TEX-
+  P.6
+  fixture
+  intact,
+  CUDA
+  fallback
+  byte-
+  identical,
+  OptiX
+  fallback
+  + log
+  lines
+  byte-
+  identical,
+  ctest
+  both
+  configs
+  green).
+
+### Sub-arc status
+
+MIS.3
+sub-arc
+fully
+audited.
+The MIS
+arc's
+last
+independent
+leaf
+(MIS.4 —
+`power_heuristic`
+helper)
+remains
+pending.
+Once
+MIS.4
+lands,
+all
+three
+leaves
+will
+be
+shipped
+and
+MIS.5
+(CUDA
+integrator)
++
+MIS.6
+(OptiX
+integrator)
++
+MIS.7
+(arc-
+level
+audit)
+follow.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
