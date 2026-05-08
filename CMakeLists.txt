@@ -678,6 +678,26 @@ if(RR_BUILD_TESTS)
     rr_apply_warnings(pathtracer_nee_tests)
     add_test(NAME pathtracer_nee_tests COMMAND pathtracer_nee_tests)
 
+    # pathtracer_bsdf_tests (MIS.2) covers the host-side
+    # `rr::pathtracer::sample_bsdf / bsdf_pdf / bsdf_eval`
+    # helpers (`pathtracer/Bsdf.cuh`) and the `BsdfSample`
+    # POD (`pathtracer/Bsdf.h`). Helpers are RR_HD inline,
+    # so the same code path the future MIS.5 (CUDA) and
+    # MIS.6 (OptiX) integrators will execute is exercised
+    # here against the host C++ compiler. Anchors the ten
+    # mandatory cases from
+    # `docs/PATH_TRACER_MIS_BSDF_PDF_TASK.md` §5.5
+    # (default-constructed, upper-hemisphere, pdf-matches-
+    # sampler, below-horizon, eval-matches-baseColor·invPi,
+    # throughput simplification, MC PDF-normalisation,
+    # cos-weighted mean dz, degenerate-normal-invalid,
+    # determinism) so a regression is caught at host-build
+    # time without requiring a CUDA-equipped runtime host.
+    add_executable(pathtracer_bsdf_tests tests/pathtracer_bsdf_tests.cpp)
+    target_link_libraries(pathtracer_bsdf_tests PRIVATE rr_pathtracer)
+    rr_apply_warnings(pathtracer_bsdf_tests)
+    add_test(NAME pathtracer_bsdf_tests COMMAND pathtracer_bsdf_tests)
+
     # cli_tests (NEE.5 test expansion) covers the
     # `rr::core::CommandLine::parse` parser arms relevant to the
     # `--enable-nee` modifier flag. Per the task brief

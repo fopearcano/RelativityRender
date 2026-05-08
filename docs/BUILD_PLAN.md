@@ -59420,6 +59420,1275 @@ that
 may
 interleave.
 
+## MIS.2 — BSDF helpers + host-only tests (impl, second half)
+
+**Scope of
+this slice
+(post-MIS.2
+structure-
+only):
+ship the
+remaining
+half of
+the MIS.2
+arc — the
+three
+Lambert
+helpers
+(`sample_bsdf`,
+`bsdf_pdf`,
+`bsdf_eval`),
+the host-
+only test
+binary
+exercising
+all ten
+PASS-
+criterion
+cases
+from the
+task brief
+§5.5, and
+the
+CMakeLists
+test-
+binary
+block.
+Closes
+the MIS.2
+sub-arc
+fully —
+the data
+type +
+helpers +
+host
+tests are
+all
+shipped.
+The next
+slices
+(MIS.3
+Light
+data
+model;
+MIS.4 MIS
+helper)
+remain
+independent
+leaves
+per
+`docs/PATH_TRACER_MIS_PLAN.md`
+§8.**
+
+### What ships
+
+- **`src/pathtracer/Bsdf.cuh`
+  (NEW;
+  187
+  lines).**
+  RR_HD
+  inline
+  helpers
+  for
+  Lambert.
+  Re-
+  exports
+  the
+  `BsdfSample`
+  POD
+  from
+  `Bsdf.h`;
+  brings
+  in
+  `pathtracer/Sampling.h`
+  for
+  `sample_cosine_hemisphere`
+  +
+  `pdf_cosine_hemisphere`,
+  `material/MaterialTypes.h`
+  for the
+  read-
+  only
+  `MaterialParams`
+  POD,
+  `math/Vec3.h`
+  +
+  `math/MathUtils.h`
+  for
+  `Vec3` /
+  `kInvPi`.
+    - **`detail::align_to_normal(local,
+      n)`** —
+      builds a
+      tangent
+      frame
+      from a
+      world-
+      space
+      normal
+      and
+      transforms
+      a
+      tangent-
+      space
+      direction
+      into
+      world
+      space.
+      Mirrors
+      the
+      existing
+      inline
+      copies
+      in
+      `CudaPathTracer.cu`
+      (lambda)
+      and
+      `OptixPrograms.cu::pt_align_to_normal`
+      (line
+      790-
+      799)
+      verbatim.
+    - **`sample_bsdf(material,
+      wi,
+      normal,
+      u)`** —
+      cosine-
+      weighted
+      hemisphere
+      sample
+      aligned
+      to the
+      world-
+      space
+      normal.
+      Defence-
+      in-
+      depth
+      gates
+      on
+      degenerate
+      normal
+      (`dot(n,n)
+      <= 0`
+      ⇒
+      `valid =
+      false`)
+      and
+      cos_theta_o
+      ≤ 0
+      (numerical
+      edge at
+      the
+      equator).
+      Lambert
+      `value =
+      baseColor
+      / pi`;
+      `wi`
+      unused
+      (Lambert
+      rotation-
+      invariant;
+      kept
+      for
+      forward-
+      compatibility
+      with
+      future
+      BSDFs).
+    - **`bsdf_pdf(material,
+      wo,
+      normal)`** —
+      `pdf_cosine_hemisphere(cos_theta_o)`
+      gated
+      on
+      `cos_theta_o
+      > 0`.
+      Returns
+      0 for
+      below-
+      horizon
+      `wo`.
+      MUST
+      be
+      bit-
+      consistent
+      with
+      `BsdfSample::pdf`
+      from
+      `sample_bsdf`
+      (the
+      §5.5
+      case 3
+      memcmp
+      anchor).
+    - **`bsdf_eval(material,
+      wi,
+      wo,
+      normal)`** —
+      returns
+      `baseColor
+      *
+      kInvPi`
+      regardless
+      of the
+      directions
+      (Lambert
+      is
+      rotation-
+      invariant;
+      the
+      integrator
+      gates
+      cos_theta_o
+      separately
+      via
+      throughput
+      multiply).
+
+  Doc-
+  comment
+  density
+  ~70%;
+  helper
+  bodies
+  +
+  signatures
+  ~30%.
+  The
+  doc-
+  comment
+  cross-
+  references
+  `docs/PATH_TRACER_MIS_PLAN.md`
+  +
+  `docs/PATH_TRACER_MIS_BSDF_PDF_TASK.md`
+  for the
+  contract.
+- **`tests/pathtracer_bsdf_tests.cpp`
+  (NEW;
+  367
+  lines).**
+  Host-
+  only
+  test
+  binary
+  exercising
+  the
+  helpers
+  via the
+  RR_CHECK
+  framework
+  (mirrors
+  `pathtracer_nee_tests.cpp`
+  shape).
+  Ten
+  test-
+  case
+  functions
+  totalling
+  41
+  RR_CHECK
+  assertions:
+    1. `test_default_constructed_sample_is_invalid`
+       — POD
+       memcmp
+       anchor.
+    2. `test_lambert_sample_in_upper_hemisphere`.
+    3. `test_lambert_pdf_matches_sampler`
+       — bit-
+       exact
+       consistency
+       across
+       4
+       representative
+       u
+       values.
+    4. `test_lambert_pdf_below_horizon_is_zero`
+       — three
+       wo
+       directions
+       (down,
+       equator,
+       slightly
+       below).
+    5. `test_lambert_eval_matches_inverse_pi_albedo`
+       — three
+       albedos
+       (black,
+       grey,
+       warm).
+    6. `test_lambert_throughput_simplification`
+       — the
+       byte-
+       identity
+       guarantee
+       for
+       MIS.5 /
+       MIS.6:
+       `(value
+       *
+       cos_theta_o)
+       /
+       pdf
+       ==
+       baseColor`
+       within
+       1
+       ULP.
+    7. `test_lambert_sample_pdf_normalises_via_monte_carlo`
+       — Σ
+       (1/pdf)
+       over
+       N=10^5
+       cosine-
+       weighted
+       samples
+       ≈ 2π
+       within
+       25%
+       (the
+       brief
+       §5.5
+       case 7
+       suggested
+       10%
+       at
+       N=10^4
+       but
+       the
+       estimator
+       has
+       infinite
+       variance
+       so we
+       use
+       N=10^5
+       +
+       relaxed
+       tolerance;
+       caveat
+       documented
+       inline).
+    8. `test_lambert_cos_weighted_mean_dz`
+       — the
+       finite-
+       variance
+       counterpart;
+       mean
+       cos_theta_o
+       ≈ 2/3
+       within
+       0.02
+       absolute
+       at
+       N=10^5.
+    9. `test_degenerate_normal_returns_invalid`
+       —
+       `(0,0,0)`
+       normal
+       ⇒
+       `valid =
+       false`.
+    10. `test_helper_determinism`
+        — same
+        inputs ⇒
+        bit-
+        equal
+        `BsdfSample`
+        via
+        memcmp.
+
+  Final
+  output:
+  `pathtracer_bsdf_tests:
+  41/41
+  passed`.
+- **`CMakeLists.txt`
+  (+20
+  lines).**
+  Test-
+  binary
+  block
+  next to
+  the
+  existing
+  `pathtracer_nee_tests`
+  block.
+  Linkage:
+  standard
+  `target_link_libraries(...
+  PRIVATE
+  rr_pathtracer)`
+  + 14
+  lines of
+  doc-
+  comment
+  describing
+  the
+  binary's
+  scope.
+  No
+  changes
+  to the
+  `RelativityRender`
+  executable
+  source
+  list (the
+  helpers
+  are
+  RR_HD
+  inline +
+  in the
+  INTERFACE
+  library;
+  no `.cpp`
+  registration
+  needed).
+- This
+  `BUILD_PLAN.md`
+  slice-
+  closing
+  entry.
+
+### Build hiccup + recovery
+
+The
+first
+build
+attempt
+failed
+with a
+single-
+line
+typo:
+the
+test's
+RNG
+seed
+literal
+`0xBSDFu`
+contained
+a non-
+hex `S`
+character.
+Fixed
+by
+editing
+the
+seed
+to
+`0xBDFFu`
+(only
+hex-
+digit
+characters).
+After
+the
+fix
+both
+configs
+build
+cleanly
+on the
+first
+re-
+try.
+Recorded
+here
+for
+audit
+trail
+completeness.
+
+### What does NOT change
+
+- **No
+  rendering
+  behaviour
+  change.**
+  Both
+  integrators
+  (`k_pathtrace_sample`
+  in
+  `src/cuda/CudaPathTracer.cu`
+  and
+  `__raygen__pathtrace`
+  in
+  `src/optix/OptixPrograms.cu`)
+  continue
+  to use
+  their
+  existing
+  inline
+  cosine-
+  bounce
+  arithmetic;
+  no
+  caller
+  invokes
+  the new
+  helpers
+  in this
+  slice.
+  Per-
+  pixel
+  output
+  is
+  byte-
+  identical
+  with the
+  post-
+  NEE-arc
+  baseline
+  at
+  `827f5de`
+  (the
+  same
+  baseline
+  the
+  structure-
+  only
+  half at
+  `d9fa6e3`
+  preserved).
+- **No
+  CUDA /
+  OptiX
+  algorithm
+  changes.**
+  No
+  `.cu`
+  files
+  modified.
+  No
+  POD-
+  layout /
+  pipeline /
+  dispatcher
+  change.
+- **No
+  pathtracer
+  module
+  surface
+  changes.**
+  `src/pathtracer/RNG.{h,cuh}`,
+  `src/pathtracer/Sampling.{h,cuh}`,
+  `src/pathtracer/DirectLight.{h,cuh}`,
+  `src/pathtracer/PathTracer.{h,cpp}`,
+  `src/pathtracer/Bsdf.h`
+  (the
+  POD
+  shipped
+  at
+  `d9fa6e3`)
+  — every
+  byte-
+  identical.
+- **No
+  CLI /
+  Config /
+  main.cpp
+  changes.**
+  `src/core/`
+  +
+  `src/main.cpp`
+  byte-
+  identical.
+  No new
+  CLI
+  flag
+  (per
+  `docs/PATH_TRACER_MIS_PLAN.md`
+  §6 #8,
+  the MIS
+  arc has
+  no
+  operator-
+  facing
+  surface).
+- **No
+  C4D /
+  server /
+  UI /
+  node-
+  editor
+  changes.**
+  None
+  exist;
+  trivially
+  preserved.
+- **No
+  scene /
+  tooling
+  changes.**
+  `scenes/*.rrscene`,
+  `tools/verify_cuda_host.py`
+  byte-
+  identical.
+- **No
+  changes
+  to
+  existing
+  test
+  binaries.**
+  `cli_tests`
+  31/31,
+  `pathtracer_nee_tests`
+  34/34,
+  every
+  other
+  prior
+  test
+  binary —
+  all
+  unchanged.
+
+### MIS.2 cumulative diff size
+
+**MIS.2
+structure-
+only
+half
+(commit
+`d9fa6e3`):**
++172
+across
+1 NEW
+file
+(`Bsdf.h`).
+
+**MIS.2
+helpers
+half
+(this
+slice):**
++574
+across
+3 files
+(`Bsdf.cuh`
+NEW
++187,
+`tests/pathtracer_bsdf_tests.cpp`
+NEW
++367,
+`CMakeLists.txt`
++20).
+
+**Combined
+MIS.2:**
+**+746
+lines
+across
+4 files
+(3 NEW
++ 1
+modified)**.
+Per the
+task
+brief
+§5.3
+budget
+(≤ 250
+combined),
+this
+overshoots
+by ~3x.
+The
+deviation
+matches
+the
+established
+PT-P.x /
+NEE.x
+doc-
+comment
+density
+overshoot
+pattern:
+- ~70%
+  of
+  `Bsdf.cuh`'s
+  187
+  lines
+  are
+  doc-
+  comments
+  (helper
+  contracts +
+  field-
+  level
+  semantics +
+  cross-
+  references
+  to the
+  plan +
+  task
+  brief).
+- ~50%
+  of
+  `tests/pathtracer_bsdf_tests.cpp`'s
+  367
+  lines
+  are
+  per-
+  case
+  doc-
+  comments
+  +
+  framework
+  scaffolding;
+  the
+  remaining
+  ~50% is
+  the 10
+  case
+  functions
+  + the
+  Monte
+  Carlo
+  loops.
+- The
+  pure-
+  logic
+  diff
+  (helpers
+  + test
+  bodies +
+  CMake
+  block,
+  net of
+  doc-
+  comments)
+  is
+  ~280
+  lines —
+  closer
+  to the
+  task
+  brief's
+  §5.3
+  budget,
+  but
+  still
+  above
+  the
+  ≤ 250
+  cap.
+
+Rationale:
+the
+estimator
+list in
+the
+task
+brief
+§5.5
+mandates
+ten
+test
+cases
+covering
+PDF
+normalisation,
+cosine
+distribution,
+bit-
+exact
+consistency,
+degenerate
+inputs,
+and
+determinism.
+That
+test
+coverage
+alone
+needs
+~250-
+350
+lines
+in the
+established
+RR_CHECK
+framework
+shape.
+Combined
+with the
+helpers
+(~80-
+100
+lines)
+and the
+necessarily-
+verbose
+doc-
+comments,
+the
+≤ 250
+cap is
+unachievable
+without
+sacrificing
+test
+coverage
+or
+documentation
+density.
+
+The
+deviation
+is
+documented
+here +
+in the
+slice
+commit
+message
+per the
+established
+PT-P.x /
+NEE.x /
+firefly-
+clamp /
+NEE.5
+deviation-
+note
+pattern.
+The
+shipped
+output
+satisfies
+every
+PASS
+criterion
+(§5.1
+build,
+§5.2
+ctest,
+§5.4 no-
+touch,
+§5.5
+ten-
+case
+coverage,
+§5.6
+documentation,
+§5.7
+master-
+rule
+compliance);
+only the
+§5.3
+diff-
+size
+budget
+is
+breached.
+
+### Master rule compliance
+
+- **Build
+  incrementally
+  / every
+  step
+  compilable
+  (rules
+  1 +
+  2)**:
+  both
+  audit-
+  host
+  configs
+  rebuild
+  cleanly
+  after a
+  single-
+  typo
+  fix
+  (the
+  `0xBSDFu`
+  hex-
+  literal
+  bug).
+  ctest
+  9/9 →
+  10/10
+  OFF +
+  10/10 →
+  11/11
+  ON
+  (matches
+  task
+  brief
+  §5.2
+  expectation
+  exactly).
+- **No
+  fake
+  stubs
+  (rule
+  3)**:
+  every
+  helper
+  is real
+  Lambert
+  code
+  (PDF
+  +
+  sampler
+  +
+  BRDF
+  eval
+  +
+  defence-
+  in-
+  depth
+  guards);
+  every
+  test
+  case
+  exercises
+  a real
+  invariant.
+  No
+  TODO /
+  unimplemented
+  branches.
+- **No
+  CPU
+  per-
+  pixel
+  work
+  (rules
+  5 +
+  7)**:
+  the
+  helpers
+  are
+  RR_HD
+  inline;
+  per-
+  pixel
+  consumption
+  happens
+  device-
+  side at
+  MIS.5 /
+  MIS.6.
+  Host-
+  side
+  test
+  is
+  one-
+  shot
+  per
+  RR_CHECK +
+  the two
+  Monte
+  Carlo
+  loops
+  (10^5
+  samples
+  each;
+  runs in
+  ~10 ms
+  total).
+- **Module
+  boundaries
+  (rule
+  9)**:
+  the new
+  module
+  sits
+  cleanly
+  alongside
+  `pathtracer/{DirectLight,RNG,Sampling}.{h,cuh}`.
+  No
+  cross-
+  module
+  ripple.
+- **Avoid
+  monolithic
+  files
+  (rule
+  10)**:
+  the
+  new
+  files
+  are
+  small
+  (Bsdf.cuh
+  187,
+  tests
+  367).
+- **Explicit
+  testable
+  interfaces
+  (rule
+  11)**:
+  the
+  helpers
+  +
+  POD
+  are
+  host-
+  callable
+  +
+  host-
+  tested.
+  The
+  tests
+  exercise
+  the
+  same
+  RR_HD
+  inline
+  code
+  path
+  the
+  GPU
+  kernels
+  will
+  run.
+- **Update
+  BUILD_PLAN
+  (rule
+  8)**:
+  this
+  entry.
+- **Do
+  only
+  that
+  scope**:
+  shipped
+  only
+  the
+  three
+  helpers
+  + ten
+  tests +
+  CMake
+  block.
+  No
+  integrator
+  changes;
+  no
+  `is_delta`
+  field
+  added
+  retroactively
+  (it
+  remains
+  deferred
+  per the
+  prior
+  slice's
+  scope-
+  deviation
+  note).
+
+### Verified at the build
+
+- `cmake
+  --build
+  build
+  -j`
+  (RR_ENABLE_CUDA=OFF,
+  RR_ENABLE_OPTIX=OFF):
+  clean
+  rebuild
+  including
+  the
+  new
+  `pathtracer_bsdf_tests`
+  executable.
+  ctest
+  10/10
+  green
+  (+1
+  from
+  baseline).
+- `cmake
+  --build
+  build-
+  ON -j`
+  (RR_ENABLE_CUDA=OFF,
+  RR_ENABLE_OPTIX=ON
+  with
+  SDK
+  fallback):
+  clean
+  rebuild;
+  ctest
+  11/11
+  green
+  (+1
+  from
+  baseline).
+- **Per-
+  binary
+  test
+  output:**
+    - `pathtracer_bsdf_tests:
+      41/41
+      passed`
+      (10
+      cases;
+      41
+      RR_CHECK
+      assertions).
+    - `pathtracer_nee_tests:
+      34/34
+      passed`
+      (unchanged).
+    - `cli_tests:
+      31/31
+      passed`
+      (unchanged).
+- **TEX-
+  P.6
+  fixture
+  regression
+  intact:**
+  `--scene-info
+  scenes/test_textured_material.rrscene`
+  emits
+  the
+  expected
+  three-
+  case
+  log
+  sequence;
+  fixups
+  applied:
+  2.
+- **No-
+  touch
+  invariants:**
+  `git
+  diff --
+  src/cuda/
+  src/optix/
+  src/renderer/
+  src/io/
+  src/scene/
+  src/material/
+  src/lighting/
+  src/texture/
+  src/gpu/
+  src/server/
+  src/main.cpp
+  src/core/
+  src/pathtracer/{RNG,Sampling,DirectLight,PathTracer,Bsdf.h}.*
+  tests/{cli,pathtracer_nee,pathtracer,math,image,gpu,relativity,demo,renderer,optix}_tests.cpp
+  scenes/
+  tools/`
+  ⇒ 0
+  bytes.
+  Only
+  `src/pathtracer/Bsdf.cuh`
+  +
+  `tests/pathtracer_bsdf_tests.cpp`
+  (both
+  NEW)
+  and
+  `CMakeLists.txt`
+  (test-
+  binary
+  block)
+  changed.
+
+### Sub-arc closure
+
+MIS.2
+sub-arc
+CLOSED.
+The full
+BSDF
+data
+model +
+helpers +
+host-
+only
+tests
+are
+shipped
+across
+two
+slices:
+- MIS.2
+  structure-
+  only
+  (commit
+  `d9fa6e3`):
+  the
+  POD.
+- MIS.2
+  helpers
+  (this
+  slice):
+  the
+  three
+  Lambert
+  helpers
+  + the
+  10-case
+  test
+  binary +
+  the
+  CMake
+  block.
+
+The full
+task
+brief
+§5 PASS
+criteria
+are
+satisfied
+modulo
+the
+§5.3
+diff-
+size
+deviation
+documented
+above.
+The next
+slices
+(MIS.3
+Light
+data
+model;
+MIS.4
+MIS
+helper)
+remain
+independent
+leaves
+that
+may
+interleave
+with
+unrelated
+arcs;
+MIS.5
+(CUDA
+integrator)
++ MIS.6
+(OptiX
+integrator)
++ MIS.7
+(audit)
+ship
+after
+all
+three
+leaves
+land.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
