@@ -67304,6 +67304,899 @@ MIS.5
 PPM
 `cmp`).
 
+## MIS.6 — OptiX MIS integrator task definition (docs only)
+
+**Scope of
+this slice
+(post-MIS.5
+audit):
+ship the
+self-
+contained
+task brief
+specifying
+how the
+MIS.5 CUDA-
+side
+integrator
+wiring is
+mirrored on
+the OptiX
+path
+tracer's
+`__raygen__pathtrace`
+NEE branch.
+Documentation
+only;
+zero
+source
+changes.
+The brief
+reuses
+the
+MIS.5
+template
+verbatim
+modulo
+one OptiX-
+specific
+consideration
+(the
+`bsdf_pdf`
+first
+argument:
+the OptiX
+integrator
+has
+`albedo`
+not full
+`MaterialParams`,
+so a
+default-
+constructed
+`MaterialParams{}`
+is passed —
+unused for
+Lambert
+per the
+helper
+contract).**
+
+### What ships
+
+- `docs/PATH_TRACER_MIS_OPTIX_INTEGRATOR_TASK.md`
+  (NEW;
+  ~1102
+  lines).
+  Nine-
+  section
+  brief
+  walking
+  the
+  user's
+  six
+  enumerated
+  topics +
+  out-of-
+  scope +
+  sub-arc
+  context +
+  recommended
+  audit
+  cadence +
+  verdict:
+    - **§1
+      Exact
+      goal.**
+      Mirror
+      the
+      MIS.5
+      CUDA-
+      side
+      ternary
+      on
+      `__raygen__pathtrace`
+      at
+      `OptixPrograms.cu:1023`
+      (the
+      OptiX-
+      side
+      mirror
+      of
+      CUDA's
+      `CudaPathTracer.cu:303`).
+      §1.1
+      The
+      single
+      architectural
+      change:
+      multiply
+      `k =
+      cos_th
+      *
+      sample.pdf_inv
+      *
+      kInvPi`
+      by
+      `mis_weight_nee
+      =
+      sample.is_delta
+      ? 1.0f
+      :
+      power_heuristic(...)`.
+      §1.4
+      OptiX-
+      specific
+      consideration:
+      pass
+      `MaterialParams{}`
+      to
+      `bsdf_pdf`
+      (the
+      helper
+      doesn't
+      use the
+      material
+      for
+      Lambert;
+      a
+      default-
+      constructed
+      instance
+      is bit-
+      equivalent
+      with
+      the
+      CUDA
+      caller's
+      `m`).
+    - **§2
+      v1
+      behavior.**
+      Four
+      sub-
+      sections
+      matching
+      the
+      user's
+      bullets.
+      §2.3
+      output
+      byte-
+      identical
+      via
+      IEEE-
+      754
+      identity
+      multiplication.
+      §2.3
+      also
+      explicitly
+      notes:
+      cross-
+      backend
+      bit-
+      identity
+      is NOT
+      a goal
+      (the
+      two
+      backends
+      have
+      never
+      been
+      bit-
+      equivalent
+      at PPM
+      level
+      due to
+      different
+      bounce-
+      loop /
+      RNG /
+      FMA-
+      fusion
+      patterns;
+      they
+      are
+      statistically
+      similar
+      at high
+      spp).
+      What
+      MIS.6
+      preserves:
+      OptiX-
+      pre-
+      MIS.6 ==
+      OptiX-
+      post-
+      MIS.6.
+    - **§3
+      Files
+      likely
+      involved.**
+      `src/optix/OptixPrograms.cu`
+      (+~25-
+      40
+      lines:
+      includes +
+      MIS-
+      weight
+      composition
+      inside
+      the
+      existing
+      NEE
+      branch).
+      `tests/pathtracer_nee_tests.cpp`
+      NOT
+      touched —
+      the
+      MIS.5
+      case is
+      backend-
+      agnostic
+      (lambda
+      simulates
+      the
+      ternary;
+      OptiX
+      integrator
+      uses
+      the
+      identical
+      ternary).
+      `CMakeLists.txt`
+      NOT
+      touched.
+      §3.1
+      provides
+      the
+      target
+      shape
+      for
+      the
+      integrator
+      change
+      with
+      the
+      OptiX-
+      specific
+      `MaterialParams{}`
+      pattern.
+      §3.2
+      explains
+      why no
+      test
+      addition
+      is
+      needed.
+    - **§4
+      What
+      must
+      not be
+      touched.**
+      Nine
+      sub-
+      sections
+      covering
+      the
+      CUDA
+      integrator
+      (MIS.5
+      preserved
+      byte-
+      identical),
+      pathtracer
+      module's
+      sibling
+      surfaces
+      (RNG,
+      Sampling,
+      DirectLight,
+      Bsdf,
+      Mis,
+      PathTracer
+      ALL
+      byte-
+      identical),
+      OptiX
+      module's
+      OTHER
+      surfaces
+      (OptixRenderer,
+      OptixLaunchParams,
+      OptixPipeline,
+      OptixSBT,
+      OptixDenoiser,
+      OptixBackend,
+      OptixAccel
+      — every
+      byte-
+      identical),
+      CLI /
+      Config /
+      main.cpp,
+      renderer /
+      scene /
+      material
+      modules,
+      OptiX
+      raygen
+      structure
+      (PT-
+      payload
+      helpers,
+      __miss__shadow,
+      __closesthit__radiance,
+      raygen
+      structure
+      with
+      spp
+      loop,
+      bounce
+      loop,
+      kernel
+      guard,
+      shadow
+      ray,
+      cosine
+      bounce,
+      firefly
+      clamp,
+      relativity
+      stack —
+      ALL
+      unchanged
+      except
+      the
+      ~10-line
+      MIS-
+      weight
+      arithmetic
+      block),
+      tests +
+      scenes +
+      tooling,
+      build
+      configs,
+      default
+      behaviour.
+    - **§5
+      PASS
+      criteria.**
+      Eight-
+      sub-
+      section
+      gate:
+      §5.1
+      build,
+      §5.2
+      ctest
+      counts
+      UNCHANGED
+      at 11/11
+      OFF +
+      12/12
+      ON
+      (NO new
+      test
+      binary;
+      NO new
+      test
+      cases —
+      MIS.5
+      backend-
+      agnostic
+      case
+      covers
+      OptiX
+      composition),
+      §5.3
+      diff ≤
+      200
+      (likely
+      ~30-60
+      lines —
+      smaller
+      than
+      MIS.5),
+      §5.4
+      no-touch
+      invariants,
+      §5.5
+      explicitly
+      no new
+      cases,
+      §5.6
+      existing
+      MIS.{2,3,4,5} +
+      NEE.x
+      test
+      invariants
+      preserved,
+      §5.7
+      documentation,
+      §5.8
+      master-
+      rule
+      compliance.
+    - **§6
+      Runtime-
+      deferred
+      CUDA /
+      OptiX-
+      host
+      checks.**
+      Six
+      checks:
+      §6.1
+      OptiX
+      MIS-on
+      byte-
+      IDENTITY
+      at v1
+      (the
+      KEY
+      check);
+      §6.2
+      OptiX
+      default-
+      OFF
+      byte-
+      IDENTITY;
+      §6.3
+      OptiX
+      NEE-on
+      visible
+      behaviour
+      (subsumed
+      by
+      §6.1);
+      §6.4
+      cross-
+      backend
+      MIS
+      convergence
+      (becomes
+      meaningful
+      AFTER
+      MIS.6
+      lands;
+      statistical
+      similarity
+      check);
+      §6.5
+      ctest
+      cycle
+      on
+      CUDA +
+      OptiX-
+      SDK
+      host;
+      §6.6
+      carry-
+      forward
+      MIS.7
+      arc
+      audit
+      will
+      roll up
+      everything.
+    - **§7
+      Out-of-
+      scope.**
+      Ten
+      explicit
+      items
+      (MIS.7,
+      BSDF
+      bounce
+      swap,
+      MIS-on-
+      emission-
+      add,
+      area-
+      light
+      NEE,
+      specular-
+      delta
+      BSDFs,
+      env-IBL
+      NEE,
+      CLI
+      flag,
+      MIS-
+      weight
+      AOV,
+      per-
+      bounce
+      relativity-
+      on-
+      throughput,
+      OptiX-
+      side
+      `BsdfSample`
+      POD
+      direct
+      consumption).
+    - **§8
+      Sub-arc
+      context.**
+      MIS.6
+      is the
+      SECOND
+      INTEGRATING
+      slice
+      (mirrors
+      MIS.5);
+      what
+      this
+      slice
+      unblocks
+      (MIS.7
+      arc
+      audit;
+      cross-
+      backend
+      MIS
+      convergence
+      becomes
+      meaningful;
+      future
+      area-
+      light
+      arc on
+      both
+      backends);
+      §8.4
+      audit
+      cadence:
+      MIS.6
+      audit
+      RECOMMENDED
+      consistent
+      with
+      MIS.5
+      cadence
+      but
+      accepts
+      deferral
+      to
+      bundle
+      with
+      MIS.7.
+    - **§9
+      Verdict.**
+      Brief
+      complete;
+      mode
+      reminder.
+
+  Notable
+  design
+  decisions
+  called
+  out:
+  (a) the
+  user-
+  referenced
+  `PATH_TRACER_MIS_BSDF_PDF_AUDIT.md`
+  +
+  `PATH_TRACER_MIS_POWER_HEURISTIC_AUDIT.md`
+  do NOT
+  exist —
+  MIS.2
+  audit
+  was
+  bundled
+  into
+  BUILD_PLAN
+  entries;
+  MIS.4
+  audit
+  was
+  NICE-
+  TO-HAVE
+  per the
+  MIS.4
+  task
+  brief
+  §7.4
+  and
+  not
+  shipped.
+  This
+  brief
+  proceeds
+  from
+  the
+  plan +
+  shipped
+  task
+  briefs +
+  MIS.3 /
+  MIS.5
+  audits +
+  MIS.{2,4}
+  BUILD_PLAN
+  entries
+  as
+  source
+  of
+  truth.
+  (b) The
+  `bsdf_pdf`
+  first-
+  argument
+  pattern
+  uses
+  default-
+  constructed
+  `MaterialParams{}`
+  in
+  OptiX
+  (vs full
+  `m`
+  available
+  in
+  CUDA);
+  the
+  helper
+  doesn't
+  read
+  the
+  material
+  for
+  Lambert
+  PDF, so
+  this is
+  bit-
+  equivalent.
+- This
+  `BUILD_PLAN.md`
+  slice-
+  closing
+  entry.
+
+### What does NOT change
+
+- Source:
+  byte-
+  identical.
+  `git
+  diff --
+  src/
+  tests/
+  scenes/
+  tools/
+  CMakeLists.txt`
+  ⇒ 0
+  bytes.
+- Build
+  configs:
+  unchanged
+  at the
+  post-
+  MIS.5-
+  audit
+  baseline
+  (11/11
+  OFF +
+  12/12
+  ON
+  ctest;
+  the
+  brief's
+  authoring
+  did not
+  invoke
+  the
+  build
+  system).
+- All
+  other
+  docs:
+  this
+  brief
+  only
+  ADDS
+  `PATH_TRACER_MIS_OPTIX_INTEGRATOR_TASK.md`;
+  no
+  edits
+  to
+  prior
+  artefacts.
+
+### Master rule compliance
+
+- **Build
+  incrementally
+  / every
+  step
+  compilable
+  (rules
+  1 +
+  2)**:
+  docs-
+  only;
+  preserved
+  trivially.
+- **No
+  fake
+  stubs
+  (rule
+  3)**:
+  brief
+  defines
+  real
+  contracts
+  (helper
+  composition +
+  byte-
+  identity
+  argument +
+  PASS-
+  criterion
+  test) +
+  cross-
+  references
+  the
+  Veach
+  1995
+  source +
+  the
+  shipped
+  MIS.{2,3,4,5}
+  helper
+  APIs +
+  the
+  CUDA-
+  side
+  mirror
+  pattern.
+- **No
+  CPU
+  per-
+  pixel
+  work
+  (rules
+  5 +
+  7)**:
+  brief
+  describes
+  device-
+  side
+  per-
+  pixel
+  decisions
+  only.
+- **Module
+  boundaries
+  (rule
+  9)**:
+  brief
+  scopes
+  the
+  integrator
+  consumption
+  to the
+  existing
+  `OptixPrograms.cu`
+  →
+  `pathtracer/*`
+  consumer
+  pattern;
+  no
+  cross-
+  module
+  ripple.
+- **Update
+  BUILD_PLAN
+  (rule
+  8)**:
+  this
+  entry.
+- **Documentation
+  only;
+  do not
+  modify
+  source
+  code
+  (current-
+  prompt
+  rules)**:
+  zero
+  source
+  edits.
+
+### Verified at the build
+
+- Trivially
+  preserved.
+  The
+  authoring
+  of this
+  task
+  brief
+  did not
+  invoke
+  the
+  build
+  system.
+  Both
+  audit-
+  host
+  configs
+  remain
+  green at
+  the
+  post-
+  MIS.5-
+  audit
+  baseline:
+  `build`
+  (RR_ENABLE_CUDA=OFF,
+  RR_ENABLE_OPTIX=OFF)
+  ctest
+  11/11;
+  `build-ON`
+  (RR_ENABLE_CUDA=OFF,
+  RR_ENABLE_OPTIX=ON)
+  ctest
+  12/12.
+
+### Sub-arc status
+
+MIS.6
+task
+brief
+shipped.
+The
+contract
+for the
+MIS.6
+impl
+slice is
+canonical;
+the
+implementer
+can ship
+the
+diff
+end-to-
+end
+without
+re-
+deriving
+the
+design.
+After
+the
+MIS.6
+impl
+slice +
+optional
+audit
+land,
+MIS.7
+(arc-
+level
+audit)
+follows
+to walk
+all
+runtime-
+deferred
+checks +
+the
+cross-
+backend
+MIS
+convergence
+verification.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
