@@ -35,6 +35,8 @@
 #include "cuda/CudaScene.cuh"
 #include "gpu/GpuScene.h"
 #include "pathtracer/DirectLight.cuh"   // NEE.2 helper + epsilons
+#include "pathtracer/Bsdf.cuh"          // MIS.5: bsdf_pdf for the BSDF-side PDF inside power_heuristic
+#include "pathtracer/Mis.h"             // MIS.5: power_heuristic helper
 #include "pathtracer/RNG.cuh"
 #include "pathtracer/Sampling.cuh"
 
@@ -301,10 +303,44 @@ __global__ void k_pathtrace_sample(float*           pixels,
                     const float cos_th =
                         rr::math::dot(hit.normal, sample.wi);
                     if (cos_th > 0.0f) {
+                        // MIS.5: compute the MIS weight on the
+                        // NEE-side estimator. Veach 1995 §10.3
+                        // delta-light convention: when
+                        // `sample.is_delta == true` (v1 Point +
+                        // Directional lights, populated by
+                        // `sample_direct_light_uniform` per
+                        // MIS.3), the BSDF sampler can never
+                        // reach this light (zero measure on
+                        // the unit sphere); the NEE-side
+                        // weight is exactly 1.0f. Multiplying
+                        // the contribution by `1.0f` is the
+                        // IEEE-754 identity multiplication
+                        // (per IEEE-754 §6: `x * 1.0f == x`
+                        // for any finite non-NaN x), so the
+                        // per-pixel arithmetic is bit-
+                        // identical with the pre-MIS.5
+                        // baseline at v1 light-type scope.
+                        //
+                        // For non-delta lights (future area-
+                        // light arc), the weight is computed
+                        // via the Veach β=2 power heuristic
+                        // from `sample.pdf_solid_angle` (MIS.3)
+                        // and the BSDF PDF at `sample.wi`
+                        // (`bsdf_pdf` from MIS.2). The
+                        // `power_heuristic` call (MIS.4) is
+                        // unreachable at v1 because every v1
+                        // light sets `is_delta == true`.
+                        const float mis_weight_nee = sample.is_delta
+                            ? 1.0f
+                            : rr::pathtracer::power_heuristic(
+                                  sample.pdf_solid_angle,
+                                  rr::pathtracer::bsdf_pdf(
+                                      m, sample.wi, hit.normal));
+
                         // Lambert BRDF: baseColor / pi.
                         const Vec3 brdf = m.baseColor * rr::math::kInvPi;
                         const float k =
-                            cos_th * vis * sample.pdf_inv;
+                            cos_th * vis * sample.pdf_inv * mis_weight_nee;
                         const Vec3 contrib = Vec3{
                             throughput.x * sample.li_unattenuated.x * brdf.x,
                             throughput.y * sample.li_unattenuated.y * brdf.y,

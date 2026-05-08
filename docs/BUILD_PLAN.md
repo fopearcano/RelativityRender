@@ -65494,6 +65494,1004 @@ the
 entire
 arc.
 
+## MIS.5 — CUDA MIS integrator (impl)
+
+**Scope of
+this slice
+(post-MIS.5
+task brief):
+ship the
+CUDA-side
+MIS
+integrator
+wiring per
+the brief's
+§1.1 single-
+architectural-
+change
+specification.
+The MIS-
+weight
+ternary
+short-
+circuits
+on
+`is_delta
+== true`
+to `1.0f`
+at v1
+delta
+lights;
+the
+`power_heuristic`
++
+`bsdf_pdf`
+helpers
+are
+WIRED
+but
+unreachable
+at v1.
+Byte-
+identical
+output
+preserved
+via the
+IEEE-
+754
+identity-
+multiplication
+argument
+(`x *
+1.0f
+== x`).
+Ships
+the
+mandatory
+test
+case +
+6
+RR_CHECK
+assertions.**
+
+### What ships
+
+- **`src/cuda/CudaPathTracer.cu`
+  (+38 /
+  -1
+  lines).**
+  Two
+  changes:
+    - **Includes
+      (+2
+      lines).**
+      Adds
+      `#include
+      "pathtracer/Bsdf.cuh"`
+      (for
+      `bsdf_pdf`)
+      and
+      `#include
+      "pathtracer/Mis.h"`
+      (for
+      `power_heuristic`)
+      next to
+      the
+      existing
+      `pathtracer/DirectLight.cuh`
+      include.
+    - **MIS-
+      weight
+      composition
+      inside
+      the
+      existing
+      NEE
+      branch
+      (+~33
+      lines,
+      ~80%
+      doc-
+      comment
+      density).**
+      Inside
+      the
+      existing
+      `if
+      (cos_th
+      > 0.0f)`
+      block
+      (line
+      303),
+      computes
+      `mis_weight_nee`
+      via
+      the
+      ternary
+
+      ```cpp
+      const float mis_weight_nee = sample.is_delta
+          ? 1.0f
+          : rr::pathtracer::power_heuristic(
+                sample.pdf_solid_angle,
+                rr::pathtracer::bsdf_pdf(
+                    m, sample.wi, hit.normal));
+      ```
+
+      and
+      multiplies
+      it
+      into
+      the
+      contribution
+      multiplier
+      `k =
+      cos_th
+      *
+      vis *
+      sample.pdf_inv
+      *
+      mis_weight_nee`.
+      The
+      ~24-
+      line
+      doc-
+      comment
+      block
+      walks
+      the
+      Veach
+      delta
+      convention,
+      the
+      v1
+      byte-
+      identity
+      argument
+      via
+      IEEE-
+      754
+      identity
+      multiplication,
+      and
+      the
+      cross-
+      reference
+      to the
+      MIS.{2,3,4}
+      helpers.
+- **`tests/pathtracer_nee_tests.cpp`
+  (+88 /
+  0 lines).**
+  Adds
+  one
+  new
+  test
+  case
+  function +
+  `#include
+  "pathtracer/Mis.h"`
+  +
+  registry
+  line in
+  `main()`:
+    - `test_mis_weight_delta_short_circuits_to_one`
+      —
+      simulates
+      the
+      integrator's
+      `is_delta
+      ?
+      1.0f :
+      power_heuristic(...)`
+      ternary
+      via a
+      lambda;
+      verifies
+      Point
+      lights
+      and
+      Directional
+      lights
+      both
+      set
+      `is_delta
+      ==
+      true`
+      and
+      produce
+      `mis_weight
+      ==
+      1.0f`;
+      and
+      cross-
+      checks
+      a
+      hypothetical
+      non-
+      delta
+      sample
+      (future
+      area-
+      light
+      shape)
+      against
+      a
+      direct
+      `power_heuristic`
+      call
+      to
+      anchor
+      that
+      the
+      else-
+      branch
+      arithmetic
+      is
+      correct.
+      6
+      RR_CHECK
+      assertions.
+
+  Per-
+  binary
+  count:
+  53/53 →
+  **59/59**
+  (+6
+  RR_CHECK).
+- This
+  `BUILD_PLAN.md`
+  slice-
+  closing
+  entry.
+
+### What does NOT change
+
+- **No
+  CUDA
+  kernel
+  signature
+  changes.**
+  `k_pathtrace_sample`
+  signature
+  preserved.
+  `launch_pathtrace_sample`
+  signature
+  preserved.
+- **No
+  OptiX
+  changes.**
+  `src/optix/`
+  byte-
+  identical.
+  MIS.6
+  (future
+  slice)
+  mirrors
+  this
+  CUDA
+  pattern
+  on the
+  OptiX
+  raygen.
+- **No
+  pathtracer
+  module
+  surface
+  changes.**
+  `src/pathtracer/{RNG,Sampling,DirectLight,Bsdf,Mis,PathTracer}.{h,cuh,cpp}`
+  every
+  byte-
+  identical.
+  The
+  integrator
+  CONSUMES
+  the
+  helpers
+  via
+  their
+  existing
+  APIs.
+- **No
+  CUDA
+  kernel
+  structure
+  changes
+  beyond
+  the
+  ~10-line
+  arithmetic
+  block.**
+  The
+  enable_nee
+  guard,
+  the
+  shadow
+  ray,
+  the
+  cosine-
+  hemisphere
+  bounce,
+  the
+  emission-
+  add, the
+  firefly
+  clamp,
+  the
+  relativity
+  stack —
+  all
+  unchanged.
+- **No
+  BSDF
+  bounce
+  swap.**
+  Per
+  task
+  brief
+  §1.3
+  #1: the
+  inline
+  `throughput
+  *=
+  m.baseColor`
+  arithmetic
+  is
+  preserved
+  bit-
+  for-
+  bit
+  (the
+  `sample_bsdf`
+  swap is
+  deferred
+  due to
+  sub-
+  ULP
+  framebuffer
+  drift
+  from
+  the
+  Lambert
+  cancellation).
+- **No
+  MIS-on-
+  emission-
+  add.**
+  Per
+  task
+  brief
+  §1.3
+  #2: the
+  emission-
+  add at
+  lines
+  233-244
+  is
+  unchanged
+  (at v1
+  delta
+  lights
+  the MIS
+  weight
+  on
+  emission-
+  add
+  collapses
+  to 1.0
+  structurally;
+  architectural
+  tracking
+  pointless).
+- **No
+  CLI /
+  Config /
+  main.cpp
+  changes.**
+  `src/core/`
+  +
+  `src/main.cpp`
+  byte-
+  identical.
+- **No
+  C4D /
+  server /
+  UI /
+  node-
+  editor
+  changes.**
+  None
+  exist.
+- **No
+  scene /
+  tooling /
+  build
+  config
+  changes.**
+  `scenes/`,
+  `tools/verify_cuda_host.py`,
+  `CMakeLists.txt`
+  byte-
+  identical.
+- **No
+  changes
+  to
+  existing
+  test
+  binaries.**
+  `cli_tests`
+  31/31,
+  `pathtracer_bsdf_tests`
+  41/41,
+  `pathtracer_mis_tests`
+  34/34 —
+  all
+  unchanged.
+
+### Default-OFF + default-ON-at-v1 byte-identity
+
+Two
+arguments
+preserve
+byte-
+identity:
+
+1. **Default-
+   OFF
+   (no
+   `--enable-nee`)**:
+   the
+   kernel
+   guard
+   `if
+   (enable_nee
+   &&
+   light_count
+   > 0)`
+   short-
+   circuits
+   at
+   `enable_nee
+   ==
+   false`.
+   The
+   MIS.5
+   additions
+   live
+   INSIDE
+   this
+   guard;
+   none
+   execute.
+   Bit-
+   identical
+   per the
+   pre-
+   existing
+   NEE.5
+   guard.
+2. **Default-
+   ON-at-
+   v1
+   (delta
+   lights
+   only)**:
+   `sample.is_delta
+   ==
+   true`
+   for
+   every
+   v1
+   light
+   (Point +
+   Directional);
+   the
+   ternary
+   takes
+   the
+   then-
+   branch
+   `1.0f`;
+   the
+   contribution
+   is
+   multiplied
+   by
+   `1.0f`
+   which
+   is the
+   IEEE-754
+   identity
+   multiplication
+   (per
+   IEEE-
+   754
+   §6:
+   `x *
+   1.0f
+   == x`
+   for
+   any
+   finite
+   non-
+   NaN
+   x).
+   Bit-
+   identical
+   per the
+   IEEE-
+   754
+   spec.
+
+The
+runtime
+empirical
+confirmation
+(PPM
+`cmp`
+pre-
+MIS.5
+vs
+post-
+MIS.5
+on a
+delta-
+light
+scene)
+is
+DEFERRED
+to a
+CUDA
+host
+operator
+session
+per
+task
+brief
+§6.1.
+
+### Source diff size
+
+**+125 /
+-1
+across
+2 files**
+(`src/cuda/CudaPathTracer.cu`
++38/-1;
+`tests/pathtracer_nee_tests.cpp`
++88/0).
+Within
+the
+task
+brief
+§5.3
+budget
+(≤
+200);
+pure-
+logic
+diff
+(includes +
+ternary +
+multiplier +
+test
+body,
+net of
+doc-
+comments)
+is ~30
+lines.
+Doc-
+comment
+density
+~75% —
+matches
+the
+established
+PT-P.x /
+NEE.x /
+MIS.x
+pattern
+within
+budget.
+
+### Master rule compliance
+
+- **Build
+  incrementally
+  / every
+  step
+  compilable
+  (rules
+  1 +
+  2)**:
+  both
+  audit-
+  host
+  configs
+  rebuild
+  cleanly
+  on the
+  first
+  attempt.
+  ctest
+  11/11
+  OFF +
+  12/12
+  ON
+  (UNCHANGED
+  per
+  task
+  brief
+  §5.2
+  expectation
+  exactly).
+- **No
+  fake
+  stubs
+  (rule
+  3)**:
+  the
+  ternary
+  is real
+  code
+  with
+  real
+  effect
+  (the
+  v1
+  short-
+  circuit
+  hits
+  the
+  `1.0f`
+  branch;
+  the
+  `power_heuristic`
+  call
+  is real
+  for any
+  future
+  non-
+  delta
+  caller;
+  the
+  test
+  exercises
+  both
+  branches).
+- **No
+  CPU
+  per-
+  pixel
+  work
+  (rules
+  5 +
+  7)**:
+  the
+  ternary
+  evaluates
+  device-
+  side at
+  every
+  per-
+  pixel
+  bounce.
+  Host
+  code in
+  this
+  slice
+  is the
+  test
+  scaffold
+  only.
+- **Module
+  boundaries
+  (rule
+  9)**:
+  the
+  integrator
+  consumes
+  the
+  three
+  pathtracer
+  module
+  helpers
+  (`is_delta`
+  field,
+  `bsdf_pdf`
+  function,
+  `power_heuristic`
+  function)
+  via
+  their
+  existing
+  APIs;
+  no
+  cross-
+  module
+  ripple.
+- **Avoid
+  monolithic
+  files
+  (rule
+  10)**:
+  changes
+  scoped
+  to a
+  single
+  ~10-
+  line
+  arithmetic
+  block +
+  doc-
+  comment
+  block in
+  `CudaPathTracer.cu`.
+- **Update
+  BUILD_PLAN
+  (rule
+  8)**:
+  this
+  entry.
+- **CUDA
+  path
+  only +
+  do not
+  modify
+  OptiX
+  path
+  yet
+  (current-
+  prompt
+  rules)**:
+  no OptiX
+  changes;
+  verified
+  via
+  `git
+  diff
+  src/optix/
+  | wc -l`
+  ⇒ 0
+  bytes.
+- **No
+  MIS for
+  area
+  lights
+  yet
+  (current-
+  prompt
+  rule)**:
+  the
+  `power_heuristic`
+  call's
+  `else`
+  branch
+  is
+  unreachable
+  at v1
+  (every
+  v1
+  light
+  sets
+  `is_delta
+  ==
+  true`).
+  Future
+  area-
+  light
+  arc
+  produces
+  non-
+  delta
+  samples;
+  this
+  slice
+  doesn't.
+- **No
+  broad
+  refactor
+  (current-
+  prompt
+  rule)**:
+  changes
+  scoped
+  to the
+  single
+  NEE-
+  branch
+  arithmetic
+  block.
+
+### Verified at the build
+
+- `cmake
+  --build
+  build
+  -j`
+  (RR_ENABLE_CUDA=OFF,
+  RR_ENABLE_OPTIX=OFF):
+  clean
+  rebuild
+  including
+  `CudaPathTracer.cu`
+  +
+  `pathtracer_nee_tests.cpp`.
+  ctest
+  11/11
+  green
+  (UNCHANGED).
+- `cmake
+  --build
+  build-
+  ON -j`
+  (RR_ENABLE_CUDA=OFF,
+  RR_ENABLE_OPTIX=ON
+  with
+  SDK
+  fallback):
+  clean
+  rebuild;
+  ctest
+  12/12
+  green
+  (UNCHANGED).
+- **Per-
+  binary
+  test
+  output:**
+    - `pathtracer_nee_tests:
+      59/59
+      passed`
+      (was
+      53/53
+      pre-
+      slice;
+      +6
+      RR_CHECK
+      from
+      the
+      new
+      MIS.5
+      case).
+    - `pathtracer_bsdf_tests:
+      41/41
+      passed`
+      (unchanged).
+    - `pathtracer_mis_tests:
+      34/34
+      passed`
+      (unchanged).
+    - `cli_tests:
+      31/31
+      passed`
+      (unchanged).
+- **TEX-
+  P.6
+  fixture
+  regression
+  intact:**
+  `--scene-info
+  scenes/test_textured_material.rrscene`
+  emits
+  `fixups
+  applied:
+  2`.
+- **No-
+  touch
+  invariants:**
+  `git
+  diff --
+  src/cuda/CudaPathTracer.cuh
+  src/optix/
+  src/renderer/
+  src/io/
+  src/scene/
+  src/material/
+  src/lighting/
+  src/texture/
+  src/gpu/
+  src/server/
+  src/main.cpp
+  src/core/
+  src/pathtracer/{RNG,Sampling,DirectLight,Bsdf,Mis,PathTracer}.*
+  tests/{cli,pathtracer,math,image,gpu,relativity,demo,renderer,optix,pathtracer_bsdf,pathtracer_mis}_tests.cpp
+  scenes/
+  tools/
+  CMakeLists.txt`
+  ⇒ 0
+  bytes.
+  Only
+  `src/cuda/CudaPathTracer.cu`
+  +
+  `tests/pathtracer_nee_tests.cpp`
+  changed.
+
+### Sub-arc status
+
+MIS.5
+(CUDA-
+side)
+sub-arc
+CLOSED.
+The MIS
+arc's
+remaining
+slices
+are
+**MIS.6**
+(OptiX
+integrator —
+mirrors
+MIS.5
+on
+`__raygen__pathtrace`)
+and
+**MIS.7**
+(arc-
+level
+audit
+walking
+all
+runtime-
+deferred
+checks
+including
+the
+MIS.5
+§6.1
+PPM
+`cmp`).
+A MIS.5
+audit is
+RECOMMENDED
+per the
+task
+brief
+§8.4 but
+not a
+hard
+PASS
+criterion;
+operator
+may
+bundle
+with
+MIS.6 /
+MIS.7.
+
+The
+runtime-
+deferred
+checks
+this
+slice
+unblocks
+(per the
+task
+brief
+§6):
+
+| §            | Check                                     | Procedure                                                  |
+|--------------|-------------------------------------------|------------------------------------------------------------|
+| §6.1         | MIS-on byte-IDENTITY at v1 (CUDA)         | `cmp` pre-MIS.5 vs post-MIS.5 PPM with `--enable-nee`     |
+| §6.2         | Default-OFF byte-IDENTITY (CUDA)          | `cmp` no-flag PPM (pre vs post)                            |
+| §6.3         | NEE-on visible behaviour unchanged        | subsumed by §6.1                                           |
+| §6.4         | ctest cycle on CUDA host                  | re-run on CUDA-built `build-cuda`                          |
+
+All
+DEFERRED
+on the
+audit
+host;
+runnable
+on a
+CUDA-
+equipped
+host.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:

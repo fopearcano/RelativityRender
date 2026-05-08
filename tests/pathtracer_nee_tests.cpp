@@ -38,6 +38,7 @@
 
 #include "pathtracer/DirectLight.cuh"
 #include "pathtracer/DirectLight.h"
+#include "pathtracer/Mis.h"             // MIS.5: power_heuristic for the helper-composition test
 #include "lighting/Light.h"
 #include "math/MathUtils.h"
 #include "math/Vec3.h"
@@ -512,6 +513,92 @@ void test_zero_contribution_sample_has_default_is_delta() {
         "environment placeholder");
 }
 
+// ---------- MIS.5 integrator helper-composition anchor ----------
+//
+// Per `docs/PATH_TRACER_MIS_CUDA_INTEGRATOR_TASK.md` §5.5, the
+// CUDA integrator composes the NEE-side MIS weight via the
+// ternary
+//
+//   const float mis_weight_nee = sample.is_delta
+//       ? 1.0f
+//       : rr::pathtracer::power_heuristic(
+//             sample.pdf_solid_angle,
+//             rr::pathtracer::bsdf_pdf(m, sample.wi, hit.normal));
+//
+// At v1 (Point + Directional lights only), every NEE sample
+// sets `is_delta == true`, so the ternary short-circuits to
+// `1.0f` exactly — preserving byte-identity with the pre-MIS.5
+// build via the IEEE-754 identity-multiplication invariant
+// (`x * 1.0f == x` per IEEE-754 §6 for any finite non-NaN x).
+//
+// This case anchors the helper composition logic (the
+// `is_delta ? 1.0f : power_heuristic(...)` ternary) on the
+// host. The integrator-level byte-identity check at the PPM
+// level is a runtime-deferred CUDA-host `cmp` per the task
+// brief §6.1; the host test catches a regression in the
+// short-circuit logic before the operator runs the runtime
+// check.
+
+void test_mis_weight_delta_short_circuits_to_one() {
+    // Helper: simulate the integrator's MIS-weight ternary
+    // for a representative DirectLightSample. `p_bsdf_at_wi`
+    // is a hypothetical BSDF PDF the integrator would
+    // compute via `bsdf_pdf(material, sample.wi, normal)`;
+    // its actual value is irrelevant when `is_delta == true`
+    // (the short-circuit branch never reads it).
+    auto compute_mis_weight = [](const DirectLightSample& s,
+                                 float p_bsdf_at_wi) {
+        return s.is_delta
+            ? 1.0f
+            : rr::pathtracer::power_heuristic(
+                  s.pdf_solid_angle, p_bsdf_at_wi);
+    };
+
+    // Point-light fixture: should set is_delta = true.
+    // `p_bsdf_at_wi` set to a non-zero value to confirm the
+    // short-circuit ignores it.
+    const Light L_point = make_point(Vec3{0.0f, 5.0f, 0.0f},
+                                     Vec3{1.0f, 1.0f, 1.0f},
+                                     /*intensity=*/2.0f);
+    const auto s_point = sample_direct_light_uniform(
+        &L_point, /*count=*/1,
+        Vec3{0.0f, 0.0f, 0.0f},
+        Vec3{0.0f, 1.0f, 0.0f},
+        /*u_select=*/0.0f);
+    RR_CHECK(s_point.is_delta == true);
+    RR_CHECK(compute_mis_weight(s_point, /*p_bsdf_at_wi=*/0.5f) == 1.0f);
+
+    // Directional-light fixture: should set is_delta = true.
+    const Light L_dir = make_directional(Vec3{0.0f, -1.0f, 0.0f},
+                                         Vec3{1.0f, 1.0f, 1.0f},
+                                         /*intensity=*/0.9f);
+    const auto s_dir = sample_direct_light_uniform(
+        &L_dir, /*count=*/1,
+        Vec3{0.0f, 0.0f, 0.0f},
+        Vec3{0.0f, 1.0f, 0.0f},
+        /*u_select=*/0.0f);
+    RR_CHECK(s_dir.is_delta == true);
+    RR_CHECK(compute_mis_weight(s_dir, /*p_bsdf_at_wi=*/0.5f) == 1.0f);
+
+    // Hypothetical non-delta sample (a future area light at
+    // some finite solid-angle PDF). The ternary takes the
+    // else branch and computes the Veach β=2 power
+    // heuristic. With (p_light, p_bsdf) = (0.4, 0.3) the
+    // expected weight is 0.16 / (0.16 + 0.09) = 0.64.
+    DirectLightSample s_hypothetical;
+    s_hypothetical.is_delta        = false;
+    s_hypothetical.pdf_solid_angle = 0.4f;
+    s_hypothetical.pdf_inv         = 1.0f;
+    s_hypothetical.wi              = Vec3{0.0f, 1.0f, 0.0f};
+    const float mis_w = compute_mis_weight(s_hypothetical,
+                                           /*p_bsdf_at_wi=*/0.3f);
+    RR_CHECK(approx(mis_w, 0.64f, 1e-5f));
+    // Cross-check against `power_heuristic` directly.
+    RR_CHECK(approx(mis_w,
+                    rr::pathtracer::power_heuristic(0.4f, 0.3f),
+                    1e-7f));
+}
+
 }  // namespace
 
 int main() {
@@ -531,6 +618,7 @@ int main() {
     test_point_light_sets_is_delta_and_zero_pdf();           // MIS.3
     test_directional_light_sets_is_delta_and_zero_pdf();     // MIS.3
     test_zero_contribution_sample_has_default_is_delta();    // MIS.3
+    test_mis_weight_delta_short_circuits_to_one();           // MIS.5
 
     std::fprintf(stderr, "pathtracer_nee_tests: %d/%d passed\n",
                  g_total - g_failed, g_total);
