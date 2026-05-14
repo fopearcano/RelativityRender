@@ -70030,6 +70030,188 @@ path; module-map promotion still waits for the
 Minkowski-chart-wrap and chart-aware-seam slices
 (architecture-doc §10 steps 1–2).
 
+## MANIFOLD.5 — Manifold Transform (impl, model-only)
+
+**Scope of this slice (per the operator's *MANIFOLD.5 — Manifold
+Transform* task brief): promote `src/manifold/ManifoldTransform.h`
+from the Manifold Core Skeleton slice's bare aggregate
+`{chart, metric, observer}` + `identity_transform()` factory to
+the full coordinate-transform abstraction architecture-doc §3.5
+specifies. Adds four helpers — `world_to_chart` / `chart_to_world`
+/ `transform_direction` / `transform_ray_like_direction` — each
+in `Vec3` (spatial-only, matches today's renderer primitives) and
+`Vec4` (spacetime, future curved-chart integrator) overloads.
+Initial behaviour: Euclidean identity transform only. The default
+`ManifoldTransform{}` makes every helper the identity map
+(preserves current output by default per the task brief); a
+non-default Euclidean chart applies the affine `(p - origin) /
+scale`; non-Euclidean chart families return passthrough until
+their slices land. No curved-space math, no CUDA / OptiX
+integration, no Camera replacement, no kernel change.**
+
+### What ships
+
+- **`src/manifold/ManifoldTransform.h` (rewritten, +186 / -7 net,
+  ~70% doc-comment density).** The aggregate POD and
+  `identity_transform()` factory are preserved unchanged from
+  the Skeleton slice; the eight new helpers (four × two
+  overloads) are appended.
+    - **`world_to_chart(transform, Vec3)`** (`RR_HD inline`).
+      Euclidean: `(world_pos - chart.origin) / chart.scale`.
+      Non-Euclidean: passthrough.
+    - **`chart_to_world(transform, Vec3)`** (`RR_HD inline`).
+      Euclidean inverse: `chart.origin + chart_pos *
+      chart.scale`. Non-Euclidean: passthrough.
+    - **`transform_direction(transform, Vec3)`** (`RR_HD
+      inline`). Spatial direction Jacobian of `world_to_chart`:
+      `world_dir / chart.scale`. Magnitude not preserved.
+    - **`transform_ray_like_direction(transform, Vec3)`**
+      (`RR_HD inline`). Spatial direction Jacobian followed by
+      unit-length renormalisation: `normalize(world_dir /
+      chart.scale)`. For uniform scale this reduces to
+      `normalize(world_dir)`, so a unit-length input
+      round-trips unchanged regardless of `scale` — the
+      "preserves current output by default" anchor for
+      ray-direction inputs.
+    - **`world_to_chart(transform, Vec4)`** (`RR_HD inline`).
+      Time component (`Vec4.x = x^0`) invariant; spatial
+      components (`Vec4.y / z / w = x^1 / x^2 / x^3`) follow
+      the spatial `world_to_chart` rule. Non-Euclidean:
+      passthrough.
+    - **`chart_to_world(transform, Vec4)`** (`RR_HD inline`).
+      Vec4 inverse of the above.
+    - **`transform_direction(transform, Vec4)`** (`RR_HD
+      inline`). Time component invariant; spatial divided by
+      `scale`. Does NOT preserve the Minkowski null condition
+      for `scale != 1` (the time component is unscaled).
+    - **`transform_ray_like_direction(transform, Vec4)`**
+      (`RR_HD inline`). Uniform 4D scaling: `world_dir4 /
+      chart.scale`. Preserves the null condition because
+      `g_{mu nu} (alpha p)^mu (alpha p)^nu = alpha^2 g_{mu nu}
+      p^mu p^nu`; the photon's worldline is preserved up to
+      affine-parameter reparameterisation.
+  Header preamble expanded with "What lives here this slice" /
+  "Initial behaviour" / "What does NOT live here this slice" /
+  "Convention reminder" sections. The convention pin
+  (`Vec4` time component is `.x`, spatial is `.y / .z / .w`)
+  is repeated explicitly so callers know not to use
+  `Vec4::xyz()` for the spatial part.
+- **`CMakeLists.txt` (rr_manifold doc-comment block, one row
+  refreshed).** `ManifoldTransform.h`'s entry now lists the four
+  helpers in both overloads and the Euclidean-identity-only
+  initial-behaviour caveat. CMake target shape and link line
+  are unchanged from MANIFOLD.3.
+- **`src/manifold/README.md` (file-table row refreshed).**
+  `ManifoldTransform.h`'s row now lists the four transform
+  helpers in both overloads, the default-identity contract,
+  the non-Euclidean passthrough, and the MANIFOLD.5 promotion.
+
+### What does NOT ship
+
+- **No curved-space math.** `SchwarzschildLike`,
+  `KruskalLikePlaceholder`, `PenroseLikePlaceholder`,
+  `KerrLikePlaceholder` chart families return passthrough on
+  every helper. Master rule #3 forbids shipping a curved-chart
+  forward map before the chart's own slice lands
+  (architecture-doc §10 steps 3–6).
+- **No CUDA / OptiX integration.** The helpers are `RR_HD
+  inline` so they compile on device, but no kernel consumes
+  them this slice. `src/cuda/`, `src/optix/` byte-identical.
+- **No Camera replacement.** `src/camera/Camera`,
+  `src/camera/CameraRay.h`, `generate_camera_ray`, and
+  `GpuCamera` are byte-identical. The future Minkowski-chart-
+  wrap slice (architecture-doc §10 step 1) is what will thread
+  `world_to_chart` / `transform_ray_like_direction` through the
+  path-tracer ray-gen step.
+- **No metric or observer consumption inside the transforms.**
+  The four helpers read `t.chart` only; `t.metric` and
+  `t.observer` are present on the aggregate so the spacetime-
+  deformation-layer surface is complete, but the transforms
+  themselves do not branch on them. The null-preservation
+  argument for `transform_ray_like_direction(Vec4)` is purely
+  algebraic (`g(alpha p, alpha p) = alpha^2 g(p, p)`); no
+  metric tensor contraction happens at call sites.
+- **No chart-time origin or chart-time scale.** The
+  `CoordinateChart` POD's `origin` is a `Vec3` (spatial-only)
+  and `scale` is a single float. The Vec4 transforms leave
+  `world_pos4.x` (the time component) invariant; a future
+  slice that introduces a chart-time origin / scale will widen
+  the `CoordinateChart` ABI alongside the corresponding
+  transform changes.
+- **No renderer integration.** `src/cuda/`, `src/optix/`,
+  `src/pathtracer/`, `src/renderer/`, `src/gpu/`,
+  `src/scene/`, `src/io/`, `src/server/`, `src/main.cpp`,
+  `src/core/`, `src/camera/`, `src/material/`,
+  `src/lighting/`, `src/texture/`, `src/geometry/`,
+  `src/image/`, `src/math/`, `src/relativity/`, and `tests/`
+  are byte-identical (`git diff` outside `src/manifold/`,
+  `CMakeLists.txt`, and `docs/BUILD_PLAN.md` ⇒ 0 bytes).
+- **No CoordinateChart.h / MetricTensor.h / ObserverFrame.h /
+  GeodesicState.h / ManifoldMode.h change.** Their consumption
+  by `ManifoldTransform` flows through unchanged.
+- **No CLI surface change. No new `--render-*` action. No new
+  test binary. `ctest` set unchanged.**
+
+### Acceptance
+
+- **Compiles.** Audit-host rebuild (`cmake --build build -j`)
+  succeeds. A standalone
+  `g++ -std=c++20 -Isrc -Wall -Wextra -Werror` build of a
+  `ManifoldTransform.h`-consuming TU compiles cleanly.
+- **Validates.** A standalone runtime check exercises the
+  shipping surface:
+    - On the default `identity_transform()` all eight helpers
+      are the identity map on representative `Vec3` /
+      `Vec4` inputs.
+    - `chart_to_world ∘ world_to_chart` round-trips both
+      `Vec3` and `Vec4` inputs exactly on the default
+      transform.
+    - On a non-default Euclidean chart (`origin = (10, 0, 0)`,
+      `scale = 2`):
+      - `world_to_chart((12, 4, -2))` returns `(1, 2, -1)`
+        (textbook affine map).
+      - `chart_to_world ∘ world_to_chart` round-trips
+        exactly.
+      - `transform_ray_like_direction` on a unit-length
+        `Vec3` returns the unchanged unit-length input
+        (uniform-scaling preservation).
+      - `transform_direction` on a unit-length `Vec3`
+        returns the input halved in magnitude.
+      - `transform_ray_like_direction` on a null `Vec4`
+        with `g(p, p) = 0` preserves the null condition to
+        within `1e-6`; `transform_direction` does NOT, as
+        documented.
+    - On a `SchwarzschildLike` chart with the same `origin` /
+      `scale`, every helper passes its input through
+      unchanged (curved-chart forward maps deferred to the
+      chart's own slice).
+    - The default `identity_transform()`'s metric is still
+      `is_minkowski`-equivalent and its observer still passes
+      `is_normalised_timelike` — no regression on the prior
+      slices' anchors.
+- **No behaviour change.** All 11 ctest binaries pass
+  (`100% tests passed, 0 tests failed out of 11`) — same set
+  and outputs as the MANIFOLD.4 acceptance line.
+- **Rule-#3 honesty.** The shipped helpers are real, complete
+  implementations of the Euclidean case (the affine map is
+  honest closed-form math, the null-preservation argument for
+  the Vec4 ray-like overload is the standard `alpha^2 g(p, p)`
+  algebraic identity). Non-Euclidean passthrough is documented
+  as the temporary degenerate-but-honest behaviour the future
+  curved-chart slices will replace at this seam, not a stub
+  pretending to be a curved-chart transform.
+
+### Module status changes
+
+`docs/MODULE_MAP.md` is *not* updated by this slice (same
+posture as MANIFOLD.1 / MANIFOLD.2 / MANIFOLD.3 / MANIFOLD.4).
+The transform surface is now *shaped* and the Euclidean affine
+map is *real*, but no renderer code path consumes any of the
+helpers yet; module-map promotion still waits for the
+Minkowski-chart-wrap slice (architecture-doc §10 step 1) that
+threads `world_to_chart` / `transform_ray_like_direction`
+through the path-tracer ray-gen step.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:

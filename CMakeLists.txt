@@ -289,9 +289,18 @@ target_link_libraries(rr_relativity INTERFACE rr_math)
 #                           on Minkowski (§3.4). Promoted to its
 #                           MANIFOLD.4 shape; data model only,
 #                           no integrator.
-#   ManifoldTransform.h   - aggregate {chart, metric, observer} POD +
-#                           `identity_transform()` helper (§3.5,
+#   ManifoldTransform.h   - aggregate {chart, metric, observer}
+#                           POD + `identity_transform()` factory
+#                           + `world_to_chart` / `chart_to_world`
+#                           / `transform_direction` /
+#                           `transform_ray_like_direction`
+#                           helpers in Vec3 (spatial) and Vec4
+#                           (spacetime) overloads (§3.5,
 #                           spacetime deformation layer).
+#                           Promoted to its MANIFOLD.5 shape;
+#                           Euclidean identity transform only at
+#                           this slice, non-Euclidean charts
+#                           passthrough.
 #
 # Skeleton stage: no renderer integration, no CUDA / OptiX
 # dependency, no behaviour change. Library exists so future slices
