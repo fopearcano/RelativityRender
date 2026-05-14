@@ -74489,6 +74489,167 @@ closes the MANI-I.10 slot. Module-map promotion
 still waits for MANI-I.12 (final cross-host audit)
 per the integration plan §11.
 
+## SCHW.8 — Schwarzschild-Like OptiX Warp Audit (docs only)
+
+**Scope of this slice (per the operator's *SCHW.8 —
+Schwarzschild-Like OptiX Warp Audit* task brief): write
+`docs/SCHWARZSCHILD_LIKE_OPTIX_WARP_AUDIT.md`, the
+per-slice verdict document for SCHW.7 (`fc71aed`).
+Verifies the nine structural items the task brief
+enumerates — OptiX launch params receive the manifold
+payload; OptiX warp activates only on the intended
+triple-gate; disabled/default no-op; Euclidean identity;
+CUDA/OptiX warp math equivalence; bounded / no-NaN
+behavior; OptiX OFF build remains valid; runtime
+CUDA/OptiX-host status; verdict — and produces a PASS /
+REPAIR / BLOCKED verdict that gates progression to the
+next concrete slice. Documentation only; no source
+code, no test, no CMake, no behavioural change. Inserts
+SCHW.8 as a per-slice audit slot AND renames the
+original SCHW.8-debug-visualization → SCHW.9 (with
+cascade shift SCHW.9 → SCHW.10) in the
+`SCHWARZSCHILD_LIKE_REMAP_PLAN.md` §8 sub-slice ladder.**
+
+### What ships
+
+- **`docs/SCHWARZSCHILD_LIKE_OPTIX_WARP_AUDIT.md`
+  (new).** Per-slice verdict document mirroring the
+  prior audit doc shape:
+    - **§1 VERDICT** — `PASS` (structural OptiX-side
+      warp bridge verified); check #8 (runtime
+      CUDA/OptiX-host status) DEFERRED on
+      documented audit-host limitations.
+    - **§2 PER-CHECK RESULTS** — nine-row evidence
+      table. Each row cites concrete file/line
+      observations: the `coordinate_chart` field
+      at `OptixLaunchParams.h:391` plus its header
+      include at line 7; the SDK_FOUND body's
+      manifold-payload threading at
+      `OptixRenderer.cpp:2760-2761`; the audit-host
+      stub at `OptixRenderer.cpp:3282-3296`; the
+      triple-gate at `OptixPrograms.cu:773-777`
+      (`is_active(...)` + `chart ==
+      SchwarzschildLike` + `strength > 0.0f`); the
+      shared `schwarzschild_like_world_to_chart`
+      call at `OptixPrograms.cu:787-792`; the
+      three-layer disabled-mode-no-op guarantee
+      (host doesn't allocate
+      `aov_manifold_coordinates` on
+      `debug_visualization=false`; kernel null-
+      checks the pointer; triple-gate
+      short-circuits on Euclidean default); CUDA/
+      OptiX equivalence by single-source-of-truth
+      math leaf; four bounding/no-NaN mechanisms
+      inherited from SCHW.1 plus two additional
+      defensive layers from the triple-gate; ctest
+      12/12 + `manifold_identity_tests: 198/198
+      checks passed`.
+    - **§3 WHAT THIS AUDIT DOES NOT VERIFY** —
+      explicit scope-boundary section listing five
+      items the audit cannot check: no runtime
+      device-side verification (deferred to CUDA
+      + OptiX-SDK host); no CUDA-side
+      SchwarzschildLike arm (SCHW.5 unlanded);
+      no primary-ray direction warp at raygen; no
+      `render_aovs_retain` chart-aware path; no
+      OptiX SDK matrix ABI cross-check; no
+      artistic-defaults verification.
+    - **§4 REASONING SUMMARY** — six host- and
+      device-side surface changes the SCHW.7
+      commit ships; the bridge is structurally
+      complete on the OptiX side; the activation
+      gate decomposes onto three independent
+      checks; the shared math leaf guarantees
+      CUDA/OptiX equivalence by construction; the
+      bounded / no-NaN invariants inherited from
+      SCHW.1 / SCHW.2 carry through with two
+      additional defensive layers; the disabled-
+      mode-no-op invariant is three-layer-
+      redundantly guaranteed; the Euclidean-
+      identity invariant is bit-preserving; the
+      OptiX-OFF-build-validity invariant is
+      verified empirically.
+    - **§5 NEXT** — names the SCHW.* sub-slice
+      renumbering (SCHW.8 audit inserted; SCHW.8 →
+      SCHW.9 / SCHW.9 → SCHW.10) and points at
+      either SCHW.5 (CUDA integration) or SCHW.9
+      (debug visualization) as the next concrete
+      commit. Both are tractable on the audit
+      host.
+- **`docs/SCHWARZSCHILD_LIKE_REMAP_PLAN.md` §8
+  (renumbered).** Two replace-all substitutions
+  shift every SCHW.x reference from §8 SCHW.8
+  onward (highest-to-lowest to avoid double-shifting):
+  SCHW.9 → SCHW.10, SCHW.8 → SCHW.9. A new "SCHW.8
+  — Audit (docs only)" subsection is inserted
+  between SCHW.7 (OptiX integration; LANDED) and
+  the renumbered SCHW.9 (Debug visualization).
+  The plan's other sections (§1–§7, §9–§10) are
+  unchanged.
+
+### What does NOT ship
+
+- **No source code.** Nothing in any `src/` subtree
+  is touched (`git diff` outside `docs/` ⇒ 0 bytes).
+- **No new test binary.** ctest set unchanged at 12.
+- **No CMake change.** No new `rr_*` target; no
+  link-line change.
+- **No `BUILD_PLAN.md` historical-record rewrite.**
+  The MANI-I.* / SCHW.1 / SCHW.2 / SCHW.3 / SCHW.4
+  / SCHW.6 / SCHW.7 entries above stay as-is; this
+  SCHW.8 entry is additive.
+- **No `MODULE_MAP.md` update.** The per-slice audit
+  is doc-only; module-map promotion still waits for
+  MANI-I.12 (final cross-host audit) per the
+  integration plan §11.
+- **No update to the prior audit docs.** The
+  MANI-I.2 / MANI-I.4 / MANI-I.6 / MANI-I.9 /
+  SCHW.2 / SCHW.4 / SCHW.6 audit docs are preserved
+  as point-in-time historical snapshots.
+- **No integration plan §3 chain-diagram update.**
+  The SCHW.* renumbering is local to the
+  `SCHWARZSCHILD_LIKE_REMAP_PLAN.md` §8 sub-slice
+  ladder.
+
+### Acceptance
+
+- **Compiles.** Documentation-only slice; no build
+  configuration touched. The audit-host build
+  remains at the post-SCHW.7 baseline (`100% tests
+  passed, 0 tests failed out of 12`;
+  `manifold_identity_tests: 198 / 198 checks
+  passed`; `cli_tests: 123/123 passed`;
+  `renderer_tests: 19 / 19 passed`).
+- **Internally consistent.** The nine-row evidence
+  table cites concrete file/line positions in
+  `OptixLaunchParams.h`, `OptixRenderer.h`,
+  `OptixRenderer.cpp`, `OptixPrograms.cu`,
+  `main.cpp`, `ManifoldMode.h`, and
+  `SchwarzschildLikeWarp.h` that re-verify on the
+  audit host; the renumbering in
+  `SCHWARZSCHILD_LIKE_REMAP_PLAN.md` §8 is verified
+  by reading the renumbered section headings.
+- **Verdict honesty.** The verdict is `PASS`
+  because the structural OptiX-side warp bridge
+  checks pass — not because of an arbitrary
+  judgement call. Check #8 (runtime CUDA/OptiX-host
+  status) is DEFERRED on documented audit-host
+  limitations (no CUDA SDK, no OptiX SDK on the
+  audit host). The §3 "WHAT THIS AUDIT DOES NOT
+  VERIFY" section explicitly enumerates the five
+  items the audit cannot check.
+
+### Module status changes
+
+`docs/MODULE_MAP.md` is *not* updated by this slice.
+The SCHW.8 audit verdict (`PASS` structurally,
+`DEFERRED` runtime) authorises the operator to
+proceed to either SCHW.5 (CUDA integration; the
+CUDA-side counterpart to SCHW.7) or SCHW.9 (debug
+visualization refinement); no module-map row changes
+state until MANI-I.12 (final cross-host audit)
+lands.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
