@@ -53,8 +53,30 @@
 //                                       g_{mu nu} (αp)^mu (αp)^nu
 //                                       = α^2 g_{mu nu} p^mu p^nu]
 //
-// On non-Euclidean chart families (`SchwarzschildLike`,
-// `KruskalLikePlaceholder`, `PenroseLikePlaceholder`,
+// On the `SchwarzschildLike` chart family (SCHW.3) the
+// `world_to_chart` / `chart_to_world` helpers (both `Vec3` and
+// `Vec4` overloads) invoke the bounded SCHW.1 math leaf
+// (`schwarzschild_like_world_to_chart` /
+// `schwarzschild_like_chart_to_world`) with the chart's
+// per-pixel artist parameters extracted from
+// `CoordinateChart::params` per the
+// `SCHWARZSCHILD_LIKE_REMAP_PLAN.md` §3 reinterpretation table
+// (mass→`r_s`, spin→`falloff`, compactification_scale→
+// `clamp_radius`, origin→`mass_origin`). The intrinsic
+// `warp_strength` defaults to `1.0` here — the runtime
+// `ManifoldMode::strength` dial is the kernel-seam's
+// responsibility and lands at SCHW.4 / SCHW.5; on the audit
+// host the integration is bit-identical because no kernel call
+// site invokes the chart-aware helpers yet (SCHW.3 is host-only).
+// The `Vec4` overload treats the time component as invariant
+// (the SchwarzschildLike chart is static in coordinate time).
+// The math leaf's own Euclidean fallback (returns input when
+// `r_s = 0` or `warp_strength = 0` or validator rejects)
+// preserves the bit-identity invariant when the chart is
+// configured with `chart.params.mass = 0`.
+//
+// On the remaining non-Euclidean chart families
+// (`KruskalLikePlaceholder`, `PenroseLikePlaceholder`,
 // `KerrLikePlaceholder`) every helper is the passthrough
 // (returns its input). Master rule #3 ("no fake stubs pretending
 // to be complete systems") forbids shipping a curved-chart
@@ -99,6 +121,7 @@
 #include "manifold/CoordinateChart.h"
 #include "manifold/MetricTensor.h"
 #include "manifold/ObserverFrame.h"
+#include "manifold/SchwarzschildLikeWarp.h"
 #include "math/MathUtils.h"
 #include "math/Vec3.h"
 #include "math/Vec4.h"
@@ -110,6 +133,37 @@ struct ManifoldTransform {
     MetricTensor    metric;
     ObserverFrame   observer;
 };
+
+// SCHW.3 — build `SchwarzschildLikeWarpParams` from a
+// `CoordinateChart` per the
+// `SCHWARZSCHILD_LIKE_REMAP_PLAN.md` §3 reinterpretation
+// table:
+//   - `r_s`           ← `chart.params.mass`
+//   - `falloff`       ← `chart.params.spin`
+//   - `clamp_radius`  ← `chart.params.compactification_scale`
+//   - `warp_strength` ← the caller-supplied scalar
+//     (default `1.0` = the chart's intrinsic full warp;
+//     the runtime `ManifoldMode::strength` dial is applied
+//     by the kernel-seam at SCHW.4 / SCHW.5).
+// The `mass_origin` `Vec3` is NOT in this POD; callers pass
+// `chart.origin` directly as the helper's `mass_origin`
+// argument.
+//
+// The returned struct may fail
+// `schwarzschild_like_validate_params(...)` if the chart's
+// parameter slots are out-of-range; the math leaf's own
+// defensive fallback returns the input vector unchanged on
+// invalid input, so this helper does NOT need to inspect
+// validity itself.
+RR_HD inline SchwarzschildLikeWarpParams schwarzschild_like_params_from(
+        const CoordinateChart& chart, float warp_strength = 1.0f) {
+    SchwarzschildLikeWarpParams p;
+    p.r_s           = chart.params.mass;
+    p.warp_strength = warp_strength;
+    p.falloff       = chart.params.spin;
+    p.clamp_radius  = chart.params.compactification_scale;
+    return p;
+}
 
 // Returns the Identity / Minkowski / rest-frame transform - the
 // degenerate case that reproduces today's renderer bit-for-bit
@@ -134,6 +188,12 @@ RR_HD inline rr::math::Vec3 world_to_chart(
     if (t.chart.type == CoordinateChartType::Euclidean) {
         return (world_pos - t.chart.origin) * (1.0f / t.chart.scale);
     }
+    if (t.chart.type == CoordinateChartType::SchwarzschildLike) {
+        const SchwarzschildLikeWarpParams p =
+            schwarzschild_like_params_from(t.chart);
+        return schwarzschild_like_world_to_chart(
+            world_pos, t.chart.origin, p);
+    }
     return world_pos;
 }
 
@@ -146,6 +206,12 @@ RR_HD inline rr::math::Vec3 chart_to_world(
         const ManifoldTransform& t, rr::math::Vec3 chart_pos) {
     if (t.chart.type == CoordinateChartType::Euclidean) {
         return t.chart.origin + chart_pos * t.chart.scale;
+    }
+    if (t.chart.type == CoordinateChartType::SchwarzschildLike) {
+        const SchwarzschildLikeWarpParams p =
+            schwarzschild_like_params_from(t.chart);
+        return schwarzschild_like_chart_to_world(
+            chart_pos, t.chart.origin, p);
     }
     return chart_pos;
 }
@@ -203,6 +269,17 @@ RR_HD inline rr::math::Vec4 world_to_chart(
             (world_pos4.w - t.chart.origin.z) * inv_scale,
         };
     }
+    if (t.chart.type == CoordinateChartType::SchwarzschildLike) {
+        const SchwarzschildLikeWarpParams p =
+            schwarzschild_like_params_from(t.chart);
+        const rr::math::Vec3 spatial{
+            world_pos4.y, world_pos4.z, world_pos4.w};
+        const rr::math::Vec3 warped =
+            schwarzschild_like_world_to_chart(
+                spatial, t.chart.origin, p);
+        return rr::math::Vec4{
+            world_pos4.x, warped.x, warped.y, warped.z};
+    }
     return world_pos4;
 }
 
@@ -218,6 +295,17 @@ RR_HD inline rr::math::Vec4 chart_to_world(
             t.chart.origin.y + chart_pos4.z * t.chart.scale,
             t.chart.origin.z + chart_pos4.w * t.chart.scale,
         };
+    }
+    if (t.chart.type == CoordinateChartType::SchwarzschildLike) {
+        const SchwarzschildLikeWarpParams p =
+            schwarzschild_like_params_from(t.chart);
+        const rr::math::Vec3 spatial{
+            chart_pos4.y, chart_pos4.z, chart_pos4.w};
+        const rr::math::Vec3 unwarped =
+            schwarzschild_like_chart_to_world(
+                spatial, t.chart.origin, p);
+        return rr::math::Vec4{
+            chart_pos4.x, unwarped.x, unwarped.y, unwarped.z};
     }
     return chart_pos4;
 }

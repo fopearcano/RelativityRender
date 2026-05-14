@@ -40,6 +40,7 @@
 
 #include <cmath>
 #include <cstdio>
+#include <initializer_list>
 
 namespace {
 
@@ -619,6 +620,276 @@ void test_schw_1_warp_ray_direction_bends_toward_mass() {
     RR_CHECK(warped.z > 0.0f);
 }
 
+// ---------- SCHW.3: ManifoldTransform integration ----------
+//
+// Verifies that `world_to_chart` / `chart_to_world` on
+// `ManifoldTransform` invoke the SCHW.1 math leaf when the
+// active chart is `SchwarzschildLike`, while preserving the
+// "default no-op" contract for the disabled / Euclidean
+// configurations. Plan: `SCHWARZSCHILD_LIKE_REMAP_PLAN.md` §6.1
+// / §6.2.
+
+// Build a SchwarzschildLike `CoordinateChart` from the
+// "worked example" parameters in the plan §2 algebra. Mass at
+// origin; `r_s = 1`, `falloff = 1`, `clamp_radius = 0.1`.
+rr::manifold::CoordinateChart make_schwarzschild_like_chart() {
+    rr::manifold::CoordinateChart c{};
+    c.type   = rr::manifold::CoordinateChartType::SchwarzschildLike;
+    c.name   = "schwarzschild-like";
+    c.origin = rr::math::Vec3{0.0f, 0.0f, 0.0f};   // mass at origin
+    c.params.mass                   = 1.0f;        // r_s
+    c.params.spin                   = 1.0f;        // falloff
+    c.params.compactification_scale = 0.1f;        // clamp_radius
+    return c;
+}
+
+void test_schw_3_disabled_identity_preserved() {
+    using namespace rr::manifold;
+    using rr::math::Vec3;
+    using rr::math::Vec4;
+
+    // Default ManifoldTransform (Euclidean chart, identity scale,
+    // zero origin): every helper is the identity. SCHW.3 does
+    // not change this behaviour; this test re-runs the post-
+    // MANIFOLD.5 invariant against the post-SCHW.3 build.
+    ManifoldTransform t = identity_transform();
+    RR_CHECK(t.chart.type == CoordinateChartType::Euclidean);
+
+    const Vec3 p3{1.5f, -2.3f, 4.7f};
+    RR_CHECK(approx(world_to_chart(t, p3), p3));
+    RR_CHECK(approx(chart_to_world(t, p3), p3));
+
+    const Vec4 p4{0.5f, 1.5f, -2.3f, 4.7f};
+    RR_CHECK(approx(world_to_chart(t, p4), p4));
+    RR_CHECK(approx(chart_to_world(t, p4), p4));
+}
+
+void test_schw_3_euclidean_identity_preserved() {
+    using namespace rr::manifold;
+    using rr::math::Vec3;
+    using rr::math::Vec4;
+
+    // Explicit Euclidean chart (`type = Euclidean`, non-trivial
+    // origin / scale): the SCHW.3 changes are gated on
+    // `type == SchwarzschildLike`, so the Euclidean affine map
+    // continues to apply unchanged. Bit-identity preserved.
+    ManifoldTransform t = identity_transform();
+    t.chart.type   = CoordinateChartType::Euclidean;
+    t.chart.origin = rr::math::Vec3{1.0f, 2.0f, 3.0f};
+    t.chart.scale  = 2.0f;
+
+    const Vec3 world_pos{3.0f, 6.0f, 9.0f};
+    // (world - origin) / scale = (2, 4, 6) / 2 = (1, 2, 3).
+    RR_CHECK(approx(world_to_chart(t, world_pos), Vec3{1.0f, 2.0f, 3.0f}));
+    // Round-trip is exact under uniform scaling.
+    RR_CHECK(approx(chart_to_world(t, world_to_chart(t, world_pos)), world_pos));
+
+    const Vec4 world4{0.5f, 3.0f, 6.0f, 9.0f};
+    // Time invariant, spatial part transformed.
+    RR_CHECK(approx(world_to_chart(t, world4),
+                    Vec4{0.5f, 1.0f, 2.0f, 3.0f}));
+    RR_CHECK(approx(chart_to_world(t, world_to_chart(t, world4)), world4));
+}
+
+void test_schw_3_schwarzschild_like_zero_mass_is_identity() {
+    using namespace rr::manifold;
+    using rr::math::Vec3;
+    using rr::math::Vec4;
+
+    // SchwarzschildLike with `mass = 0` (i.e. `r_s = 0`): the
+    // SCHW.1 math leaf's defensive Euclidean fallback returns
+    // its input unchanged, so the chart behaves like Euclidean
+    // at the `ManifoldTransform` seam. Verifies the plan §5.2
+    // "Euclidean fallback" contract through the new helper arms.
+    ManifoldTransform t = identity_transform();
+    t.chart = make_schwarzschild_like_chart();
+    t.chart.params.mass = 0.0f;   // r_s = 0 ⇒ identity
+
+    const Vec3 p3{1.5f, -2.3f, 4.7f};
+    RR_CHECK(approx(world_to_chart(t, p3), p3));
+    RR_CHECK(approx(chart_to_world(t, p3), p3));
+
+    const Vec4 p4{0.5f, 1.5f, -2.3f, 4.7f};
+    RR_CHECK(approx(world_to_chart(t, p4), p4));
+    RR_CHECK(approx(chart_to_world(t, p4), p4));
+}
+
+void test_schw_3_world_to_chart_schwarzschild_like_known_value() {
+    using namespace rr::manifold;
+    using rr::math::Vec3;
+    using rr::math::Vec4;
+
+    // Worked example from plan §2: with `r_s=1`, `falloff=1`,
+    // `clamp_radius=0.1`, `mass_origin=(0,0,0)`, `warp_strength=1`,
+    // and `p_world = (2, 0, 0)`:
+    //   r = 2; f = 1 * 1 / 2 = 0.5;
+    //   chart_pos = (2,0,0) + 0.5 * (2,0,0) = (3,0,0).
+    // The `ManifoldTransform` seam supplies `warp_strength = 1.0`
+    // by default (the chart's intrinsic full warp), so the
+    // Vec3 overload reproduces the math leaf's result.
+    ManifoldTransform t = identity_transform();
+    t.chart = make_schwarzschild_like_chart();
+
+    const Vec3 p_world{2.0f, 0.0f, 0.0f};
+    RR_CHECK(approx(world_to_chart(t, p_world), Vec3{3.0f, 0.0f, 0.0f}));
+
+    // Vec4 overload: time invariant, spatial part follows the
+    // same warp.
+    const Vec4 p_world4{0.5f, 2.0f, 0.0f, 0.0f};
+    RR_CHECK(approx(world_to_chart(t, p_world4),
+                    Vec4{0.5f, 3.0f, 0.0f, 0.0f}));
+}
+
+void test_schw_3_chart_to_world_schwarzschild_like_round_trip() {
+    using namespace rr::manifold;
+    using rr::math::length;
+    using rr::math::Vec3;
+    using rr::math::Vec4;
+
+    // Forward → inverse round-trip via the `ManifoldTransform`
+    // seam reproduces the input to within the plan §5.4
+    // documented residual (`<= 1e-4`). This re-exercises the
+    // SCHW.1 helper through the `chart_to_world` arm.
+    ManifoldTransform t = identity_transform();
+    t.chart = make_schwarzschild_like_chart();
+
+    const Vec3 inputs[] = {
+        {2.0f, 0.0f, 0.0f},
+        {3.0f, 0.0f, 0.0f},
+        {1.5f, 0.5f, -1.0f},
+        {0.5f, 0.0f, 0.0f},   // near the clamp shell
+    };
+    for (const Vec3& p_world : inputs) {
+        const Vec3 chart  = world_to_chart(t, p_world);
+        const Vec3 back   = chart_to_world(t, chart);
+        const float resid = length(back - p_world);
+        RR_CHECK(resid < 1.0e-4f);
+    }
+
+    // Vec4 round-trip: time component preserved exactly,
+    // spatial residual bounded by the same constant.
+    const Vec4 q_world4{0.7f, 2.0f, 0.0f, 0.0f};
+    const Vec4 chart4   = world_to_chart(t, q_world4);
+    const Vec4 back4    = chart_to_world(t, chart4);
+    RR_CHECK(approx(back4.x, q_world4.x));  // time invariant
+    const Vec3 sp_back{back4.y, back4.z, back4.w};
+    const Vec3 sp_in  {q_world4.y, q_world4.z, q_world4.w};
+    RR_CHECK(length(sp_back - sp_in) < 1.0e-4f);
+}
+
+void test_schw_3_no_nan_inf_near_clamp_radius() {
+    using namespace rr::manifold;
+    using rr::math::Vec3;
+    using rr::math::Vec4;
+
+    // At `p_world == chart.origin` (the most singular geometric
+    // case) and at `p_world` strictly inside the clamp shell
+    // (`|p_world - mass_origin| < clamp_radius`), the SCHW.1
+    // math leaf substitutes `r = clamp_radius` so the formula
+    // stays finite. Verify no NaN / Inf propagates through the
+    // `ManifoldTransform` seam.
+    ManifoldTransform t = identity_transform();
+    t.chart = make_schwarzschild_like_chart();
+    t.chart.origin = Vec3{2.0f, 0.0f, 0.0f};
+
+    // At the mass origin: the math leaf returns mass_origin
+    // unchanged (delta = 0; f * delta = 0; chart_pos = p_world).
+    const Vec3 at_mass = t.chart.origin;
+    const Vec3 out_at  = world_to_chart(t, at_mass);
+    RR_CHECK(std::isfinite(out_at.x));
+    RR_CHECK(std::isfinite(out_at.y));
+    RR_CHECK(std::isfinite(out_at.z));
+    RR_CHECK(approx(out_at, at_mass));
+
+    // Strictly inside the clamp shell (|delta| < clamp_radius
+    // = 0.1): the math leaf substitutes r = clamp_radius for
+    // the displacement scalar; no division by zero.
+    const Vec3 in_shell{
+        t.chart.origin.x + 0.01f, t.chart.origin.y, t.chart.origin.z};
+    const Vec3 out_shell = world_to_chart(t, in_shell);
+    RR_CHECK(std::isfinite(out_shell.x));
+    RR_CHECK(std::isfinite(out_shell.y));
+    RR_CHECK(std::isfinite(out_shell.z));
+
+    // chart_to_world also stays finite for the clamp-shell case
+    // (the NR inverse uses the clamp-shell derivative
+    // substitution per plan §5.4).
+    const Vec3 chart_in_shell = out_shell;
+    const Vec3 back_shell     = chart_to_world(t, chart_in_shell);
+    RR_CHECK(std::isfinite(back_shell.x));
+    RR_CHECK(std::isfinite(back_shell.y));
+    RR_CHECK(std::isfinite(back_shell.z));
+
+    // The Vec4 overload also stays finite at the singular case.
+    const Vec4 at_mass4{
+        1.0f, t.chart.origin.x, t.chart.origin.y, t.chart.origin.z};
+    const Vec4 out4 = world_to_chart(t, at_mass4);
+    RR_CHECK(std::isfinite(out4.x));
+    RR_CHECK(std::isfinite(out4.y));
+    RR_CHECK(std::isfinite(out4.z));
+    RR_CHECK(std::isfinite(out4.w));
+    RR_CHECK(approx(out4, at_mass4));
+}
+
+void test_schw_3_params_from_chart() {
+    using namespace rr::manifold;
+
+    // The chart→helper-params builder follows the plan §3
+    // reinterpretation table verbatim.
+    CoordinateChart c = make_schwarzschild_like_chart();
+    c.params.mass                   = 1.5f;
+    c.params.spin                   = 2.0f;
+    c.params.compactification_scale = 0.25f;
+
+    SchwarzschildLikeWarpParams p = schwarzschild_like_params_from(c);
+    RR_CHECK(p.r_s           == 1.5f);
+    RR_CHECK(p.warp_strength == 1.0f);  // default
+    RR_CHECK(p.falloff       == 2.0f);
+    RR_CHECK(p.clamp_radius  == 0.25f);
+
+    // Caller-supplied strength overrides the default.
+    SchwarzschildLikeWarpParams half = schwarzschild_like_params_from(c, 0.5f);
+    RR_CHECK(half.warp_strength == 0.5f);
+    RR_CHECK(half.r_s           == p.r_s);
+    RR_CHECK(half.falloff       == p.falloff);
+    RR_CHECK(half.clamp_radius  == p.clamp_radius);
+
+    // The default chart's params satisfy the math-leaf
+    // validator (all-positive `clamp_radius`, finite
+    // `falloff` in `[0.5, 4.0]`, etc.).
+    RR_CHECK(schwarzschild_like_validate_params(p));
+    RR_CHECK(schwarzschild_like_validate_params(half));
+}
+
+void test_schw_3_other_non_euclidean_passthrough() {
+    using namespace rr::manifold;
+    using rr::math::Vec3;
+    using rr::math::Vec4;
+
+    // The non-`SchwarzschildLike` non-Euclidean placeholder
+    // charts (Kruskal / Penrose / Kerr) remain passthrough.
+    // SCHW.3 must not silently route them through the
+    // SchwarzschildLike math (master rule #3: no fake stubs
+    // pretending to be complete systems).
+    ManifoldTransform t = identity_transform();
+    const Vec3 p3{1.5f, -2.3f, 4.7f};
+    const Vec4 p4{0.5f, 1.5f, -2.3f, 4.7f};
+
+    for (CoordinateChartType type : {
+            CoordinateChartType::KruskalLikePlaceholder,
+            CoordinateChartType::PenroseLikePlaceholder,
+            CoordinateChartType::KerrLikePlaceholder}) {
+        t.chart.type = type;
+        // Even if `params.mass != 0` (which would activate the
+        // SchwarzschildLike math), these charts must passthrough.
+        t.chart.params.mass = 1.0f;
+        RR_CHECK(approx(world_to_chart(t, p3), p3));
+        RR_CHECK(approx(chart_to_world(t, p3), p3));
+        RR_CHECK(approx(world_to_chart(t, p4), p4));
+        RR_CHECK(approx(chart_to_world(t, p4), p4));
+    }
+}
+
 }  // namespace
 
 int main() {
@@ -642,6 +913,16 @@ int main() {
     test_schw_1_warp_ray_direction_euclidean_fallback();
     test_schw_1_warp_ray_direction_bend_cap();
     test_schw_1_warp_ray_direction_bends_toward_mass();
+
+    // SCHW.3: ManifoldTransform integration.
+    test_schw_3_disabled_identity_preserved();
+    test_schw_3_euclidean_identity_preserved();
+    test_schw_3_schwarzschild_like_zero_mass_is_identity();
+    test_schw_3_world_to_chart_schwarzschild_like_known_value();
+    test_schw_3_chart_to_world_schwarzschild_like_round_trip();
+    test_schw_3_no_nan_inf_near_clamp_radius();
+    test_schw_3_params_from_chart();
+    test_schw_3_other_non_euclidean_passthrough();
 
     std::printf("manifold_identity_tests: %d / %d checks passed\n",
                 g_total - g_failed, g_total);

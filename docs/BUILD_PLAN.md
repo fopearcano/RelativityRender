@@ -73657,6 +73657,247 @@ original SCHW.2 in
 module-map row changes state until
 MANI-I.12 (final cross-host audit) lands.
 
+## SCHW.3 — Schwarzschild-Like CPU Transform Integration (impl, host-only)
+
+**Scope of this slice (per the operator's *SCHW.3 —
+Schwarzschild-Like CPU Transform Integration* task brief and
+`docs/SCHWARZSCHILD_LIKE_REMAP_PLAN.md` §8 SCHW.3): wire the
+bounded SCHW.1 Schwarzschild-like warp math leaf into the
+`ManifoldTransform.h` CPU-side coordinate-transform helpers.
+`world_to_chart` and `chart_to_world` (Vec3 + Vec4 overloads
+each) gain a `CoordinateChartType::SchwarzschildLike` arm that
+calls the math leaf with the chart's per-pixel artist
+parameters extracted from `CoordinateChart::params` per the
+plan §3 reinterpretation table. The Euclidean / disabled
+default remains the identity at every helper. No CUDA touch,
+no OptiX touch, no render-output change by default. Adds
+eight unit-test functions exercising disabled identity,
+Euclidean identity, SchwarzschildLike bounded transform, and
+no-NaN/Inf safety near the clamp radius.**
+
+### What ships
+
+- **`src/manifold/ManifoldTransform.h` (extended).** Six
+  surface additions:
+    - **Header include.** `#include "manifold/SchwarzschildLikeWarp.h"`
+      pulls in the SCHW.1 math leaf at the same include
+      level as `CoordinateChart.h` / `MetricTensor.h` /
+      `ObserverFrame.h`.
+    - **`schwarzschild_like_params_from(const CoordinateChart&,
+      float warp_strength = 1.0f)`** — new `RR_HD inline`
+      helper that builds a `SchwarzschildLikeWarpParams`
+      from a `CoordinateChart` per the plan §3 reinterpretation
+      table: `r_s ← chart.params.mass`, `falloff ←
+      chart.params.spin`, `clamp_radius ←
+      chart.params.compactification_scale`, `warp_strength
+      ← caller's argument` (defaults to `1.0`, the chart's
+      intrinsic full warp; the runtime
+      `ManifoldMode::strength` dial is the kernel-seam's
+      responsibility and lands at SCHW.4 / SCHW.5). The
+      `mass_origin` `Vec3` is NOT in this POD; callers
+      pass `chart.origin` directly as the math leaf's
+      `mass_origin` argument.
+    - **`world_to_chart(t, Vec3)` SchwarzschildLike arm.**
+      Calls `schwarzschild_like_world_to_chart(world_pos,
+      t.chart.origin, schwarzschild_like_params_from(t.chart))`.
+      The math leaf's own defensive Euclidean fallback
+      handles `r_s = 0` (returns input) and `warp_strength
+      = 0` (returns input).
+    - **`chart_to_world(t, Vec3)` SchwarzschildLike arm.**
+      Calls `schwarzschild_like_chart_to_world(...)`, which
+      runs the bounded Newton-Raphson inverse with the
+      hard-capped iteration count (`8`) and convergence
+      tolerance (`1.0e-5f`) the math leaf documents.
+    - **`world_to_chart(t, Vec4)` SchwarzschildLike arm.**
+      Time component `world_pos4.x` is invariant (the
+      SchwarzschildLike chart is static in coordinate time
+      per the plan §6.1); spatial components
+      `(.y, .z, .w)` are routed through the Vec3 math leaf
+      and re-packed.
+    - **`chart_to_world(t, Vec4)` SchwarzschildLike arm.**
+      Mirror of the Vec4 forward overload; time component
+      preserved, spatial components inverted through the
+      bounded NR.
+  The other non-Euclidean chart families
+  (`KruskalLikePlaceholder`, `PenroseLikePlaceholder`,
+  `KerrLikePlaceholder`) remain passthrough — master rule
+  #3 forbids routing them through the SchwarzschildLike
+  math silently. `transform_direction` and
+  `transform_ray_like_direction` are intentionally NOT
+  extended this slice: the math leaf's
+  `schwarzschild_like_warp_ray_direction` helper needs a
+  `ray_origin` argument which those signatures do not
+  carry; the future SCHW.4 / SCHW.5 kernel-seam slices
+  will call the ray-direction warp directly from raygen
+  where `ray_origin` is in scope.
+- **`tests/manifold_identity_tests.cpp` (+58 RR_CHECKs
+  across eight new test functions).** SCHW.3 coverage:
+    - `test_schw_3_disabled_identity_preserved` — the
+      default `ManifoldTransform{}` (Euclidean chart,
+      identity origin/scale) is the identity at every
+      Vec3 / Vec4 overload, post-SCHW.3.
+    - `test_schw_3_euclidean_identity_preserved` — an
+      explicit `Euclidean` chart with non-trivial
+      `origin = (1, 2, 3)` and `scale = 2.0` still applies
+      the affine `(p - origin) / scale` rule unchanged
+      (Vec3 + Vec4); round-trip via `chart_to_world` is
+      exact.
+    - `test_schw_3_schwarzschild_like_zero_mass_is_identity`
+      — SchwarzschildLike chart with
+      `chart.params.mass = 0` returns input unchanged at
+      every helper (math leaf's `r_s = 0` short-circuit;
+      Vec3 + Vec4 both verified).
+    - `test_schw_3_world_to_chart_schwarzschild_like_known_value`
+      — the plan §2 worked example
+      (`r_s=1, falloff=1, clamp_radius=0.1,
+      p_world=(2,0,0)`) produces `chart_pos=(3,0,0)` via
+      both the Vec3 and Vec4 overloads (the Vec4 time
+      component stays at `0.5` per the plan §6.1
+      time-invariance rule).
+    - `test_schw_3_chart_to_world_schwarzschild_like_round_trip`
+      — forward → inverse round-trip residual `< 1e-4`
+      across four representative input points (matches
+      the plan §5.4 documented bound); Vec4 round-trip
+      preserves time exactly and the spatial residual
+      meets the same bound.
+    - `test_schw_3_no_nan_inf_near_clamp_radius` — three
+      cases:
+      (a) `p_world == chart.origin` produces a finite,
+      identity output via the `delta = 0` short-circuit;
+      (b) `p_world` strictly inside the clamp shell
+      (`|p_world - mass_origin| < clamp_radius`) produces
+      a finite output via the `r = clamp_radius`
+      substitution;
+      (c) the Vec4 overload at the singular case also
+      produces a finite, identity output.
+    - `test_schw_3_params_from_chart` — exercises the
+      builder helper directly. The reinterpretation table
+      maps `r_s ← params.mass`, `falloff ← params.spin`,
+      `clamp_radius ← params.compactification_scale`,
+      `warp_strength ← caller arg`. A caller-supplied
+      `0.5` overrides the default `1.0`. The default
+      chart's params validate (math leaf's
+      `validate_params` returns `true`).
+    - `test_schw_3_other_non_euclidean_passthrough` —
+      `KruskalLikePlaceholder`, `PenroseLikePlaceholder`,
+      and `KerrLikePlaceholder` are passthrough even
+      with `params.mass = 1.0` (master rule #3: no fake
+      stubs routing through SchwarzschildLike math
+      silently); Vec3 + Vec4 both verified per chart
+      type.
+  `manifold_identity_tests` reports `198 / 198 checks
+  passed` (was `140 / 140` pre-SCHW.3; +58 new RR_CHECKs
+  from the 8 new test functions).
+- **`tests/manifold_identity_tests.cpp` include
+  addition.** `#include <initializer_list>` added next
+  to `<cstdio>` to support the
+  `test_schw_3_other_non_euclidean_passthrough` range-for
+  over a brace-init list. GCC 13's `-Werror` requires
+  the explicit include even though `<cmath>` /
+  `<cstdio>` pull it in transitively on libstdc++.
+
+### What does NOT ship
+
+- **No CUDA touch.** `src/cuda/` is byte-identical. The
+  CUDA kernel arms for the SchwarzschildLike chart land
+  at SCHW.4 (renumbered from the original SCHW.3 per the
+  SCHW.2 audit-slot insertion).
+- **No OptiX touch.** `src/optix/` is byte-identical.
+  The OptiX kernel + host-side allocation land at SCHW.5
+  (renumbered).
+- **No render-output change by default.** Every CLI
+  action without `--manifold-enable --manifold-chart
+  schwarzschild-like` continues to take the pre-SCHW.3
+  code path. The kernel-seam guards (`is_active(...)`
+  + null AOV pointer + `manifold_mode.chart ==
+  Euclidean` short-circuit) are untouched; the new
+  `ManifoldTransform.h` arm is host-side and is not yet
+  consumed by any kernel call site.
+- **No full GR solver.** No Christoffel symbols; no
+  geodesic ODE; no Riemann tensor; no
+  Einstein-field-equation evaluation. Architecture-doc
+  §8 non-goals stand.
+- **No primary-ray direction warp at the
+  `ManifoldTransform` seam.** The math leaf's
+  `schwarzschild_like_warp_ray_direction` helper exists
+  (SCHW.1) but is not wired into
+  `transform_direction(t, d)` or
+  `transform_ray_like_direction(t, d)` — those
+  signatures lack the `ray_origin` argument the ray-warp
+  needs. SCHW.4 / SCHW.5 will invoke the ray-direction
+  warp directly from the kernel raygen entry point
+  where `ray_origin` is in scope.
+- **No C4D / server / UI / node-editor touch.** Zero
+  files in `src/server/`, `bridges/`, or `tools/`.
+- **No new ctest binary.** Tests are appended to the
+  existing `manifold_identity_tests` binary; ctest set
+  remains at 12.
+- **No CMake change.** `rr_manifold` is unchanged
+  (header-only INTERFACE); the test target link line
+  is unchanged.
+- **No `.rrscene` schema bump.** Parameters ride on the
+  existing `CoordinateChart` + `CoordinateChartParameters`
+  PODs.
+- **No `ManifoldMode::strength` plumbing.** The
+  strength dial lives on `ManifoldMode`, which
+  `ManifoldTransform` does not carry. The SCHW.3 helper
+  uses `warp_strength = 1.0` as the chart's intrinsic
+  full warp; the runtime strength dial is the kernel-
+  seam's responsibility at SCHW.4 / SCHW.5.
+
+### Acceptance
+
+- **Compiles.** Audit-host rebuild
+  (`cmake --build build -j`) succeeds cleanly with no
+  new warnings under the project's `rr_apply_warnings`
+  settings.
+- **Tests.** Full ctest: `100% tests passed, 0 tests
+  failed out of 12`.
+  `manifold_identity_tests` reports `198 / 198 checks
+  passed` (the 58 new SCHW.3 RR_CHECKs land within the
+  binary; ctest still reports a single binary, matching
+  the plan §8 SCHW.3 "no new test binary" rule).
+- **Analytic invariants verified by the unit tests:**
+    - **Disabled identity.** Default `ManifoldTransform{}`
+      is the identity at every Vec3 / Vec4 helper.
+    - **Euclidean identity.** Explicit Euclidean chart
+      with non-trivial origin / scale applies the
+      documented affine map and round-trips exactly.
+    - **SchwarzschildLike bounded transform.** The plan
+      §2 worked example (`r_s=1`, `falloff=1`,
+      `clamp_radius=0.1`, `p_world=(2,0,0)`) produces
+      `chart_pos=(3,0,0)` via the new arm.
+    - **No NaN / Inf near clamp radius.** Inputs at the
+      mass origin and inside the clamp shell produce
+      finite outputs at both Vec3 and Vec4 overloads.
+    - **Round-trip residual.** `world_to_chart ∘
+      chart_to_world` residual `< 1e-4` across four
+      representative input points.
+    - **Honest placeholder handling.** Kruskal /
+      Penrose / Kerr charts remain passthrough even with
+      `params.mass = 1.0` (no silent routing through
+      SchwarzschildLike math).
+- **Rule-#3 honesty.** The SchwarzschildLike chart's
+  forward and inverse maps are real, complete artistic
+  math (the SCHW.1 helpers, exercised via the
+  `ManifoldTransform` seam). The Newton-Raphson
+  inverse's residual bound is verified (`< 1e-4`); the
+  no-NaN / no-Inf invariant is verified at the most
+  singular geometric case (`p_world == chart.origin`).
+  The other non-Euclidean chart families remain
+  honest-but-degenerate passthroughs — no fake stubs.
+
+### Module status changes
+
+`docs/MODULE_MAP.md` is *not* updated by this slice.
+The SchwarzschildLike CPU-seam integration is landed
+but no renderer kernel consumes it yet; SCHW.4 wires
+it into the CUDA kernels, SCHW.5 into the OptiX
+programs, SCHW.6 (debug visualization) chooses the
+AOV encoding, SCHW.7 (audit) closes the MANI-I.10
+slot. Module-map promotion still waits for MANI-I.12
+(final cross-host audit) per the integration plan §11.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
