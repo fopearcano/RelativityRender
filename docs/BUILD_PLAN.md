@@ -70548,6 +70548,164 @@ consumer; promotion still waits for the Minkowski-chart-wrap
 slice. The ctest binary count rises from 11 to 12 across the
 audit-host build.
 
+## Field Interpretation Layer — Design Doc (docs only)
+
+**Scope of this slice (per the operator's *Field Interpretation
+Layer — Design Doc* task brief): write
+`docs/FIELD_INTERPRETATION_LAYER.md`, the detailed design for
+Phase 1 of the Manifold Core Pivot — the optional perception-
+transcoding layer that maps non-light fields into the
+renderer's visible channels. Cross-reference from the existing
+`docs/MANIFOLD_RENDERING_ARCHITECTURE.md` §6 so the high-level
+summary points at the detailed doc. Documentation only; no
+source code, no test, no CMake, no behavioural change. The
+first concrete implementation slice (FIELD.1 — Kretschmann-
+scalar diagnostic AOV) is *named* in §9 of the new doc but
+not started here.**
+
+### What ships
+
+- **`docs/FIELD_INTERPRETATION_LAYER.md` (new, ~480 lines).**
+  Ten-section design doc matching the
+  `MANIFOLD_RENDERING_ARCHITECTURE.md` shape:
+    - **§1 Purpose & scope** — what the layer is (Phase 1
+      perception-transcoding sibling to the Manifold Core),
+      what it is *not* (a renderer foundation), and where it
+      fits in the layer diagram.
+    - **§2 Purpose** — the renderer's output is an RGB image
+      and its only physical primitive is the EM field; this
+      layer transcodes the perception of other fields into
+      the chromatic / luminous / volumetric / geometric
+      channels the renderer already emits. Explicitly
+      artistic / interpretive, not physical.
+    - **§3 Field types** — scalar (§3.1), vector (§3.2),
+      tensor (§3.3), curvature (§3.4), probability /
+      amplitude placeholder (§3.5). Each carries a value-
+      shape, examples the layer is built to support
+      (Klein-Gordon-like wavefunction analogue, gauge-field
+      potential `A^μ`, metric perturbation `h_{μν}`, the
+      Kretschmann scalar `K = R_{μνρσ} R^{μνρσ}`,
+      single-particle wavefunction `ψ(x)` placeholder), and
+      non-binding interpretation hints (`|φ|` → emission,
+      `arg(ψ)` → hue, etc.).
+    - **§4 Mapping outputs** — color (§4.1), emission
+      (§4.2), distortion (§4.3, explicitly small + clamped
+      + tetrad-local), density (§4.4, Beer-Lambert
+      composition via the
+      `GeodesicState::accumulated_optical_depth` slot
+      reserved at MANIFOLD.4), chromatic shift (§4.5,
+      seeded by today's `applyDopplerColor` artistic
+      kernel), diagnostic AOV (§4.6, consumes existing
+      `src/renderer/AOV.h` machinery). Each channel
+      documents its composition model and its safety
+      constraints.
+    - **§5 Relationship to the Manifold Core** — the layer
+      sits *above* the Manifold Core and reads its surface
+      read-only (chart / metric / observer frame / geodesic
+      samples); the Manifold Core does *not* depend on the
+      layer. The layer MUST NOT modify the metric, advance
+      geodesics, mutate the observer frame, or replace the
+      path tracer. The reasoning section (§5.3) explains
+      why the separation matters — the two layers evolve
+      at different speeds with different correctness
+      criteria.
+    - **§6 Composition semantics** — Phase 1 modules are
+      additive, commutative within each channel (subject
+      to the linear-regime caveat for the Distortion
+      channel), and artist-strength-controlled.
+    - **§7 Non-goals** — no field-dynamics simulation
+      (Klein-Gordon, Schrödinger, Dirac evolution), no
+      Einstein-field-equation solver from a stress-energy
+      input, no spectral colour pipeline (deferred to the
+      renderer's wider colour-pipeline programme), no
+      Manifold-Core / path-tracer replacement, no
+      Phase-1-specific AOV machinery (consume the
+      existing `src/renderer/AOV.h` surface).
+    - **§8 Dependency rules** — additive matrix for the
+      new module. Layer MAY depend on Math / Image /
+      Scene Graph / Manifold Core (read-only). Layer
+      MUST NOT depend on GPU Backends, Path Tracer
+      internals, Server, Bridge, UI. Manifold Core MUST
+      NOT depend on the layer.
+    - **§9 First implementation slice (deferred)** —
+      FIELD.1 = Kretschmann-scalar diagnostic AOV on a
+      Schwarzschild chart. Lands after architecture-doc
+      §10 step 3 (Schwarzschild chart). Acceptance is
+      the analytic closed-form `K = 48 M² / r⁶` along a
+      radial line to single-precision tolerance.
+      FIELD.2 / FIELD.3 are named (artist-supplied
+      scalar texture → emission; probability-amplitude
+      → density-and-hue) but their detail waits on
+      FIELD.1's contract surface.
+    - **§10 References** — cross-references to master
+      instructions, architecture doc, master architecture
+      doc, module map, build plan, and the existing
+      `src/manifold/*` / `src/renderer/AOV.h` /
+      `src/relativity/RelativityMath.h` surfaces the
+      layer will eventually consume.
+- **`docs/MANIFOLD_RENDERING_ARCHITECTURE.md` §6 preface
+  (+8 lines).** A one-paragraph pointer at the top of §6
+  declares the new design doc the authoritative source
+  and marks the existing §6.1 / §6.2 / §6.3 prose as the
+  high-level summary. No content is removed from the
+  architecture doc — the design lives in the new
+  artifact and the existing prose stays as the
+  fast-overview.
+
+### What does NOT ship
+
+- **No source code.** Nothing in `src/manifold/`,
+  `src/relativity/`, `src/cuda/`, `src/optix/`,
+  `src/pathtracer/`, `src/renderer/`, `src/gpu/`,
+  `src/scene/`, `src/io/`, `src/server/`, `src/main.cpp`,
+  `src/core/`, `src/camera/`, `src/material/`,
+  `src/lighting/`, `src/texture/`, `src/geometry/`,
+  `src/image/`, or `src/math/` is touched (`git diff`
+  outside `docs/` ⇒ 0 bytes).
+- **No new test binary.** ctest set unchanged at 12.
+- **No CMake change.** `rr_manifold` link / target shape
+  unchanged; no `rr_field_interpretation` target created
+  this stage (master rule #3 forbids empty-scaffold
+  directories that pretend a system exists — the source
+  tree gains a Phase 1 sub-directory only when FIELD.1
+  lands).
+- **No `src/field/` or `src/manifold/` extension.** The
+  layer's first source artifact is FIELD.1, which lands
+  later per the architecture-doc §10 milestone order
+  (after the Schwarzschild chart).
+- **No FIELD.1 / FIELD.2 / FIELD.3 implementation.** The
+  three are *named* in the design doc's §9 with their
+  acceptance criteria, not started.
+
+### Acceptance
+
+- **Compiles.** Documentation-only slice; no build
+  configuration touched. The audit-host build remains at
+  the post-MANIFOLD.7 baseline (`100% tests passed, 0
+  tests failed out of 12`).
+- **Internally consistent.** The new doc cross-references
+  `MANIFOLD_RENDERING_ARCHITECTURE.md` §3 / §6 / §8 / §9
+  / §10 correctly; the dep rules in §8 are additive (no
+  row removed from the existing matrix); the non-goals in
+  §7 are consistent with architecture-doc §8.
+- **Master-rule honesty.** The probability / amplitude
+  placeholder in §3.5 is documented as a placeholder slot
+  (master rule #3: "no fake stubs"). FIELD.1 / FIELD.2 /
+  FIELD.3 are named *with their acceptance criteria*,
+  not started; the architecture-doc §10 milestone order
+  is unchanged.
+
+### Module status changes
+
+`docs/MODULE_MAP.md` is *not* updated by this slice. The
+Field Interpretation Layer is now *named and shaped* via
+its design doc but still has zero source artifacts, no
+test coverage, and no renderer consumer; module-map
+promotion waits for the first FIELD.x implementation
+milestone (FIELD.1 — Kretschmann-scalar diagnostic AOV)
+that lands after the Schwarzschild chart slice in the
+architecture-doc §10 order.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:

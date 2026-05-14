@@ -320,6 +320,15 @@ optional**: the core renderer must remain useful with Phase 1 absent,
 and Phase 1 must not appear in the dependency closure of L3 or below
 (§9).
 
+The full design — field types (scalar / vector / tensor / curvature /
+probability-amplitude placeholder), output channels (color / emission /
+distortion / density / chromatic shift / diagnostic AOV), composition
+semantics, non-goals, additive dependency rules, and the first
+implementation slice (FIELD.1 Kretschmann-scalar diagnostic AOV) — is
+specified in [`docs/FIELD_INTERPRETATION_LAYER.md`](FIELD_INTERPRETATION_LAYER.md).
+The sketches in §6.1 / §6.2 / §6.3 below are the high-level summary;
+the design doc is the authoritative source.
+
 ### 6.1 Perceptual field interpretation
 
 The intent of Phase 1 is to surface fields *other than* the EM field
