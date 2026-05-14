@@ -72365,6 +72365,161 @@ Module-map promotion still waits for MANI-I.9
 (final cross-host audit) per the integration plan
 §11.
 
+## MANI-I.6 — Euclidean Identity GPU Path Audit (docs only)
+
+**Scope of this slice (per the operator's *MANI-I.6 —
+Euclidean Identity GPU Path Audit* task brief): write
+`docs/MANIFOLD_EUCLIDEAN_GPU_IDENTITY_AUDIT.md`, the
+per-slice verdict document for MANI-I.5 (`a34e265`).
+Verifies the eight items the task brief enumerates —
+GPU-side manifold payload landed, disabled mode is
+no-op, Euclidean chart is identity, CUDA path visually
+unchanged by default, OptiX path visually unchanged
+by default, build / test green, runtime CUDA / OptiX
+status documented, verdict — and produces a
+PASS / REPAIR / BLOCKED verdict that gates progression
+to the debug coordinate-warp AOV (renumbered MANI-I.7).
+Documentation only; no source code, no test, no CMake,
+no behavioural change. Inserts MANI-I.6 as a per-slice
+audit slot into the integration plan §3 chain diagram
+and renumbers MANI-I.6 → MANI-I.7, MANI-I.7 → MANI-I.8,
+MANI-I.8 → MANI-I.9, MANI-I.9 → MANI-I.10 accordingly
+across the integration plan.**
+
+### What ships
+
+- **`docs/MANIFOLD_EUCLIDEAN_GPU_IDENTITY_AUDIT.md`
+  (new).** Per-slice verdict document mirroring the
+  `MANIFOLD_CORE_FOUNDATION_AUDIT.md` /
+  `MANIFOLD_CLI_CONFIG_AUDIT.md` /
+  `MANIFOLD_RENDER_CONFIG_BRIDGE_AUDIT.md` shape:
+    - **§1 VERDICT** — `PASS` (structural). Runtime
+      CUDA / OptiX byte-identity verification
+      DEFERRED behind the audit-host gate. No
+      REPAIR or BLOCKED item.
+    - **§2 PER-CHECK RESULTS** — eight-row evidence
+      table. Each row cites a concrete observation:
+      `OptixLaunchParams::manifold_mode{}` field at
+      the end of the launch-params POD;
+      `launch_pathtrace_sample(..., manifold_mode
+      = {})` signature; `is_active` helper truth
+      table; **zero** `manifold` references in
+      `k_pathtrace_sample`'s body (lines 178-405)
+      and in `OptixPrograms.cu` device-side
+      programs (grep-verified); ctest 12/12 +
+      `cli_tests: 123/123 passed`; runtime
+      verification DEFERRED behind the audit-host's
+      no-CUDA / no-OptiX-SDK fallback, matching the
+      existing `firefly_clamp` / `enable_nee`
+      byte-identity claims' posture.
+    - **§3 REASONING SUMMARY** — recap of the
+      MANI-I.5 commit's 11-file scope, the
+      structurally-guaranteed bit-identity (no
+      kernel arm reads `manifold_mode`), the
+      audit-host runtime-deferral rationale, and
+      the FP-byte-identity reason for not
+      inserting a kernel-side
+      `transform_ray_like_direction(...)` call
+      this slice (documented in the integration
+      plan §6 "Implementation choice notes"
+      subsection).
+    - **§4 NEXT** — names the integration-plan
+      renumbering (MANI-I.6 audit inserted;
+      MANI-I.6 → MANI-I.7 debug-warp AOV →
+      MANI-I.7 → MANI-I.8 Schwarzschild-like →
+      ... → MANI-I.9 → MANI-I.10 final audit) and
+      points at MANI-I.7 as the next concrete
+      slice the operator may prompt for.
+- **`docs/MANIFOLD_INTEGRATION_PLAN.md` (renumbered).**
+  Four replace-all substitutions shift every
+  MANI-I.x reference at the kernel-side and audit
+  end of the chain (highest-to-lowest to avoid
+  double-shifting): MANI-I.9 → MANI-I.10, MANI-I.8
+  → MANI-I.9, MANI-I.7 → MANI-I.8, MANI-I.6 →
+  MANI-I.7. The §3 chain diagram is rewritten by
+  hand to insert a new MANI-I.6 box (Euclidean
+  Identity GPU Path Audit, doc-only, points at
+  the new audit doc) and to update the "Why this
+  ordering?" prose with a per-slice-audit
+  rationale citing the MANI-I.2 / MANI-I.4 /
+  MANI-I.6 audit slots. The section heading
+  numbers (§4 through §12) stay stable; the
+  audit slice does not get its own slice section
+  because the audit doc is the authoritative
+  artifact.
+- **`docs/MANIFOLD_RENDERING_ARCHITECTURE.md`
+  (cross-reference update).** §10 operational-view
+  pointer reads "MANI-I.1 through MANI-I.10" after
+  this slice (was "MANI-I.1 through MANI-I.9").
+- **`docs/MANIFOLD_CORE_FOUNDATION_AUDIT.md`
+  (cross-reference update).** §3 reasoning-
+  summary forward-looking statement updated to
+  point at the ten-slice plan, name all three
+  audit slots (MANI-I.2 / MANI-I.4 / MANI-I.6)
+  and the two GPU-side slices (MANI-I.5 /
+  MANI-I.7), and cite the new audit doc
+  alongside the prior two.
+
+### What does NOT ship
+
+- **No source code.** Nothing in any `src/`
+  subtree is touched (`git diff` outside `docs/`
+  ⇒ 0 bytes).
+- **No new test binary.** ctest set unchanged at
+  12.
+- **No CMake change.** No new `rr_*` target; no
+  link-line change.
+- **No `BUILD_PLAN.md` historical-record
+  rewrite.** The MANI-I.1 / MANI-I.2 / MANI-I.3 /
+  MANI-I.4 / MANI-I.5 entries above stay as-is;
+  this MANI-I.6 entry is additive.
+- **No `MODULE_MAP.md` update.** The per-slice
+  audit is doc-only; module-map promotion still
+  waits for MANI-I.10 (final cross-host audit)
+  per the integration plan §11.
+- **No update to the prior audit docs.** The
+  MANI-I.2 and MANI-I.4 audit docs are
+  preserved as point-in-time historical
+  snapshots of the renumbering state at their
+  time of writing.
+
+### Acceptance
+
+- **Compiles.** Documentation-only slice; no
+  build configuration touched. The audit-host
+  build remains at the post-MANI-I.5 baseline
+  (`100% tests passed, 0 tests failed out of 12`;
+  `cli_tests: 123/123 passed`).
+- **Internally consistent.** The eight-row
+  evidence table cites concrete file / line
+  positions that can be re-verified on the audit
+  host; the renumbering in the integration plan
+  is verified by a final `grep MANI-I.` pass
+  showing every reference uses the ten-slice
+  numbering with MANI-I.6 as the new audit slot.
+- **Verdict honesty.** The verdict is `PASS`
+  (structural) because the structural checks
+  pass — not because of an arbitrary judgement
+  call. The bit-identity invariant is
+  **structurally guaranteed**, not just
+  empirically observed: no kernel arm reads
+  `manifold_mode`, so there is no device-side
+  code path through which the new launch-params
+  field could affect a pixel. The runtime
+  re-verification gate is DEFERRED, not
+  BLOCKED — it matches the existing
+  `firefly_clamp` / `enable_nee` byte-identity
+  claims' audit-host posture.
+
+### Module status changes
+
+`docs/MODULE_MAP.md` is *not* updated by this slice.
+The MANI-I.6 audit verdict (`PASS`) authorises the
+operator to proceed to MANI-I.7 (debug coordinate-
+warp AOV under the renumbered integration plan §7);
+no module-map row changes state until MANI-I.10
+(final cross-host audit) lands.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
