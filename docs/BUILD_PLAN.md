@@ -70390,6 +70390,164 @@ module-map promotion still waits for the Minkowski-chart-wrap
 slice (architecture-doc §10 step 1) that becomes the first
 real consumer of any `src/manifold/` POD.
 
+## MANIFOLD.7 — Identity Tests (impl, tests-only)
+
+**Scope of this slice (per the operator's *MANIFOLD.7 — Identity
+Tests* task brief): wire the first ctest binary for the Manifold
+Core. Verifies that the `rr_manifold` library's six POD types
+and their factories are a "default no-op" — i.e. a renderer
+that constructs every manifold value via its default
+constructor (and the published default factories) gets the same
+logical result as the pre-pivot renderer. No renderer behaviour
+change; no `src/manifold/*` code change; ctest set grows from
+11 binaries to 12.**
+
+### What ships
+
+- **`tests/manifold_identity_tests.cpp` (new, 287 lines).**
+  Hand-rolled `RR_CHECK` test binary matching the
+  `math_tests.cpp` / `relativity_tests.cpp` shape (no
+  third-party framework). Eight test groups, 112 assertions:
+    1. **`test_minkowski_metric_creation`** (~20 RR_CHECKs) —
+       Default-constructed `MetricTensor` is mostly-plus
+       Minkowski `diag(-1, +1, +1, +1)`; off-diagonals zero;
+       `minkowski_metric()` factory matches; `is_minkowski` /
+       `is_symmetric` / `is_diagonal` / `is_finite` all hold;
+       `determinant == -1.0f` exactly. `identity_metric()`
+       returns `diag(+1, +1, +1, +1)` with `determinant ==
+       +1.0f`; rejects `is_minkowski` (sanity that the two
+       factories are not aliased).
+    2. **`test_euclidean_chart_default`** (~12 RR_CHECKs) —
+       Default `CoordinateChart{}.type == Euclidean`,
+       `scale == 1`, `origin == (0, 0, 0)`,
+       `units == SceneNatural`, `params.compactification_scale
+       == 1`, all other params zero; `euclidean_chart()` /
+       `identity_chart()` (alias) match the default;
+       `ManifoldTransform.chart.type == Euclidean`.
+    3. **`test_world_to_chart_identity`** (~8 RR_CHECKs) —
+       `world_to_chart(identity_transform(), p)` is the
+       identity on Vec3 `(0, 0, 0)` / `(1.5, -2.3, 4.7)` /
+       `(-100, 0.5, 99.9)` and on Vec4 `(0, 0, 0, 0)` /
+       `(0.5, 1.5, -2.3, 4.7)`; round-trip
+       `chart_to_world ∘ world_to_chart` is exact.
+    4. **`test_chart_to_world_identity`** (~4 RR_CHECKs) —
+       Vec3 and Vec4 identity + reverse round-trip.
+    5. **`test_transform_direction_identity`** (~6 RR_CHECKs) —
+       `transform_direction` Vec3 / Vec4 identity;
+       `transform_ray_like_direction` Vec3 identity on unit
+       input; `transform_ray_like_direction` Vec4 preserves
+       the null condition (`g_{mu nu} p^mu p^nu = 0` before
+       and after) on a null `(1, 0.6, 0, 0.8)` photon.
+    6. **`test_manifold_mode_disabled_by_default`** (~12
+       RR_CHECKs) — `ManifoldMode{}.enabled == false`;
+       `chart == Euclidean`; `strength == 0`;
+       `debug_visualization == false`;
+       `preserve_light_speed_normally == true`;
+       `transform_coordinates_instead_of_light == true`;
+       `disabled_manifold_mode()` produces the same value
+       field-by-field.
+    7. **`test_observer_frame_defaults`** (~14 RR_CHECKs,
+       bonus) — `rest_frame()` matches the documented
+       scene-rest defaults (position4 / velocity4 / beta /
+       tetrad / time placeholders); passes
+       `is_normalised_timelike(rf, minkowski_metric())`;
+       `observer_frame_from(Observer{velocity = 0})`
+       reproduces `rest_frame()`;
+       `to_relativity_observer(observer_frame_from(o))`
+       round-trips beta exactly at `|beta| = 0.5`;
+       `is_normalised_timelike` holds at the round-tripped
+       frame.
+    8. **`test_geodesic_state_defaults`** (~10 RR_CHECKs,
+       bonus) — `default_geodesic_state()` matches the six
+       documented defaults; the default photon satisfies
+       `g_{mu nu} p^mu p^nu = 0` on Minkowski; the three
+       `GeodesicStatus` enumerators are distinct.
+  A `metric_contract(g, p)` local helper performs the
+  `g_{mu nu} p^mu p^nu` contraction inline so the validators
+  in groups 5 / 7 / 8 do not leak the contraction into the
+  manifold headers themselves (architecture-doc §3.4: real
+  metric-aware validators belong on the future integrator,
+  not the data POD).
+- **`CMakeLists.txt` (+22 lines).** Adds the
+  `manifold_identity_tests` `add_executable` +
+  `target_link_libraries(... PRIVATE rr_manifold)` +
+  `rr_apply_warnings` + `add_test(NAME manifold_identity_tests
+  ...)` block, placed immediately after `relativity_tests` so
+  the ordering reflects the architecture-doc §7.2 subsumption.
+  Links `rr_manifold` only — the INTERFACE library
+  transitively pulls `rr_math` and `rr_relativity` for the
+  SR-bridge round-trip checks.
+- **`src/manifold/README.md` (+10 lines).** Adds a
+  "Test coverage" section pointing at the new binary, the
+  112-assertion count, and the 12/12-from-MANIFOLD.7-onward
+  ctest expectation.
+
+### What does NOT ship
+
+- **No `src/manifold/*` code change.** The six POD headers,
+  the helpers, and the `disabled_manifold_mode()` factory are
+  byte-identical to MANIFOLD.6; this slice only adds tests
+  that consume them.
+- **No renderer behaviour change.** Nothing in `src/cuda/`,
+  `src/optix/`, `src/pathtracer/`, `src/renderer/`,
+  `src/gpu/`, `src/scene/`, `src/io/`, `src/server/`,
+  `src/main.cpp`, `src/core/`, `src/camera/`,
+  `src/material/`, `src/lighting/`, `src/texture/`,
+  `src/geometry/`, `src/image/`, `src/math/`, or
+  `src/relativity/` is touched. The new test file is the only
+  consumer of the manifold module that this slice introduces.
+- **No GPU coverage.** The new test binary runs entirely on
+  the host (header-only consumption; no CUDA / OptiX
+  dependency). The `RR_HD inline` helpers are exercised
+  through their host instantiation. A future
+  Minkowski-chart-wrap slice will add GPU-side tests if
+  needed.
+- **No reference-image / pixel coverage.** This slice tests
+  the manifold POD layer for default-no-op behaviour; the
+  pre-pivot renderer's pixel output is not regenerated nor
+  byte-compared. That validation belongs with the
+  Minkowski-chart-wrap slice that becomes the first renderer
+  consumer of these PODs.
+- **No CLI surface change.** No new `--render-*` action. The
+  ctest set grows from 11 to 12 binaries; the existing 11 are
+  unchanged.
+
+### Acceptance
+
+- **Compiles.** Audit-host
+  `cmake -S . -B build -DRR_BUILD_TESTS=ON` reconfigures
+  cleanly with the new test target wired; `cmake --build
+  build -j` builds `manifold_identity_tests` alongside the
+  existing 11 binaries with no warnings under the project's
+  `rr_apply_warnings` settings (`-Wall -Wextra -Werror`-class).
+- **Passes.** `manifold_identity_tests` reports `112 / 112
+  checks passed` on the audit host. Full ctest:
+  `100% tests passed, 0 tests failed out of 12`
+  (`math_tests`, `image_tests`, `gpu_tests`,
+  `pathtracer_tests`, `pathtracer_nee_tests`,
+  `pathtracer_bsdf_tests`, `pathtracer_mis_tests`,
+  `cli_tests`, `relativity_tests`, **`manifold_identity_tests`**,
+  `demo_tests`, `renderer_tests`).
+- **No behaviour change in existing binaries.** The 11
+  pre-MANIFOLD.7 ctest binaries pass with identical
+  pass-counts to MANIFOLD.6's acceptance line; no flake, no
+  reference-image regen.
+- **Rule-#3 honesty.** The test binary exercises real
+  invariants (analytic determinant values, byte-identity
+  round-trips on the default transform, the closed-form
+  Minkowski null condition for the default photon). No
+  assertion is a stub or a tautology; every one of the 112
+  checks would catch a real regression if the relevant
+  manifold POD's defaults drifted.
+
+### Module status changes
+
+`docs/MODULE_MAP.md` is *not* updated by this slice. The
+manifold module gains test coverage but still has no renderer
+consumer; promotion still waits for the Minkowski-chart-wrap
+slice. The ctest binary count rises from 11 to 12 across the
+audit-host build.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:

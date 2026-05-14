@@ -844,6 +844,28 @@ if(RR_BUILD_TESTS)
     rr_apply_warnings(relativity_tests)
     add_test(NAME relativity_tests COMMAND relativity_tests)
 
+    # manifold_identity_tests (MANIFOLD.7) verifies the Manifold
+    # Core's six POD types are a default no-op: Minkowski /
+    # Euclidean metric construction matches `diag(-1, +1, +1, +1)`
+    # and passes is_minkowski / is_symmetric / is_diagonal /
+    # is_finite with determinant exactly -1; the default
+    # CoordinateChart is Euclidean with origin = 0 and scale = 1;
+    # world_to_chart / chart_to_world / transform_direction /
+    # transform_ray_like_direction (Vec3 + Vec4 overloads) on the
+    # default `identity_transform()` are byte-identity on
+    # representative inputs and the round-trip is exact;
+    # ManifoldMode's six fields default to "disabled, Euclidean,
+    # strength 0, no debug overlay, both Phase-2 axioms set".
+    # Bonus invariants cover rest_frame() + observer_frame_from
+    # round-trip and default_geodesic_state() satisfying the null
+    # condition on Minkowski. Links rr_manifold (header-only
+    # INTERFACE library, transitively pulls rr_math + rr_relativity
+    # for the SR-bridge round-trip checks).
+    add_executable(manifold_identity_tests tests/manifold_identity_tests.cpp)
+    target_link_libraries(manifold_identity_tests PRIVATE rr_manifold)
+    rr_apply_warnings(manifold_identity_tests)
+    add_test(NAME manifold_identity_tests COMMAND manifold_identity_tests)
+
     # demo_tests (Stage 19E.2) covers the `--render-demo` action's
     # relativistic-perception layer end-to-end on the host: the
     # demo's exact camera / observer composition fed through

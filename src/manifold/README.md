@@ -27,6 +27,18 @@ architecture-doc §7.2).
 | `GeodesicState.h`      | §3.4            | Geodesic state POD (`position4`, `momentum4`, `affine_parameter`, `valid`, `accumulated_optical_depth`, `diagnostic_curvature`) plus the `GeodesicStatus` enum (`InFlight` / `ChartBoundary` / `Terminated`) and a `default_geodesic_state()` factory returning the unit-energy +z photon that satisfies the null condition on Minkowski. Promoted to its MANIFOLD.4 shape. |
 | `ManifoldTransform.h`  | §3.5            | Aggregate `{CoordinateChart, MetricTensor, ObserverFrame}` POD plus `identity_transform()` and the four coordinate-transform helpers `world_to_chart` / `chart_to_world` / `transform_direction` / `transform_ray_like_direction`, each in `Vec3` (spatial-only) and `Vec4` (spacetime) overloads. Euclidean identity at default; affine `(p - origin) / scale` on a non-default Euclidean chart; passthrough on non-Euclidean families. Promoted to its MANIFOLD.5 shape. |
 
+## Test coverage
+
+The manifold layer is exercised end-to-end by
+`tests/manifold_identity_tests.cpp` (`manifold_identity_tests` ctest
+target, MANIFOLD.7). The test verifies the "default no-op" contract:
+every shipping factory produces the documented degenerate-case POD,
+all four `ManifoldTransform` helpers are the identity on the default
+transform, and `ManifoldMode{}` reproduces the pre-pivot renderer
+behaviour bit-for-bit. 112 hand-rolled `RR_CHECK` assertions across
+eight test groups; wired into the audit-host `ctest` set (12/12 from
+MANIFOLD.7 onward).
+
 ## What is intentionally NOT here this slice
 
 Per master rule #3 ("do not implement fake stubs pretending to be
