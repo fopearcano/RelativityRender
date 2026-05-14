@@ -291,6 +291,15 @@ CudaRenderer::Result CudaRenderer::render_scene_with_aovs(
     // arithmetic for the existing six AOVs is unchanged.
     view.aovs.manifold_coordinates = targets.manifold_coordinates;
 
+    // SCHW.5 — thread the per-launch manifold payload
+    // into the kernel-visible view. Defaults (the
+    // pre-pivot disabled / Euclidean / strength-0
+    // no-op anchor) keep the kernel arm short-circuited
+    // and the AOV write byte-identical to the pre-SCHW.5
+    // MANI-I.8 raw `best.position` output.
+    view.manifold_mode    = targets.manifold_mode;
+    view.coordinate_chart = targets.coordinate_chart;
+
     return run_kernel_render(width, height,
         [view](float* device_pixels, int w, int h) {
             launch_render_scene(device_pixels, w, h, view, /*stream=*/nullptr);

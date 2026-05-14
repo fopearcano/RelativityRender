@@ -3894,14 +3894,43 @@ int run_render_aovs(const rr::core::Config& cfg) {
     targets.searchlight_factor   = aov_set[5].device_ptr();
     // MANI-I.8 / SCHW.9 — set only when the gate is on;
     // otherwise stays at the documented `nullptr` default
-    // and the kernel skips the write arm. SCHW.5 will
-    // extend the CUDA kernel to invoke the SchwarzschildLike
-    // warp when the manifold is engaged; until then the
-    // CUDA kernel writes the raw `best.position` per
-    // MANI-I.8 (the AOV reflects this verbatim).
+    // and the kernel skips the write arm. SCHW.5 (this
+    // slice) added the CUDA kernel arm that invokes the
+    // SchwarzschildLike warp when the triple-gate is
+    // engaged; on the default disabled / Euclidean /
+    // strength=0 path the arm short-circuits and writes
+    // the raw `best.position` (MANI-I.8 baseline).
     targets.manifold_coordinates = effective_cuda_manifold.debug_visualization
                                    ? manifold_coords_buffer.device_ptr()
                                    : nullptr;
+
+    // SCHW.5 — build a per-launch `CoordinateChart` from
+    // the operator's resolved manifold mode (CLI or
+    // scene-file), mirroring the OptiX-side helper at
+    // `run_render_optix_aovs`. The chart's
+    // `CoordinateChartParameters` slots come from
+    // artistic defaults consistent with the SCHW.3 test
+    // fixture (`make_schwarzschild_like_chart` in
+    // `manifold_identity_tests.cpp`) and the SCHW.7
+    // OptiX dispatcher: `mass = 1.0`, `spin = 1.0`,
+    // `compactification_scale = 0.1`, `origin =
+    // (0, 0, 0)`. CUDA + OptiX use byte-identical chart
+    // payloads so the cross-backend AOV equivalence the
+    // SCHW.11 capstone audit anticipates holds by
+    // construction (both backends invoke the same
+    // RR_HD inline math leaf with the same parameter
+    // encoding).
+    rr::manifold::CoordinateChart cuda_manifold_chart{};
+    cuda_manifold_chart.type = effective_cuda_manifold.chart;
+    if (effective_cuda_manifold.chart
+            == rr::manifold::CoordinateChartType::SchwarzschildLike) {
+        cuda_manifold_chart.name                    = "schwarzschild-like";
+        cuda_manifold_chart.params.mass             = 1.0f;
+        cuda_manifold_chart.params.spin             = 1.0f;
+        cuda_manifold_chart.params.compactification_scale = 0.1f;
+    }
+    targets.manifold_mode    = effective_cuda_manifold;
+    targets.coordinate_chart = cuda_manifold_chart;
 
     auto r = rr::cuda::CudaRenderer::render_scene_with_aovs(
         gpu_scene, cfg.width, cfg.height, targets);

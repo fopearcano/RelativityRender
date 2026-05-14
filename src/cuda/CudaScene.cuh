@@ -19,6 +19,8 @@
 #include "cuda/CudaTexture.cuh"   // DeviceTextureView for the texture array slot
 #include "geometry/Sphere.h"
 #include "lighting/Light.h"
+#include "manifold/CoordinateChart.h"  // SCHW.5: per-launch chart payload
+#include "manifold/ManifoldMode.h"     // SCHW.5: per-launch manifold mode
 #include "material/MaterialTypes.h"
 #include "relativity/RelativityParams.h"
 
@@ -74,6 +76,35 @@ struct CudaSceneView {
     // default-constructed view skips every pass, which keeps every
     // existing render action's behaviour byte-identical.
     rr::cuda::DeviceAOVView           aovs;
+
+    // ---- SCHW.5 per-launch manifold payload ----
+    //
+    // Mirrors the OptiX side's
+    // `OptixLaunchParams::manifold_mode` (MANI-I.5) +
+    // `OptixLaunchParams::coordinate_chart` (SCHW.7)
+    // fields. The CUDA kernel
+    // (`CudaTestKernel.cu::k_render_scene`'s
+    // `ManifoldCoordinates` AOV write arm) reads these
+    // to gate the SchwarzschildLike warp on the
+    // `is_active(manifold_mode) && chart ==
+    // SchwarzschildLike && strength > 0` triple-gate,
+    // and to invoke the shared SCHW.1 math leaf with
+    // the chart's per-pixel artist parameters extracted
+    // from `coordinate_chart.params` per the
+    // `SCHWARZSCHILD_LIKE_REMAP_PLAN.md` §3
+    // reinterpretation table.
+    //
+    // Defaults are the pre-pivot
+    // disabled / Euclidean / strength-0 / no-chart no-op
+    // anchor. With the defaults, the kernel arm
+    // short-circuits and the AOV write is byte-identical
+    // to the pre-SCHW.5 MANI-I.8 raw `best.position`
+    // output. The host
+    // (`CudaRenderer::render_scene_with_aovs`) populates
+    // these when the operator engages the manifold via
+    // CLI or scene file (SCHW.9).
+    rr::manifold::ManifoldMode        manifold_mode{};
+    rr::manifold::CoordinateChart     coordinate_chart{};
 };
 
 }

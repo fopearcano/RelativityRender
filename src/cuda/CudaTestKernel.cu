@@ -13,6 +13,7 @@
 #include "cuda/CudaKernels.cuh"
 #include "cuda/CudaScene.cuh"
 #include "lighting/Light.h"
+#include "manifold/SchwarzschildLikeWarp.h"  // SCHW.5: shared artistic warp
 #include "material/MaterialTypes.h"
 #include "relativity/RelativityMath.cuh"
 
@@ -578,21 +579,74 @@ __global__ void k_render_scene(float* pixels, int width, int height,
     if (scene.aovs.searchlight_factor != nullptr) {
         scene.aovs.searchlight_factor[pix_idx_1] = D4;
     }
-    // MANI-I.8 — manifold debug coordinate-visualisation AOV.
-    // On hit: write the world-space hit position
-    // `(best.position.x, .y, .z)` as the documented identity /
-    // neutral diagnostic (the chart-aware `world_to_chart`
-    // helper is the identity on the Euclidean default, and
-    // no curved-chart math has landed yet per the MANI-I.8
-    // task brief's "no Schwarzschild/Penrose/Kerr behavior
-    // yet" rule). On miss: write `(0, 0, 0)` matching the
-    // Normal AOV's miss convention. Null-gated so the AOV
-    // pass is opt-in via `--render-aovs --manifold-debug`.
+    // MANI-I.8 / SCHW.5 — manifold debug coordinate-
+    // visualisation AOV.
+    //
+    // On the **default / disabled / Euclidean** path
+    // (`is_active(manifold_mode)` returns `false`, OR
+    // `manifold_mode.chart != SchwarzschildLike`, OR
+    // `manifold_mode.strength <= 0`) this arm writes the
+    // raw world-space hit position `best.position` — the
+    // MANI-I.8 neutral diagnostic — and produces output
+    // byte-identical to the pre-SCHW.5 baseline.
+    //
+    // On the **SchwarzschildLike** path
+    // (`is_active(...)` true AND chart is
+    // `SchwarzschildLike` AND `strength > 0`) the arm
+    // invokes the shared SCHW.1 math leaf
+    // `schwarzschild_like_world_to_chart(...)` with the
+    // chart's per-pixel artist parameters extracted from
+    // `scene.coordinate_chart.params` per the
+    // `SCHWARZSCHILD_LIKE_REMAP_PLAN.md` §3
+    // reinterpretation table and the
+    // `scene.manifold_mode.strength` runtime dial threaded
+    // through as `warp_strength`. Same triple-gate +
+    // parameter encoding as the OptiX SCHW.7 arm at
+    // `OptixPrograms.cu:773-792`; both paths invoke the
+    // identical `RR_HD inline` math leaf so the AOV
+    // output is byte-equivalent across backends by
+    // construction (SCHW.11 capstone audit's
+    // single-source-of-truth claim).
+    //
+    // On miss: write `(0, 0, 0)` matching the Normal
+    // AOV's miss convention. Null-gated so the AOV pass
+    // is opt-in via `--render-aovs --manifold-debug`.
     if (scene.aovs.manifold_coordinates != nullptr) {
         if (best.hit) {
-            scene.aovs.manifold_coordinates[pix_idx_3 + 0] = best.position.x;
-            scene.aovs.manifold_coordinates[pix_idx_3 + 1] = best.position.y;
-            scene.aovs.manifold_coordinates[pix_idx_3 + 2] = best.position.z;
+            rr::math::Vec3 hit_pos{
+                best.position.x, best.position.y, best.position.z};
+            // SCHW.5 activation gate: enabled AND
+            // chart == SchwarzschildLike AND strength > 0.
+            // `is_active(manifold_mode)` already requires
+            // `enabled && chart != Euclidean`; the
+            // explicit `chart == SchwarzschildLike` check
+            // structurally bypasses the other `*Like` /
+            // `*LikePlaceholder` chart families
+            // (Kruskal / Penrose / Kerr) routing through
+            // SchwarzschildLike math silently — master
+            // rule #3 + audited at SCHW.4 as
+            // `test_schw_3_other_non_euclidean_passthrough`.
+            const bool active =
+                rr::manifold::is_active(scene.manifold_mode)
+             && scene.manifold_mode.chart
+                    == rr::manifold::CoordinateChartType::SchwarzschildLike
+             && scene.manifold_mode.strength > 0.0f;
+            if (active) {
+                rr::manifold::SchwarzschildLikeWarpParams sp;
+                sp.r_s = scene.coordinate_chart.params.mass;
+                sp.warp_strength = scene.manifold_mode.strength;
+                sp.falloff = scene.coordinate_chart.params.spin;
+                sp.clamp_radius =
+                    scene.coordinate_chart.params.compactification_scale;
+                hit_pos =
+                    rr::manifold::schwarzschild_like_world_to_chart(
+                        hit_pos,
+                        scene.coordinate_chart.origin,
+                        sp);
+            }
+            scene.aovs.manifold_coordinates[pix_idx_3 + 0] = hit_pos.x;
+            scene.aovs.manifold_coordinates[pix_idx_3 + 1] = hit_pos.y;
+            scene.aovs.manifold_coordinates[pix_idx_3 + 2] = hit_pos.z;
         } else {
             scene.aovs.manifold_coordinates[pix_idx_3 + 0] = 0.0f;
             scene.aovs.manifold_coordinates[pix_idx_3 + 1] = 0.0f;

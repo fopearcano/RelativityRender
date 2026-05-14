@@ -1,6 +1,8 @@
 #pragma once
 
 #include "image/Image.h"
+#include "manifold/CoordinateChart.h"  // SCHW.5: AOVTargets manifold payload
+#include "manifold/ManifoldMode.h"     // SCHW.5: AOVTargets manifold payload
 
 #include <string>
 
@@ -168,6 +170,22 @@ public:
         // baseline. Set to a device buffer pointer when
         // `--render-aovs --manifold-debug` is in effect.
         float* manifold_coordinates = nullptr;
+
+        // SCHW.5 — per-launch manifold payload. Defaults
+        // are the pre-pivot disabled / Euclidean /
+        // strength-0 no-op anchor. The CUDA kernel's
+        // `ManifoldCoordinates` AOV write arm gates on
+        // `is_active(manifold_mode) && chart ==
+        // SchwarzschildLike && strength > 0`; on the
+        // default the arm short-circuits and writes the
+        // raw `best.position` (MANI-I.8 baseline). When
+        // the operator engages the SchwarzschildLike
+        // chart, the arm invokes the shared SCHW.1 math
+        // leaf with `coordinate_chart.params`-derived
+        // arguments + the `manifold_mode.strength`
+        // runtime dial.
+        rr::manifold::ManifoldMode    manifold_mode    = {};
+        rr::manifold::CoordinateChart coordinate_chart = {};
     };
 
     [[nodiscard]] static Result render_scene_with_aovs(

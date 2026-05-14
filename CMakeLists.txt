@@ -742,7 +742,7 @@ target_include_directories(rr_gpu PUBLIC src)
 # rr_texture is PUBLIC because GpuTexture's upload_from(ImageTexture&)
 # / metadata accessors expose `rr::texture::ImageTexture` and
 # `ImageTextureFormat` in its header.
-target_link_libraries(rr_gpu PUBLIC rr_camera rr_relativity rr_geometry rr_material rr_lighting rr_texture)
+target_link_libraries(rr_gpu PUBLIC rr_camera rr_relativity rr_geometry rr_material rr_lighting rr_texture rr_manifold)
 rr_apply_warnings(rr_gpu)
 
 if(RR_ENABLE_CUDA)

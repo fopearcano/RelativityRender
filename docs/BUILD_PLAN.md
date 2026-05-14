@@ -75241,6 +75241,235 @@ Explicitly NOT authorised by this capstone:
 forbids; `*LikePlaceholder` charts remain
 reserved-but-inert).
 
+## SCHW.5 — Schwarzschild-Like CUDA Kernel Warp Wiring (impl, CUDA-side)
+
+**Scope of this slice (per the operator's *SCHW.5
+Completion — CUDA Kernel Warp Wiring* task brief and
+`docs/SCHWARZSCHILD_LIKE_REMAP_PLAN.md` §8 SCHW.5):
+close the CUDA-side kernel-wiring gap the SCHW.11
+capstone audit identified as the highest-priority
+tractable continuation. Mirrors the SCHW.7 OptiX-side
+wiring in `CudaTestKernel.cu::k_render_scene`'s
+`ManifoldCoordinates` AOV write arm. Activation is
+triple-gated: `manifold.enabled == true` AND
+`chart == SchwarzschildLike` AND `strength > 0`. The
+default / Euclidean / disabled paths produce
+byte-identical output to the pre-SCHW.5 baseline.
+CUDA-only; OptiX path is unchanged. Closes the
+"PARTIAL" finding (check #3) in the SCHW.11 capstone
+audit; the CUDA AOV now produces the same
+SchwarzschildLike warp signature the OptiX AOV
+produces for the same fixture.**
+
+### What ships
+
+- **`src/cuda/CudaScene.cuh` (extended).** Two surface
+  additions to `CudaSceneView`:
+    - **Header includes.** `#include
+      "manifold/CoordinateChart.h"` and `#include
+      "manifold/ManifoldMode.h"` mirror the existing
+      relativity / lighting / material header pulls.
+    - **`manifold_mode` + `coordinate_chart` fields.**
+      New `rr::manifold::ManifoldMode manifold_mode{}`
+      and `rr::manifold::CoordinateChart coordinate_chart{}`
+      fields at the end of the view POD. Defaults are
+      the pre-pivot disabled / Euclidean / strength-0 /
+      no-chart no-op anchor; the kernel arm short-
+      circuits on the default and writes the raw
+      `best.position` (MANI-I.8 baseline).
+- **`src/cuda/CudaRenderer.h` (extended).** Two
+  surface additions:
+    - **Header includes.** `#include
+      "manifold/CoordinateChart.h"` and `#include
+      "manifold/ManifoldMode.h"` enable the new
+      AOVTargets payload.
+    - **`AOVTargets::manifold_mode` +
+      `AOVTargets::coordinate_chart` fields.** New
+      defaulted fields on the public `AOVTargets`
+      struct, mirroring the `OptixRenderer::render_aovs(...)`
+      trailing parameter shape. Defaults preserve the
+      byte-identity invariant for every existing
+      caller.
+- **`src/cuda/CudaRenderer.cu` (extended).** Two new
+  lines in `render_scene_with_aovs` body assigning
+  `view.manifold_mode = targets.manifold_mode` and
+  `view.coordinate_chart = targets.coordinate_chart`
+  alongside the existing AOV-pointer plumbing.
+- **`src/cuda/CudaTestKernel.cu` (extended).** Two
+  surface additions:
+    - **Header include.** `#include
+      "manifold/SchwarzschildLikeWarp.h"` pulls in
+      the shared RR_HD inline SCHW.1 math leaf.
+    - **`k_render_scene`'s `ManifoldCoordinates` AOV
+      write arm at line ~582** now triple-gates the
+      SchwarzschildLike warp:
+      `is_active(manifold_mode) && chart ==
+      SchwarzschildLike && strength > 0.0f`. On the
+      active path, the kernel builds a
+      `SchwarzschildLikeWarpParams` from
+      `scene.coordinate_chart.params` + the
+      `scene.manifold_mode.strength` runtime dial,
+      invokes
+      `schwarzschild_like_world_to_chart(hit_pos,
+      scene.coordinate_chart.origin, sp)`, and writes
+      the warped position to the AOV. On the inactive
+      path the raw `best.position` is written (the
+      MANI-I.8 baseline). The miss arm remains
+      unchanged (writes `(0, 0, 0)`). Same shape +
+      parameter encoding as the OptiX SCHW.7 arm at
+      `OptixPrograms.cu:773-792`; both backends invoke
+      the identical RR_HD inline math leaf so the AOV
+      output is byte-equivalent across backends by
+      construction (SCHW.11 capstone's
+      single-source-of-truth claim).
+- **`src/main.cpp` (extended).** Two surface
+  additions in `run_render_aovs`:
+    - **`CoordinateChart` builder.** Constructs a
+      `cuda_manifold_chart` from
+      `effective_cuda_manifold.chart` with the same
+      artistic defaults as the OptiX-side helper at
+      `run_render_optix_aovs` (`mass = 1.0`, `spin
+      = 1.0`, `compactification_scale = 0.1`,
+      `origin = (0,0,0)`). CUDA + OptiX use byte-
+      identical chart payloads.
+    - **`AOVTargets` payload threading.** Assigns
+      `targets.manifold_mode = effective_cuda_manifold`
+      and `targets.coordinate_chart =
+      cuda_manifold_chart` before the call to
+      `CudaRenderer::render_scene_with_aovs(...)`.
+- **`CMakeLists.txt` (extended).** `rr_gpu`'s PUBLIC
+  link adds `rr_manifold` (mirrors the SCHW.9
+  `rr_scene → rr_manifold` precedent and MANI-I.3's
+  `rr_pathtracer → rr_manifold` precedent).
+  `rr_manifold` is INTERFACE-only so no build artifact
+  changes; the explicit link documents the
+  dependency.
+
+### What does NOT ship
+
+- **No OptiX touch.** `src/optix/` is byte-identical
+  (`git diff -- src/optix/` returns 0 bytes). The
+  OptiX side already wired the warp at SCHW.7; this
+  slice mirrors the same wiring in CUDA without
+  modifying OptiX.
+- **No new warp math.** SCHW.5 reuses the SCHW.1
+  math leaf verbatim. The triple-gate +
+  parameter-encoding shape matches SCHW.7 exactly so
+  the cross-backend AOV equivalence claim
+  (SCHW.11 capstone) becomes structurally
+  guaranteed.
+- **No Penrose / Kerr / Kruskal behavior.** The
+  triple-gate's explicit `chart ==
+  SchwarzschildLike` check structurally bypasses the
+  other `*Like` / `*LikePlaceholder` chart families
+  per master rule #3. `*LikePlaceholder` charts
+  remain reserved-but-inert.
+- **No full GR solver.** Architecture-doc §8 non-goals
+  stand.
+- **No primary-ray direction warp at raygen.** The
+  `schwarzschild_like_warp_ray_direction` helper
+  exists at SCHW.1 but neither raygen invokes it.
+  SCHW.5 routes only the hit position through the
+  warp for the AOV write site, mirroring SCHW.7.
+- **No `render_scene_with_aovs` signature change.**
+  The new payload rides on the existing `AOVTargets`
+  struct (defaulted fields); every existing caller
+  compiles without modification.
+- **No new ctest binary.** ctest set unchanged at 12.
+  The kernel arm is exercised at runtime, not at
+  unit-test level (the SCHW.4 audit's
+  `test_schw_3_*` test functions already verify the
+  shared math leaf via the CPU seam; the kernel arm
+  delegates to the same leaf).
+- **No CLI surface change.** The existing
+  `--manifold-enable` / `--manifold-chart` /
+  `--manifold-strength` / `--manifold-debug` flags
+  from MANI-I.1 are the only operator-facing entry
+  points; the SCHW.9 scene-file `manifold` block is
+  the alternative.
+- **No `.rrscene` schema bump.** The fixture
+  `scenes/test_schwarzschild_like_manifold.rrscene`
+  consumes the same SCHW.9 parser surface.
+- **No C4D / server / UI / node-editor touch.**
+
+### Acceptance
+
+- **Compiles with CUDA OFF and ON.** Audit-host
+  rebuild succeeds cleanly with no new warnings under
+  the project's `rr_apply_warnings` settings. The
+  CUDA-OFF audit-host path is preserved
+  (`run_render_aovs` still returns the documented
+  "requires CUDA" error on the audit host); the
+  CUDA-ON TU compiles under the audit-host's NVCC
+  rules.
+- **Tests.** Full ctest: `100% tests passed, 0 tests
+  failed out of 12`. No regression vs the post-SCHW.11
+  baseline (`manifold_identity_tests: 198/198`;
+  `cli_tests: 123/123`; `renderer_tests: 19/19`;
+  `relativity_tests` unchanged).
+- **Default / disabled / Euclidean modes remain
+  byte-identical.** Every `--render-aovs`
+  invocation without `--manifold-enable
+  --manifold-chart schwarzschild-like
+  --manifold-strength <s>` (and without a scene-
+  file `manifold` block authoring those values)
+  continues to take the pre-SCHW.5 code path: the
+  triple-gate's `active = false` short-circuits the
+  warp invocation; the kernel writes raw
+  `best.position` per MANI-I.8.
+- **CUDA and OptiX now use the same shared warp
+  math AT THE KERNEL LEVEL.** Both backends invoke
+  the same RR_HD inline
+  `schwarzschild_like_world_to_chart(...)` from
+  `src/manifold/SchwarzschildLikeWarp.h` with the
+  same parameter encoding
+  (`mass→r_s / spin→falloff /
+  compactification_scale→clamp_radius`, plus
+  `manifold_mode.strength → warp_strength`). The
+  cross-backend AOV equivalence the SCHW.11
+  capstone anticipates is now structurally
+  guaranteed by single-source-of-truth math.
+- **Warp remains bounded and NaN/Inf safe.**
+  Inherited from SCHW.1 / SCHW.2 audit. The
+  math leaf's four guards (clamp_radius lower
+  bound, NR 8-iteration cap, F' zero-guard,
+  primary-ray bend cap) carry through the CUDA
+  kernel arm identically to the OptiX arm. The
+  triple-gate adds a fourth defensive layer.
+- **SCHW.11 capstone check #3 PARTIAL → PASS.** With
+  SCHW.5 landed, the SCHW.11 capstone's check #3
+  ("CUDA warp bridge exists and is default-no-op")
+  becomes a structural PASS. The audit-host build
+  cannot exercise the kernel arm directly (runtime
+  CUDA-host is DEFERRED), but the structural
+  invariants the capstone identified are now met.
+- **Runtime CUDA + OptiX-SDK checks.** DEFERRED to a
+  CUDA + OptiX-SDK host. The plan §7 fixture renders
+  apply:
+    - `--render-aovs --manifold-enable
+      --manifold-chart schwarzschild-like
+      --manifold-strength 1.0 --manifold-debug` →
+      `output/aov_manifold_coordinates.ppm` shows
+      the documented radial-compression signature
+      near the mass origin (plan §4.1).
+    - The CUDA `output/aov_manifold_coordinates.ppm`
+      is byte-identical to the OptiX
+      `output/optix_aov_manifold_coordinates.ppm`
+      for the same fixture and same `--manifold-*`
+      parameters (cross-backend equivalence).
+
+### Module status changes
+
+`docs/MODULE_MAP.md` is *not* updated by this slice.
+With SCHW.5 landed, the SCHW.* arc's only
+**implementation** gap closes; the CLI consumption-
+gap (no existing CLI action loads the fixture into a
+manifold-aware render) and the runtime CUDA + OptiX-SDK
+verification are still deferred per the SCHW.11
+capstone's checks #6 and #8. Module-map promotion
+still waits for MANI-I.12 (final cross-host audit)
+per the integration plan §11.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
