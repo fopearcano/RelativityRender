@@ -71751,8 +71751,138 @@ parser-test cases (M1–M13).**
 `docs/MODULE_MAP.md` is *not* updated by this slice.
 The CLI parser now plumbs the manifold mode into
 `Config` but no renderer code reads it; module-map
-promotion still waits for the audit slice (MANI-I.7)
-per the integration plan §10.
+promotion still waits for the final audit slice
+(MANI-I.8 under the renumbered integration plan) per
+the integration plan §11.
+
+## MANI-I.2 — Manifold CLI Config Audit (docs only)
+
+**Scope of this slice (per the operator's *MANI-I.2 —
+Manifold CLI Config Audit* task brief): write
+`docs/MANIFOLD_CLI_CONFIG_AUDIT.md`, the per-slice
+verdict document for MANI-I.1 (`1bb1fb4`). Verifies the
+seven items the task brief enumerates — CLI flags exist,
+defaults are no-op, invalid input is handled safely on
+both the chart-name and strength axes, no renderer
+behaviour changed, build / test green — and produces a
+PASS / REPAIR / BLOCKED verdict that gates progression
+to the renderer-config slice (renumbered MANI-I.3).
+Documentation only; no source code, no test, no CMake,
+no behavioural change. Inserts MANI-I.2 as a per-slice
+audit slot into the integration plan §3 chain diagram
+and renumbers MANI-I.2 → MANI-I.3, MANI-I.3 → MANI-I.4,
+... MANI-I.7 → MANI-I.8 accordingly across the
+integration plan.**
+
+### What ships
+
+- **`docs/MANIFOLD_CLI_CONFIG_AUDIT.md` (new).** Per-
+  slice verdict document mirroring the
+  `MANIFOLD_CORE_FOUNDATION_AUDIT.md` shape:
+    - **§1 VERDICT** — `PASS`. All seven checks return
+      PASS; no REPAIR or BLOCKED item is found.
+    - **§2 PER-CHECK RESULTS** — seven-row evidence
+      table. Each row cites a concrete observation:
+      `--help` reports four `--manifold-*` flag
+      entries; `Config{}.manifold` defaults match
+      `ManifoldMode{}` field-by-field; the parser
+      rejects unknown / case-mismatched / missing
+      chart values with a clean error listing every
+      legal alternative; the parser rejects non-
+      parseable strength values and passes through
+      out-of-range values per the
+      `ManifoldMode::strength` contract; zero files
+      modified in any of the 16 renderer subdirectories
+      across the whole branch's MANI-I.1 commit;
+      ctest 12/12 + `cli_tests: 123/123 passed`.
+    - **§3 REASONING SUMMARY** — recap of the
+      MANI-I.1 commit's surface (six files,
+      ~700 net inserts), invalid-input handling on
+      both the chart-name and strength axes, and the
+      build/test invariants.
+    - **§4 NEXT** — names the integration-plan
+      renumbering (MANI-I.1 → MANI-I.2 audit →
+      MANI-I.3 renderer-config → MANI-I.4 GPU
+      identity → MANI-I.5 debug-warp AOV → MANI-I.6
+      Schwarzschild-like → MANI-I.7 Penrose-like →
+      MANI-I.8 final audit) and points at MANI-I.3
+      as the next concrete slice the operator may
+      prompt for.
+- **`docs/MANIFOLD_INTEGRATION_PLAN.md` (renumbered).**
+  Six replace-all substitutions shift every
+  MANI-I.x reference in the plan (highest-to-lowest
+  to avoid double-shifting): MANI-I.7 → MANI-I.8,
+  MANI-I.6 → MANI-I.7, MANI-I.5 → MANI-I.6, MANI-I.4
+  → MANI-I.5, MANI-I.3 → MANI-I.4, MANI-I.2 →
+  MANI-I.3. The §3 chain diagram is rewritten by hand
+  to insert a new MANI-I.2 box (CLI Config Audit,
+  doc-only, points at the audit doc) and to update
+  the "Why this ordering?" prose with a per-slice-
+  audit rationale. The section heading numbers (§4
+  MANI-I.1 → §5 MANI-I.3 → ... → §10 MANI-I.8 → §11
+  Non-goals → §12 References) are kept stable; the
+  audit slice does not get its own slice section in
+  the integration plan because the audit doc itself
+  is the authoritative artifact (master rule #3 —
+  the audit doc is real; a placeholder "this slice
+  is documented elsewhere" section would be a stub).
+- **`docs/MANIFOLD_CORE_FOUNDATION_AUDIT.md`
+  (cross-reference update).** Updates the §3
+  reasoning summary's "seven MANI-I.* slices" /
+  "post-MANI-I.7" forward-looking statement to point
+  at the renumbered eight-slice chain and at the
+  MANI-I.2 audit doc.
+- **`docs/MANIFOLD_RENDERING_ARCHITECTURE.md`
+  (cross-reference update).** One-line update to
+  the §10 "(MANI-I.1 through MANI-I.7)" pointer
+  inside the operational-view paragraph; reads
+  "(MANI-I.1 through MANI-I.8)" after this slice.
+
+### What does NOT ship
+
+- **No source code.** Nothing in any `src/` subtree
+  is touched (`git diff` outside `docs/` ⇒ 0 bytes).
+- **No new test binary.** ctest set unchanged at 12.
+- **No CMake change.** No new `rr_*` target; no
+  link-line change.
+- **No `BUILD_PLAN.md` historical-record rewrite.**
+  The MANI-I.1 entry above stays as-is; this
+  MANI-I.2 entry is additive.
+- **No `MODULE_MAP.md` update.** The per-slice audit
+  is doc-only; module-map promotion still waits for
+  the final audit (MANI-I.8) per the integration
+  plan §11.
+
+### Acceptance
+
+- **Compiles.** Documentation-only slice; no build
+  configuration touched. The audit-host build remains
+  at the post-MANI-I.1 baseline (`100% tests passed,
+  0 tests failed out of 12`); `cli_tests` reports
+  `123/123 passed`.
+- **Internally consistent.** The seven-row evidence
+  table cites concrete commands and outputs that can
+  be re-run on the audit host; the renumbering in
+  the integration plan is verified by a final
+  `grep MANI-I` pass showing every reference now
+  uses the eight-slice numbering with MANI-I.2 as
+  the audit slot.
+- **Verdict honesty.** The verdict is `PASS` because
+  the structural checks pass — not because of an
+  arbitrary judgement call. The audit doc explicitly
+  enumerates the runtime invariants (`--help`
+  output, `cli_tests` exit code, `git diff` scope,
+  parser rejection messages) so a future operator
+  can re-verify by re-running the same commands.
+
+### Module status changes
+
+`docs/MODULE_MAP.md` is *not* updated by this slice.
+The MANI-I.2 audit verdict (`PASS`) authorises the
+operator to proceed to MANI-I.3 (renderer-config
+plumb under the renumbered integration plan §5); no
+module-map row changes state until MANI-I.8 (final
+audit) lands.
 
 ## Next stage
 

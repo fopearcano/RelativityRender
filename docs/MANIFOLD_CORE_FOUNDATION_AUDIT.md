@@ -88,11 +88,15 @@ graph).
 
 The integration plan (`MANIFOLD_INTEGRATION_PLAN.md`) is
 the **operational** complement to the **structural**
-architecture doc: it names the seven MANI-I.* slices that
-will move the renderer from "manifold POD exists but no
+architecture doc: it names the MANI-I.* slices that will
+move the renderer from "manifold POD exists but no
 consumer" (today) to "Schwarzschild-like + Penrose-like
 artistic charts available with bit-identical Euclidean
-fallback" (post-MANI-I.7). Each slice carries its own
+fallback" (post-MANI-I.7 in the original seven-slice plan,
+which the MANI-I.2 audit renumbered to post-MANI-I.7
+under the current eight-slice plan; see
+`docs/MANIFOLD_CLI_CONFIG_AUDIT.md` §4 and the integration
+plan §3 chain diagram). Each slice carries its own
 acceptance gate that includes a pixel-bit-identity check
 on at least seven enumerated CLI actions.
 
