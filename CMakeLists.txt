@@ -277,8 +277,18 @@ target_link_libraries(rr_relativity INTERFACE rr_math)
 #                           MANIFOLD.3 shape; the bridge
 #                           realises the relativity-subsumption
 #                           contract.
-#   GeodesicState.h       - null-geodesic state POD +
-#                           `GeodesicStatus` enum (§3.4).
+#   GeodesicState.h       - geodesic state POD (`position4`,
+#                           `momentum4`, `affine_parameter`,
+#                           `valid`, `accumulated_optical_depth`,
+#                           `diagnostic_curvature`) +
+#                           `GeodesicStatus` enum (`InFlight` /
+#                           `ChartBoundary` / `Terminated`) +
+#                           `default_geodesic_state()` factory
+#                           returning the unit-energy +z photon
+#                           that satisfies the null condition
+#                           on Minkowski (§3.4). Promoted to its
+#                           MANIFOLD.4 shape; data model only,
+#                           no integrator.
 #   ManifoldTransform.h   - aggregate {chart, metric, observer} POD +
 #                           `identity_transform()` helper (§3.5,
 #                           spacetime deformation layer).

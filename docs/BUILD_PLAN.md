@@ -69867,6 +69867,169 @@ but the kernel pipeline still feeds on the legacy
 for the Minkowski-chart-wrap slice (architecture-doc §10 step 1)
 that threads the bridge through the path tracer.
 
+## MANIFOLD.4 — Geodesic State (impl, data-model-only)
+
+**Scope of this slice (per the operator's *MANIFOLD.4 — Geodesic
+State* task brief): promote `src/manifold/GeodesicState.h` from
+the Manifold Core Skeleton slice's two-`Vec3` POD
+(`position`, `momentum`) to the full geodesic-state descriptor
+architecture-doc §3.4 specifies, in preparation for the future
+chart-aware-seam slice (§10 step 2) that introduces the
+integrator. Adds 4D position / momentum, an affine-parameter
+accumulator, a validity flag, and forward-looking placeholders
+for optical depth and a diagnostic curvature scalar. Data model
+only: no integrator, no validator, no renderer integration, no
+behavioural change.**
+
+### What ships
+
+- **`src/manifold/GeodesicState.h` (rewritten, +138 / -28 net,
+  ~70% doc-comment density).** New / promoted surface:
+    - **`GeodesicState` POD fields (six total).** New since the
+      Skeleton slice:
+      - `position4` (`Vec4`, default `{0,0,0,0}`) — 4D event in
+        chart coordinates. Replaces the Skeleton-slice `Vec3
+        position` with the full chart-coordinate event the
+        integrator will advance per architecture-doc §3.4.
+      - `momentum4` (`Vec4`, default `{1,0,0,1}`) — 4-momentum
+        `p^mu`. Replaces the Skeleton-slice `Vec3 momentum`.
+        The default is the unit-energy +z photon
+        `(E, p_x, p_y, p_z) = (1, 0, 0, 1)` which satisfies
+        the null condition `g_{mu nu} p^mu p^nu = -E^2 +
+        |p|^2 = 0` on the Euclidean chart's Minkowski metric
+        exactly.
+      - `affine_parameter` (`float`, default `0`) —
+        `lambda` cumulative since the integrator's reference
+        event. For null geodesics this is the integrator's
+        parameter (not proper time); for timelike geodesics
+        it is proper time up to scale.
+      - `valid` (`bool`, default `true`) — internal-consistency
+        flag the future integrator will clear when the state
+        becomes unrecoverable. Independent of `GeodesicStatus`:
+        an invalid state may still carry diagnostic
+        information for the renderer to log.
+      - `accumulated_optical_depth` (`float`, default `0`) —
+        `tau_opt` along the geodesic; the future volumetric /
+        atmospheric integrator will accumulate
+        `d(tau_opt) / d(lambda) = sigma_a(x(lambda))` and the
+        renderer evaluates `I = I_0 * exp(-tau_opt)` at the
+        eye. Storage-only this slice; no `sigma_a` field
+        exists yet.
+      - `diagnostic_curvature` (`float`, default `0`) —
+        chart-dependent curvature invariant the future
+        integrator may record per step for AOV / debug output
+        (Kretschmann scalar, Ricci scalar). Storage-only this
+        slice.
+    - **`GeodesicStatus` enum (preserved).** Unchanged from
+      the Skeleton slice: `InFlight` / `ChartBoundary` /
+      `Terminated`. The integrator's per-step return value,
+      not a struct field; the struct's `valid` flag is the
+      closest in-state analog.
+    - **`default_geodesic_state()`** (new, `RR_HD inline`).
+      Returns `GeodesicState{}`, i.e. the default unit-energy
+      +z photon. Matches the factory convention of the other
+      manifold modules (`euclidean_chart()`,
+      `minkowski_metric()`, `rest_frame()`).
+  Header preamble expanded with "What lives here this slice" /
+  "What does NOT live here this slice" sections and a
+  "Convention reminder" pinning mostly-plus signature
+  `(-, +, +, +)`.
+- **`CMakeLists.txt` (rr_manifold doc-comment block, one row
+  refreshed).** `GeodesicState.h`'s entry now spells out the
+  six fields, the `GeodesicStatus` enum, and the
+  `default_geodesic_state()` factory. CMake target shape and
+  link line are unchanged from MANIFOLD.3.
+- **`src/manifold/README.md` (file-table row refreshed).**
+  `GeodesicState.h`'s row now lists the six POD fields, the
+  enum, and the factory, with the MANIFOLD.4 promotion called
+  out explicitly.
+
+### What does NOT ship
+
+- **No integrator.** Master rule #3 forbids stubbing the
+  per-step advance before a real implementation. Stepping
+  lands at the chart-aware-seam slice (architecture-doc §10
+  step 2).
+- **No null / timelike validator.** A `is_null_geodesic(state,
+  metric, tol)` helper would be the natural analog of
+  MANIFOLD.3's `is_normalised_timelike`, but `GeodesicState`
+  needs a metric to evaluate the contraction. That couples
+  the validator to a metric and belongs on the integrator's
+  per-step entry point, not on the data POD. The standalone
+  runtime check below demonstrates the contraction inline
+  without shipping it.
+- **No optical-depth evaluation.** `accumulated_optical_depth`
+  is storage-only; the future volumetric / atmospheric
+  integrator will populate it, and there is no `sigma_a` /
+  medium descriptor on this POD or elsewhere yet.
+- **No curvature evaluation.** `diagnostic_curvature` is
+  storage-only; architecture-doc §8 non-goal "full GR solver"
+  still forbids actually computing it this slice.
+- **No renderer integration.** `src/cuda/`, `src/optix/`,
+  `src/pathtracer/`, `src/renderer/`, `src/gpu/`,
+  `src/scene/`, `src/io/`, `src/server/`, `src/main.cpp`,
+  `src/core/`, `src/camera/`, `src/material/`,
+  `src/lighting/`, `src/texture/`, `src/geometry/`,
+  `src/image/`, `src/math/`, `src/relativity/`, and `tests/`
+  are byte-identical (`git diff` outside `src/manifold/`,
+  `CMakeLists.txt`, and `docs/BUILD_PLAN.md` ⇒ 0 bytes).
+- **No CoordinateChart.h / MetricTensor.h /
+  ObserverFrame.h / ManifoldTransform.h / ManifoldMode.h
+  change.** Their consumption of `GeodesicState` flows
+  through unchanged: no current code path consumes the
+  state, and `ManifoldTransform` does not aggregate it
+  (architecture-doc §3.5: the chart-transform aggregate is
+  `{chart, metric, observer}`, with geodesic state owned by
+  the future per-ray pipeline, not the per-render
+  descriptor).
+- **No CLI surface change. No new `--render-*` action. No
+  new test binary. `ctest` set unchanged.**
+
+### Acceptance
+
+- **Compiles.** Audit-host rebuild
+  (`cmake --build build -j`) succeeds. The header is included
+  by no current consumer; nothing outside `src/manifold/`
+  references `GeodesicState`. A standalone
+  `g++ -std=c++20 -Isrc -Wall -Wextra -Werror` build of a
+  `GeodesicState.h`-only TU compiles cleanly.
+- **Validates.** A standalone runtime check exercises the
+  promoted POD:
+    - All six default-initialiser values match the documented
+      shipping defaults.
+    - `default_geodesic_state()` returns the same value as
+      `GeodesicState{}`.
+    - The default `momentum4 = (1, 0, 0, 1)` satisfies the
+      null condition on Minkowski:
+      `g_{mu nu} p^mu p^nu = -1 + 1 = 0` to within `1e-6`.
+    - A hand-rolled timelike momentum `(2, 1, 0, 0)` evaluates
+      to `g_{mu nu} p^mu p^nu = -3` on Minkowski; the POD
+      accepts it without complaint, confirming the data
+      model is unconstrained (validation belongs to the
+      future integrator-side check).
+    - `GeodesicStatus` enumerators are preserved and distinct.
+    - `GeodesicState` is trivially copyable (memcpy-safe for
+      future GPU per-ray state) and `sizeof(GeodesicState) ==
+      48 bytes` on the audit host (small enough for per-ray
+      state without bloating the path-tracer kernel ABI).
+- **No behaviour change.** All 11 ctest binaries pass
+  (`100% tests passed, 0 tests failed out of 11`) — same set
+  and outputs as the MANIFOLD.3 acceptance line.
+- **Rule-#3 honesty.** The POD ships real data fields with
+  real defaults (the default photon really does satisfy the
+  null condition). The deferred items (integrator, validator,
+  optical-depth evaluator, curvature evaluator) are
+  documented as absent with reason, not stubbed.
+
+### Module status changes
+
+`docs/MODULE_MAP.md` is *not* updated by this slice (same
+posture as MANIFOLD.1 / MANIFOLD.2 / MANIFOLD.3). The geodesic
+data model is now *shaped* but still consumed by no other code
+path; module-map promotion still waits for the
+Minkowski-chart-wrap and chart-aware-seam slices
+(architecture-doc §10 steps 1–2).
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
@@ -69876,10 +70039,6 @@ When prompted, the natural follow-ups are:
   POD headers in `src/manifold/` to the same level of detail
   MANIFOLD.1 brought to `CoordinateChart.h`. Candidates, in
   architecture-doc §3 order:
-    - **MANIFOLD.4 — Geodesic State Model.** Add affine-parameter
-      and chart-id fields to `GeodesicState`, and document the
-      integrator's per-step contract (architecture-doc §3.4)
-      without shipping an integrator.
 - *or* the *Minkowski chart wrap* implementation (architecture-doc
   §10 step 1) — a host-side adaptor that consumes the existing
   `Camera` + `Observer` + `RelativityParams` and produces a
