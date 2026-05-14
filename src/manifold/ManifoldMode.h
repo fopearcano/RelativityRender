@@ -1,30 +1,33 @@
 #pragma once
 
-// Identity tag for the active coordinate chart. The Manifold Core
-// expresses spacetime via a *chart* on the rendered manifold (see
-// `docs/MANIFOLD_RENDERING_ARCHITECTURE.md` §3.1 and §4.2), and the
-// renderer picks which chart is active per render. This enum names
-// the chart slots reserved by the architecture doc.
+// The Manifold Core's chart-identity tag was originally named
+// `ManifoldMode` during the Manifold Core Skeleton slice. The
+// MANIFOLD.1 slice promoted the enum to `CoordinateChartType`
+// (defined in `manifold/CoordinateChart.h`) with the more
+// conservative "*Like" / "*LikePlaceholder" naming convention,
+// matching master rule #3 ("no fake stubs pretending to be
+// complete systems") and architecture-doc §8 non-goals.
 //
-// Only `Identity` has a concrete implementation today; it wraps
-// today's renderer behaviour as the Minkowski + constant-velocity-
-// frame specialisation of the Manifold Core's contracts (§7.1 of the
-// architecture doc). The other entries are reserved-but-inert
-// placeholders for future chart milestones; selecting one of them at
-// this stage carries no behavioural meaning beyond carrying the tag.
+// This header keeps the `ManifoldMode` name as a type alias of
+// `CoordinateChartType` so any future code or test written
+// against the older spelling still compiles. The canonical name
+// for new code is `CoordinateChartType` and the canonical home
+// for the enum is `manifold/CoordinateChart.h`. Note that the
+// enum's value names also changed:
 //
-// Architecture-doc non-goal §8 ("an empty scaffold for the Manifold
-// Core") is satisfied by keeping every non-Identity entry *named*
-// without claiming any of its physics has been implemented.
+//   Identity         -> Euclidean
+//   Schwarzschild    -> SchwarzschildLike
+//   KruskalSzekeres  -> KruskalLikePlaceholder
+//   Penrose          -> PenroseLikePlaceholder
+//   Kerr             -> KerrLikePlaceholder
+//
+// Callers that previously read `ManifoldMode::Identity` must read
+// `ManifoldMode::Euclidean` (the same enumerator via the alias).
+
+#include "manifold/CoordinateChart.h"
 
 namespace rr::manifold {
 
-enum class ManifoldMode {
-    Identity        = 0,  // Minkowski + constant-velocity observer frame.
-    Schwarzschild,        // Reserved; not implemented.
-    KruskalSzekeres,      // Reserved; not implemented.
-    Penrose,              // Reserved; not implemented.
-    Kerr,                 // Reserved; not implemented.
-};
+using ManifoldMode = CoordinateChartType;
 
 }

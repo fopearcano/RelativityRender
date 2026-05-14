@@ -69389,18 +69389,192 @@ when the next slice (Manifold Core — Minkowski chart wrap) lands
 real consumers per architecture-doc §10 step 1. The
 architecture-doc §10 milestone order is unchanged.
 
+## MANIFOLD.1 — Coordinate Chart Model (impl, model-only)
+
+**Scope of this slice (per the operator's *MANIFOLD.1 — Coordinate
+Chart Model* task brief): promote `src/manifold/CoordinateChart.h`
+from a single-tag POD (`CoordinateChart{ManifoldMode mode}`) to the
+full chart-descriptor model the future curved-chart slices will
+consume — `CoordinateChartType` enum with conservative
+`*Like` / `*LikePlaceholder` naming, plus chart metadata (`name`,
+`scale`, `origin`, `units`, `params`) and the canonical
+`euclidean_chart()` helper. No real GR math; no renderer
+integration; no kernel change; no behavioural change. Every
+existing test keeps passing bit-for-bit.**
+
+### What ships
+
+- **`src/manifold/CoordinateChart.h` (rewritten, +151 / -36 net).**
+  Five additions:
+    - **`enum class CoordinateChartType`** — `Euclidean`,
+      `SchwarzschildLike`, `KruskalLikePlaceholder`,
+      `PenroseLikePlaceholder`, `KerrLikePlaceholder`. The `*Like`
+      / `*LikePlaceholder` naming follows master rule #3 ("no
+      fake stubs pretending to be complete systems") and
+      architecture-doc §8 non-goals ("physically exact Kerr ray
+      tracing"). Only `Euclidean` is selectable today; the others
+      reserve the architecture-doc §4.2 slots.
+    - **`enum class ChartUnits`** — `SceneNatural`, `Meters`,
+      `SchwarzschildRadius`, `Geometrized`. Units metadata for
+      what one chart-coordinate unit means in scene units.
+      Documentation only this slice; no code path enforces unit
+      consistency.
+    - **`struct CoordinateChartParameters`** — `mass`, `spin`,
+      `compactification_scale` (default `1.0`, the identity),
+      `reserved`. Placeholder parameter bag for the future
+      curved-space modes; no current code path reads it. The
+      slot exists so the next slice does not have to widen the
+      `CoordinateChart` ABI when it introduces a curved-chart
+      implementation.
+    - **`struct CoordinateChart`** — extended from
+      `{ManifoldMode mode}` to `{CoordinateChartType type,
+      const char* name, float scale, Vec3 origin, ChartUnits
+      units, CoordinateChartParameters params}`. Default value is
+      the Euclidean chart in scene-natural units at scene origin
+      with unit scale — the same "no behaviour change" degenerate
+      case the Skeleton slice pinned. `name` is a `const char*`
+      with a `"euclidean"` literal default so the struct stays
+      trivially copyable.
+    - **`RR_HD inline euclidean_chart()`** — canonical
+      degenerate-case factory. The older `identity_chart()` is
+      retained as a thin alias returning the same value so any
+      caller written against the Skeleton-slice spelling still
+      compiles.
+- **`src/manifold/ManifoldMode.h` (rewritten, +30 / -7 net).**
+  Demoted to a compatibility alias header. The Skeleton-slice
+  enum body is removed; the file now provides
+  `using ManifoldMode = CoordinateChartType;` plus a doc-comment
+  mapping the old value names to the new ones
+  (`Identity → Euclidean`, `Schwarzschild → SchwarzschildLike`,
+  `KruskalSzekeres → KruskalLikePlaceholder`,
+  `Penrose → PenroseLikePlaceholder`,
+  `Kerr → KerrLikePlaceholder`). Callers that previously read
+  `ManifoldMode::Identity` must now read `ManifoldMode::Euclidean`
+  via the alias. Today no caller exists outside the manifold
+  directory itself; the alias is defensive future-proofing.
+- **`src/manifold/README.md` (file table updated).** The
+  `CoordinateChart.h` row now lists `CoordinateChartType`,
+  `ChartUnits`, `CoordinateChartParameters`, the extended
+  `CoordinateChart` POD fields, and both `euclidean_chart()` /
+  `identity_chart()` helpers. The `ManifoldMode.h` row is
+  re-described as a compatibility alias header. The "intentionally
+  NOT here" paragraph is updated to refer to the
+  Euclidean-degenerate case under the new naming.
+- **`CMakeLists.txt` (rr_manifold doc-comment block refreshed,
+  +9 / -3 net inside the comment).** The header inventory inside
+  the `rr_manifold` block now lists `CoordinateChartType`,
+  `ChartUnits`, and `CoordinateChartParameters` next to
+  `CoordinateChart.h`, and describes `ManifoldMode.h` as the
+  compatibility alias header. The CMake target shape is
+  unchanged: `add_library(rr_manifold INTERFACE)`,
+  `target_include_directories(rr_manifold INTERFACE src)`,
+  `target_link_libraries(rr_manifold INTERFACE rr_math)`.
+
+### What does NOT ship
+
+- No `forward_map` / `inverse_map` / `domain_predicate` helpers on
+  `CoordinateChart` (architecture-doc §3.1's full chart contract).
+  The Euclidean chart's versions of all three are no-ops; master
+  rule #3 forbids stubbing curved-chart versions before they have
+  a real implementation. They land with the future curved-chart
+  slices that need them.
+- No Schwarzschild / Kruskal / Penrose / Kerr metric data (those
+  are architecture-doc §10 steps 3–6). The new
+  `CoordinateChartParameters` fields are storage-only this slice
+  — `mass`, `spin`, `compactification_scale`, and `reserved` are
+  read by no code path.
+- No real GR math anywhere. The `params` bag is data the future
+  curved-chart slices will consume; this slice does not introduce
+  Christoffel symbols, geodesic equations, or coordinate
+  transforms.
+- No renderer integration. `src/cuda/`, `src/optix/`,
+  `src/pathtracer/`, `src/renderer/`, `src/gpu/`, `src/scene/`,
+  `src/io/`, `src/server/`, `src/main.cpp`, `src/core/`,
+  `src/camera/`, `src/material/`, `src/lighting/`, `src/texture/`,
+  `src/geometry/`, `src/image/`, `src/math/`, `src/relativity/`,
+  and `tests/` are byte-identical (`git diff` outside
+  `src/manifold/`, `CMakeLists.txt`, and `docs/BUILD_PLAN.md` ⇒
+  0 bytes).
+- No `MetricTensor.h`, `ObserverFrame.h`, `GeodesicState.h`, or
+  `ManifoldTransform.h` change. Their consumption of
+  `CoordinateChart` flows through unchanged: `ManifoldTransform`
+  holds a `CoordinateChart` by value and its default member
+  initialiser now resolves to the new Euclidean default without
+  any change to the `ManifoldTransform.h` source.
+- No CLI surface change. No new `--render-*` action. No new test
+  binary. `ctest` set unchanged.
+
+### Acceptance
+
+- **Compiles.** Audit-host rebuild
+  (`cmake --build build -j` against the same configuration as the
+  Manifold Core Skeleton slice) succeeds. The five manifold
+  headers (`CoordinateChart.h`, `ManifoldMode.h`,
+  `MetricTensor.h`, `ObserverFrame.h`, `GeodesicState.h`,
+  `ManifoldTransform.h`) cross-include cleanly without circular
+  dependencies (`ManifoldMode.h` includes `CoordinateChart.h`,
+  `ManifoldTransform.h` includes `CoordinateChart.h` /
+  `MetricTensor.h` / `ObserverFrame.h`, `CoordinateChart.h`
+  depends only on `math/MathUtils.h` and `math/Vec3.h`). A
+  standalone `g++ -std=c++20 -Isrc -Wall -Wextra -Werror
+  -fsyntax-only` check on a TU that includes all six headers
+  passes; it verifies the new enumerators, the default
+  initialiser values, and the `ManifoldMode` alias resolve.
+- **No behaviour change.** All 11 ctest binaries pass
+  (`100% tests passed, 0 tests failed out of 11`).
+  `math_tests`, `image_tests`, `gpu_tests`, `pathtracer_tests`,
+  `pathtracer_nee_tests`, `pathtracer_bsdf_tests`,
+  `pathtracer_mis_tests`, `cli_tests`, `relativity_tests`,
+  `demo_tests`, `renderer_tests` — same set, same pass rate, same
+  output as the Manifold Core Skeleton slice's acceptance line.
+- **Rule-#3 honesty.** The `*Like` / `*LikePlaceholder` enum
+  naming makes the "not real GR" status visible at every call
+  site. The `CoordinateChartParameters` fields are documented
+  as forward-looking-storage-only; nothing pretends to read them.
+  The `forward_map` / `inverse_map` / `domain_predicate` helpers
+  are documented as absent-with-reason, not stubbed.
+
+### Module status changes
+
+`docs/MODULE_MAP.md` is *not* updated by this slice (same posture
+as the Manifold Core Skeleton entry). The chart model is now
+*shaped* but no consumer reads it; module-map promotion waits for
+the Minkowski-chart-wrap slice (architecture-doc §10 step 1).
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
 
-- **continue the Manifold Core Pivot:** implement the *Minkowski
-  chart wrap* (architecture-doc §10 step 1) — a host-side adaptor
-  that consumes the existing `Camera` + `Observer` +
-  `RelativityParams` and produces a `ManifoldTransform{}`
-  equivalent, with byte-identical-image tests against the current
-  relativistic kernels. This is the smallest concrete consumer of
-  `rr_manifold` and is the prerequisite for the chart-aware-seam
-  slice (§10 step 2) and the Schwarzschild chart (§10 step 3);
+- **continue the Manifold Core Pivot — next ontology model
+  expansion (`MANIFOLD.2+`):** extend the remaining Skeleton-stage
+  POD headers in `src/manifold/` to the same level of detail
+  MANIFOLD.1 brought to `CoordinateChart.h`. Candidates, in
+  architecture-doc §3 order:
+    - **MANIFOLD.2 — Metric Tensor Model.** Promote
+      `MetricTensor.h` from "flat 4x4 + `minkowski_metric()`" to a
+      richer descriptor that names the metric family (Minkowski,
+      Schwarzschild-like static spherical, etc.), exposes
+      element-access helpers, and reserves storage for
+      analytic-vs-numerical Christoffel-symbol provenance per
+      architecture-doc §3.2.
+    - **MANIFOLD.3 — Observer Frame Model.** Extend
+      `ObserverFrame.h` so the tetrad-vs-chart distinction
+      (architecture-doc §3.3) is encoded in the POD, with
+      provenance fields linking the frame to its chart and to
+      the existing `Observer` / `RelativityParams` in
+      `src/relativity/` (still host-only; no kernel wiring).
+    - **MANIFOLD.4 — Geodesic State Model.** Add affine-parameter
+      and chart-id fields to `GeodesicState`, and document the
+      integrator's per-step contract (architecture-doc §3.4)
+      without shipping an integrator.
+- *or* the *Minkowski chart wrap* implementation (architecture-doc
+  §10 step 1) — a host-side adaptor that consumes the existing
+  `Camera` + `Observer` + `RelativityParams` and produces a
+  `ManifoldTransform{}` equivalent, with byte-identical-image
+  tests against the current relativistic kernels. Smallest
+  concrete consumer of `rr_manifold`; prerequisite for the
+  chart-aware-seam slice (§10 step 2) and the Schwarzschild chart
+  (§10 step 3);
 - *or* continue 12A: append the remaining design sections to
   `OPTIX_BACKEND_PLAN.md` — Intersection program design
   (currently covered inline in §10.2 / §9.4 but a

@@ -240,11 +240,21 @@ target_link_libraries(rr_relativity INTERFACE rr_math)
 # rr_manifold: header-only Manifold Core skeleton
 # (`docs/MANIFOLD_RENDERING_ARCHITECTURE.md` §3).
 #
-#   ManifoldMode.h        - enum of chart identities (Identity only;
-#                           Schwarzschild / Kruskal / Penrose / Kerr
-#                           reserved as inert placeholders).
-#   CoordinateChart.h     - chart POD + `identity_chart()` helper
-#                           (§3.1).
+#   CoordinateChart.h     - chart POD (type / name / scale / origin
+#                           / units / params) +
+#                           `CoordinateChartType` enum (Euclidean +
+#                           reserved-but-inert *Like / *LikePlaceholder
+#                           entries) + `ChartUnits` enum +
+#                           `CoordinateChartParameters` parameter bag
+#                           + `euclidean_chart()` /
+#                           `identity_chart()` helpers (§3.1).
+#                           Promoted to its canonical shape by
+#                           MANIFOLD.1.
+#   ManifoldMode.h        - compatibility alias header
+#                           (`using ManifoldMode =
+#                           CoordinateChartType;`); kept so older
+#                           callers compile. Canonical enum lives
+#                           in CoordinateChart.h.
 #   MetricTensor.h        - 4x4 mostly-plus metric POD +
 #                           `minkowski_metric()` helper (§3.2).
 #   ObserverFrame.h       - tetrad + 3-velocity POD +

@@ -20,8 +20,8 @@ architecture-doc §7.2).
 
 | File | Architecture-doc section | Role |
 |------|--------------------------|------|
-| `ManifoldMode.h`       | §3.1, §4.2, §5.3 | Enum of chart identities (`Identity` only; `Schwarzschild` / `KruskalSzekeres` / `Penrose` / `Kerr` are reserved-but-inert placeholders). |
-| `CoordinateChart.h`    | §3.1            | POD carrying the active chart's `ManifoldMode` tag; `identity_chart()` helper. |
+| `CoordinateChart.h`    | §3.1            | Canonical home of `CoordinateChartType` (`Euclidean`, `SchwarzschildLike`, `KruskalLikePlaceholder`, `PenroseLikePlaceholder`, `KerrLikePlaceholder`) plus `ChartUnits`, `CoordinateChartParameters`, the `CoordinateChart` POD (type / name / scale / origin / units / params), and the `euclidean_chart()` / `identity_chart()` helpers. |
+| `ManifoldMode.h`       | §3.1            | Compatibility alias header. Since MANIFOLD.1, `ManifoldMode` is a `using` alias for `CoordinateChartType`; the canonical enum lives in `CoordinateChart.h`. |
 | `MetricTensor.h`       | §3.2            | Flat 4x4 row-major `g_{mu nu}` POD in mostly-plus signature; `minkowski_metric()` returns the flat default. |
 | `ObserverFrame.h`      | §3.3, §7.2      | Tetrad (`right` / `up` / `forward`) plus three-velocity `beta`; `rest_frame()` returns the scene-rest observer. |
 | `GeodesicState.h`      | §3.4            | Null-geodesic state POD (`position`, `momentum`) plus `GeodesicStatus` (`InFlight` / `ChartBoundary` / `Terminated`). |
@@ -45,10 +45,14 @@ complete systems") and the non-goals enumerated in architecture-doc
 
 The directory exists today only so future slices have a clean home;
 every type defined here is a real, complete implementation of the
-**Identity / Minkowski / rest-frame** degenerate case. The
-`ManifoldMode` enum's non-`Identity` entries are documented as
-inert placeholders, not stubs — selecting one has no defined
-behaviour until its chart milestone lands.
+**Euclidean / Minkowski / rest-frame** degenerate case. The
+`CoordinateChartType` enum's non-`Euclidean` entries are documented
+as inert placeholders, not stubs — selecting one has no defined
+behaviour until its chart milestone lands. The conservative `*Like`
+/ `*LikePlaceholder` naming (vs. the bare `Schwarzschild` / `Kerr`
+names the Skeleton slice originally used) makes this honesty
+visible at every call site (master rule #3, architecture-doc §8
+non-goal "physically exact Kerr ray tracing").
 
 ## CMake
 
