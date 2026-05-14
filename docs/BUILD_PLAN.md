@@ -72520,6 +72520,138 @@ warp AOV under the renumbered integration plan §7);
 no module-map row changes state until MANI-I.10
 (final cross-host audit) lands.
 
+## MANI-I.7 — Manifold Debug AOV Task Definition (docs only)
+
+**Scope of this slice (per the operator's *MANI-I.7 —
+Manifold Debug AOV Task Definition* task brief):
+write `docs/MANIFOLD_DEBUG_AOV_TASK.md`, the
+operator-facing brief the future implementation slice
+will read as its canonical specification. Documentation
+only; no source code, no test, no CMake, no
+behavioural change.**
+
+### What ships
+
+- **`docs/MANIFOLD_DEBUG_AOV_TASK.md` (new, ~380
+  lines).** Seven-section task-definition document:
+    - **§1 Exact goal** — single-sentence
+      specification: add a single optional
+      diagnostic AOV that visualises the per-pixel
+      effect of the active manifold mode on the
+      primary ray's chart-space hit position.
+    - **§2 Expected behaviour** — three load-bearing
+      invariants:
+        - Beauty output unchanged for every
+          existing CLI action regardless of new-AOV
+          presence or `--manifold-*` flag state.
+        - Debug AOV gated on TWO conditions both
+          true: `--render-aovs` AND
+          `--manifold-debug`.
+        - Disabled / Euclidean mode produces the
+          documented identity / neutral
+          visualisation (per-pixel chart-space hit
+          position equals world-space hit position
+          to within `1.0e-5f`).
+    - **§3 AOV naming proposal** — discusses the
+      three candidate names from the task brief
+      (`manifoldCoordinates`,
+      `manifoldWarpMagnitude`,
+      `manifoldChartDiagnostic`). Recommends
+      `ManifoldCoordinates` (3-channel Vec3 chart-
+      space hit position) as the MANI-I.7 shipping
+      surface; the other two are documented as
+      forward-looking placeholders gated behind
+      future slices (warp magnitude → derivable
+      post-process; chart diagnostic → deferred to
+      MANI-I.8 / MANI-I.9 where chart-specific
+      content is meaningful).
+    - **§4 Files likely involved** — 12-row table
+      listing every file the implementation slice
+      is expected to touch, with net-line
+      estimates (data model, GPU AOV buffer,
+      launch params, kernels, host orchestrators,
+      CLI, tests, docs).
+    - **§5 What must not be touched** — explicit
+      8-item exclusion list (no Beauty arithmetic
+      change, no existing AOV slot reorder, no
+      `.rrscene` schema bump, no server / bridges
+      / tools touch, no new action, no denoiser
+      change, no launch-params offset shuffle, no
+      filename rename).
+    - **§6 PASS criteria** — 4-subsection
+      acceptance gate: §6.1 Structural (8
+      checkboxes for enum / helpers / launch-
+      params / kernel gates / output files);
+      §6.2 Behavioural (5 checkboxes for AOV
+      gating, Beauty bit-identity, existing-AOV
+      bit-identity, Euclidean identity check,
+      miss-pixel convention); §6.3 Test surface
+      (4 checkboxes for ctest / cli_tests /
+      renderer_tests / standalone compile);
+      §6.4 Documentation (3 checkboxes for the
+      §7 rewrite, the BUILD_PLAN entry, and the
+      chain-diagram label update).
+    - **§7 Runtime-deferred CUDA / OptiX checks**
+      — 5 deferred runtime checks (identity on
+      Euclidean for CUDA + OptiX, off-path
+      bit-identity, off-chart bit-identity on
+      Schwarzschild-like inputs, denoiser-path
+      no-regression). Each documented in the
+      same audit-host-runtime-deferred rubric as
+      MANI-I.6 (Q1 / Q2 of
+      `docs/STAGE_19_DENOISER_AUDIT.md`).
+
+### What does NOT ship
+
+- **No source code.** Nothing in any `src/`
+  subtree is touched (`git diff` outside `docs/`
+  ⇒ 0 bytes).
+- **No implementation of the AOV.** The slice is
+  a task definition; the actual `AOVType`
+  enumerator, helpers, launch-params field, and
+  kernel arm land in the next slice (MANI-I.7
+  IMPL, which is a separate commit gated by the
+  operator's prompt).
+- **No new test binary.** ctest set unchanged
+  at 12; `cli_tests` stays 123/123.
+- **No CMake change.** No new `rr_*` target; no
+  link-line change.
+- **No integration plan renumbering.** This
+  slice is a task brief; it does not change the
+  MANI-I.* numbering. The implementation slice
+  later rewrites `MANIFOLD_INTEGRATION_PLAN.md`
+  §7's "What ships" block to reflect what
+  actually landed.
+
+### Acceptance
+
+- **Compiles.** Documentation-only slice; no
+  build configuration touched. The audit-host
+  build remains at the post-MANI-I.6 baseline
+  (`100% tests passed, 0 tests failed out of 12`;
+  `cli_tests: 123/123 passed`).
+- **Internally consistent.** The task brief's §6
+  PASS criteria reference fields, enum values,
+  function names, and filenames that match the
+  existing `src/renderer/AOV.h` /
+  `src/optix/OptixLaunchParams.h` /
+  `--render-aovs` surface; the future
+  implementation slice has a stable target.
+- **Forward-looking honesty.** The task brief
+  explicitly defers `manifoldWarpMagnitude` and
+  `manifoldChartDiagnostic` to future slices with
+  documented reasons; it does not pretend to
+  ship them at MANI-I.7. Master rule #3 is
+  preserved.
+
+### Module status changes
+
+`docs/MODULE_MAP.md` is *not* updated by this slice.
+The MANI-I.7 task definition does not change
+runtime state; module-map promotion still waits
+for MANI-I.10 (final cross-host audit) per the
+integration plan §11.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
