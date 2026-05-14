@@ -76231,6 +76231,298 @@ PENROSE.3 in
 module-map row changes state until MANI-I.12
 (final cross-host audit) lands.
 
+## PENROSE.4 — Penrose-Like CPU Transform Integration (impl, host-only)
+
+**Scope of this slice (per the operator's *PENROSE.4 —
+Penrose-Like CPU Transform Integration* task brief
+and `docs/PENROSE_LIKE_COMPACTIFICATION_PLAN.md` §10
+PENROSE.4): wire the bounded PENROSE.2 compactification
+math leaf into the `ManifoldTransform.h` CPU-side
+coordinate-transform helpers. `world_to_chart` and
+`chart_to_world` (Vec3 + Vec4 overloads each) gain a
+`CoordinateChartType::PenroseLike` arm that calls the
+math leaf with the chart's per-pixel artist parameters
+extracted from `CoordinateChart::params` per the plan
+§3 reinterpretation table. Disabled / default and
+Euclidean chart paths remain the identity. No CUDA
+touch, no OptiX touch, no render-output change by
+default. Adds eight unit-test functions / 62 new
+RR_CHECKs to the existing `manifold_identity_tests`
+binary. Also performs the enum rename
+`CoordinateChartType::PenroseLikePlaceholder` →
+`CoordinateChartType::PenroseLike` deferred from
+PENROSE.2 (per the PENROSE.2 BUILD_PLAN entry's
+"deferred to PENROSE.3 [post-renumber: PENROSE.4]"
+note).**
+
+### What ships
+
+- **`src/manifold/CoordinateChart.h` (extended).** The
+  enum value `CoordinateChartType::PenroseLikePlaceholder`
+  is renamed to `CoordinateChartType::PenroseLike`,
+  matching the SchwarzschildLike precedent (the
+  `*Placeholder` suffix is reserved for inert chart
+  families with no concrete implementation; PenroseLike
+  now has a concrete arm at PENROSE.4). The doc-comment
+  for `CoordinateChartParameters::compactification_scale`
+  also gets the rename. Six call-site updates carry the
+  rename through:
+    - `src/core/CommandLine.cpp:34` (CLI parser
+      `parse_chart_type` maps `"penrose-like"` →
+      `PenroseLike`);
+    - `src/io/SceneLoader.cpp:903` (scene-loader
+      parser `parse_chart_type`);
+    - `src/main.cpp:163` (chart-name format helper
+      `format_manifold_mode`);
+    - `src/manifold/README.md:23` (file-inventory
+      table);
+    - `tests/cli_tests.cpp:233 + :336` (two
+      references in the CLI parser test table);
+    - `tests/manifold_identity_tests.cpp:881` (one
+      reference in the SchwarzschildLike
+      passthrough-iteration set — see
+      "test update" below).
+- **`src/manifold/ManifoldTransform.h` (extended).** Six
+  surface additions:
+    - **Header include.** `#include
+      "manifold/PenroseLikeCompactification.h"` pulls
+      in the PENROSE.2 math leaf at the same include
+      level as `SchwarzschildLikeWarp.h`.
+    - **Builder helper.** `penrose_like_params_from(
+      const CoordinateChart&, float strength = 1.0f)`
+      at `ManifoldTransform.h:185+` builds a
+      `PenroseLikeCompactificationParams` from a
+      `CoordinateChart` per the plan §3
+      reinterpretation table: `r_max ← chart.params.mass`,
+      `falloff ← chart.params.spin`, `scale ←
+      chart.params.compactification_scale`, `strength
+      ← caller's argument` (defaults to `1.0`, the
+      chart's intrinsic full compactification). The
+      `compactification_origin` `Vec3` is NOT in this
+      POD; callers pass `chart.origin` directly as
+      the math leaf's `origin` argument.
+    - **`world_to_chart(t, Vec3)` PenroseLike arm.**
+      Calls `penrose_like_world_to_chart(world_pos,
+      t.chart.origin, penrose_like_params_from(t.chart))`.
+      The math leaf's own defensive Euclidean fallback
+      handles `r_max = 0` (returns input) and
+      `strength = 0` (returns input).
+    - **`chart_to_world(t, Vec3)` PenroseLike arm.**
+      Calls `penrose_like_chart_to_world(...)`, which
+      runs the analytical `atanh` inverse with the
+      `kBoundaryEpsilon = 1e-6f` boundary clamp the
+      math leaf documents. **No Newton-Raphson
+      iteration** required (key design advantage
+      over SCHW.1 / SCHW.3's NR inverse).
+    - **`world_to_chart(t, Vec4)` PenroseLike arm.**
+      Time component `world_pos4.x` is invariant
+      (the PenroseLike chart compactifies only the
+      spatial radial coordinate at this slice;
+      time-axis compactification is explicitly
+      deferred per the plan §4.6 non-goals list);
+      spatial components `(.y, .z, .w)` are routed
+      through the Vec3 math leaf and re-packed.
+    - **`chart_to_world(t, Vec4)` PenroseLike arm.**
+      Mirror of the Vec4 forward overload; time
+      component preserved, spatial components
+      inverted through the analytical `atanh`.
+  The doc-comment block at the top of the file is
+  updated to describe the PenroseLike arm explicitly
+  (next to the SchwarzschildLike description) and to
+  note that the remaining placeholder charts
+  (Kruskal / Kerr) continue as passthrough.
+- **`tests/manifold_identity_tests.cpp` (+62 RR_CHECKs
+  across 8 new test functions).** PENROSE.4 coverage:
+    - `test_penrose_4_disabled_identity_preserved` —
+      the default `ManifoldTransform{}` (Euclidean
+      chart, identity origin/scale) is the identity
+      at every Vec3 / Vec4 overload, post-PENROSE.4.
+    - `test_penrose_4_euclidean_identity_preserved`
+      — an explicit `Euclidean` chart with non-trivial
+      `origin = (1, 2, 3)` and `scale = 2.0` still
+      applies the affine `(p - origin) / scale` rule
+      unchanged (Vec3 + Vec4); round-trip via
+      `chart_to_world` is exact.
+    - `test_penrose_4_penrose_like_zero_mass_is_identity`
+      — PenroseLike chart with `chart.params.mass = 0`
+      (`r_max = 0`) returns input unchanged at every
+      helper (math leaf's `r_max = 0` short-circuit;
+      Vec3 + Vec4 both verified). This covers the
+      operator's "strength 0 identity" acceptance
+      item: the seam hardcodes `strength = 1.0`, so
+      the only path to identity at the seam level is
+      the math leaf's `r_max = 0` short-circuit.
+    - `test_penrose_4_world_to_chart_penrose_like_bounded`
+      — PenroseLike chart with `r_max = 5.0`,
+      `scale = 1.0`, `falloff = 1.0`: three inputs
+      at distances `r ∈ {0.5, 3.0, 1e4}` all produce
+      chart-space outputs satisfying `|chart - origin|
+      ≤ r_max`. Far-field input saturates within
+      `1e-4` of `r_max`. Vec4 overload also bounded,
+      with time invariant.
+    - `test_penrose_4_chart_to_world_penrose_like_round_trip`
+      — forward → inverse round-trip residual
+      `< 1e-4` across four representative input
+      points (typical observed much tighter because
+      the inverse is analytical); Vec4 round-trip
+      preserves time exactly.
+    - `test_penrose_4_no_nan_inf_for_large_coordinates`
+      — three extreme Vec3 inputs (`1e6`, `1e10`,
+      mixed-sign `1e6`) and one extreme Vec4 input
+      (`1e8` on three axes) all produce
+      `std::isfinite` outputs through both the
+      forward and inverse helpers. The math leaf's
+      `tanh` saturation behavior carries through
+      the seam unchanged.
+    - `test_penrose_4_params_from_chart` — exercises
+      the builder helper directly. The
+      reinterpretation table maps `r_max ←
+      params.mass`, `falloff ← params.spin`,
+      `scale ← params.compactification_scale`,
+      `strength ← caller arg`. A caller-supplied
+      `0.5` overrides the default `1.0`. The
+      default chart's params validate (math leaf's
+      `validate_params` returns `true`).
+    - `test_penrose_4_other_non_euclidean_passthrough`
+      — `KruskalLikePlaceholder` and
+      `KerrLikePlaceholder` remain passthrough even
+      with `params.mass = 1.0` (master rule #3: no
+      fake stubs routing through PenroseLike math
+      silently); Vec3 + Vec4 both verified per chart
+      type.
+  `manifold_identity_tests` reports `312 / 312
+  checks passed` (was `250 / 250` pre-PENROSE.4;
+  +62 new RR_CHECKs from the 8 new test functions).
+- **`tests/manifold_identity_tests.cpp` test update.**
+  `test_schw_3_other_non_euclidean_passthrough` (the
+  SCHW.3 placeholder-passthrough iteration test) has
+  its iteration set updated: `PenroseLike` removed
+  (it now has an active arm), leaving
+  `KruskalLikePlaceholder` + `KerrLikePlaceholder`
+  as the placeholder set. The change is purely
+  notational — the test still verifies the
+  remaining placeholders are passthrough — and is
+  documented inline.
+
+### What does NOT ship
+
+- **No CUDA touch.** `src/cuda/` is byte-identical.
+  The CUDA kernel arms for PenroseLike (the
+  equivalent of SCHW.5's CUDA wiring for
+  SchwarzschildLike) land at PENROSE.5 (renumbered
+  from the original PENROSE.4 per the PENROSE.3
+  audit-slot insertion).
+- **No OptiX touch.** `src/optix/` is byte-identical.
+  The OptiX kernel + host-side allocation land at
+  PENROSE.6 (renumbered).
+- **No render-output change by default.** Every CLI
+  action without `--manifold-enable --manifold-chart
+  penrose-like` (and without a scene-file `manifold`
+  block authoring those values) continues to take
+  the pre-PENROSE.4 code path. The kernel-seam guards
+  (`is_active(...)` + null AOV pointer +
+  `manifold_mode.chart != PenroseLike` short-circuit)
+  are untouched; the new `ManifoldTransform.h` arm is
+  host-side and is not yet consumed by any kernel
+  call site.
+- **No full conformal-geometry solver.** No Penrose
+  diagram time-axis compactification; no
+  preservation of 45° null geodesics; no conformal
+  factor on the metric. Architecture-doc §8
+  non-goals stand.
+- **No primary-ray direction warp at the
+  `ManifoldTransform` seam.** The PENROSE.2 math
+  leaf deliberately ships only a forward / inverse
+  pair (no `penrose_like_warp_ray_direction`
+  helper); the beauty pass is unaffected by the
+  PenroseLike chart.
+- **No `ManifoldMode::strength` plumbing.** The
+  strength dial lives on `ManifoldMode`, which
+  `ManifoldTransform` does not carry. The PENROSE.4
+  helper uses `strength = 1.0` as the chart's
+  intrinsic full compactification (mirrors SCHW.3's
+  pattern); the runtime strength dial is the
+  kernel-seam's responsibility at PENROSE.5 /
+  PENROSE.6.
+- **No `.rrscene` schema bump.** Parameters ride on
+  the existing `CoordinateChart` +
+  `CoordinateChartParameters` PODs.
+- **No new ctest binary.** Tests are appended to
+  the existing `manifold_identity_tests` binary;
+  ctest set remains at 12.
+- **No CMake change.** `rr_manifold` is unchanged
+  (header-only INTERFACE).
+- **No C4D / server / UI / node-editor touch.**
+
+### Acceptance
+
+- **Compiles.** Audit-host rebuild
+  (`cmake --build build -j`) succeeds cleanly with
+  no new warnings under the project's
+  `rr_apply_warnings` settings.
+- **Tests.** Full ctest: `100% tests passed, 0
+  tests failed out of 12`.
+  `manifold_identity_tests` reports `312 / 312
+  checks passed` (the 62 new PENROSE.4 RR_CHECKs
+  land within the binary; ctest still reports a
+  single binary). `cli_tests: 123/123 passed`
+  (the enum rename is transparent to the parser
+  test; the kebab-case `penrose-like` CLI name is
+  unchanged). `renderer_tests: 19/19 passed`,
+  `relativity_tests` unchanged.
+- **Analytic invariants verified by the unit tests:**
+    - **Disabled identity.** Default
+      `ManifoldTransform{}` is the identity at every
+      Vec3 / Vec4 helper.
+    - **Euclidean identity.** Explicit Euclidean
+      chart with non-trivial origin / scale applies
+      the documented affine map and round-trips
+      exactly.
+    - **PenroseLike bounded transform.** With
+      `r_max = 5.0`, inputs at distances `r ∈
+      {0.5, 3.0, 1e4}` all produce chart-space
+      outputs bounded by `r_max`; far-field
+      saturates at `r_max` within `1e-4`.
+    - **Strength 0 identity (at the seam level).**
+      `chart.params.mass = 0` (`r_max = 0`) returns
+      input via the math leaf's defensive short-
+      circuit.
+    - **No NaN / Inf for large coordinates.** Three
+      Vec3 extremes + one Vec4 extreme all produce
+      finite outputs through both forward + inverse
+      helpers.
+    - **Round-trip residual.** `world_to_chart ∘
+      chart_to_world` residual `< 1e-4` across
+      four representative input points
+      (analytical inverse, much tighter than
+      SCHW.1's iterative bound).
+    - **Honest placeholder handling.** Kruskal /
+      Kerr charts remain passthrough even with
+      `params.mass = 1.0` (no silent routing
+      through PenroseLike math).
+- **Rule-#3 honesty.** The PenroseLike chart's
+  forward and inverse maps are real, complete
+  artistic math (the PENROSE.2 helpers, exercised
+  via the `ManifoldTransform` seam). The
+  analytical inverse residual bound is verified
+  (`< 1e-4`); the no-NaN / no-Inf invariant is
+  verified at the most extreme geometric input
+  (`r = 1e10`). The other non-Euclidean chart
+  families remain honest-but-degenerate
+  passthroughs — no fake stubs.
+
+### Module status changes
+
+`docs/MODULE_MAP.md` is *not* updated by this slice.
+The PenroseLike CPU-seam integration is landed but
+no renderer kernel consumes it yet; PENROSE.5 wires
+it into the CUDA kernels, PENROSE.6 into the OptiX
+programs, PENROSE.7 (fixture / debug viz) adds the
+fixture scene, PENROSE.8 (arc capstone audit)
+closes the MANI-I.11 slot. Module-map promotion
+still waits for MANI-I.12 (final cross-host audit)
+per the integration plan §11.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:

@@ -230,7 +230,7 @@ void test_manifold_chart_each_value() {
         {"euclidean",           ChartType::Euclidean},
         {"schwarzschild-like",  ChartType::SchwarzschildLike},
         {"kruskal-like",        ChartType::KruskalLikePlaceholder},
-        {"penrose-like",        ChartType::PenroseLikePlaceholder},
+        {"penrose-like",        ChartType::PenroseLike},
         {"kerr-like",           ChartType::KerrLikePlaceholder},
     };
     for (const auto& c : cases) {
@@ -333,7 +333,7 @@ void test_manifold_flags_order_independent() {
     RR_CHECK(r.config.scene_path == "scene.rrscene");
     RR_CHECK(r.config.enable_nee == true);
     RR_CHECK(r.config.manifold.enabled              == true);
-    RR_CHECK(r.config.manifold.chart                == ChartType::PenroseLikePlaceholder);
+    RR_CHECK(r.config.manifold.chart                == ChartType::PenroseLike);
     RR_CHECK(r.config.manifold.strength             == 0.25f);
     RR_CHECK(r.config.manifold.debug_visualization  == true);
 }

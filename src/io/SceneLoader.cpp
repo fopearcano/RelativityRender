@@ -900,7 +900,7 @@ bool parse_chart_type(const std::string& s,
         out = CoordinateChartType::KruskalLikePlaceholder;  return true;
     }
     if (s == "penrose-like") {
-        out = CoordinateChartType::PenroseLikePlaceholder;  return true;
+        out = CoordinateChartType::PenroseLike;             return true;
     }
     if (s == "kerr-like") {
         out = CoordinateChartType::KerrLikePlaceholder;     return true;

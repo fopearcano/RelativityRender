@@ -160,7 +160,7 @@ inline std::string format_manifold_mode(
             chart_name = "schwarzschild-like";     break;
         case CoordinateChartType::KruskalLikePlaceholder:
             chart_name = "kruskal-like";           break;
-        case CoordinateChartType::PenroseLikePlaceholder:
+        case CoordinateChartType::PenroseLike:
             chart_name = "penrose-like";           break;
         case CoordinateChartType::KerrLikePlaceholder:
             chart_name = "kerr-like";              break;

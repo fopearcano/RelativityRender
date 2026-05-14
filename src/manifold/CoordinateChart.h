@@ -46,7 +46,7 @@ enum class CoordinateChartType {
     Euclidean              = 0,
     SchwarzschildLike,
     KruskalLikePlaceholder,
-    PenroseLikePlaceholder,
+    PenroseLike,
     KerrLikePlaceholder,
 };
 
@@ -81,7 +81,7 @@ enum class ChartUnits {
 //                              Zero on a `KerrLikePlaceholder`
 //                              chart reduces structurally to the
 //                              spherically symmetric case.
-//   - `compactification_scale` `PenroseLikePlaceholder`'s
+//   - `compactification_scale` `PenroseLike`'s
 //                              conformal-compactification
 //                              parameter; controls how aggressively
 //                              asymptotic infinity is compressed

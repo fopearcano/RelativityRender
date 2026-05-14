@@ -876,13 +876,21 @@ void test_schw_3_other_non_euclidean_passthrough() {
     const Vec3 p3{1.5f, -2.3f, 4.7f};
     const Vec4 p4{0.5f, 1.5f, -2.3f, 4.7f};
 
+    // Note: PenroseLike was originally `PenroseLikePlaceholder`
+    // and was included in this iteration set at SCHW.3 time as
+    // a passthrough placeholder. PENROSE.4 promoted `PenroseLike`
+    // to an active chart with its own ManifoldTransform arm; it
+    // is therefore removed from this passthrough iteration set
+    // (a separate `test_penrose_4_other_non_euclidean_passthrough`
+    // verifies that Kruskal / Kerr remain passthrough even after
+    // PenroseLike joined SchwarzschildLike as an active chart).
     for (CoordinateChartType type : {
             CoordinateChartType::KruskalLikePlaceholder,
-            CoordinateChartType::PenroseLikePlaceholder,
             CoordinateChartType::KerrLikePlaceholder}) {
         t.chart.type = type;
         // Even if `params.mass != 0` (which would activate the
-        // SchwarzschildLike math), these charts must passthrough.
+        // SchwarzschildLike or PenroseLike math), these charts
+        // must passthrough.
         t.chart.params.mass = 1.0f;
         RR_CHECK(approx(world_to_chart(t, p3), p3));
         RR_CHECK(approx(chart_to_world(t, p3), p3));
@@ -1212,6 +1220,285 @@ void test_penrose_2_chart_to_world_boundary_clamp() {
     RR_CHECK(std::isfinite(out_p.z));
 }
 
+// ---------- PENROSE.4: ManifoldTransform integration ----------
+//
+// Verifies that `world_to_chart` / `chart_to_world` on
+// `ManifoldTransform` invoke the PENROSE.2 math leaf when the
+// active chart is `PenroseLike`, while preserving the
+// "default no-op" contract for the disabled / Euclidean
+// configurations. Plan: `PENROSE_LIKE_COMPACTIFICATION_PLAN.md`
+// §8.1 / §8.2.
+
+// Build a PenroseLike `CoordinateChart` from the canonical
+// fixture parameters per the plan §3 reinterpretation table.
+// Compactification origin at scene origin; `r_max = 5.0`,
+// `scale = 1.0`, `falloff = 1.0`. These are the same artistic
+// defaults the future PENROSE.5 / PENROSE.6 dispatcher uses.
+rr::manifold::CoordinateChart make_penrose_like_chart() {
+    rr::manifold::CoordinateChart c{};
+    c.type   = rr::manifold::CoordinateChartType::PenroseLike;
+    c.name   = "penrose-like";
+    c.origin = rr::math::Vec3{0.0f, 0.0f, 0.0f};   // observer / compactification centre
+    c.params.mass                   = 5.0f;        // r_max
+    c.params.spin                   = 1.0f;        // falloff
+    c.params.compactification_scale = 1.0f;        // scale
+    return c;
+}
+
+void test_penrose_4_disabled_identity_preserved() {
+    using namespace rr::manifold;
+    using rr::math::Vec3;
+    using rr::math::Vec4;
+
+    // Default ManifoldTransform (Euclidean chart, identity scale,
+    // zero origin): every helper is the identity. PENROSE.4 does
+    // not change this behaviour; this test re-runs the post-
+    // MANIFOLD.5 / post-SCHW.3 invariant against the post-PENROSE.4
+    // build.
+    ManifoldTransform t = identity_transform();
+    RR_CHECK(t.chart.type == CoordinateChartType::Euclidean);
+
+    const Vec3 p3{1.5f, -2.3f, 4.7f};
+    RR_CHECK(approx(world_to_chart(t, p3), p3));
+    RR_CHECK(approx(chart_to_world(t, p3), p3));
+
+    const Vec4 p4{0.5f, 1.5f, -2.3f, 4.7f};
+    RR_CHECK(approx(world_to_chart(t, p4), p4));
+    RR_CHECK(approx(chart_to_world(t, p4), p4));
+}
+
+void test_penrose_4_euclidean_identity_preserved() {
+    using namespace rr::manifold;
+    using rr::math::Vec3;
+    using rr::math::Vec4;
+
+    // Explicit Euclidean chart (`type = Euclidean`, non-trivial
+    // origin / scale): the PENROSE.4 changes are gated on
+    // `type == PenroseLike`, so the Euclidean affine map
+    // continues to apply unchanged. Bit-identity preserved.
+    ManifoldTransform t = identity_transform();
+    t.chart.type   = CoordinateChartType::Euclidean;
+    t.chart.origin = rr::math::Vec3{1.0f, 2.0f, 3.0f};
+    t.chart.scale  = 2.0f;
+
+    const Vec3 world_pos{3.0f, 6.0f, 9.0f};
+    // (world - origin) / scale = (2, 4, 6) / 2 = (1, 2, 3).
+    RR_CHECK(approx(world_to_chart(t, world_pos), Vec3{1.0f, 2.0f, 3.0f}));
+    // Round-trip is exact under uniform scaling.
+    RR_CHECK(approx(chart_to_world(t, world_to_chart(t, world_pos)), world_pos));
+
+    const Vec4 world4{0.5f, 3.0f, 6.0f, 9.0f};
+    // Time invariant, spatial part transformed.
+    RR_CHECK(approx(world_to_chart(t, world4),
+                    Vec4{0.5f, 1.0f, 2.0f, 3.0f}));
+    RR_CHECK(approx(chart_to_world(t, world_to_chart(t, world4)), world4));
+}
+
+void test_penrose_4_penrose_like_zero_mass_is_identity() {
+    using namespace rr::manifold;
+    using rr::math::Vec3;
+    using rr::math::Vec4;
+
+    // PenroseLike with `mass = 0` (i.e. `r_max = 0`): the
+    // PENROSE.2 math leaf's defensive Euclidean fallback
+    // returns its input unchanged, so the chart behaves like
+    // Euclidean at the `ManifoldTransform` seam. Verifies the
+    // plan §6.3 "Euclidean fallback" contract through the new
+    // helper arms. This also covers the operator's "strength 0
+    // identity" acceptance — the seam hardcodes strength = 1.0,
+    // so the only path to identity is the math leaf's `r_max =
+    // 0` short-circuit.
+    ManifoldTransform t = identity_transform();
+    t.chart = make_penrose_like_chart();
+    t.chart.params.mass = 0.0f;   // r_max = 0 ⇒ identity
+
+    const Vec3 p3{1.5f, -2.3f, 4.7f};
+    RR_CHECK(approx(world_to_chart(t, p3), p3));
+    RR_CHECK(approx(chart_to_world(t, p3), p3));
+
+    const Vec4 p4{0.5f, 1.5f, -2.3f, 4.7f};
+    RR_CHECK(approx(world_to_chart(t, p4), p4));
+    RR_CHECK(approx(chart_to_world(t, p4), p4));
+}
+
+void test_penrose_4_world_to_chart_penrose_like_bounded() {
+    using namespace rr::manifold;
+    using rr::math::length;
+    using rr::math::Vec3;
+    using rr::math::Vec4;
+
+    // PenroseLike chart with `r_max = 5.0`: world-space inputs
+    // produce chart-space outputs bounded by r_max. Verified
+    // across three input distances spanning the chart's
+    // operational range: near-identity (small r), transition
+    // (moderate r), saturation (large r).
+    ManifoldTransform t = identity_transform();
+    t.chart = make_penrose_like_chart();
+
+    const Vec3 origin = t.chart.origin;
+    const Vec3 near{0.5f, 0.0f, 0.0f};       // r = 0.5
+    const Vec3 mid{3.0f, 0.0f, 0.0f};         // r = 3.0
+    const Vec3 far{1.0e4f, 0.0f, 0.0f};       // r = 1e4 (saturated)
+
+    const Vec3 chart_near = world_to_chart(t, near);
+    const Vec3 chart_mid  = world_to_chart(t, mid);
+    const Vec3 chart_far  = world_to_chart(t, far);
+
+    RR_CHECK(length(chart_near - origin) <= t.chart.params.mass);
+    RR_CHECK(length(chart_mid  - origin) <= t.chart.params.mass);
+    RR_CHECK(length(chart_far  - origin) <= t.chart.params.mass);
+
+    // Far-field saturation: chart_far is very close to r_max.
+    RR_CHECK(approx(length(chart_far - origin),
+                    t.chart.params.mass, 1.0e-4f));
+
+    // Vec4 overload: time invariant; spatial part bounded.
+    const Vec4 p_world4{0.7f, 1.0e4f, 0.0f, 0.0f};
+    const Vec4 chart4 = world_to_chart(t, p_world4);
+    RR_CHECK(approx(chart4.x, p_world4.x));   // time invariant
+    const Vec3 sp{chart4.y, chart4.z, chart4.w};
+    RR_CHECK(length(sp - origin) <= t.chart.params.mass);
+}
+
+void test_penrose_4_chart_to_world_penrose_like_round_trip() {
+    using namespace rr::manifold;
+    using rr::math::length;
+    using rr::math::Vec3;
+    using rr::math::Vec4;
+
+    // Forward → inverse round-trip via the `ManifoldTransform`
+    // seam reproduces the input to within the plan §6.4
+    // documented residual. The PENROSE.2 inverse is
+    // analytical (closed-form `atanh`), so the residual is
+    // much tighter than SCHW.1's iterative bound — typical
+    // observed << 1e-6.
+    ManifoldTransform t = identity_transform();
+    t.chart = make_penrose_like_chart();
+
+    const Vec3 inputs[] = {
+        {0.5f, 0.0f, 0.0f},
+        {1.0f, 0.0f, 0.0f},
+        {2.0f, 0.0f, 0.0f},
+        {1.5f, 0.5f, -1.0f},
+    };
+    for (const Vec3& p_world : inputs) {
+        const Vec3 chart  = world_to_chart(t, p_world);
+        const Vec3 back   = chart_to_world(t, chart);
+        const float resid = length(back - p_world);
+        RR_CHECK(resid < 1.0e-4f);
+    }
+
+    // Vec4 round-trip: time component preserved exactly,
+    // spatial residual bounded by the same constant.
+    const Vec4 q_world4{0.7f, 2.0f, 0.0f, 0.0f};
+    const Vec4 chart4   = world_to_chart(t, q_world4);
+    const Vec4 back4    = chart_to_world(t, chart4);
+    RR_CHECK(approx(back4.x, q_world4.x));   // time invariant
+    const Vec3 sp_back{back4.y, back4.z, back4.w};
+    const Vec3 sp_in  {q_world4.y, q_world4.z, q_world4.w};
+    RR_CHECK(length(sp_back - sp_in) < 1.0e-4f);
+}
+
+void test_penrose_4_no_nan_inf_for_large_coordinates() {
+    using namespace rr::manifold;
+    using rr::math::Vec3;
+    using rr::math::Vec4;
+
+    // Very large coordinates exercise the `tanh` saturation
+    // path. The math leaf's bounded-by-construction property
+    // (tanh saturates at ±1.0f in IEEE-754 single precision)
+    // guarantees finite outputs. Verify at multiple extreme
+    // inputs through both the Vec3 and Vec4 overloads of the
+    // ManifoldTransform seam.
+    ManifoldTransform t = identity_transform();
+    t.chart = make_penrose_like_chart();
+
+    const Vec3 extremes[] = {
+        {1.0e6f, 0.0f, 0.0f},
+        {0.0f, 1.0e10f, 0.0f},
+        {-1.0e6f, 1.0e6f, -1.0e6f},
+    };
+    for (const Vec3& p : extremes) {
+        const Vec3 chart = world_to_chart(t, p);
+        RR_CHECK(std::isfinite(chart.x));
+        RR_CHECK(std::isfinite(chart.y));
+        RR_CHECK(std::isfinite(chart.z));
+        const Vec3 back = chart_to_world(t, chart);
+        RR_CHECK(std::isfinite(back.x));
+        RR_CHECK(std::isfinite(back.y));
+        RR_CHECK(std::isfinite(back.z));
+    }
+
+    // Vec4 at an extreme input: time component preserved
+    // exactly; spatial output finite.
+    const Vec4 p_world4{0.5f, 1.0e8f, -1.0e8f, 1.0e8f};
+    const Vec4 chart4 = world_to_chart(t, p_world4);
+    RR_CHECK(std::isfinite(chart4.x));
+    RR_CHECK(std::isfinite(chart4.y));
+    RR_CHECK(std::isfinite(chart4.z));
+    RR_CHECK(std::isfinite(chart4.w));
+    RR_CHECK(approx(chart4.x, p_world4.x));   // time invariant
+}
+
+void test_penrose_4_params_from_chart() {
+    using namespace rr::manifold;
+
+    // The chart→helper-params builder follows the plan §3
+    // reinterpretation table verbatim.
+    CoordinateChart c = make_penrose_like_chart();
+    c.params.mass                   = 8.0f;
+    c.params.spin                   = 2.0f;
+    c.params.compactification_scale = 0.5f;
+
+    PenroseLikeCompactificationParams p = penrose_like_params_from(c);
+    RR_CHECK(p.r_max    == 8.0f);
+    RR_CHECK(p.strength == 1.0f);  // default
+    RR_CHECK(p.falloff  == 2.0f);
+    RR_CHECK(p.scale    == 0.5f);
+
+    // Caller-supplied strength overrides the default.
+    PenroseLikeCompactificationParams half = penrose_like_params_from(c, 0.5f);
+    RR_CHECK(half.strength == 0.5f);
+    RR_CHECK(half.r_max    == p.r_max);
+    RR_CHECK(half.falloff  == p.falloff);
+    RR_CHECK(half.scale    == p.scale);
+
+    // The default chart's params satisfy the math-leaf
+    // validator (all-positive `scale`, finite `falloff` in
+    // `[0.5, 4.0]`, etc.).
+    RR_CHECK(penrose_like_validate_params(p));
+    RR_CHECK(penrose_like_validate_params(half));
+}
+
+void test_penrose_4_other_non_euclidean_passthrough() {
+    using namespace rr::manifold;
+    using rr::math::Vec3;
+    using rr::math::Vec4;
+
+    // The non-`SchwarzschildLike` non-`PenroseLike` non-Euclidean
+    // placeholder charts (Kruskal / Kerr) remain passthrough.
+    // PENROSE.4 must not silently route them through either the
+    // SchwarzschildLike or the PenroseLike math (master rule #3:
+    // no fake stubs pretending to be complete systems).
+    ManifoldTransform t = identity_transform();
+    const Vec3 p3{1.5f, -2.3f, 4.7f};
+    const Vec4 p4{0.5f, 1.5f, -2.3f, 4.7f};
+
+    for (CoordinateChartType type : {
+            CoordinateChartType::KruskalLikePlaceholder,
+            CoordinateChartType::KerrLikePlaceholder}) {
+        t.chart.type = type;
+        // Even if `params.mass != 0` (which would activate the
+        // SchwarzschildLike or PenroseLike math), these charts
+        // must passthrough.
+        t.chart.params.mass = 1.0f;
+        RR_CHECK(approx(world_to_chart(t, p3), p3));
+        RR_CHECK(approx(chart_to_world(t, p3), p3));
+        RR_CHECK(approx(world_to_chart(t, p4), p4));
+        RR_CHECK(approx(chart_to_world(t, p4), p4));
+    }
+}
+
 }  // namespace
 
 int main() {
@@ -1256,6 +1543,16 @@ int main() {
     test_penrose_2_chart_to_world_inverse_residual();
     test_penrose_2_chart_to_world_euclidean_fallback();
     test_penrose_2_chart_to_world_boundary_clamp();
+
+    // PENROSE.4: ManifoldTransform integration.
+    test_penrose_4_disabled_identity_preserved();
+    test_penrose_4_euclidean_identity_preserved();
+    test_penrose_4_penrose_like_zero_mass_is_identity();
+    test_penrose_4_world_to_chart_penrose_like_bounded();
+    test_penrose_4_chart_to_world_penrose_like_round_trip();
+    test_penrose_4_no_nan_inf_for_large_coordinates();
+    test_penrose_4_params_from_chart();
+    test_penrose_4_other_non_euclidean_passthrough();
 
     std::printf("manifold_identity_tests: %d / %d checks passed\n",
                 g_total - g_failed, g_total);

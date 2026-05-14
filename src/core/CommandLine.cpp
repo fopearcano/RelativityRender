@@ -31,7 +31,7 @@ bool parse_chart_type(std::string_view s,
         out = CoordinateChartType::KruskalLikePlaceholder;  return true;
     }
     if (s == "penrose-like") {
-        out = CoordinateChartType::PenroseLikePlaceholder;  return true;
+        out = CoordinateChartType::PenroseLike;             return true;
     }
     if (s == "kerr-like") {
         out = CoordinateChartType::KerrLikePlaceholder;     return true;
