@@ -19,8 +19,8 @@ change. The directory ships:
 |------|--------------------|------|
 | `FieldType.h`        | §3            | Enum naming the five field-type slots (Scalar, Vector, Tensor, Curvature, ProbabilityAmplitudePlaceholder). Only `Scalar` has a concrete sampler this slice. |
 | `ScalarField.h`      | §3.1          | `ConstantScalarField` POD (uniform value + advisory `min_value`/`max_value` range) and `SampledScalarField` POD placeholder (`domain_min`/`domain_max` + `default_value` + range), plus `evaluate(field, Vec3)` / `evaluate(field, Vec4)` overloads for both types and `zero_constant_scalar_field()` / `zero_sampled_scalar_field()` factories. Promoted to its FIELD.2 shape. The sampled type's in-domain backend (texture / grid / procedural) is deferred. |
-| `FieldMapping.h`     | §4            | `FieldOutputChannel` enum (six entries matching §4.1-§4.6) + `FieldMapping` POD wiring `input_type` -> `output_channel` with `strength` and `output_clamp` + `disabled_field_mapping()` factory. |
-| `FieldInterpreter.h` | §6            | `FieldInterpreter` POD describing a Phase 1 module's metadata (`name`, `enabled`, `mapping`, `strength`) + `disabled_field_interpreter()` factory + `effective_strength(...)` helper. |
+| `FieldMapping.h`     | §4            | `FieldOutputChannel` enum (six entries matching §4.1-§4.6) + multi-channel `FieldMapping` POD with per-target strengths (`color_multiplier`, `emission`, `distortion_strength`, `alpha_density`, `diagnostic_aov`) plus `input_type` and `output_clamp` + `target_strength(...)` accessor + `disabled_field_mapping()` factory. Promoted to its FIELD.3 shape; the FIELD.1 single-channel form is removed. |
+| `FieldInterpreter.h` | §6            | `FieldInterpreter` POD describing a Phase 1 module's metadata (`name`, `enabled`, `mapping`, `strength`) + `disabled_field_interpreter()` factory + `effective_strength(interpreter, channel)` target-aware helper. The FIELD.1 single-arg `effective_strength(m)` is removed; every call site now names the channel it wants. |
 
 The default-constructed values for every shipping POD describe
 the **disabled** state — the renderer emits zero Phase 1

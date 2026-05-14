@@ -71070,6 +71070,195 @@ first kernel-bearing interpretation slice per the
 renumbered design-doc §9 — Kretschmann-scalar diagnostic
 AOV, behind the Schwarzschild chart).
 
+## FIELD.3 — Field Mapping Model (impl, data-model-only)
+
+**Scope of this slice (per the operator's *FIELD.3 — Field
+Mapping Model* task brief): promote
+`src/field/FieldMapping.h` from the FIELD.1 single-channel
+form (`output_channel` + `strength`) to the multi-channel
+mapping POD the design doc §4 specifies. A single
+`FieldMapping` now carries per-target strengths for the
+five mapping targets the task brief names
+(`colorMultiplier`, `emission`, `distortionStrength`,
+`alphaDensity`, `diagnosticAOV`), plus an input field-type
+and a per-mapping output clamp. Adds a
+`target_strength(mapping, channel)` accessor for
+target-aware dispatch. Cascade-updates
+`FieldInterpreter.h`'s `effective_strength` to take the
+output-channel argument the new mapping shape requires.
+Data model only; no actual shading changes; no renderer
+integration; no new test binary. ctest stays at 12/12.
+The renumbered design-doc §9 milestone order (kernel
+slices FIELD.3 Kretschmann diagnostic AOV onwards) is NOT
+disturbed by this data-model slice; the previous design-doc
+renumbering remains valid.**
+
+### What ships
+
+- **`src/field/FieldMapping.h` (rewritten, +101 / -60 net).**
+  Replaces the FIELD.1 single-channel form with the
+  multi-channel mapping POD:
+    - **`FieldOutputChannel`** enum preserved unchanged from
+      FIELD.1 (six entries naming the design-doc §4.1-§4.6
+      channels; `ChromaticShift` is reserved as a documented
+      future slot).
+    - **`FieldMapping`** POD with seven fields:
+      `input_type` (`FieldType`, default `Scalar`);
+      `color_multiplier` (`float`, default `0`);
+      `emission` (`float`, default `0`);
+      `distortion_strength` (`float`, default `0`);
+      `alpha_density` (`float`, default `0`);
+      `diagnostic_aov` (`float`, default `0`);
+      `output_clamp` (`float`, default `1`). The FIELD.1
+      `output_channel` and `strength` fields are removed —
+      the per-target strengths replace them entirely. Default
+      state is the safe no-op (all per-target strengths
+      `0.0f`, clamp `1.0f`, scalar input). A single mapping
+      can contribute to multiple channels simultaneously by
+      setting multiple non-zero per-target strengths.
+    - **`target_strength(mapping, channel)`** (`RR_HD inline
+      float`). Dispatches a `FieldOutputChannel` to the
+      matching POD field. The five mapping targets return
+      their matching fields; `ChromaticShift` returns
+      `0.0f` (no per-target field this slice).
+    - **`disabled_field_mapping()`** factory preserved.
+  Header preamble carries the field-by-field rationale, the
+  task-brief-name-to-POD-field-name mapping table
+  (`colorMultiplier` ↔ `color_multiplier`, etc.), and the
+  explicit "What does NOT live here this slice" section
+  pinning master rule #3.
+- **`src/field/FieldInterpreter.h` (cascade-updated, +24 /
+  -16 net).** The FIELD.1 single-arg
+  `effective_strength(m)` (which read the now-removed
+  `mapping.strength` field) is **removed**; in its place,
+  the target-aware `effective_strength(interpreter,
+  channel)` overload returns
+  `target_strength(m.mapping, channel) * m.strength` when
+  enabled, `0.0f` otherwise. The `FieldInterpreter` POD
+  itself (four fields: `name` / `enabled` / `mapping` /
+  `strength`) is unchanged — only the helper API evolves.
+  Header preamble updated to describe the per-channel
+  composition rule.
+- **`src/field/README.md` (file-table rows refreshed).** The
+  `FieldMapping.h` and `FieldInterpreter.h` rows now reflect
+  the FIELD.3 surface: multi-channel mapping POD,
+  per-target strength fields, `target_strength(...)`
+  accessor, target-aware `effective_strength(...)` helper,
+  removal of the FIELD.1 single-arg signature.
+- **`CMakeLists.txt` (rr_field doc-comment block, two rows
+  refreshed).** `FieldMapping.h`'s entry now lists the five
+  per-target strengths, the `target_strength(...)`
+  accessor, and the FIELD.3 promotion. `FieldInterpreter.h`'s
+  entry notes the new target-aware `effective_strength`
+  signature and the removal of the single-arg helper. CMake
+  target shape and link line are unchanged (still
+  `rr_field INTERFACE rr_math`).
+
+### What does NOT ship
+
+- **No actual shading change.** Data model only; no
+  interpretation kernel consumes the new per-target fields,
+  no AOV is written, no beauty-pass modulation runs. Master
+  rule #3 holds: the per-target fields are real data the
+  future kernels will read; they do not pretend to drive
+  behaviour that has not landed.
+- **No `chromatic_shift_strength` field.** The §4.5 channel
+  is reserved by the `FieldOutputChannel` enum but has no
+  per-target field on `FieldMapping` this slice — the task
+  brief's five targets cover the channels the renderer is
+  expected to ship first. A future slice that introduces a
+  chromatic-shift kernel may widen the POD without breaking
+  the existing per-target API.
+- **No renderer integration.** `rr_field` still has no
+  consumer outside its own headers. Nothing in `src/cuda/`,
+  `src/optix/`, `src/pathtracer/`, `src/renderer/`,
+  `src/gpu/`, `src/scene/`, `src/io/`, `src/server/`,
+  `src/main.cpp`, `src/core/`, `src/camera/`,
+  `src/material/`, `src/lighting/`, `src/texture/`,
+  `src/geometry/`, `src/image/`, `src/math/`,
+  `src/relativity/`, `src/manifold/`, or `tests/` is
+  touched (`git diff` outside `src/field/`,
+  `CMakeLists.txt`, and `docs/BUILD_PLAN.md` ⇒ 0 bytes).
+- **No `ScalarField.h` / `FieldType.h` change.** FIELD.2's
+  promoted scalar-field model continues to be consumed via
+  the unchanged `FieldType::Scalar` enumerator on
+  `FieldMapping::input_type`. No cascade into ScalarField.
+- **No design-doc renumbering.** The previously renumbered
+  design-doc §9 milestone order is unchanged: this slice
+  fills in the data-model surface that `FIELD.3 Kretschmann
+  diagnostic AOV` (a kernel slice, gated by the Schwarzschild
+  chart) will eventually consume.
+- **No CLI surface change. No new `--field-*` flag plumbed.
+  No new test binary. ctest set unchanged at 12.**
+
+### Acceptance
+
+- **Compiles.** Audit-host rebuild
+  (`cmake --build build -j`) succeeds. `rr_field` link line
+  unchanged (still `rr_math` only); the new POD shape
+  triggers no rebuild fan-out outside `src/field/`. A
+  standalone `g++ -std=c++20 -Isrc -Wall -Wextra -Werror`
+  build of a `FieldMapping.h`-/`FieldInterpreter.h`-
+  consuming TU compiles cleanly.
+- **Validates.** A standalone runtime check exercises the
+  promoted surface:
+    - `FieldMapping{}` has the documented defaults (five
+      per-target strengths zero, clamp `1.0f`, scalar input);
+      `disabled_field_mapping()` matches field-by-field.
+    - `target_strength(mapping, channel)` dispatches
+      correctly for every channel — the five mapping
+      targets return their matching POD fields,
+      `ChromaticShift` returns `0.0f` even when the other
+      five are non-zero.
+    - A single mapping with `emission = 0.5f` and
+      `diagnostic_aov = 0.25f` simultaneously contributes
+      to both channels (other three remain `0.0f`),
+      demonstrating the multi-channel design.
+    - `FieldInterpreter{}` defaults are unchanged from
+      FIELD.1 (`enabled = false`, `strength = 0.0f`).
+    - `effective_strength(interpreter, channel)`:
+      - returns `0.0f` for every channel when disabled,
+        regardless of any per-target strength;
+      - returns `mapping.<target> * interpreter.strength`
+        for every of the five mapping targets when enabled
+        (verified at mapping = `{1, 2, 3, 4, 5}` and
+        `interpreter.strength = 10.0f`, yielding 10 / 20 /
+        30 / 40 / 50);
+      - returns `0.0f` for `ChromaticShift` (no per-target
+        field);
+      - returns `0.0f` for every channel when enabled but
+        `interpreter.strength = 0.0f`.
+    - Both POD types stay trivially copyable +
+      standard-layout (`static_assert`s on
+      `is_trivially_copyable_v` and `is_standard_layout_v`).
+      `sizeof(FieldMapping) = 28` bytes (compact 7-field
+      record); `sizeof(FieldInterpreter) = 48` bytes
+      (pointer + bool + mapping + float).
+- **No behaviour change.** All 12 ctest binaries pass
+  (`100% tests passed, 0 tests failed out of 12`) — same
+  set and outputs as the post-FIELD.2 acceptance line. The
+  FIELD.1 standalone check in `/tmp` is now stale (it
+  referenced the removed single-arg `effective_strength(m)`
+  helper); the actual ctest set has no such reference and
+  remains green.
+- **Rule-#3 honesty.** The five new per-target fields are
+  real data the future Phase 1 kernels will read; the
+  removed FIELD.1 single-channel surface is acknowledged
+  explicitly in the comments (not silently rewritten). The
+  `ChromaticShift` no-per-target-field state is documented
+  rather than papered over with a fake field. The deferred
+  items (kernels, renderer integration, chart-region
+  predicates) are documented as absent with reason.
+
+### Module status changes
+
+`docs/MODULE_MAP.md` is *not* updated by this slice. The
+field-mapping model is now in its multi-channel production
+shape but still has no renderer consumer; module-map
+promotion still waits for FIELD.3 (the renumbered
+kernel-bearing slice — Kretschmann-scalar diagnostic AOV,
+behind the Schwarzschild chart).
+
 ## Next stage
 
 When prompted, the natural follow-ups are:

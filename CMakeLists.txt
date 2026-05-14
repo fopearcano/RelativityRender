@@ -353,15 +353,24 @@ target_link_libraries(rr_manifold INTERFACE rr_math rr_relativity)
 #   FieldMapping.h        - `FieldOutputChannel` enum (Color /
 #                           Emission / Distortion / Density /
 #                           ChromaticShift / DiagnosticAOV) +
-#                           `FieldMapping` POD wiring
-#                           input_type -> output_channel with
-#                           strength + clamp + the
+#                           multi-channel `FieldMapping` POD
+#                           with per-target strengths
+#                           (color_multiplier / emission /
+#                           distortion_strength / alpha_density
+#                           / diagnostic_aov) + input_type +
+#                           output_clamp +
+#                           `target_strength(...)` accessor +
 #                           `disabled_field_mapping()` factory.
+#                           Promoted to its FIELD.3 shape; the
+#                           FIELD.1 single-channel form is
+#                           replaced.
 #   FieldInterpreter.h    - `FieldInterpreter` POD describing a
 #                           Phase 1 module's metadata (name,
 #                           enabled, mapping, strength) +
-#                           `disabled_field_interpreter()` /
-#                           `effective_strength()` helpers.
+#                           `disabled_field_interpreter()` +
+#                           target-aware `effective_strength(m,
+#                           channel)` helper. The FIELD.1
+#                           single-arg helper is removed.
 #
 # Skeleton stage (FIELD.1): no renderer integration, no kernel
 # implementation, no behaviour change. Library exists so future
