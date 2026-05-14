@@ -73017,6 +73017,227 @@ under the renumbered integration plan §8); no
 module-map row changes state until MANI-I.12
 (final cross-host audit) lands.
 
+## MANI-I.10 — Schwarzschild-Like Coordinate Remap Plan (docs only)
+
+**Scope of this slice (per the operator's *MANI-I.10
+— Schwarzschild-Like Coordinate Remap Plan* task
+brief): write
+`docs/SCHWARZSCHILD_LIKE_REMAP_PLAN.md`, the
+operator-facing design document for the first
+non-Euclidean manifold transformation. Names the
+artistic remap math, the parameter mapping onto the
+existing `CoordinateChart` + `CoordinateChartParameters`
++ `ManifoldMode` PODs, the safety invariants, the
+two-seam integration strategy (world-to-chart
+remap of hit positions AND optional primary-ray
+direction warp), the runtime-deferred CUDA / OptiX
+checks, and the six-slice SCHW.* sub-slice ladder
+(SCHW.1 math helper → SCHW.2 CPU integration →
+SCHW.3 CUDA integration → SCHW.4 OptiX
+integration → SCHW.5 debug visualization →
+SCHW.6 audit). Documentation only; no source
+code, no implementation, no integration plan
+renumbering this slice.**
+
+### What ships
+
+- **`docs/SCHWARZSCHILD_LIKE_REMAP_PLAN.md`
+  (new, ~700 lines).** Ten-section design
+  document matching the
+  `MANIFOLD_RENDERING_ARCHITECTURE.md` /
+  `FIELD_INTERPRETATION_LAYER.md` /
+  `MANIFOLD_INTEGRATION_PLAN.md` shape:
+    - **§1 Scope** — artistic, not physical;
+      coordinate-remap layer only; off by
+      default. The `*Like` naming convention
+      (MANIFOLD.1) is the architectural
+      anchor.
+    - **§2 Core idea** — closed-form radial
+      coordinate displacement centred on a
+      configured mass origin: `chart_pos =
+      p_world + warp_strength * r_s /
+      r^falloff * (p_world - mass_origin)`.
+      Documented analytic properties:
+      `warp_strength = 0` ⇒ identity;
+      `r → ∞` ⇒ identity; bounded by
+      `clamp_radius`; no NaN / Inf at the
+      mass origin.
+    - **§3 Required parameters** — six
+      parameters mapped onto the existing
+      manifold PODs without a schema bump:
+      `massOrigin` → `CoordinateChart::origin`;
+      `schwarzschildRadiusLike` →
+      `CoordinateChartParameters::mass`;
+      `warpStrength` → `ManifoldMode::strength`;
+      `falloff` → `CoordinateChartParameters::spin`
+      (reinterpreted for SchwarzschildLike);
+      `clampRadius` →
+      `CoordinateChartParameters::compactification_scale`
+      (reinterpreted); `debugMode` →
+      `ManifoldMode::debug_visualization`. The
+      per-chart reinterpretation of `spin` /
+      `compactification_scale` is documented
+      explicitly (master rule #3 honesty).
+    - **§4 Expected visual effects** — radial
+      compression / stretching, pseudo-lensing
+      (when the optional primary-ray direction
+      warp is enabled), coordinate crowding
+      near radius, horizon-like visual
+      boundary. Explicit "what is NOT
+      produced" list (photon-sphere ring,
+      frame-dragging, back-side-emergent rays
+      — all deferred to a hypothetical future
+      physical-geodesic programme outside
+      this plan).
+    - **§5 Safety constraints** — six
+      invariants: no NaN / Inf (via
+      `clamp_radius > 0` guard); Euclidean
+      fallback at `warp_strength = 0`;
+      bounded transforms (closed-form;
+      analytic max displacement); reversible
+      via approximate Newton-Raphson inverse;
+      bit-identity on the Euclidean off-path
+      (gated by `is_active(manifold_mode)`);
+      defence-in-depth on the host-side
+      parameter validator.
+    - **§6 Integration strategy** — three
+      seams: (6.1) `world_to_chart(...)`
+      extension for hit positions; (6.2)
+      `chart_to_world(...)` approximate
+      inverse; (6.3) optional primary-ray
+      direction warp with a hard cap on the
+      bending factor; (6.4) reuse of the
+      existing `ManifoldCoordinates` AOV
+      slot.
+    - **§7 Runtime-deferred CUDA / OptiX
+      checks** — six deferred runtime checks
+      (Euclidean fallback bit-identity on
+      CUDA + OptiX, `warp_strength = 0`
+      byte-identity, AOV visual signature,
+      beauty-pass lensing signature,
+      off-chart non-regression). All
+      deferred behind the audit-host's no-CUDA
+      / no-OptiX-SDK fallback, matching the
+      MANI-I.6 / MANI-I.9 posture.
+    - **§8 Proposed slices** — six-slice
+      SCHW.* sub-slice ladder, each with its
+      own acceptance gate:
+        - SCHW.1 — math helper (closed-form
+          forward + Newton-Raphson inverse +
+          ray-direction warp);
+        - SCHW.2 — CPU integration
+          (`ManifoldTransform.h` extension);
+        - SCHW.3 — CUDA integration (kernel
+          arm + optional primary-ray warp);
+        - SCHW.4 — OptiX integration (kernel
+          arms + closes the MANI-I.9 deferred
+          OptiX host-side allocation);
+        - SCHW.5 — debug visualization (AOV
+          encoding refinement);
+        - SCHW.6 — audit (closes the MANI-I.10
+          slot).
+    - **§9 Non-goals** — explicit 8-item
+      exclusion list (no physical
+      Schwarzschild solver, no Kerr spin, no
+      photon-sphere ring, no new AOV slot,
+      no denoiser change, no `.rrscene`
+      schema bump, no multi-chart scene, no
+      C4D / preview-UI integration).
+    - **§10 References** — cross-references
+      to master instructions, integration
+      plan, architecture doc, debug-AOV
+      task definition + audit, and the
+      `src/manifold/*` / `src/cuda/*` /
+      `src/optix/*` files the SCHW.* slices
+      extend.
+
+### What does NOT ship
+
+- **No source code.** Nothing in any `src/`
+  subtree is touched (`git diff` outside
+  `docs/` ⇒ 0 bytes).
+- **No new test binary.** ctest set unchanged
+  at 12.
+- **No CMake change.** No new `rr_*` target;
+  no link-line change.
+- **No integration plan renumbering.** This
+  slice is a design document; the §8 slice
+  section in the integration plan describes
+  the MANI-I.10 slot at a high level, and
+  the SCHW.* sub-slices land their own
+  implementations later. The integration
+  plan §3 chain diagram and §8 slice section
+  are NOT modified by this slice; the SCHW.6
+  audit (or the SCHW.* implementation
+  slices) update them when work lands.
+- **No implementation.** The six SCHW.*
+  sub-slices are *named and acceptance-
+  criteria-pinned* in §8, not started.
+  Master rule #3 honesty: every SCHW.*
+  slice's acceptance gate is documented
+  with concrete file targets, analytic
+  checks, and runtime-deferred items.
+- **No prior-audit-doc update.** The
+  MANI-I.2 / MANI-I.4 / MANI-I.6 / MANI-I.9
+  audit docs are preserved as point-in-time
+  historical snapshots; their cross-
+  references to "MANI-I.10" remain accurate
+  (this slice is MANI-I.10).
+
+### Acceptance
+
+- **Compiles.** Documentation-only slice;
+  no build configuration touched. The
+  audit-host build remains at the
+  post-MANI-I.9 baseline (`100% tests passed,
+  0 tests failed out of 12`;
+  `renderer_tests: 19 / 19 passed`;
+  `cli_tests: 123/123 passed`).
+- **Internally consistent.** The plan's
+  parameter mapping (§3) cites
+  `CoordinateChart::origin`,
+  `CoordinateChartParameters::mass /
+  spin / compactification_scale`,
+  `ManifoldMode::strength /
+  debug_visualization` — every field is a
+  real shipping POD field from MANIFOLD.1
+  / MANIFOLD.6. The integration strategy
+  (§6) cites `world_to_chart` /
+  `chart_to_world` /
+  `transform_ray_like_direction` helpers
+  shipping in MANIFOLD.5 and the
+  `is_active` guard shipping at MANI-I.5.
+  The SCHW.* sub-slice file targets (§8)
+  cite concrete files
+  (`src/manifold/*`, `src/cuda/*`,
+  `src/optix/*`) that exist today.
+- **Forward-looking honesty.** Every
+  SCHW.* sub-slice has explicit
+  acceptance criteria; no sub-slice is a
+  stub. The plan acknowledges the
+  approximate Newton-Raphson inverse's
+  residual is `≤ 1e-4` (documented
+  bounded approximation, not "exact
+  inverse"). The plan acknowledges that
+  the SchwarzschildLike chart is artistic
+  (not physical) and lists what visual
+  signatures it does NOT produce
+  (photon-sphere ring, frame-dragging,
+  emergent rays from behind the
+  horizon). Master rule #3 is preserved
+  throughout.
+
+### Module status changes
+
+`docs/MODULE_MAP.md` is *not* updated by this
+slice. The MANI-I.10 design document does not
+change runtime state; module-map promotion
+still waits for MANI-I.12 (final cross-host
+audit) per the integration plan §11. The
+SCHW.* sub-slices will update relevant module-
+map rows as each lands real curved-chart
+behaviour.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
