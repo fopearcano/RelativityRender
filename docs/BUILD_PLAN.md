@@ -75607,6 +75607,222 @@ unchanged; module-map promotion still waits for
 MANI-I.12 (final cross-host audit) per the
 integration plan §11.
 
+## PENROSE.1 — Penrose-Like Compactification Planning (docs only)
+
+**Scope of this slice (per the operator's *PENROSE.1
+— Penrose-Like Compactification Planning* task brief):
+write `docs/PENROSE_LIKE_COMPACTIFICATION_PLAN.md`,
+the design document for the **second non-trivial
+chart family** in the renderer (the
+`CoordinateChartType::PenroseLikePlaceholder` enum
+value reserved at MANIFOLD.1; promoted to
+`PenroseLike` at the eventual PENROSE.1
+math-helper-impl slice). The arc this plan covers
+consumes the integration plan's MANI-I.11 slot
+(`docs/MANIFOLD_INTEGRATION_PLAN.md` §9). Documentation
+only — no source code, no implementation, no test
+binary changes. Authorised by the SCHW.11 capstone
+audit's preconditions (operator approval + SCHW.5
+closure both met).**
+
+### What ships
+
+- **`docs/PENROSE_LIKE_COMPACTIFICATION_PLAN.md`
+  (new).** Twelve-section design doc mirroring the
+  predecessor `SCHWARZSCHILD_LIKE_REMAP_PLAN.md`
+  structure:
+    - **§1 Scope** — artistic / observer-manifold
+      visualization; NOT mathematically exact
+      Penrose diagrams; off by default; composable
+      with — but mutually exclusive with —
+      SchwarzschildLike at this slice.
+    - **§2 Core idea** — closed-form radial
+      compactification via `r_chart = R_max *
+      tanh(strength * (r / scale)^falloff)`. Family
+      A (`tanh`-based) is the shipping helper; Family
+      B (rational) is deferred. Math is bounded by
+      construction, NaN/Inf-free, and direction-
+      preserving.
+    - **§3 Required parameters** — per-chart
+      reinterpretation table mapping plan parameters
+      onto existing `CoordinateChart` +
+      `CoordinateChartParameters` slots:
+      `compactification_origin → chart.origin`;
+      `compactification_scale → params.compactification_scale`
+      (CANONICAL usage — the field's named purpose);
+      `R_max → params.mass` (reinterpreted from
+      SchwarzschildLike's `r_s`);
+      `strength → ManifoldMode::strength`;
+      `falloff → params.spin` (reinterpreted in
+      parallel to SchwarzschildLike). No schema
+      bump required.
+    - **§4 Visual goals** — five operator-visible
+      signatures: asymptotic compactification;
+      horizon-like compression; causal-boundary
+      visualization; manifold folding /
+      compression; observer-centric infinity
+      mapping. Plus an explicit "what is NOT
+      produced" list (no 45° light-cone
+      preservation; no time-axis compactification;
+      no event-horizon visualisation; no back-side
+      emergent rays).
+    - **§5 Proposed transform behavior** — radial
+      compactification (direction-preserving;
+      sign-preserving); asymptotic compression
+      (monotonic; bounded above by `R_max`);
+      bounded output coordinates (entire scene
+      fits in a sphere of radius `R_max`);
+      configurable compactification strength via
+      the `strength` dial.
+    - **§6 Safety constraints** — six invariants:
+      bounded transforms (`tanh` saturation at
+      `±1`); no NaN/Inf (`scale > 0` and `R_max
+      > 0` validator-enforced); Euclidean fallback
+      via math-leaf short-circuit on `strength=0`
+      or `R_max=0`; reversible analytical inverse
+      via `atanh` (no Newton-Raphson; better
+      `1e-6` residual than SCHW.1's iterative
+      `1e-4`); defence-in-depth validator;
+      bit-identity on the Euclidean off-path.
+    - **§7 Relationship to Schwarzschild-like
+      warp** — conceptually complementary
+      (SchwarzschildLike inflates near-mass;
+      PenroseLike compresses far-field). Mutually
+      exclusive at the `CoordinateChart::type`
+      level today. Future `ManifoldStack` concept
+      sketched but explicitly NOT shipped by
+      PENROSE.*; future addendum could allow
+      composition with ordering
+      `Penrose(Schwarzschild(p))` (mass warp first,
+      then global compactification).
+    - **§8 Integration strategy** — three seams +
+      kernel-arm gating mirroring the SCHW.7 /
+      SCHW.5 triple-gate pattern (`is_active(...)
+      && chart == PenroseLike && strength > 0`).
+      Dispatcher merge logic from SCHW.9 applies
+      verbatim. The scene parser already accepts
+      kebab-case `penrose-like`; only the C++
+      enumerator identifier changes at PENROSE.1
+      math-helper slice (`PenroseLikePlaceholder`
+      → `PenroseLike`).
+    - **§9 Runtime-deferred CUDA / OptiX checks**
+      — six runtime checks deferred to a CUDA +
+      OptiX-SDK host: Euclidean fallback
+      byte-identity (seven CLI actions);
+      SchwarzschildLike non-regression;
+      `strength = 0` byte-identity; visual AOV
+      signature; CUDA / OptiX byte-equivalence
+      via single-source-of-truth math;
+      off-chart non-regression.
+    - **§10 Proposed slices** — PENROSE.* sub-slice
+      ladder mirroring SCHW.* cadence:
+      PENROSE.1 (math helper); PENROSE.2 (CPU
+      integration via `ManifoldTransform`);
+      PENROSE.3 (CUDA kernel arm); PENROSE.4
+      (OptiX kernel arm); PENROSE.5 (fixture /
+      debug viz); PENROSE.6 (arc capstone audit
+      with 10 audit items, verdict PASS /
+      PASS_WITH_RUNTIME_DEFERRED / REPAIR /
+      BLOCKED). Per-slice gate cadence may add
+      audit slots between impl slices as the
+      operator requests (mirroring the SCHW.4 /
+      SCHW.6 / SCHW.8 / SCHW.10 insertions in
+      the SCHW.* ladder).
+    - **§11 Non-goals** — explicit catalogue of
+      what PENROSE.* does NOT introduce
+      (physically exact Penrose; time-axis
+      compactification; composability with
+      SchwarzschildLike; new AOV slot; denoiser
+      change; `.rrscene` schema bump;
+      primary-ray direction warp; multi-chart
+      scene authoring; C4D / preview-UI; Kerr /
+      Kruskal work).
+    - **§12 References** — 15-entry list spanning
+      master instructions, architecture doc,
+      integration plan, predecessor remap plan,
+      predecessor capstone, all relevant source
+      files, the SCHW.9 fixture, and the test
+      file.
+
+### What does NOT ship
+
+- **No source code.** Nothing in any `src/` subtree
+  is touched (`git diff` outside `docs/` ⇒ 0 bytes).
+- **No new test binary.** ctest set unchanged at 12.
+- **No CMake change.** No new `rr_*` target; no
+  link-line change.
+- **No PENROSE.* implementation.** This is the
+  planning slice ONLY. PENROSE.1 (math helper) is
+  the first impl slice and ships separately when
+  the operator prompts for it.
+- **No conformal-geometry solver.** Operator brief
+  explicitly forbids; the design doc itself
+  documents the artistic/visual scope explicitly
+  (§1).
+- **No C4D / server / UI / node-editor touch.**
+  Operator brief explicitly forbids;
+  architecture-doc §8 non-goals stand.
+- **No alteration of the integration plan's §3
+  chain diagram.** The PENROSE arc consumes the
+  existing MANI-I.11 slot; the chain diagram
+  references MANI-I.11 as a single slot
+  (which now contains a planned PENROSE.* sub-arc).
+- **No update to the `MANIFOLD_INTEGRATION_PLAN.md`
+  §9 entry.** That entry is the integration-plan-
+  level scope; the new
+  `PENROSE_LIKE_COMPACTIFICATION_PLAN.md` is the
+  operator-facing design doc consuming the slot
+  (parallel to how
+  `SCHWARZSCHILD_LIKE_REMAP_PLAN.md` consumed
+  MANI-I.10).
+- **No `MODULE_MAP.md` update.** The planning
+  slice is doc-only; module-map promotion still
+  waits for MANI-I.12 (final cross-host audit).
+- **No Kerr / Kruskal work.** PENROSE.* covers
+  one chart family; Kerr / Kruskal are future
+  arcs.
+
+### Acceptance
+
+- **Compiles.** Documentation-only slice; no build
+  configuration touched. The audit-host build
+  remains at the post-SCHW.5 completion-audit
+  baseline (`100% tests passed, 0 tests failed out
+  of 12`; `manifold_identity_tests: 198 / 198
+  checks passed`; `cli_tests: 123/123 passed`;
+  `renderer_tests: 19 / 19 passed`).
+- **Internally consistent.** The plan's
+  parameter-reinterpretation table (§3) is
+  consistent with the existing
+  `CoordinateChartParameters` POD; the math
+  formulas (§2) are closed-form and
+  analytically-inverse-bound; the safety
+  constraints (§6) mirror the SCHW.1 / SCHW.2
+  audit invariants with one improvement
+  (analytical inverse instead of NR iteration).
+  The PENROSE.* sub-slice ladder (§10) mirrors
+  the SCHW.* cadence so the operator can apply
+  the same per-slice audit discipline if
+  desired.
+- **Verdict honesty.** The design doc explicitly
+  flags every artistic-not-physical choice
+  (§1 + §4.6 + §11). The `*Like` naming
+  convention is preserved; the future
+  `PenroseLike` enum name (replacing
+  `PenroseLikePlaceholder` at the impl slice)
+  follows the SchwarzschildLike precedent.
+  No fake stubs; no over-claiming of physical
+  accuracy. Master rule #3 satisfied verbatim.
+
+### Module status changes
+
+`docs/MODULE_MAP.md` is *not* updated by this slice.
+The PENROSE.1 planning verdict authorises the
+operator to proceed to PENROSE.1 (math helper) as
+the first impl slice when ready; no module-map row
+changes state until MANI-I.12 (final cross-host
+audit) lands.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
