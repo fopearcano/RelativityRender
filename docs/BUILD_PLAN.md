@@ -69541,6 +69541,166 @@ as the Manifold Core Skeleton entry). The chart model is now
 *shaped* but no consumer reads it; module-map promotion waits for
 the Minkowski-chart-wrap slice (architecture-doc §10 step 1).
 
+## MANIFOLD.2 — Metric Tensor Foundation (impl, model-only)
+
+**Scope of this slice (per the operator's *MANIFOLD.2 — Metric
+Tensor Foundation* task brief): promote
+`src/manifold/MetricTensor.h` from a flat `float g[16]` POD plus
+the bare `minkowski_metric()` factory to a foundational descriptor
+the future curved-chart slices and inverse-metric helper will
+consume. Adds `at(i, j)` accessors, the `identity_metric()`
+factory, validation helpers (`is_symmetric`, `is_finite`,
+`is_minkowski`, `is_diagonal`), a closed-form 4x4 `determinant`,
+and an extended doc-comment that pins the mostly-plus signature
+convention. No real GR machinery (no Christoffel symbols, no
+inverse, no Riemann / Ricci / Einstein tensor, no field-equation
+solver - architecture-doc §8 non-goal "full GR solver" stays in
+force). No renderer integration. No behavioural change. Every
+existing test keeps passing bit-for-bit.**
+
+### What ships
+
+- **`src/manifold/MetricTensor.h` (rewritten, +192 / -22 net,
+  ~70% doc-comment density).** Six additions on the POD plus a
+  significantly expanded header preamble:
+    - **`MetricTensor::at(i, j)`** (const + non-const overloads,
+      both `RR_HD constexpr`). Component accessor papering over
+      the `4*i + j` index arithmetic. Call sites now speak in
+      `(i, j)` and the flat-layout `g[16]` storage is a private
+      detail.
+    - **`identity_metric()`** (`RR_HD inline`). Returns the
+      4D-Euclidean identity `diag(+1, +1, +1, +1)`. Explicitly
+      documented as **not** a physical spacetime metric
+      (positive-definite signature, not Lorentzian); the factory
+      exists as a clean baseline for tests and future
+      finite-difference probes.
+    - **`is_symmetric(t, tolerance)`** (`RR_HD inline bool`).
+      Checks `|g_{i j} - g_{j i}| <= tolerance` for every
+      `i < j`. Default tolerance `1.0e-6f`.
+    - **`is_finite(t)`** (`RR_HD inline bool`). Uses
+      `std::isfinite` on each of the 16 components. Detects NaN
+      and +/-inf alike.
+    - **`is_minkowski(t, tolerance)`** (`RR_HD inline bool`).
+      Component-wise comparison against `diag(-1, +1, +1, +1)`.
+      The "no behaviour change" regression anchor: a future
+      curved-chart slice that mistakenly emits the flat metric
+      from a non-flat region trips this.
+    - **`is_diagonal(t, tolerance)`** (`RR_HD inline bool`).
+      Off-diagonal-magnitude check. Many physically interesting
+      metrics (Schwarzschild in standard coords, Kerr in
+      Boyer-Lindquist, FLRW synchronous) are diagonal; future
+      integrators that exploit that structure call this as the
+      fast-path gate.
+    - **`determinant(t)`** (`RR_HD inline float`). Closed-form
+      4x4 Laplace expansion along the first row (~24 mults,
+      ~12 adds). Single-precision throughout. Returns exactly
+      `-1.0f` on the Minkowski default, exactly `+1.0f` on the
+      identity metric, and `-r^4 sin^2(theta)` on a
+      Schwarzschild slice (verified empirically: at
+      `r = 4`, `r_s = 2`, `theta = pi/2` the determinant is
+      `-256` to within `1e-3` of the closed form).
+  Header preamble expanded with a dedicated "Signature
+  convention" section pinning mostly-plus `(-, +, +, +)` and a
+  "Christoffel symbols" section spelling out why
+  `Gamma^lambda_{mu nu}` is *not* stored on the POD (per
+  architecture-doc §3.2's analytic-vs-numerical contract; lands
+  with the geodesic-integrator slice).
+- **`src/manifold/README.md` (file table row refreshed).**
+  `MetricTensor.h`'s row now lists the `(-, +, +, +)` signature
+  pin, both factories, all four validation helpers, and the
+  closed-form `determinant` - plus the explicit
+  "Christoffel / inverse still deferred" caveat.
+- **`CMakeLists.txt` (rr_manifold doc-comment block refreshed).**
+  The header inventory under the `rr_manifold` block now lists
+  the `at(i, j)` accessors, both factories, the four validation
+  helpers, and `determinant` next to `MetricTensor.h`. The CMake
+  target shape is unchanged: still
+  `add_library(rr_manifold INTERFACE)`,
+  `target_include_directories(rr_manifold INTERFACE src)`,
+  `target_link_libraries(rr_manifold INTERFACE rr_math)`.
+
+### What does NOT ship
+
+- **No inverse metric `g^{mu nu}`.** Reserved for the next
+  Manifold-Core slice; `determinant(t)` is the building block
+  the inverse helper will consume but the inverse itself is not
+  emitted today.
+- **No Christoffel symbols** (`Gamma^lambda_{mu nu}`). The
+  geodesic integrator will compute them on demand - analytically
+  for closed-form metrics (Schwarzschild / Kerr) or
+  finite-differenced for arbitrary metrics. Master rule #3 (no
+  fake stubs) forbids declaring an empty Christoffel surface
+  before there is an integrator to consume it.
+- **No Riemann / Ricci / Einstein tensors, no scalar
+  curvatures, no Kretschmann scalar, no field-equation solver.**
+  Architecture-doc §8 non-goal "full GR solver" stays in force;
+  these belong in either a future curved-chart slice (for
+  closed-form analytic forms) or a separate
+  Perceptual-Field-Interpretation module (for AOV-style
+  curvature visualisation, per architecture-doc §6.2).
+- **No matrix-inverse, no LU / SVD machinery.** The determinant
+  is closed-form 4x4 only; arbitrary-N linear algebra is out of
+  scope for the Manifold Core.
+- **No renderer integration.** `src/cuda/`, `src/optix/`,
+  `src/pathtracer/`, `src/renderer/`, `src/gpu/`, `src/scene/`,
+  `src/io/`, `src/server/`, `src/main.cpp`, `src/core/`,
+  `src/camera/`, `src/material/`, `src/lighting/`,
+  `src/texture/`, `src/geometry/`, `src/image/`, `src/math/`,
+  `src/relativity/`, and `tests/` are byte-identical
+  (`git diff` outside `src/manifold/`, `CMakeLists.txt`, and
+  `docs/BUILD_PLAN.md` ⇒ 0 bytes).
+- **No `CoordinateChart.h`, `ObserverFrame.h`,
+  `GeodesicState.h`, `ManifoldTransform.h`, or `ManifoldMode.h`
+  change.** Their consumption of `MetricTensor` flows through
+  unchanged: `ManifoldTransform` holds a `MetricTensor` by
+  value and the default member initialiser still resolves to
+  the mostly-plus Minkowski default.
+- **No CLI surface change. No new `--render-*` action. No new
+  test binary. `ctest` set unchanged.**
+
+### Acceptance
+
+- **Compiles.** Audit-host rebuild
+  (`cmake --build build -j`) succeeds. The header is included
+  only transitively (via `ManifoldTransform.h`); nothing in the
+  existing translation-unit set actually consumes
+  `MetricTensor`, so the rebuild fan-out is limited to the new
+  file itself. A standalone
+  `g++ -std=c++20 -Isrc -Wall -Wextra -Werror` build of a
+  `MetricTensor.h`-only TU compiles cleanly.
+- **Validates.** A standalone runtime check exercises every
+  shipping helper:
+    - `minkowski_metric()` has `at(0, 0) = -1` and unit diagonal
+      otherwise.
+    - `identity_metric()` has all-unit diagonal.
+    - `is_minkowski(minkowski_metric())` is true;
+      `is_minkowski(identity_metric())` is false.
+    - `is_symmetric` and `is_diagonal` pass on both factories;
+      they reject an asymmetric off-diagonal perturbation.
+    - `is_finite` rejects both `inf` and `NaN` perturbations.
+    - `determinant(minkowski_metric()) == -1.0f` exactly.
+    - `determinant(identity_metric()) == +1.0f` exactly.
+    - Determinant on a textbook Schwarzschild slice
+      (`r = 4`, `r_s = 2`, `theta = pi/2`) matches the
+      closed-form `-r^4 sin^2(theta) = -256` to within
+      `1.0e-3`.
+- **No behaviour change.** All 11 ctest binaries pass
+  (`100% tests passed, 0 tests failed out of 11`) - same set
+  and same outputs as the MANIFOLD.1 acceptance line.
+- **Rule-#3 honesty.** The shipped helpers are real, complete
+  implementations (the determinant is closed-form, not stubbed
+  to zero; the validation helpers really do check what they
+  claim). The deferred items (inverse, Christoffel, Riemann,
+  field equations) are documented as absent with reason, not
+  stubbed.
+
+### Module status changes
+
+`docs/MODULE_MAP.md` is *not* updated by this slice. The metric
+foundation is now *shaped* but still consumed by no other code
+path; the module-map promotion gate remains the
+Minkowski-chart-wrap slice (architecture-doc §10 step 1).
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
@@ -69550,13 +69710,6 @@ When prompted, the natural follow-ups are:
   POD headers in `src/manifold/` to the same level of detail
   MANIFOLD.1 brought to `CoordinateChart.h`. Candidates, in
   architecture-doc §3 order:
-    - **MANIFOLD.2 — Metric Tensor Model.** Promote
-      `MetricTensor.h` from "flat 4x4 + `minkowski_metric()`" to a
-      richer descriptor that names the metric family (Minkowski,
-      Schwarzschild-like static spherical, etc.), exposes
-      element-access helpers, and reserves storage for
-      analytic-vs-numerical Christoffel-symbol provenance per
-      architecture-doc §3.2.
     - **MANIFOLD.3 — Observer Frame Model.** Extend
       `ObserverFrame.h` so the tetrad-vs-chart distinction
       (architecture-doc §3.3) is encoded in the POD, with

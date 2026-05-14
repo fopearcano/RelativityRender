@@ -22,7 +22,7 @@ architecture-doc §7.2).
 |------|--------------------------|------|
 | `CoordinateChart.h`    | §3.1            | Canonical home of `CoordinateChartType` (`Euclidean`, `SchwarzschildLike`, `KruskalLikePlaceholder`, `PenroseLikePlaceholder`, `KerrLikePlaceholder`) plus `ChartUnits`, `CoordinateChartParameters`, the `CoordinateChart` POD (type / name / scale / origin / units / params), and the `euclidean_chart()` / `identity_chart()` helpers. |
 | `ManifoldMode.h`       | §3.1            | Compatibility alias header. Since MANIFOLD.1, `ManifoldMode` is a `using` alias for `CoordinateChartType`; the canonical enum lives in `CoordinateChart.h`. |
-| `MetricTensor.h`       | §3.2            | Flat 4x4 row-major `g_{mu nu}` POD in mostly-plus signature; `minkowski_metric()` returns the flat default. |
+| `MetricTensor.h`       | §3.2            | 4x4 row-major `g_{mu nu}` POD in mostly-plus `(-, +, +, +)` signature plus `at(i, j)` accessors, the `minkowski_metric()` and `identity_metric()` factories, validation helpers (`is_symmetric`, `is_finite`, `is_minkowski`, `is_diagonal`), and a closed-form 4x4 `determinant`. Promoted to its MANIFOLD.2 shape. Christoffel symbols / inverse metric still deferred. |
 | `ObserverFrame.h`      | §3.3, §7.2      | Tetrad (`right` / `up` / `forward`) plus three-velocity `beta`; `rest_frame()` returns the scene-rest observer. |
 | `GeodesicState.h`      | §3.4            | Null-geodesic state POD (`position`, `momentum`) plus `GeodesicStatus` (`InFlight` / `ChartBoundary` / `Terminated`). |
 | `ManifoldTransform.h`  | §3.5            | Aggregate `{CoordinateChart, MetricTensor, ObserverFrame}`; `identity_transform()` returns the default that reproduces today's renderer. |

@@ -255,8 +255,15 @@ target_link_libraries(rr_relativity INTERFACE rr_math)
 #                           CoordinateChartType;`); kept so older
 #                           callers compile. Canonical enum lives
 #                           in CoordinateChart.h.
-#   MetricTensor.h        - 4x4 mostly-plus metric POD +
-#                           `minkowski_metric()` helper (§3.2).
+#   MetricTensor.h        - 4x4 row-major `g_{mu nu}` POD in
+#                           mostly-plus signature + `at(i, j)`
+#                           accessors + `minkowski_metric()` /
+#                           `identity_metric()` factories +
+#                           validation helpers (`is_symmetric`,
+#                           `is_finite`, `is_minkowski`,
+#                           `is_diagonal`) + closed-form 4x4
+#                           `determinant` (§3.2). Promoted to its
+#                           MANIFOLD.2 shape.
 #   ObserverFrame.h       - tetrad + 3-velocity POD +
 #                           `rest_frame()` helper (§3.3).
 #   GeodesicState.h       - null-geodesic state POD +
