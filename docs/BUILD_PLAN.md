@@ -73492,6 +73492,171 @@ MANI-I.10 slot. Module-map promotion still
 waits for MANI-I.12 (final cross-host audit)
 per the integration plan §11.
 
+## SCHW.2 — Schwarzschild-Like Warp Audit (docs only)
+
+**Scope of this slice (per the operator's *SCHW.2 —
+Schwarzschild-Like Warp Audit* task brief): write
+`docs/SCHWARZSCHILD_LIKE_WARP_AUDIT.md`, the
+per-slice verdict document for SCHW.1
+(`2da5780`). Verifies the seven structural items
+the task brief enumerates — Euclidean fallback
+exists; transforms are bounded; no singularity
+generation; clamping behavior documented;
+build / test green; no renderer behavior
+changed; verdict — and produces a PASS / REPAIR /
+BLOCKED verdict that gates progression to the
+CPU integration slice (renumbered SCHW.3).
+Documentation only; no source code, no test, no
+CMake, no behavioural change. Inserts SCHW.2 as
+a per-slice audit slot AND renames the original
+SCHW.2-CPU-integration → SCHW.3 (with cascade
+shifts SCHW.3→SCHW.4, SCHW.4→SCHW.5,
+SCHW.5→SCHW.6, SCHW.6→SCHW.7) in the
+`SCHWARZSCHILD_LIKE_REMAP_PLAN.md` §8 sub-slice
+ladder.**
+
+### What ships
+
+- **`docs/SCHWARZSCHILD_LIKE_WARP_AUDIT.md`
+  (new).** Per-slice verdict document mirroring
+  the prior audit doc shape:
+    - **§1 VERDICT** — `PASS`. All seven
+      structural checks return PASS; no REPAIR
+      or BLOCKED item.
+    - **§2 PER-CHECK RESULTS** — seven-row
+      evidence table. Each row cites concrete
+      observations:
+      `schwarzschild_like_validate_params`
+      Euclidean-fallback short-circuits at
+      `SchwarzschildLikeWarp.h:152-154` /
+      `:203-205` / `:276-278`; bounding
+      mechanisms (clamp_radius lower bound,
+      Newton-Raphson iteration cap, primary-
+      ray bend cap `kBendCap = 0.5f`); four-
+      layered NaN/Inf prevention (validator
+      `isfinite`, `clamp_radius > 0`, NR
+      `F'` zero-guard, negative-`r` rebound);
+      clamping behavior documented in three
+      places (params struct, formula
+      docstring, kernel-side comments);
+      ctest 12/12 + `manifold_identity_tests:
+      140 / 140 checks passed`; zero
+      renderer-side files modified in the
+      SCHW.1 commit's diff.
+    - **§3 REASONING SUMMARY** — recap of the
+      SCHW.1 commit's surface (one new
+      header, ten new test functions, doc
+      updates), the analytic provability of
+      the bounded-transform invariant
+      (`f ≤ warp_strength * r_s /
+      clamp_radius^falloff`), the four-
+      layer no-singularity defence, and the
+      structurally-guaranteed no-renderer-
+      behavior-change (no kernel call site
+      invokes the new helpers yet).
+    - **§4 NEXT** — names the SCHW.* sub-slice
+      renumbering (SCHW.2 audit inserted;
+      SCHW.2 → SCHW.3 / SCHW.3 → SCHW.4 /
+      SCHW.4 → SCHW.5 / SCHW.5 → SCHW.6 /
+      SCHW.6 → SCHW.7) and points at SCHW.3
+      (CPU integration) as the next concrete
+      slice.
+- **`docs/SCHWARZSCHILD_LIKE_REMAP_PLAN.md` §8
+  (renumbered).** Five replace-all
+  substitutions shift every SCHW.x reference
+  from §8 SCHW.2 onward (highest-to-lowest to
+  avoid double-shifting): SCHW.6 → SCHW.7,
+  SCHW.5 → SCHW.6, SCHW.4 → SCHW.5, SCHW.3 →
+  SCHW.4, SCHW.2 → SCHW.3. A new
+  "SCHW.2 — Audit (docs only)" subsection is
+  inserted between SCHW.1 (LANDED) and the
+  renumbered SCHW.3 (CPU integration). The
+  plan's other sections (§1–§7, §9–§10) are
+  unchanged.
+
+### What does NOT ship
+
+- **No source code.** Nothing in any `src/`
+  subtree is touched (`git diff` outside
+  `docs/` ⇒ 0 bytes).
+- **No new test binary.** ctest set unchanged
+  at 12.
+- **No CMake change.** No new `rr_*` target;
+  no link-line change.
+- **No `BUILD_PLAN.md` historical-record
+  rewrite.** The MANI-I.* / SCHW.1 entries
+  above stay as-is; this SCHW.2 entry is
+  additive.
+- **No `MODULE_MAP.md` update.** The
+  per-slice audit is doc-only; module-map
+  promotion still waits for MANI-I.12
+  (final cross-host audit) per the
+  integration plan §11.
+- **No update to the prior audit docs.** The
+  MANI-I.2 / MANI-I.4 / MANI-I.6 / MANI-I.9
+  audit docs are preserved as point-in-time
+  historical snapshots of the renumbering
+  state at their time of writing.
+- **No integration plan §3 chain-diagram
+  update.** The SCHW.* renumbering is local
+  to the SCHWARZSCHILD_LIKE_REMAP_PLAN.md
+  §8 sub-slice ladder; the integration
+  plan still references MANI-I.10 as the
+  Schwarzschild-like slice (which contains
+  the SCHW.* sub-slices). The MANI-I.10
+  slot's content is unchanged.
+
+### Acceptance
+
+- **Compiles.** Documentation-only slice;
+  no build configuration touched. The
+  audit-host build remains at the
+  post-SCHW.1 baseline (`100% tests passed,
+  0 tests failed out of 12`;
+  `manifold_identity_tests: 140 / 140
+  checks passed`; `cli_tests: 123/123
+  passed`; `renderer_tests: 19 / 19
+  passed`).
+- **Internally consistent.** The seven-row
+  evidence table cites concrete file / line
+  positions in `SchwarzschildLikeWarp.h`
+  and named test functions in
+  `manifold_identity_tests.cpp` that
+  re-verify on the audit host; the
+  renumbering in
+  `SCHWARZSCHILD_LIKE_REMAP_PLAN.md` §8 is
+  verified by reading the renumbered
+  section headings.
+- **Verdict honesty.** The verdict is
+  `PASS` because the structural checks
+  pass — not because of an arbitrary
+  judgement call. Every claim in the
+  evidence table is backed by a file +
+  line citation or by a named test
+  function. The bounded-transform
+  invariant (check #2) is **provable
+  analytically**, not just empirically;
+  the no-singularity invariant (check
+  #3) is enforced at four code-level
+  layers; the no-renderer-behavior-
+  change invariant (check #6) is
+  **structurally guaranteed** because
+  no kernel call site invokes the new
+  helpers yet (verified by `git diff
+  --name-only` filtered against the
+  16 renderer subdirectories).
+
+### Module status changes
+
+`docs/MODULE_MAP.md` is *not* updated by this
+slice. The SCHW.2 audit verdict (`PASS`)
+authorises the operator to proceed to SCHW.3
+(CPU integration; renumbered from the
+original SCHW.2 in
+`SCHWARZSCHILD_LIKE_REMAP_PLAN.md` §8); no
+module-map row changes state until
+MANI-I.12 (final cross-host audit) lands.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
