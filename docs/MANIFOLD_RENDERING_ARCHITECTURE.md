@@ -559,7 +559,7 @@ Architecture Doc* stage. The operational sequence of slices that
 threads the Manifold Core's POD surface into the existing CUDA / OptiX
 renderer is specified in
 [`docs/MANIFOLD_INTEGRATION_PLAN.md`](MANIFOLD_INTEGRATION_PLAN.md)
-(MANI-I.1 through MANI-I.10); the high-level list below is the source-
+(MANI-I.1 through MANI-I.12); the high-level list below is the source-
 side milestone view, the integration-plan doc is the renderer-side
 operational view, and the two are read together.
 

@@ -72836,6 +72836,187 @@ allocation deferred". Module-map promotion still
 waits for MANI-I.10 (final cross-host audit) per
 the integration plan §11.
 
+## MANI-I.9 — Manifold Debug AOV Audit (docs only)
+
+**Scope of this slice (per the operator's *MANI-I.9 —
+Manifold Debug AOV Audit* task brief): write
+`docs/MANIFOLD_DEBUG_AOV_AUDIT.md`, the per-slice
+verdict document for MANI-I.8 (`094306f`). Verifies
+the eight items the task brief enumerates — AOV
+exists; beauty output unchanged by default; identity
+/ neutral diagnostic on disabled / Euclidean; AOV
+generation is optional; CUDA path status; OptiX path
+status; runtime status; verdict — and produces the
+PASS / REPAIR / BLOCKED verdict that gates progression
+to the first curved-chart slice (renumbered MANI-I.10
+Schwarzschild-like). Documentation only; no source
+code, no test, no CMake, no behavioural change.
+Inserts MANI-I.9 as a per-slice audit slot AND
+renames MANI-I.8 (Schwarzschild-like in the post-
+MANI-I.6 plan) to MANI-I.10 to absorb the implicit
+MANI-I.7-task-def + MANI-I.9-audit insertions; the
+plan now has twelve slices instead of ten.**
+
+### What ships
+
+- **`docs/MANIFOLD_DEBUG_AOV_AUDIT.md` (new).**
+  Per-slice verdict document mirroring the
+  `MANIFOLD_CORE_FOUNDATION_AUDIT.md` /
+  `MANIFOLD_CLI_CONFIG_AUDIT.md` /
+  `MANIFOLD_RENDER_CONFIG_BRIDGE_AUDIT.md` /
+  `MANIFOLD_EUCLIDEAN_GPU_IDENTITY_AUDIT.md` shape:
+    - **§1 VERDICT** — `PASS` (structural). CUDA
+      path fully wired; OptiX path kernel-arms-only
+      with host-side allocation DEFERRED to a
+      follow-up slice. Runtime CUDA pixel-value
+      verification DEFERRED behind the audit-host
+      gate.
+    - **§2 PER-CHECK RESULTS** — eight-row evidence
+      table. Each row cites concrete observations:
+      `AOVType::ManifoldCoordinates = 6` at
+      `AOV.h:75`; `aov_component_count == 3` and
+      `aov_type_name == "manifold_coordinates"`
+      at `AOV.cpp:15/32`; factory at `AOV.cpp:90`;
+      CUDA kernel arm at `CudaTestKernel.cu:591`
+      writing `best.position` on hit and
+      `(0, 0, 0)` on miss; OptiX kernel arms at
+      `OptixPrograms.cu:309` (miss) and
+      `:732` (closest-hit); `grep -c
+      "aov_manifold_coordinates"
+      src/optix/OptixRenderer.cpp` returns `0`
+      (OptiX host-side allocation deferred);
+      host-side allocation gate at
+      `main.cpp:3801`; ctest 12/12;
+      `renderer_tests: 19 / 19 passed`;
+      `cli_tests: 123/123 passed`.
+    - **§3 REASONING SUMMARY** — recap of the
+      MANI-I.8 commit's 12-file scope; the
+      structurally-guaranteed bit-identity (no
+      kernel arm reads `manifold_coordinates`
+      when the pointer is `nullptr`, which is
+      the default); the audit-host runtime-
+      deferral rationale; the OptiX host-side
+      allocation deferral with the documented
+      follow-up plan (allocate `d_aov_manifold`
+      analogous to `d_aov_beauty` etc. in
+      `OptixRenderer::render_aovs`; add a slot
+      to `AovResult`; download + return; update
+      `run_render_optix_aovs` to save the PPM
+      when the gate is on).
+    - **§4 NEXT** — names the integration-plan
+      renumbering (MANI-I.9 audit inserted;
+      MANI-I.8 → MANI-I.10 / MANI-I.9 →
+      MANI-I.11 / MANI-I.10 → MANI-I.12, a
+      +2 shift on the last three slots to
+      absorb both the MANI-I.7 task-def
+      insertion and this MANI-I.9 audit
+      insertion) and points at MANI-I.10
+      Schwarzschild-like as the next concrete
+      slice the operator may prompt for.
+- **`docs/MANIFOLD_INTEGRATION_PLAN.md`
+  (renumbered).** Three replace-all
+  substitutions shift the three trailing
+  MANI-I.x labels (highest-to-lowest to avoid
+  double-shifting): MANI-I.10 → MANI-I.12,
+  MANI-I.9 → MANI-I.11, MANI-I.8 → MANI-I.10.
+  The §3 chain diagram is rewritten by hand to
+  insert three new boxes (the existing
+  MANI-I.7 "debug coordinate-warp AOV" box was
+  replaced with a MANI-I.7 task definition
+  box; new MANI-I.8 implementation box;
+  new MANI-I.9 audit box) and to remove the
+  stale duplicate MANI-I.10 box that the
+  replace_all chain left behind. The "Why this
+  ordering?" prose is updated to describe the
+  new task-def / impl / audit triplet for the
+  debug AOV and to cite the four audit slots
+  (MANI-I.2 / MANI-I.4 / MANI-I.6 / MANI-I.9).
+  The section heading numbers (§4 through §12)
+  stay stable; the audit slice does not get
+  its own slice section because the audit doc
+  is the authoritative artifact.
+- **`docs/MANIFOLD_RENDERING_ARCHITECTURE.md`
+  (cross-reference update).** §10
+  operational-view pointer reads "MANI-I.1
+  through MANI-I.12" after this slice (was
+  "...MANI-I.10").
+- **`docs/MANIFOLD_CORE_FOUNDATION_AUDIT.md`
+  (cross-reference update).** §3 reasoning-
+  summary forward-looking statement updated
+  to point at the twelve-slice plan, name all
+  four audit slots (MANI-I.2 / MANI-I.4 /
+  MANI-I.6 / MANI-I.9), the MANI-I.7 task
+  definition, the two GPU-side slices
+  (MANI-I.5 / MANI-I.8), and cite all four
+  audit docs.
+
+### What does NOT ship
+
+- **No source code.** Nothing in any `src/`
+  subtree is touched (`git diff` outside
+  `docs/` ⇒ 0 bytes).
+- **No new test binary.** ctest set unchanged
+  at 12.
+- **No CMake change.** No new `rr_*` target;
+  no link-line change.
+- **No `BUILD_PLAN.md` historical-record
+  rewrite.** The MANI-I.1 / MANI-I.2 /
+  MANI-I.3 / MANI-I.4 / MANI-I.5 / MANI-I.6 /
+  MANI-I.7 / MANI-I.8 entries above stay
+  as-is; this MANI-I.9 entry is additive.
+- **No `MODULE_MAP.md` update.** The
+  per-slice audit is doc-only; module-map
+  promotion still waits for MANI-I.12 (final
+  cross-host audit) per the integration plan
+  §11.
+- **No update to the prior audit docs.** The
+  MANI-I.2 / MANI-I.4 / MANI-I.6 audit docs
+  are preserved as point-in-time historical
+  snapshots of the renumbering state at their
+  time of writing.
+- **No OptiX host-side allocation.** The
+  audit documents the deferral; the fix is a
+  separate small slice.
+
+### Acceptance
+
+- **Compiles.** Documentation-only slice; no
+  build configuration touched. The audit-host
+  build remains at the post-MANI-I.8 baseline
+  (`100% tests passed, 0 tests failed out of
+  12`; `renderer_tests: 19 / 19 passed`;
+  `cli_tests: 123/123 passed`).
+- **Internally consistent.** The eight-row
+  evidence table cites concrete file / line
+  positions that can be re-verified on the
+  audit host; the renumbering in the
+  integration plan is verified by a final
+  `grep MANI-I.` pass showing every reference
+  uses the twelve-slice numbering with
+  MANI-I.9 as the new audit slot.
+- **Verdict honesty.** The verdict is `PASS`
+  (structural) because the structural checks
+  pass — not because of an arbitrary judgement
+  call. The bit-identity invariant is
+  **structurally guaranteed**, not just
+  empirically observed (no kernel arm reads
+  `manifold_coordinates` when the pointer is
+  `nullptr`, which is the default; the gate
+  is at both the host-side allocator and the
+  device-side null-check). The OptiX
+  host-side allocation deferral is documented
+  explicitly as a follow-up, not papered over.
+
+### Module status changes
+
+`docs/MODULE_MAP.md` is *not* updated by this
+slice. The MANI-I.9 audit verdict (`PASS`)
+authorises the operator to proceed to MANI-I.10
+(Schwarzschild-like artistic coordinate remap
+under the renumbered integration plan §8); no
+module-map row changes state until MANI-I.12
+(final cross-host audit) lands.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:

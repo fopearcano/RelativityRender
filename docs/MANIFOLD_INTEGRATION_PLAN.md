@@ -5,7 +5,7 @@ this artifact.** Per the master instructions (rules #2, #3,
 #12) the only deliverable of this stage is this file.
 Concrete kernels, CLI parsing, RenderSettings extensions,
 and AOV plumbing land in their own incremental commits
-(`MANI-I.1` through `MANI-I.10`), each with a
+(`MANI-I.1` through `MANI-I.12`), each with a
 `BUILD_PLAN.md` entry and its own reference / acceptance
 output.
 
@@ -22,7 +22,7 @@ This document is read alongside:
 - `docs/FIELD_INTERPRETATION_LAYER.md` — Phase 1's
   perception-transcoding sibling. Its §9 kernel slices
   (FIELD.3 Kretschmann-scalar diagnostic AOV onward) wait
-  on this plan's MANI-I.8 / MANI-I.9 to ship a curved
+  on this plan's MANI-I.10 / MANI-I.11 to ship a curved
   chart they can read.
 - `docs/MASTER_ARCHITECTURE.md` — long-term project
   architecture outside the Manifold Core Pivot.
@@ -72,7 +72,7 @@ and its own audit doc when audit is required.
 
 The single load-bearing invariant of this plan is:
 
-> Every slice (MANI-I.1 through MANI-I.10) must preserve
+> Every slice (MANI-I.1 through MANI-I.12) must preserve
 > the renderer's pre-pivot output bit-for-bit on every
 > existing CLI action when the user does not opt in to a
 > non-Euclidean manifold mode.
@@ -120,17 +120,23 @@ crosses before merge.
 
 ## 3. Slice ordering & dependencies
 
-The ten slices form a strict prefix chain — each slice
-ships only after its predecessor is green. MANI-I.2,
-MANI-I.4, and MANI-I.6 are per-slice audit slots
-(doc-only) inserted once MANI-I.1 / MANI-I.3 / MANI-I.5
-landed (see `docs/MANIFOLD_CLI_CONFIG_AUDIT.md`,
-`docs/MANIFOLD_RENDER_CONFIG_BRIDGE_AUDIT.md`, and
-`docs/MANIFOLD_EUCLIDEAN_GPU_IDENTITY_AUDIT.md`); the
-original plan had a single-audit endpoint, but
-per-slice audits slot in alongside the implementation
-slices when an operator-prompted gate is needed before
-the next slice starts.
+The twelve slices form a strict prefix chain — each
+slice ships only after its predecessor is green.
+MANI-I.2, MANI-I.4, MANI-I.6, and MANI-I.9 are
+per-slice audit slots (doc-only) inserted once
+MANI-I.1 / MANI-I.3 / MANI-I.5 / MANI-I.8 landed
+(see `docs/MANIFOLD_CLI_CONFIG_AUDIT.md`,
+`docs/MANIFOLD_RENDER_CONFIG_BRIDGE_AUDIT.md`,
+`docs/MANIFOLD_EUCLIDEAN_GPU_IDENTITY_AUDIT.md`, and
+`docs/MANIFOLD_DEBUG_AOV_AUDIT.md`); MANI-I.7 is a
+task-definition slot (doc-only; see
+`docs/MANIFOLD_DEBUG_AOV_TASK.md`) inserted as the
+operator-facing brief before MANI-I.8 implemented the
+Debug AOV. The original plan had a single-audit
+endpoint, but per-slice audits and per-slice task
+definitions slot in alongside the implementation
+slices when an operator-prompted gate is needed
+before the next slice starts.
 
 ```
 +--------------------------------------------------------------+
@@ -200,15 +206,40 @@ the next slice starts.
                               |
                               v
 +--------------------------------------------------------------+
-| MANI-I.7: debug coordinate-warp AOV                          |
-|   - New AOV slot `ManifoldWarp` writes per-pixel chart-      |
-|     space hit position. Sanity check for the future          |
-|     curved-chart slices.                                     |
+| MANI-I.7: debug AOV task definition (docs-only)              |
+|   - Operator-facing brief for the manifold debug AOV         |
+|     surface (recommended AOV name, gating, identity /        |
+|     neutral diagnostic on Euclidean, runtime-deferred        |
+|     checks).                                                 |
+|   - Documented in docs/MANIFOLD_DEBUG_AOV_TASK.md.           |
 +--------------------------------------------------------------+
                               |
                               v
 +--------------------------------------------------------------+
-| MANI-I.8: Schwarzschild-like artistic coordinate remap       |
+| MANI-I.8: manifold debug AOV implementation                  |
+|   - AOVType::ManifoldCoordinates enumerator + helpers +      |
+|     factory. CUDA path full plumb: DeviceAOVView /           |
+|     CudaRenderer::AOVTargets / kernel arm in                 |
+|     k_render_scene / run_render_aovs host-side allocation    |
+|     gated on --manifold-debug. OptiX path: kernel arms in    |
+|     OptixPrograms.cu (closest-hit + miss); host-side         |
+|     render_aovs allocation deferred.                         |
++--------------------------------------------------------------+
+                              |
+                              v
++--------------------------------------------------------------+
+| MANI-I.9: manifold debug AOV audit (docs-only)               |
+|   - Per-slice gate for MANI-I.8. Verifies AOV exists,        |
+|     beauty output unchanged by default, identity /           |
+|     neutral on Euclidean, AOV generation is optional,        |
+|     CUDA path full plumb, OptiX path kernel-arms-only        |
+|     with host-side allocation deferred, build/test green.    |
+|   - Documented in docs/MANIFOLD_DEBUG_AOV_AUDIT.md.          |
++--------------------------------------------------------------+
+                              |
+                              v
++--------------------------------------------------------------+
+| MANI-I.10: Schwarzschild-like artistic coordinate remap      |
 |   - First non-trivial chart. Artistic, not physical.         |
 |     Lights bend around a configured "mass" centre via a      |
 |     closed-form coordinate remap (NOT a geodesic             |
@@ -217,14 +248,14 @@ the next slice starts.
                               |
                               v
 +--------------------------------------------------------------+
-| MANI-I.9: Penrose-like compactification visualisation        |
+| MANI-I.11: Penrose-like compactification visualisation        |
 |   - Second non-trivial chart. Maps asymptotic infinity       |
 |     onto a finite boundary for diagrammatic visualisation.   |
 +--------------------------------------------------------------+
                               |
                               v
 +--------------------------------------------------------------+
-| MANI-I.10: cross-host final audit                             |
+| MANI-I.12: cross-host final audit                             |
 |   - Cross-host runtime audit (CUDA + OptiX-SDK host)         |
 |     pinning every bit-identity invariant + every opt-in      |
 |     surface + every new AOV layout + every CLI combo.        |
@@ -256,33 +287,50 @@ the next slice starts.
   deliberately a no-op — its acceptance is "bit-
   identical output to the pre-MANI-I.5 baseline".
   Landing the GPU plumbing while it is a no-op is what
-  makes MANI-I.8 / MANI-I.9 tractable: only the
+  makes MANI-I.10 / MANI-I.11 tractable: only the
   *chart* changes, not the kernel scaffolding.
 - MANI-I.6 (Euclidean Identity GPU Path Audit) is
   the doc-only gate between MANI-I.5 (which widened
   the launch-params POD and the CUDA launcher
-  signature) and MANI-I.7 (the first kernel-side
-  read of manifold state, through the debug AOV
-  slot). The audit pins the structural guarantee
-  that no kernel arm reads manifold_mode at
-  MANI-I.5; the runtime CUDA / OptiX byte-identity
-  re-verification is deferred behind the
-  audit-host gate, matching the existing
+  signature) and MANI-I.7 (the debug-AOV task
+  definition that begins the first kernel-side
+  consumer of manifold state). The audit pins the
+  structural guarantee that no kernel arm reads
+  manifold_mode at MANI-I.5; the runtime CUDA /
+  OptiX byte-identity re-verification is deferred
+  behind the audit-host gate, matching the existing
   firefly_clamp / enable_nee posture.
-- MANI-I.7 (debug AOV) lands before any curved chart
-  so the visual sanity check is available *when* the
-  first curved chart breaks something.
-- MANI-I.8 (Schwarzschild-like) before MANI-I.9
-  (Penrose-like) because the Schwarzschild-like remap
-  is the simpler coordinate transform (radial-only,
-  closed-form); Penrose-like compactification needs
-  `tanh`-style coordinate compression on top of an
-  already-working curved-chart seam.
-- MANI-I.10 (final audit) is last; the audit covers
-  every prior slice including the per-slice MANI-I.2 /
-  MANI-I.4 / MANI-I.6 audits and absorbs the runtime
-  CUDA / OptiX byte-identity gate that MANI-I.6
-  defers.
+- MANI-I.7 (debug-AOV task definition, doc-only)
+  precedes MANI-I.8 (impl) so the operator-facing
+  brief is pinned before the impl commit. The task
+  definition documents the AOV naming, gating, and
+  identity / neutral diagnostic on Euclidean.
+- MANI-I.8 (debug-AOV implementation) lands before
+  any curved chart so the visual sanity check is
+  available *when* the first curved chart breaks
+  something. CUDA path full plumb; OptiX path
+  kernel-arms-only with host-side allocation
+  deferred (documented).
+- MANI-I.9 (debug-AOV audit, doc-only) closes the
+  per-slice gate after MANI-I.8. Verifies the
+  beauty-output bit-identity, identity / neutral
+  diagnostic on Euclidean, optional AOV generation,
+  CUDA path full plumb, and OptiX path kernel-
+  arms-only.
+- MANI-I.10 (Schwarzschild-like) before MANI-I.11
+  (Penrose-like) because the Schwarzschild-like
+  remap is the simpler coordinate transform
+  (radial-only, closed-form); Penrose-like
+  compactification needs `tanh`-style coordinate
+  compression on top of an already-working
+  curved-chart seam.
+- MANI-I.12 (final audit) is last; the audit covers
+  every prior slice including the per-slice
+  MANI-I.2 / MANI-I.4 / MANI-I.6 / MANI-I.9 audits
+  and absorbs the runtime CUDA / OptiX byte-
+  identity gates that those audits defer (including
+  the OptiX host-side allocation gap MANI-I.9
+  documented).
 
 ---
 
@@ -395,7 +443,7 @@ no `RenderSettings`, no renderer, no GPU code touched.
 - No GPU change.
 - No new AOV.
 - No `.rrscene` serialisation of the manifold mode (lands
-  later, alongside MANI-I.8 when artists need to author
+  later, alongside MANI-I.10 when artists need to author
   curved-chart scenes through the file format).
 - No `--manifold-*` modifier flag is wired into the
   action-mutual-exclusion list (the four flags are
@@ -542,7 +590,7 @@ must be bit-identical to the pre-MANI-I.5 baseline.
 
 This slice lands the GPU plumbing while it is still a
 no-op. After this slice, every curved-chart slice
-(MANI-I.8 / MANI-I.9) only needs to add a chart
+(MANI-I.10 / MANI-I.11) only needs to add a chart
 specialisation; the kernel scaffolding is already in place.
 
 ### Prerequisites
@@ -610,7 +658,7 @@ specialisation; the kernel scaffolding is already in place.
   address, and dereferencing it on device would
   fault). Adding `ManifoldTransform` to the launch
   params requires a GPU-friendly POD strip — that
-  surface lands with MANI-I.8's first curved-chart
+  surface lands with MANI-I.10's first curved-chart
   slice that actually needs to read the transform on
   device.
 - **No kernel-side ray-gen seam this slice.** The
@@ -746,7 +794,7 @@ specialisation; the kernel scaffolding is already in place.
   no kernel branches on chart type yet.
 - No `ManifoldTransform` on the launch params (see
   "Implementation choice notes" above — deferred to
-  MANI-I.8's first curved-chart slice).
+  MANI-I.10's first curved-chart slice).
 - No kernel-side ray-gen seam (see "Implementation
   choice notes" — FP byte-identity gate).
 - No hit-shading seam.
@@ -770,7 +818,7 @@ specialisation; the kernel scaffolding is already in place.
 A new AOV that visualises the chart-space coordinates of
 each primary-ray hit. On the Euclidean chart the AOV is
 identically the world-space hit position (no warp). On a
-future curved chart (MANI-I.8 / MANI-I.9) the AOV will
+future curved chart (MANI-I.10 / MANI-I.11) the AOV will
 make the coordinate deformation legible — the visual
 sanity check the curved-chart slices need.
 
@@ -789,7 +837,7 @@ in §3.4.
 
 - **`src/renderer/AOV.h` + `AOV.cpp`** — new
   `AOVType::ManifoldCoordinates = 6` enumerator appended
-  at the end of the enum (preserves every pre-MANI-I.8
+  at the end of the enum (preserves every pre-MANI-I.10
   value); `aov_component_count` returns `3`;
   `aov_type_name` returns `"manifold_coordinates"`;
   `AOV::make_manifold_coordinates(...)` factory.
@@ -807,7 +855,7 @@ in §3.4.
   write arm in `k_render_scene` writes
   `(best.position.x, .y, .z)` on hit and `(0, 0, 0)` on
   miss when the pointer is non-null. The arm is the
-  *neutral / identity diagnostic* for MANI-I.8: the
+  *neutral / identity diagnostic* for MANI-I.10: the
   world-space hit position is what the future
   curved-chart code would also output on the Euclidean
   default, so the implementation is honest for every
@@ -816,7 +864,7 @@ in §3.4.
 - **`src/optix/OptixLaunchParams.h`** — new
   `float* aov_manifold_coordinates = nullptr;` field at
   the end of the launch-params POD (preserves every
-  pre-MANI-I.8 field's offset).
+  pre-MANI-I.10 field's offset).
 - **`src/optix/OptixPrograms.cu`** — closest-hit-side
   write arm (uses `optixGetWorldRayOrigin() +
   optixGetRayTmax() * optixGetWorldRayDirection()` to
@@ -825,10 +873,10 @@ in §3.4.
   **The OptiX host-side `OptixRenderer::render_aovs`
   does NOT allocate this slot this slice** — that
   follow-up landing is deferred to a small subsequent
-  slice (or rolled into the MANI-I.9 / MANI-I.10
+  slice (or rolled into the MANI-I.11 / MANI-I.12
   surface). The kernel arms stay dormant at runtime
   in the OptiX path until that wiring lands; the OptiX
-  path's pre-MANI-I.8 output is byte-identical.
+  path's pre-MANI-I.10 output is byte-identical.
 - **`src/main.cpp` `run_render_aovs`** — when
   `cfg.manifold.debug_visualization` is `true`,
   allocates a 7th `GpuAOVBuffer` for the
@@ -839,14 +887,14 @@ in §3.4.
   existing six AOV PPMs. When the gate is off the
   buffer is not allocated, `targets.manifold_coordinates
   = nullptr`, and the kernel arm short-circuits — the
-  CUDA path's pre-MANI-I.8 output is byte-identical.
+  CUDA path's pre-MANI-I.10 output is byte-identical.
 - **`tests/renderer_tests.cpp`** — three new test
   functions (six new RR_CHECKs total): enumerator
   value `== 6`, `aov_component_count == 3`,
   `aov_type_name == "manifold_coordinates"`,
   factory default-name behaviour, factory custom-name
   behaviour. The binary reports `19 / 19 passed`
-  (was 13 / 13 pre-MANI-I.8).
+  (was 13 / 13 pre-MANI-I.10).
 
 ### Acceptance
 
@@ -860,10 +908,10 @@ in §3.4.
   `--render-aovs` *without* `--manifold-debug` emits
   exactly the existing six PPMs (no new file).
 - OptiX path: `--render-optix-aovs` is byte-identical to
-  the pre-MANI-I.8 baseline regardless of
+  the pre-MANI-I.10 baseline regardless of
   `--manifold-debug` (the kernel arms are wired but
   the host-side allocation is deferred — the field
-  stays `nullptr` at runtime; pre-MANI-I.8 pixel
+  stays `nullptr` at runtime; pre-MANI-I.10 pixel
   output is structurally preserved).
 - Beauty output byte-identity on every existing CLI
   action: structurally guaranteed; the new AOV write
@@ -877,7 +925,7 @@ in §3.4.
   pinned reference) is DEFERRED behind the audit
   host's no-CUDA / no-OptiX-SDK fallback, matching
   the existing per-slice audits' posture (the
-  MANI-I.9 audit and MANI-I.10 final cross-host audit
+  MANI-I.11 audit and MANI-I.12 final cross-host audit
   will pin the reference images).
 
 ### Risks & mitigations (LANDED)
@@ -885,7 +933,7 @@ in §3.4.
 - **AOV-buffer layout change** breaks the OptiX
   denoiser hand-off. Mitigated by appending the new
   AOV slot at the END of the enum (preserves every
-  pre-MANI-I.8 enumerator value) and by gating the
+  pre-MANI-I.10 enumerator value) and by gating the
   new slot's allocation behind `--manifold-debug`
   (the denoiser path's `Beauty` / `Albedo` /
   `Normal` consumption is unaffected — those three
@@ -898,15 +946,15 @@ in §3.4.
   arms are in place but the OptiX `--render-optix-aovs`
   action does not yet emit the new PPM. Documented
   as a known follow-up; the OptiX path's
-  pre-MANI-I.8 output is byte-identical structurally
+  pre-MANI-I.10 output is byte-identical structurally
   (null pointer → kernel short-circuit). No
   observable regression; the deferral is honest.
 
 ### What does NOT ship
 
-- No curved-chart math (MANI-I.9). The AOV writes
+- No curved-chart math (MANI-I.11). The AOV writes
   the world-space hit position as the documented
-  identity / neutral diagnostic; future MANI-I.9+
+  identity / neutral diagnostic; future MANI-I.11+
   slices add chart-specific logic above this write
   arm.
 - No second-tier AOV (e.g. curvature scalar) — that
@@ -921,7 +969,7 @@ in §3.4.
 
 ---
 
-## 8. MANI-I.8 — Schwarzschild-like artistic coordinate remap
+## 8. MANI-I.10 — Schwarzschild-like artistic coordinate remap
 
 ### Goal
 
@@ -968,20 +1016,20 @@ physically exact (architecture-doc §8 non-goal).
   single bright sphere offset from the optical axis,
   rendered with and without the chart engaged. The
   without-flag image is bit-identical to the
-  pre-MANI-I.8 baseline; the with-flag image is the new
+  pre-MANI-I.10 baseline; the with-flag image is the new
   reference image pinning the chart's visual signature.
 - **A new audit doc** `docs/MANI_I_5_SCHWARZSCHILD_AUDIT.md`
   with the closed-form remap formula, the visual
   acceptance gate, and the bit-identity verification of
   the off-path.
-- **`docs/BUILD_PLAN.md`** gets a MANI-I.8 entry.
+- **`docs/BUILD_PLAN.md`** gets a MANI-I.10 entry.
 
 ### Acceptance
 
 - Audit-host build green; ctest 12/12.
 - The off-path (default `ManifoldMode{}`, or
   `--manifold-mode Euclidean`) is bit-identical to the
-  pre-MANI-I.8 baseline on all the actions enumerated in
+  pre-MANI-I.10 baseline on all the actions enumerated in
   the MANI-I.5 acceptance section.
 - The on-path
   (`--manifold-mode SchwarzschildLike`,
@@ -1038,7 +1086,7 @@ physically exact (architecture-doc §8 non-goal).
 
 ---
 
-## 9. MANI-I.9 — Penrose-like compactification visualization
+## 9. MANI-I.11 — Penrose-like compactification visualization
 
 ### Goal
 
@@ -1051,14 +1099,14 @@ where the artist wants the whole asymptotic structure
 visible in a single frame, not for production beauty
 passes.
 
-Same master-rule honesty as MANI-I.8: the chart is real,
+Same master-rule honesty as MANI-I.10: the chart is real,
 complete, and tested against its own closed-form
 reference, but not claimed to be physically exact.
 
 ### Prerequisites
 
-- MANI-I.8 — the chart-aware seam is already curved-chart-
-  capable; MANI-I.9 only adds a new chart branch.
+- MANI-I.10 — the chart-aware seam is already curved-chart-
+  capable; MANI-I.11 only adds a new chart branch.
 
 ### What ships
 
@@ -1085,17 +1133,17 @@ reference, but not claimed to be physically exact.
   compactification formula, the boundary-mapping
   acceptance gate, and the bit-identity verification of
   the off-path.
-- **`docs/BUILD_PLAN.md`** gets a MANI-I.9 entry.
+- **`docs/BUILD_PLAN.md`** gets a MANI-I.11 entry.
 
 ### Acceptance
 
 - Audit-host build green; ctest 12/12.
 - The off-path (default `ManifoldMode{}`) is
-  bit-identical to the pre-MANI-I.9 baseline on every
+  bit-identical to the pre-MANI-I.11 baseline on every
   CLI action enumerated in the MANI-I.5 acceptance
-  section, **plus** the MANI-I.8 reference images
+  section, **plus** the MANI-I.10 reference images
   (i.e. running `--manifold-mode SchwarzschildLike`
-  still produces the MANI-I.8 image bit-for-bit).
+  still produces the MANI-I.10 image bit-for-bit).
 - The on-path (`--manifold-mode PenroseLikePlaceholder` —
   but reading "PenroseLike", which we may rename in this
   slice; see Risks) produces an image whose
@@ -1123,7 +1171,7 @@ reference, but not claimed to be physically exact.
   default that produces a sensible boundary at
   `tanh(scale * |r|) ≈ ±0.95` for typical scene scales.
 - **Performance regression** on the off-path same as
-  MANI-I.8; same mitigation.
+  MANI-I.10; same mitigation.
 
 ### What does NOT ship
 
@@ -1140,7 +1188,7 @@ reference, but not claimed to be physically exact.
 
 ---
 
-## 10. MANI-I.10 — audit
+## 10. MANI-I.12 — audit
 
 ### Goal
 
@@ -1152,7 +1200,7 @@ the merge gate for the whole MANI-I.* programme.
 
 ### Prerequisites
 
-- MANI-I.1 through MANI-I.9 — all six prior slices green
+- MANI-I.1 through MANI-I.11 — all six prior slices green
   on the audit host.
 
 ### What ships
@@ -1163,7 +1211,7 @@ the merge gate for the whole MANI-I.* programme.
     (`--manifold-mode * × --manifold-strength * ×
     --manifold-debug-warp`);
   - per-slice acceptance regression: every reference
-    image pinned by MANI-I.8 / MANI-I.9 reproduces
+    image pinned by MANI-I.10 / MANI-I.11 reproduces
     bit-for-bit; every pre-pivot reference image is
     untouched by the off-path of every slice;
   - launch-params layout audit: the
@@ -1181,7 +1229,7 @@ the merge gate for the whole MANI-I.* programme.
     representative scene is within `5%` of the
     pre-pivot baseline (measured via the existing
     `GpuTiming` instrumentation).
-- **`docs/BUILD_PLAN.md`** gets a MANI-I.10 entry.
+- **`docs/BUILD_PLAN.md`** gets a MANI-I.12 entry.
 
 ### Acceptance
 
@@ -1211,12 +1259,12 @@ the merge gate for the whole MANI-I.* programme.
 
 - No source change. The audit is a regression-and-
   invariant document; if it finds a gap, the gap is
-  filled by a follow-up slice (`MANI-I.10.N`), not by
+  filled by a follow-up slice (`MANI-I.12.N`), not by
   this slice.
 - No new test binary unless gap-driven; the existing
   ctest set is expected to cover the audit invariants
   with the assertion expansions added across MANI-I.1
-  through MANI-I.9.
+  through MANI-I.11.
 
 ---
 
@@ -1240,7 +1288,7 @@ The MANI-I.* programme deliberately does **not**:
   operator follows before approving the promotion.
 - Ship a CLI / scene-file pipeline for the Field
   Interpretation Layer. FIELD.3+ slices land separately,
-  reading the curved-chart surface MANI-I.8 / MANI-I.9
+  reading the curved-chart surface MANI-I.10 / MANI-I.11
   expose.
 - Re-architect the relativistic camera model. The
   existing `src/relativity/` helpers continue to feed
@@ -1263,7 +1311,7 @@ The MANI-I.* programme deliberately does **not**:
   Phase 2, §7 chart-aware seam, §8 non-goals, §10
   milestone order, §11 references).
 - `docs/FIELD_INTERPRETATION_LAYER.md` — Phase 1 sibling;
-  §9 kernel slices wait on MANI-I.8 / MANI-I.9.
+  §9 kernel slices wait on MANI-I.10 / MANI-I.11.
 - `docs/MASTER_ARCHITECTURE.md` — long-term project
   architecture.
 - `docs/BUILD_PLAN.md` — per-slice implementation status;
