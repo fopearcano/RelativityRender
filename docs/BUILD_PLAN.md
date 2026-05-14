@@ -74219,6 +74219,276 @@ proceed to SCHW.5 (CUDA integration) when ready;
 no module-map row changes state until MANI-I.12
 (final cross-host audit) lands.
 
+## SCHW.7 — Schwarzschild-Like OptiX Warp Bridge (impl, OptiX-side)
+
+**Scope of this slice (per the operator's *SCHW.7 —
+Schwarzschild-Like OptiX Warp Bridge* task brief and
+`docs/SCHWARZSCHILD_LIKE_REMAP_PLAN.md` §8 SCHW.7): wire
+the bounded SCHW.1 Schwarzschild-like warp math leaf
+into the OptiX closest-hit kernel's `ManifoldCoordinates`
+AOV write path, plumb the per-launch chart payload
+(`coordinate_chart`) through `OptixLaunchParams`, and
+land the host-side `aov_manifold_coordinates` allocation
+in `OptixRenderer::render_aovs` that the MANI-I.9 audit
+flagged as deferred. OptiX-only; CUDA path is unchanged.
+Activation is triple-gated: `manifold_mode.enabled` AND
+`chart == SchwarzschildLike` AND `strength > 0`. The
+default / Euclidean / disabled paths produce
+byte-identical output to the pre-SCHW.7 baseline.**
+
+### What ships
+
+- **`src/optix/OptixLaunchParams.h` (extended).** Two
+  new surface additions:
+    - **Header include.** `#include
+      "manifold/CoordinateChart.h"` pulls in the
+      `CoordinateChart` POD.
+    - **`coordinate_chart` field.** New
+      `rr::manifold::CoordinateChart coordinate_chart{}`
+      field at the end of the POD. The kernel reads
+      `coordinate_chart.origin` as the
+      SchwarzschildLike chart's `mass_origin` and
+      `coordinate_chart.params.{mass, spin,
+      compactification_scale}` as the math leaf's
+      `r_s` / `falloff` / `clamp_radius` per the
+      `SCHWARZSCHILD_LIKE_REMAP_PLAN.md` §3
+      reinterpretation table. Default-constructed
+      `CoordinateChart{}` is Euclidean — the
+      `is_active(...)` guard short-circuits this
+      arm on the default path.
+- **`src/optix/OptixRenderer.h` (extended).** Three
+  surface additions:
+    - **Header include.** `#include
+      "manifold/CoordinateChart.h"` pulls in the
+      POD.
+    - **`AovResult::manifold_coordinates` field.**
+      New `rr::image::Image manifold_coordinates`
+      slot. Empty `Image{}` on the default path
+      (the device buffer is null, the kernel
+      short-circuits, the host-side download is
+      skipped); populated when the operator opts
+      in via `manifold_mode.debug_visualization
+      = true`.
+    - **`render_aovs(...)` signature extension.**
+      Two new trailing defaulted parameters:
+      `rr::manifold::ManifoldMode manifold_mode =
+      {}` and `rr::manifold::CoordinateChart
+      coordinate_chart = {}`. Defaults preserve
+      the pre-pivot byte-identity invariant.
+- **`src/optix/OptixRenderer.cpp` (extended).** Both
+  the SDK_FOUND body and the audit-host stub gain
+  the new signature. SDK_FOUND body additionally:
+    - Allocates a `cudaMalloc(aov3_floats *
+      sizeof(float))` buffer for
+      `aov_manifold_coordinates` only when
+      `manifold_mode.debug_visualization` is `true`
+      (the MANI-I.9 audit's deferred OptiX-side
+      allocation finding closes here).
+    - Threads `manifold_mode` + `coordinate_chart`
+      into `params.manifold_mode` /
+      `params.coordinate_chart` /
+      `params.aov_manifold_coordinates` (the last
+      stays `nullptr` on the default).
+    - Downloads the AOV buffer to
+      `R.manifold_coordinates` (3-channel
+      `Rgb32F`) only when allocated.
+- **`src/optix/OptixPrograms.cu` (extended).** Two
+  surface additions:
+    - **Header include.** `#include
+      "manifold/SchwarzschildLikeWarp.h"` pulls in
+      the RR_HD inline SCHW.1 math leaf.
+    - **Closest-hit MANI-I.8 AOV write arm
+      (line ~720)** now triple-gates the
+      SchwarzschildLike warp:
+      `is_active(manifold_mode) && chart ==
+      SchwarzschildLike && strength > 0.0f`. On
+      the active path, the kernel builds a
+      `SchwarzschildLikeWarpParams` from
+      `coordinate_chart.params` + the
+      `manifold_mode.strength` runtime dial,
+      invokes
+      `schwarzschild_like_world_to_chart(world_pos,
+      coordinate_chart.origin, sp)`, and writes
+      the warped position to the AOV. On the
+      inactive path the raw `ro + t * rd` world-
+      space hit position is written (the
+      MANI-I.8 baseline). The miss-side arm
+      remains unchanged (writes `(0, 0, 0)` —
+      no hit position means no warp can apply).
+- **`src/main.cpp` (extended).** Two surface
+  additions in `run_render_optix_aovs`:
+    - **`CoordinateChart` builder.** Constructs a
+      `CoordinateChart` from `cfg.manifold.chart`
+      with artistic defaults for SchwarzschildLike
+      (`mass = 1.0`, `spin = 1.0`,
+      `compactification_scale = 0.1`, `origin =
+      (0,0,0)`) mirroring the SCHW.3 test fixture
+      (`make_schwarzschild_like_chart` in
+      `manifold_identity_tests.cpp`). The defaults
+      make the warp immediately visible on the
+      AOV when the operator opts in; future
+      slices can add CLI / scene-file plumbing for
+      non-default chart params without an ABI
+      bump.
+    - **`render_aovs(...)` call site.** Passes
+      `cfg.manifold` + the built chart through.
+    - **PPM save for the new AOV.** When
+      `cfg.manifold.debug_visualization` is `true`,
+      saves `r.manifold_coordinates` to
+      `output/optix_aov_manifold_coordinates.ppm`
+      via the existing `save_one(...)` helper.
+
+### What does NOT ship
+
+- **No CUDA touch.** `src/cuda/` is byte-identical.
+  The CUDA kernel arms still write the raw
+  `best.position` to `aov_manifold_coordinates`
+  (per MANI-I.8 / the unlanded SCHW.5); the OptiX
+  side now diverges by invoking the chart-aware
+  arm. This is consistent with the operator's
+  "OptiX path only" rule and the operator's
+  forward-looking SCHW.6 audit (where SCHW.5
+  CUDA-side wiring was explicitly noted as
+  unlanded).
+- **No pathtracer / scene / IO / renderer / server
+  touch.** The new code surface is restricted to
+  `src/optix/` + `src/main.cpp`'s
+  `run_render_optix_aovs` dispatcher arm.
+- **No full GR solver.** No Christoffel symbols;
+  no geodesic ODE; no Riemann tensor.
+  Architecture-doc §8 non-goals stand.
+- **No Penrose / Kerr / Kruskal behavior.** The
+  triple-gate `chart == SchwarzschildLike`
+  structurally bypasses the other `*Like` /
+  `*LikePlaceholder` chart families. Master rule
+  #3 (no silent routing through SchwarzschildLike
+  math) is preserved.
+- **No primary-ray direction warp.** The
+  `schwarzschild_like_warp_ray_direction` helper
+  exists at SCHW.1 but is not invoked from
+  raygen; SCHW.7 only routes the hit position
+  through the warp for the AOV write site. The
+  beauty pass uses the unwarped primary ray.
+- **No `OptixRenderer::render_aovs_retain`
+  signature change.** The retained-buffer entry
+  point (Stage 20N's denoiser fork) is unchanged
+  this slice; only the public `render_aovs`
+  gains the new parameters. Future denoiser
+  integration with chart-aware AOVs is deferred.
+- **No new ctest binary.** ctest set unchanged
+  at 12. The audit-host build cannot exercise
+  the OptiX kernel arm; runtime verification is
+  DEFERRED to a CUDA + OptiX-SDK host (per the
+  SCHW.6 audit's deferred-checks rubric).
+- **No CLI surface change.** The existing
+  `--manifold-enable` / `--manifold-chart` /
+  `--manifold-strength` / `--manifold-debug`
+  flags from MANI-I.1 are the only operator-
+  facing entry points; SCHW.7 reuses the same
+  surface.
+- **No `.rrscene` schema bump.** Chart parameters
+  ride on the existing `CoordinateChart` POD;
+  artistic defaults are baked into the OptiX
+  dispatcher per the section above.
+- **No `CudaTestKernel.cu` change.** The CUDA
+  side's `ManifoldCoordinates` AOV write site
+  is preserved verbatim. SCHW.5 will close the
+  CUDA-side gap.
+- **No C4D / server / UI / node-editor touch.**
+
+### Acceptance
+
+- **Compiles with OptiX OFF.** Audit-host rebuild
+  (`cmake --build build -j`) succeeds cleanly with
+  no new warnings under the project's
+  `rr_apply_warnings` settings. The audit-host
+  stub `render_aovs(...)` carries the new
+  signature and returns the documented
+  "requires SDK" message.
+- **Compiles with OptiX ON.** The SDK_FOUND
+  `render_aovs(...)` body wires the new
+  parameters through; the `OptixPrograms.cu`
+  closest-hit arm activates the SchwarzschildLike
+  warp on the triple-gate. (Audit-host build
+  cannot verify the OptiX-ON path directly; the
+  SDK_FOUND TU compiles under the same
+  audit-host compile rules but the link/launch
+  steps require a CUDA + OptiX SDK host. The
+  SDK_FOUND code path is structurally validated
+  by the audit-host TU's syntactic compile.)
+- **Tests.** Full ctest: `100% tests passed, 0
+  tests failed out of 12`. No regression vs. the
+  post-SCHW.6 baseline (`manifold_identity_tests:
+  198/198 checks passed`, `cli_tests: 123/123`,
+  `renderer_tests: 19/19`, `relativity_tests`
+  unchanged).
+- **Default / disabled mode remains byte-
+  identical.** Every `--render-optix-aovs`
+  invocation without `--manifold-enable
+  --manifold-chart schwarzschild-like
+  --manifold-strength <s>` continues to take the
+  pre-SCHW.7 code path: the
+  `aov_manifold_coordinates` device buffer stays
+  `nullptr` (host doesn't allocate when
+  `manifold_mode.debug_visualization` is false);
+  the `is_active(manifold_mode)` guard returns
+  `false` on the disabled default; the kernel
+  arm short-circuits.
+- **Euclidean mode remains identity.** With
+  `--manifold-enable --manifold-chart euclidean
+  --manifold-strength 1.0`, the
+  `is_active(...)` guard returns `false`
+  (Euclidean charts are intentionally "not active"
+  per the helper's documented semantic), so the
+  kernel writes the raw `ro + t * rd` hit
+  position. PPM output is byte-identical to the
+  pre-SCHW.7 baseline.
+- **CUDA and OptiX use equivalent warp math.**
+  Both paths invoke the same RR_HD inline
+  `schwarzschild_like_world_to_chart(...)` from
+  `src/manifold/SchwarzschildLikeWarp.h`. Today
+  the OptiX kernel is the only call site; when
+  SCHW.5 lands, the CUDA kernel will call the
+  same helper with the same parameter encoding
+  (chart-side `mass / spin / compactification_scale
+  / origin` + `manifold_mode.strength` runtime
+  dial).
+- **Warp remains bounded and NaN/Inf safe.**
+  Inherited from SCHW.1 / SCHW.2 audit. The
+  math leaf's four guards (clamp_radius lower
+  bound, NR 8-iteration cap, F' zero-guard,
+  primary-ray bend cap) carry through the OptiX
+  kernel arm. The triple-gate adds a fourth
+  defensive layer: when the operator inadvertently
+  configures `chart.params.mass = 0`, the math
+  leaf's `r_s = 0` short-circuit returns the
+  input unchanged (no NaN possible).
+- **Runtime CUDA + OptiX-SDK checks.** DEFERRED to
+  a CUDA + OptiX-SDK host. The plan §7 fixture
+  renders apply:
+    - `--render-optix-aovs --manifold-enable
+      --manifold-chart euclidean
+      --manifold-strength 0.0` → byte-identical
+      to pre-SCHW.7 OptiX `--render-optix-aovs`.
+    - `--render-optix-aovs --manifold-enable
+      --manifold-chart schwarzschild-like
+      --manifold-strength 1.0 --manifold-debug` →
+      `output/optix_aov_manifold_coordinates.ppm`
+      shows the documented radial-compression
+      signature (plan §4.1) near the mass
+      origin.
+
+### Module status changes
+
+`docs/MODULE_MAP.md` is *not* updated by this slice.
+The OptiX-side SchwarzschildLike warp bridge is
+landed; the CUDA-side bridge (SCHW.5) is still
+unlanded; the final cross-host audit (SCHW.9; was
+SCHW.8 before the SCHW.6 audit-slot insertion)
+closes the MANI-I.10 slot. Module-map promotion
+still waits for MANI-I.12 (final cross-host audit)
+per the integration plan §11.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:

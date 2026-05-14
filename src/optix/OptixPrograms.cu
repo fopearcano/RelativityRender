@@ -50,6 +50,7 @@
 
 #include "camera/CameraRay.h"
 #include "cuda/CudaTexture.cuh"        // Stage 20M: nearest-neighbour sampler
+#include "manifold/SchwarzschildLikeWarp.h"  // SCHW.7: artistic warp
 #include "math/Vec2.h"                 // Stage 20M: UV interpolation
 #include "math/Vec3.h"
 #include "optix/OptixLaunchParams.h"
@@ -717,18 +718,34 @@ extern "C" __global__ void __closesthit__radiance() {
         optixLaunchParams.aov_beauty[pix_idx_3 + 1] = color.y;
         optixLaunchParams.aov_beauty[pix_idx_3 + 2] = color.z;
     }
-    // MANI-I.8 — manifold debug coordinate-visualisation AOV
-    // (hit side). Writes the world-space hit position
-    // `ro + t * rd` as the documented identity / neutral
-    // diagnostic. The chart-aware `world_to_chart` helper is
-    // the identity on the Euclidean / disabled default and
-    // no curved-chart math has landed yet per the MANI-I.8
-    // task brief. Null-gated so the slot is opt-in via the
-    // host-side allocator (currently CUDA-only;
-    // OptixRenderer::render_aovs does NOT allocate this
-    // slot today, so the field stays null at runtime and
-    // this arm short-circuits — the OptiX path's pre-MANI-I.8
-    // pixel output is byte-identical).
+    // MANI-I.8 / SCHW.7 — manifold debug coordinate-
+    // visualisation AOV (hit side).
+    //
+    // On the **default / disabled / Euclidean** path
+    // (`is_active(manifold_mode)` returns `false`, OR
+    // `coordinate_chart.type != SchwarzschildLike`, OR
+    // `manifold_mode.strength <= 0`) this arm writes the
+    // world-space hit position `ro + t * rd` — the
+    // MANI-I.8 neutral diagnostic — and produces output
+    // byte-identical to the pre-SCHW.7 baseline.
+    //
+    // On the **SchwarzschildLike** path
+    // (`is_active(...)` true AND chart is
+    // `SchwarzschildLike` AND `strength > 0`) the arm
+    // invokes the shared SCHW.1 math leaf
+    // `schwarzschild_like_world_to_chart(...)` with the
+    // chart's per-pixel artist parameters extracted from
+    // `coordinate_chart.params` per the
+    // `SCHWARZSCHILD_LIKE_REMAP_PLAN.md` §3 reinterpretation
+    // table and the `manifold_mode.strength` runtime dial
+    // threaded through as `warp_strength`. The math leaf
+    // is bounded by construction (SCHW.2 audit) and
+    // NaN/Inf-safe at the clamp shell (SCHW.4 audit).
+    //
+    // Null-gated on `aov_manifold_coordinates` so the
+    // slot is opt-in via the host-side allocator
+    // (`OptixRenderer::render_aovs` allocates only when
+    // `manifold_mode.debug_visualization` is `true`).
     if (optixLaunchParams.aov_manifold_coordinates != nullptr) {
         const uint3 idx_mc = optixGetLaunchIndex();
         const int   x_mc   = static_cast<int>(idx_mc.x);
@@ -738,12 +755,44 @@ extern "C" __global__ void __closesthit__radiance() {
         const float3 ro = optixGetWorldRayOrigin();
         const float3 rd = optixGetWorldRayDirection();
         const float  t  = optixGetRayTmax();
-        const float  px = ro.x + t * rd.x;
-        const float  py = ro.y + t * rd.y;
-        const float  pz = ro.z + t * rd.z;
-        optixLaunchParams.aov_manifold_coordinates[pix_idx_3 + 0] = px;
-        optixLaunchParams.aov_manifold_coordinates[pix_idx_3 + 1] = py;
-        optixLaunchParams.aov_manifold_coordinates[pix_idx_3 + 2] = pz;
+        rr::math::Vec3 hit_pos{
+            ro.x + t * rd.x,
+            ro.y + t * rd.y,
+            ro.z + t * rd.z};
+        // SCHW.7 activation gate: enabled AND
+        // chart == SchwarzschildLike AND strength > 0.
+        // `is_active(manifold_mode)` already requires
+        // `enabled && chart != Euclidean`; the explicit
+        // `chart == SchwarzschildLike` check below
+        // structurally guards against the other
+        // `*Like` / `*LikePlaceholder` chart families
+        // (Kruskal / Penrose / Kerr) routing through
+        // SchwarzschildLike math silently — master rule
+        // #3, audited at SCHW.4 as
+        // `test_schw_3_other_non_euclidean_passthrough`.
+        const bool active =
+            rr::manifold::is_active(optixLaunchParams.manifold_mode)
+         && optixLaunchParams.manifold_mode.chart
+                == rr::manifold::CoordinateChartType::SchwarzschildLike
+         && optixLaunchParams.manifold_mode.strength > 0.0f;
+        if (active) {
+            rr::manifold::SchwarzschildLikeWarpParams sp;
+            sp.r_s = optixLaunchParams.coordinate_chart.params.mass;
+            sp.warp_strength =
+                optixLaunchParams.manifold_mode.strength;
+            sp.falloff =
+                optixLaunchParams.coordinate_chart.params.spin;
+            sp.clamp_radius =
+                optixLaunchParams.coordinate_chart.params.compactification_scale;
+            hit_pos =
+                rr::manifold::schwarzschild_like_world_to_chart(
+                    hit_pos,
+                    optixLaunchParams.coordinate_chart.origin,
+                    sp);
+        }
+        optixLaunchParams.aov_manifold_coordinates[pix_idx_3 + 0] = hit_pos.x;
+        optixLaunchParams.aov_manifold_coordinates[pix_idx_3 + 1] = hit_pos.y;
+        optixLaunchParams.aov_manifold_coordinates[pix_idx_3 + 2] = hit_pos.z;
     }
 }
 

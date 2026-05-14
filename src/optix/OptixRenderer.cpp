@@ -2516,7 +2516,9 @@ OptixRenderer::AovResult
 OptixRenderer::render_aovs(
     const rr::scene::Scene& scene,
     const std::vector<rr::lighting::Light>& lights,
-    int width, int height) noexcept {
+    int width, int height,
+    rr::manifold::ManifoldMode manifold_mode,
+    rr::manifold::CoordinateChart coordinate_chart) noexcept {
     AovResult R;
 
     if (width <= 0 || height <= 0) {
@@ -2680,13 +2682,14 @@ OptixRenderer::render_aovs(
         return true;
     };
 
-    void* d_framebuffer = nullptr;
-    void* d_aov_beauty  = nullptr;
-    void* d_aov_normal  = nullptr;
-    void* d_aov_depth   = nullptr;
-    void* d_aov_albedo  = nullptr;
-    void* d_aov_doppler = nullptr;
-    void* d_aov_search  = nullptr;
+    void* d_framebuffer    = nullptr;
+    void* d_aov_beauty     = nullptr;
+    void* d_aov_normal     = nullptr;
+    void* d_aov_depth      = nullptr;
+    void* d_aov_albedo     = nullptr;
+    void* d_aov_doppler    = nullptr;
+    void* d_aov_search     = nullptr;
+    void* d_aov_manifold_c = nullptr;
     if (!alloc_aov(framebuffer_floats, d_framebuffer)
      || !alloc_aov(aov3_floats,        d_aov_beauty)
      || !alloc_aov(aov3_floats,        d_aov_normal)
@@ -2697,6 +2700,24 @@ OptixRenderer::render_aovs(
         cleanup();
         R.message = "render_aovs: cudaMalloc(framebuffer / AOV buffers) failed";
         return R;
+    }
+    // SCHW.7 — opt-in 7th AOV: `aov_manifold_coordinates`.
+    // Allocated only when the operator passes
+    // `--manifold-debug` (which sets
+    // `manifold_mode.debug_visualization = true`). When the
+    // gate is off, the device pointer stays `nullptr` and
+    // the OptiX programs' MANI-I.8 write arms short-circuit
+    // — every existing `--render-optix-aovs` invocation
+    // without `--manifold-debug` is byte-identical to the
+    // pre-SCHW.7 baseline. This closes the MANI-I.9 audit's
+    // deferred OptiX-side allocation finding.
+    if (manifold_mode.debug_visualization) {
+        if (!alloc_aov(aov3_floats, d_aov_manifold_c)) {
+            cleanup();
+            R.message =
+                "render_aovs: cudaMalloc(aov_manifold_coordinates) failed";
+            return R;
+        }
     }
 
     // Stage 14A.3 / CUDA --render-aovs precedent: set a non-
@@ -2723,6 +2744,21 @@ OptixRenderer::render_aovs(
     params.aov_albedo             = static_cast<float*>(d_aov_albedo);
     params.aov_doppler_factor     = static_cast<float*>(d_aov_doppler);
     params.aov_searchlight_factor = static_cast<float*>(d_aov_search);
+    // SCHW.7 — null when the gate is off; allocated buffer
+    // when `manifold_mode.debug_visualization` is `true`.
+    // The kernel arms guard on this pointer in addition to
+    // the `is_active(manifold_mode) && chart ==
+    // SchwarzschildLike && strength > 0` activation gate.
+    params.aov_manifold_coordinates =
+        static_cast<float*>(d_aov_manifold_c);
+    // SCHW.7 — per-launch manifold/chart payload. Threaded
+    // from the host caller so the OptiX kernels can engage
+    // the SchwarzschildLike warp arm when the operator
+    // opts in. Default values (`ManifoldMode{}` /
+    // `CoordinateChart{}`) preserve the pre-pivot
+    // byte-identity invariant.
+    params.manifold_mode     = manifold_mode;
+    params.coordinate_chart  = coordinate_chart;
 
     {
         const ::cudaError_t e = ::cudaMemcpy(
@@ -2807,6 +2843,21 @@ OptixRenderer::render_aovs(
      || !download_1_replicate(d_aov_search,  R.searchlight_factor)) {
         cleanup();
         R.message = "render_aovs: cudaMemcpy(d->h, AOV buffer) failed";
+        return R;
+    }
+    // SCHW.7 — only download the manifold-coordinates AOV
+    // when the host allocated the device buffer (i.e. the
+    // operator opted in via
+    // `manifold_mode.debug_visualization = true`). On the
+    // default path `d_aov_manifold_c` is `nullptr` and
+    // `R.manifold_coordinates` stays as a default-constructed
+    // empty `Image{}` — matches the AovResult doc-comment.
+    if (d_aov_manifold_c != nullptr
+     && !download_3(d_aov_manifold_c, R.manifold_coordinates)) {
+        cleanup();
+        R.message =
+            "render_aovs: cudaMemcpy(d->h, "
+            "aov_manifold_coordinates) failed";
         return R;
     }
 
@@ -3284,7 +3335,9 @@ OptixRenderer::render_aovs(
     const rr::scene::Scene& /*scene*/,
     const std::vector<rr::lighting::Light>& /*lights*/,
     int /*width*/,
-    int /*height*/) noexcept {
+    int /*height*/,
+    rr::manifold::ManifoldMode /*manifold_mode*/,
+    rr::manifold::CoordinateChart /*coordinate_chart*/) noexcept {
     AovResult r;
     r.ok = false;
     r.message =

@@ -2,6 +2,7 @@
 
 #include "image/Image.h"
 #include "gpu/GpuBuffer.h"  // OptiX Gap A Step 1: GpuBuffer<float> for retained AOV device buffers
+#include "manifold/CoordinateChart.h"  // SCHW.7: trailing render_aovs arg
 #include "manifold/ManifoldMode.h"  // MANI-I.5: trailing render_pathtrace_progressive arg
 
 #include <string>
@@ -402,6 +403,17 @@ public:
         rr::image::Image albedo;
         rr::image::Image doppler_factor;
         rr::image::Image searchlight_factor;
+        // SCHW.7: populated only when the operator opts in via
+        // `manifold_mode.debug_visualization = true`. Empty
+        // `rr::image::Image{}` otherwise (the OptiX programs
+        // null-gate on `params.aov_manifold_coordinates`, the
+        // host allocates the device buffer only on the opt-in,
+        // and the download skips when the buffer was not
+        // allocated). The encoding matches the CUDA
+        // `aov_manifold_coordinates.ppm` payload: 3-channel
+        // float per pixel, hit position post-warp on hit and
+        // `(0, 0, 0)` on miss.
+        rr::image::Image manifold_coordinates;
         float            gpu_time_ms = 0.0f;
     };
 
@@ -419,11 +431,29 @@ public:
     // `render_direct_lighting`; pass an empty vector for
     // unlit Beauty.
     //
+    // SCHW.7: trailing `manifold_mode` / `coordinate_chart`
+    // parameters thread the per-launch chart-aware payload
+    // through the existing `OptixLaunchParams`
+    // `manifold_mode` (MANI-I.5) and `coordinate_chart`
+    // (SCHW.7) fields. Defaults are the pre-pivot
+    // bit-identity anchor — `disabled_manifold_mode()` plus
+    // `CoordinateChart{}` (Euclidean) — every call site that
+    // doesn't opt in keeps the existing AOV output byte-
+    // for-byte. The `aov_manifold_coordinates` device buffer
+    // is allocated only when
+    // `manifold_mode.debug_visualization` is `true`; on the
+    // default the field stays `nullptr` and the OptiX
+    // programs short-circuit the chart-aware AOV write arm
+    // (the MANI-I.8 / MANI-I.9 audit's deferred OptiX
+    // allocation lands here).
+    //
     // Same audit-host fallback semantics as render_test.
     [[nodiscard]] static AovResult render_aovs(
         const rr::scene::Scene& scene,
         const std::vector<rr::lighting::Light>& lights,
-        int width, int height) noexcept;
+        int width, int height,
+        rr::manifold::ManifoldMode manifold_mode = {},
+        rr::manifold::CoordinateChart coordinate_chart = {}) noexcept;
 
     // OptiX Gap A Step 1: durable AOV buffer ownership for
     // the OptiX path. See `docs/OPTIX_GAP_A_POLISH_PLAN.md`

@@ -2058,8 +2058,43 @@ int run_render_optix_aovs(const rr::core::Config& cfg) {
                   "optix-sdk).");
     return 1;
 #else
+    // SCHW.7 — build a per-launch `CoordinateChart` from the
+    // operator's `cfg.manifold` selection. The
+    // `CoordinateChart` POD carries the chart's identity +
+    // origin + `CoordinateChartParameters` (mass / spin /
+    // compactification_scale / reserved). The default
+    // `cfg.manifold.chart = Euclidean` maps onto the
+    // pre-SCHW.7 byte-identity baseline because
+    // `is_active(manifold_mode)` returns `false` for
+    // Euclidean and the kernel arm short-circuits.
+    //
+    // For SchwarzschildLike, the chart parameters are not
+    // yet CLI-exposed; the slice supplies sensible artistic
+    // defaults — `mass = 1.0`, `spin = 1.0`,
+    // `compactification_scale = 0.1`, `origin = (0,0,0)` —
+    // matching the SCHW.3 test fixture
+    // (`make_schwarzschild_like_chart` in
+    // `manifold_identity_tests.cpp`). These values make the
+    // chart's warp immediately visible on the
+    // `aov_manifold_coordinates` AOV when the operator
+    // passes `--manifold-enable --manifold-chart
+    // schwarzschild-like --manifold-strength <s>
+    // --manifold-debug`. Future slices can plumb chart-
+    // parameter CLI flags (or scene-file authoring) without
+    // an ABI bump because the slot already exists on the
+    // `CoordinateChart` POD.
+    rr::manifold::CoordinateChart manifold_chart{};
+    manifold_chart.type = cfg.manifold.chart;
+    if (cfg.manifold.chart
+            == rr::manifold::CoordinateChartType::SchwarzschildLike) {
+        manifold_chart.name                    = "schwarzschild-like";
+        manifold_chart.params.mass             = 1.0f;
+        manifold_chart.params.spin             = 1.0f;
+        manifold_chart.params.compactification_scale = 0.1f;
+    }
     auto r = rr::optix::OptixRenderer::render_aovs(
-        scene, lights, cfg.width, cfg.height);
+        scene, lights, cfg.width, cfg.height,
+        cfg.manifold, manifold_chart);
     if (!r.ok) {
         Logger::error("optix aovs render failed: " + r.message);
         return 1;
@@ -2108,6 +2143,20 @@ int run_render_optix_aovs(const rr::core::Config& cfg) {
     all_ok &= save_one(r.searchlight_factor,
                        "output/optix_aov_searchlight.ppm",
                        "OptiX AOV searchlight");
+    // SCHW.7 — save the OptiX manifold debug coordinate
+    // AOV when the operator opted in. The kernel arm short-
+    // circuits when the device buffer is null, so on the
+    // default `cfg.manifold.debug_visualization = false`
+    // path `r.manifold_coordinates` stays as the empty
+    // `Image{}` and we don't emit a PPM. File name mirrors
+    // the CUDA path's
+    // `output/aov_manifold_coordinates.ppm` convention with
+    // the OptiX-side `optix_aov_*` stem.
+    if (cfg.manifold.debug_visualization) {
+        all_ok &= save_one(r.manifold_coordinates,
+                           "output/optix_aov_manifold_coordinates.ppm",
+                           "OptiX AOV manifold coordinates");
+    }
 
     // OptiX Gap A Step 3.5: when `--denoise` is set, run the
     // new orchestration helper to additionally produce

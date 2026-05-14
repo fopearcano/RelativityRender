@@ -4,6 +4,7 @@
 #include "cuda/CudaTexture.cuh"        // Stage 20M: DeviceTextureView
 #include "geometry/Triangle.h"         // Stage 20M: per-vertex UV indexing
 #include "lighting/Light.h"            // Stage 20K: Light POD union
+#include "manifold/CoordinateChart.h"  // SCHW.7: per-launch chart payload
 #include "manifold/ManifoldMode.h"     // MANI-I.5: per-launch manifold mode
 #include "math/Vec2.h"                 // Stage 20M: per-vertex UVs
 #include "relativity/RelativityParams.h"
@@ -358,6 +359,36 @@ struct OptixLaunchParams {
     // arguments). Default value preserves the byte-identity
     // invariant the integration plan §2 declares.
     rr::manifold::ManifoldMode manifold_mode{};
+
+    // ---- SCHW.7 per-launch coordinate chart ----
+    //
+    // Full `CoordinateChart` POD (type + name + scale +
+    // origin + units + params). The kernel reads
+    // `coordinate_chart.origin` as the SchwarzschildLike
+    // chart's `mass_origin` and
+    // `coordinate_chart.params.{mass, spin,
+    // compactification_scale}` as the math leaf's
+    // `r_s` / `falloff` / `clamp_radius` per the
+    // `SCHWARZSCHILD_LIKE_REMAP_PLAN.md` §3
+    // reinterpretation table.
+    //
+    // The `manifold_mode.chart` enum and this struct's
+    // `coordinate_chart.type` are expected to agree (the
+    // host dispatcher populates both from the same
+    // `cfg.manifold`/cfg-chart inputs). When the two
+    // disagree the kernel respects the structural
+    // `is_active(manifold_mode)` guard plus the SCHW.3
+    // arm's `coordinate_chart.type == SchwarzschildLike`
+    // gate — both must agree for the warp to engage.
+    //
+    // Default-constructed `CoordinateChart{}` is Euclidean
+    // with `origin = (0,0,0)`, `scale = 1`, `params.mass
+    // = 0`, etc. — the chart's `is_active(...)` returns
+    // `false` on `manifold_mode.chart = Euclidean` so the
+    // kernel arm short-circuits and the per-pixel AOV
+    // output is byte-identical to the pre-SCHW.7
+    // baseline.
+    rr::manifold::CoordinateChart coordinate_chart{};
 };
 
 }  // namespace rr::optix
