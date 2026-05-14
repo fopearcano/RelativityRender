@@ -69701,6 +69701,172 @@ foundation is now *shaped* but still consumed by no other code
 path; the module-map promotion gate remains the
 Minkowski-chart-wrap slice (architecture-doc §10 step 1).
 
+## MANIFOLD.3 — Observer Frame (impl, model-only)
+
+**Scope of this slice (per the operator's *MANIFOLD.3 — Observer
+Frame* task brief): promote `src/manifold/ObserverFrame.h` from a
+`{velocity, right, up, forward}` POD to the full observer-state
+descriptor architecture-doc §3.3 specifies, and wire the bridge to
+the existing `src/relativity/Observer` per §7.2 ("relativity
+subsumed by the observer-frame contract"). Adds `position4`,
+`velocity4`, `proper_time`, `coordinate_time`, the bridge helpers
+`observer_frame_from(...)` / `to_relativity_observer(...)`, and
+the `is_normalised_timelike(frame, metric, tol)` sanity gate.
+Does NOT replace the existing `src/camera/Camera` class; does NOT
+change render behaviour; does NOT introduce a geodesic
+integrator.**
+
+### What ships
+
+- **`src/manifold/ObserverFrame.h` (rewritten, +211 / -33 net,
+  ~70% doc-comment density).** New / promoted surface:
+    - **`ObserverFrame` POD fields.** Eight fields total. New
+      since MANIFOLD.2 are
+      - `position4` (`Vec4`, default `{0,0,0,0}`) — 4D event in
+        chart coordinates;
+      - `velocity4` (`Vec4`, default `{1,0,0,0}`) — `u^mu` in
+        chart coordinates;
+      - `beta` (`Vec3`, default `{0,0,0}`) — 3-velocity `v / c`
+        mirroring `rr::relativity::Observer::velocity`. Renamed
+        from the Skeleton-slice `velocity` (which conflated the
+        4-velocity and the 3-velocity); the new naming makes the
+        sibling-of-`velocity4` relationship explicit.
+      - `proper_time` (`float`, default `0`);
+      - `coordinate_time` (`float`, default `0`).
+      Preserved from the Skeleton slice: `right` / `up` /
+      `forward` (`Vec3`, world-basis defaults).
+    - **`rest_frame()`** (unchanged signature). Returns
+      `ObserverFrame{}`, i.e. the scene-rest observer on the
+      Euclidean chart - same "no behaviour change" baseline the
+      Skeleton slice pinned.
+    - **`observer_frame_from(rr::relativity::Observer)`** (new,
+      `RR_HD inline`). Constructs an `ObserverFrame` from an
+      existing legacy `Observer`. Computes
+      `velocity4 = gamma * (1, beta_x, beta_y, beta_z)` via
+      `rr::relativity::gamma` and clamps `|beta|` to
+      `0.999999f` via `rr::relativity::clampBeta` so `gamma`
+      stays finite. Identity at `|beta| = 0`. The remaining
+      frame state (`position4`, tetrad, time placeholders)
+      defaults to the rest-frame value.
+    - **`to_relativity_observer(ObserverFrame)`** (new,
+      `RR_HD inline`). Inverse bridge. Returns
+      `rr::relativity::Observer{f.beta}`. Round-trip via
+      `observer_frame_from(...)` preserves `beta` exactly
+      (modulo the outbound `clampBeta` cap).
+    - **`is_normalised_timelike(frame, metric, tol)`** (new,
+      `RR_HD inline bool`). Verifies
+      `|g_{mu nu} u^mu u^nu + 1| <= tol` under the supplied
+      `MetricTensor`. Default tolerance `1.0e-4f`. Lets future
+      curved-chart slices (and tests of
+      `observer_frame_from(...)`) gate four-velocity
+      normalisation against the active metric without
+      hand-rolling the contraction.
+  Header preamble expanded with "What lives here this slice" /
+  "What does NOT live here this slice" sections and an explicit
+  "Why the existing relativity module shows up here" footnote
+  citing architecture-doc §7.2.
+- **`CMakeLists.txt` (rr_manifold link line + doc comment).**
+  - `target_link_libraries(rr_manifold INTERFACE rr_math
+    rr_relativity)` — adds `rr_relativity` to `rr_manifold`'s
+    link surface so the new bridge helpers find
+    `rr::relativity::Observer`, `gamma`, and `clampBeta`. The
+    explicit `rr_math` link is redundant (transitive via
+    `rr_relativity`) but kept for documentation.
+  - `ObserverFrame.h` row in the doc-comment block now spells
+    out the new fields and helpers.
+- **`docs/MANIFOLD_RENDERING_ARCHITECTURE.md` §9 (one row
+  updated).** "Manifold Core MAY depend on" now lists the
+  Relativistic Camera Model leaf (`src/relativity/`,
+  header-only) alongside the original Math / Image / Scene
+  entries, citing §7.2 as the rationale. The forbidden
+  matrix is unchanged.
+- **`src/manifold/README.md` (file table row refreshed).**
+  `ObserverFrame.h`'s row now lists the new fields, the bridge
+  helpers, and the `is_normalised_timelike` gate; the
+  MANIFOLD.3 promotion is called out explicitly.
+
+### What does NOT ship
+
+- **No Camera replacement.** `src/camera/Camera`,
+  `src/camera/CameraRay.h`, `src/camera/Camera.cpp`,
+  `generate_camera_ray`, and `GpuCamera` are byte-identical.
+  The future Minkowski-chart-wrap slice (architecture-doc §10
+  step 1) is what will introduce an adaptor consuming both
+  `Camera` and `ObserverFrame`; that is a separate commit.
+- **No render-behaviour change.** Nothing in `src/cuda/`,
+  `src/optix/`, `src/pathtracer/`, `src/renderer/`,
+  `src/gpu/`, `src/scene/`, `src/io/`, `src/server/`,
+  `src/main.cpp`, `src/core/`, `src/material/`,
+  `src/lighting/`, `src/texture/`, `src/geometry/`,
+  `src/image/`, `src/math/`, or `tests/` is touched (`git
+  diff` outside `src/manifold/`, `CMakeLists.txt`,
+  `docs/MANIFOLD_RENDERING_ARCHITECTURE.md`, and
+  `docs/BUILD_PLAN.md` ⇒ 0 bytes). The kernel-side
+  aberration / Doppler / searchlight path still feeds on
+  `rr::relativity::Observer` directly.
+- **No geodesic integrator.** `proper_time` and
+  `coordinate_time` are zero-initialised placeholders; no code
+  path advances them. Architecture-doc §3.4 / §10 step 2
+  remain deferred.
+- **No full tetrad transport.** Spatial tetrad legs stay
+  `Vec3` (Euclidean-chart spatial part only); a future
+  curved-chart slice will promote them to `Vec4` and add
+  parallel-transport machinery.
+- **No deletion of `src/relativity/`.** The legacy module is
+  *consumed* by the new bridge, not retired. Architecture-doc
+  §7.2 subsumption is realised here only at the
+  observer-frame interface level.
+- **No CLI surface change. No new `--render-*` action. No new
+  test binary. `ctest` set unchanged.**
+
+### Acceptance
+
+- **Compiles.** Audit-host rebuild (`cmake --build build -j`)
+  succeeds with the new `rr_relativity` link on `rr_manifold`.
+  A standalone `g++ -std=c++20 -Isrc -Wall -Wextra -Werror`
+  build of an `ObserverFrame.h`-consuming TU compiles cleanly
+  with `<cmath>` / `<vec4>` / relativity-header transitive
+  resolution.
+- **Validates.** A standalone runtime check exercises the new
+  surface end-to-end:
+    - `rest_frame()` has the documented defaults; passes
+      `is_normalised_timelike` under Minkowski.
+    - `observer_frame_from(Observer{velocity=0})` reproduces
+      `rest_frame()`.
+    - `observer_frame_from(Observer{velocity=(0.6, 0, 0)})`
+      produces `velocity4 = (1.25, 0.75, 0, 0)` to within
+      `1e-5` (the textbook `gamma = 1.25` at `|beta| = 0.6`)
+      and passes `is_normalised_timelike` under Minkowski.
+    - Round-trip
+      `to_relativity_observer(observer_frame_from(o))`
+      preserves `o.velocity` exactly at moderate beta
+      (`|beta| = 0.5`).
+    - Super-luminal input `Observer{velocity=(2, 0, 0)}` is
+      clamped to `|beta| <= 0.999999f` and produces a finite
+      `gamma` (no NaN / inf).
+    - `ManifoldTransform`'s default aggregate still resolves
+      to `rest_frame()`'s velocity4 (no behaviour-change
+      cascade).
+- **No behaviour change.** All 11 ctest binaries pass
+  (`100% tests passed, 0 tests failed out of 11`) — same set,
+  same outputs as the MANIFOLD.2 acceptance line.
+- **Rule-#3 honesty.** Shipping helpers are real (the bridge
+  actually computes the SR Lorentz boost; the validator
+  actually contracts the metric with the four-velocity). The
+  deferred items (geodesic integrator advancing the time
+  placeholders, full `Vec4` tetrad transport, Camera adaptor)
+  are documented as absent with reason, not stubbed.
+
+### Module status changes
+
+`docs/MODULE_MAP.md` is *not* updated by this slice (same
+posture as MANIFOLD.1 / MANIFOLD.2). The observer-frame surface
+is now *shaped* and the relativity-subsumption bridge is *real*
+but the kernel pipeline still feeds on the legacy
+`rr::relativity::Observer` directly; module-map promotion waits
+for the Minkowski-chart-wrap slice (architecture-doc §10 step 1)
+that threads the bridge through the path tracer.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
@@ -69710,12 +69876,6 @@ When prompted, the natural follow-ups are:
   POD headers in `src/manifold/` to the same level of detail
   MANIFOLD.1 brought to `CoordinateChart.h`. Candidates, in
   architecture-doc §3 order:
-    - **MANIFOLD.3 — Observer Frame Model.** Extend
-      `ObserverFrame.h` so the tetrad-vs-chart distinction
-      (architecture-doc §3.3) is encoded in the POD, with
-      provenance fields linking the frame to its chart and to
-      the existing `Observer` / `RelativityParams` in
-      `src/relativity/` (still host-only; no kernel wiring).
     - **MANIFOLD.4 — Geodesic State Model.** Add affine-parameter
       and chart-id fields to `GeodesicState`, and document the
       integrator's per-step contract (architecture-doc §3.4)

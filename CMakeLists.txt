@@ -264,8 +264,19 @@ target_link_libraries(rr_relativity INTERFACE rr_math)
 #                           `is_diagonal`) + closed-form 4x4
 #                           `determinant` (§3.2). Promoted to its
 #                           MANIFOLD.2 shape.
-#   ObserverFrame.h       - tetrad + 3-velocity POD +
-#                           `rest_frame()` helper (§3.3).
+#   ObserverFrame.h       - 4D position + 4-velocity +
+#                           3-velocity (beta) + spatial tetrad +
+#                           proper-time / coordinate-time
+#                           placeholders + `rest_frame()` /
+#                           `observer_frame_from(...)` /
+#                           `to_relativity_observer(...)` bridge
+#                           helpers to `rr::relativity::Observer`
+#                           + `is_normalised_timelike(...)`
+#                           sanity gate against a `MetricTensor`
+#                           (§3.3, §7.2). Promoted to its
+#                           MANIFOLD.3 shape; the bridge
+#                           realises the relativity-subsumption
+#                           contract.
 #   GeodesicState.h       - null-geodesic state POD +
 #                           `GeodesicStatus` enum (§3.4).
 #   ManifoldTransform.h   - aggregate {chart, metric, observer} POD +
@@ -279,7 +290,18 @@ target_link_libraries(rr_relativity INTERFACE rr_math)
 # slice.
 add_library(rr_manifold INTERFACE)
 target_include_directories(rr_manifold INTERFACE src)
-target_link_libraries(rr_manifold INTERFACE rr_math)
+# rr_manifold links rr_relativity since MANIFOLD.3: the new
+# `observer_frame_from(...)` / `to_relativity_observer(...)`
+# bridge helpers in `manifold/ObserverFrame.h` consume
+# `rr::relativity::Observer` (from `RelativityParams.h`) and the
+# `gamma` / `clampBeta` helpers (from `RelativityMath.h`). The
+# bridge realises the architecture-doc §7.2 subsumption: the
+# special-relativistic helpers in `src/relativity/` are the
+# Minkowski + constant-velocity-frame specialisation of the
+# observer-frame contract. rr_relativity transitively pulls
+# rr_math, so the explicit rr_math link is redundant but kept
+# for documentation.
+target_link_libraries(rr_manifold INTERFACE rr_math rr_relativity)
 
 # rr_scene: host-side authoring scene container.
 #

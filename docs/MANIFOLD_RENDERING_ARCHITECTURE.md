@@ -522,7 +522,7 @@ Rendering Domain modules. Its dependency surface:
 
 | Direction                                          | Allowed                                                                       |
 |----------------------------------------------------|-------------------------------------------------------------------------------|
-| Manifold Core MAY depend on                        | Math Library, Image System, Scene Graph (chart metadata only)                 |
+| Manifold Core MAY depend on                        | Math Library, Image System, Scene Graph (chart metadata only), Relativistic Camera Model leaf (`src/relativity/`, header-only; for the §7.2 Minkowski + constant-velocity-frame subsumption bridge) |
 | Manifold Core MUST NOT depend on                   | GPU Backends, Path Tracer, Progressive Renderer, Renderer Server, Bridge, UI  |
 | Path Tracer MAY depend on                          | Manifold Core (chart-aware advance), as it already depends on Camera/Geometry |
 | Camera System MAY depend on                        | Manifold Core (observer-frame helper); free to ignore it for Minkowski        |
