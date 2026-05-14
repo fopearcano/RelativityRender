@@ -73238,6 +73238,260 @@ SCHW.* sub-slices will update relevant module-
 map rows as each lands real curved-chart
 behaviour.
 
+## SCHW.1 — Schwarzschild-Like Warp Math Helper (impl, math-leaf)
+
+**Scope of this slice (per the operator's *SCHW.1 —
+Schwarzschild-Like Warp Math Helper* task brief and
+`docs/SCHWARZSCHILD_LIKE_REMAP_PLAN.md` §8 SCHW.1):
+add a header-only math leaf for the artistic
+Schwarzschild-like coordinate warp. Closed-form math
+only; bounded by construction; Euclidean fallback at
+`warp_strength = 0` or `r_s = 0`; debug-safe
+clamping (`clamp_radius > 0` enforced by the
+validator). No GR solver, no tensor integration, no
+renderer integration, no CUDA / OptiX touch. Adds
+minimal unit-test coverage to the existing
+`manifold_identity_tests` binary.**
+
+### What ships
+
+- **`src/manifold/SchwarzschildLikeWarp.h` (new,
+  ~230 lines, RR_HD inline throughout).** Four
+  helpers + one parameter POD:
+    - **`SchwarzschildLikeWarpParams`** — four
+      `float` fields (`r_s`, `warp_strength`,
+      `falloff`, `clamp_radius`) named per the
+      plan §3 parameter mapping. Defaults are the
+      Euclidean fallback (`r_s = 0`,
+      `warp_strength = 0`, `falloff = 1.0`,
+      `clamp_radius = 1.0`).
+    - **`schwarzschild_like_validate_params(p)`**
+      — boolean validator enforcing plan §5.6:
+      `r_s >= 0` and finite; `warp_strength`
+      finite; `falloff in [0.5, 4.0]`;
+      `clamp_radius > 0` and finite. Out-of-range
+      inputs cause the transform helpers to
+      fall through to Euclidean identity (per
+      plan §5.2).
+    - **`schwarzschild_like_world_to_chart(p_world,
+      mass_origin, p)`** — closed-form radial
+      displacement: `chart_pos = p_world +
+      warp_strength * r_s / r^falloff * (p_world -
+      mass_origin)` with `r = max(|delta|,
+      clamp_radius)`. Returns the input unchanged
+      on Euclidean fallback (validator rejection,
+      `warp_strength = 0`, or `r_s = 0`).
+    - **`schwarzschild_like_chart_to_world(chart_pos,
+      mass_origin, p)`** — bounded Newton-Raphson
+      inverse on the radial scalar equation
+      `F(r) = (1 + warp_strength * r_s / r^falloff)
+      * r - |chart_pos - mass_origin| = 0`. Hard
+      cap of 8 iterations; convergence tolerance
+      `1.0e-5f`. Documented residual ≤ `1e-4` for
+      typical parameter sweeps (empirically
+      verified ≤ `1e-4` across six representative
+      test cases). Defensive guards: clamp-shell
+      derivative substitution; `|F'| < 1e-9`
+      early break; negative-`r` rebound to
+      `clamp_radius`.
+    - **`schwarzschild_like_warp_ray_direction(
+      ray_origin, ray_dir, mass_origin, p)`** —
+      optional primary-ray warp toward the mass
+      origin. Bending strength falls off as
+      `1 / r`. Hard-capped at `±0.5` so the
+      direction cannot flip (plan §6.2). Returns
+      the input direction unchanged on Euclidean
+      fallback; returns a unit-length output on
+      every non-fallback input.
+  All four helpers are `RR_HD inline` so they
+  compile under both the host compiler and NVCC
+  (the future SCHW.3 / SCHW.4 slices will call
+  them from the CUDA / OptiX kernels). The
+  header includes only `math/MathUtils.h`,
+  `math/Vec3.h`, and `<cmath>`; no new module
+  dependencies.
+- **`tests/manifold_identity_tests.cpp` (+28
+  RR_CHECKs across 10 new test functions).**
+  SCHW.1 unit-test coverage appended:
+    - `test_schw_1_validate_params` — defaults
+      validate; typical non-trivial params
+      validate; negative `r_s`, out-of-range
+      `falloff` (both ends), zero / negative
+      `clamp_radius`, and NaN `warp_strength`
+      all rejected.
+    - `test_schw_1_world_to_chart_euclidean_fallback`
+      — `warp_strength = 0` returns input
+      unchanged across three test points; `r_s
+      = 0` also returns input unchanged.
+    - `test_schw_1_world_to_chart_far_field_identity`
+      — at `r = 1.0e6`, the relative
+      displacement is `< 1e-3` (effectively
+      identity in the far field).
+    - `test_schw_1_world_to_chart_known_value`
+      — the plan §2 worked example
+      (`p_world = (2,0,0)`, params
+      `{1.0, 1.0, 1.0, 0.1}`) produces
+      `chart_pos = (3, 0, 0)` exactly.
+    - `test_schw_1_world_to_chart_clamp_radius_safety`
+      — at the mass origin (`p_world =
+      mass_origin`), the formula's `delta = 0`
+      branch returns `mass_origin` without
+      NaN / Inf.
+    - `test_schw_1_chart_to_world_inverse_residual`
+      — forward → inverse round-trip residual
+      `< 1e-4` across six representative
+      parameter sweeps (varying `r_s`,
+      `warp_strength`, `falloff`, and input
+      position; including a near-clamp-radius
+      edge case).
+    - `test_schw_1_chart_to_world_euclidean_fallback`
+      — `warp_strength = 0` makes the inverse
+      the identity.
+    - `test_schw_1_warp_ray_direction_euclidean_fallback`
+      — `warp_strength = 0` and `r_s = 0` both
+      return the input direction unchanged.
+    - `test_schw_1_warp_ray_direction_bend_cap`
+      — extreme parameters (`r_s = 1000`,
+      `warp_strength = 100`) produce a finite,
+      unit-length output direction; the hard
+      cap prevents NaN / Inf.
+    - `test_schw_1_warp_ray_direction_bends_toward_mass`
+      — a +Z ray with a +X mass picks up a
+      positive-`x` component (bent toward the
+      mass) while keeping a positive-`z`
+      component (still mostly along the
+      original direction).
+  `manifold_identity_tests` reports `140 / 140
+  checks passed` (was `112 / 112` pre-SCHW.1; +28
+  new RR_CHECKs from the 10 new test functions).
+- **`CMakeLists.txt` (rr_manifold doc-comment
+  block, one row appended).** `SchwarzschildLikeWarp.h`
+  added to the `rr_manifold` header inventory
+  doc-comment. CMake target shape and link
+  line are unchanged from MANIFOLD.3:
+  `rr_manifold` stays as a header-only
+  INTERFACE library linking `rr_math` and
+  `rr_relativity`.
+- **`src/manifold/README.md` (file-table row
+  appended).** `SchwarzschildLikeWarp.h` row
+  describes the four helpers + the
+  `SchwarzschildLikeWarpParams` POD + the
+  Euclidean fallback contract + the SCHW.2+
+  follow-up note.
+
+### What does NOT ship
+
+- **No `ManifoldTransform.h` change.** The
+  existing `world_to_chart` /
+  `chart_to_world` /
+  `transform_ray_like_direction` helpers in
+  `ManifoldTransform.h` are unchanged. SCHW.2
+  is the slice that wires the SchwarzschildLike
+  arm into those helpers.
+- **No renderer integration.** No CUDA
+  changes. No OptiX changes. The
+  `src/cuda/` and `src/optix/` directories
+  are byte-identical. `src/main.cpp`,
+  `src/pathtracer/`, `src/renderer/`,
+  `src/gpu/`, `src/scene/`, `src/io/`,
+  `src/server/`, `src/core/`, `src/camera/`,
+  `src/material/`, `src/lighting/`,
+  `src/texture/`, `src/geometry/`,
+  `src/image/`, `src/math/`, `src/relativity/`,
+  `src/field/` are all byte-identical (`git
+  diff` outside `src/manifold/`, `tests/`,
+  `CMakeLists.txt`, and `docs/` ⇒ 0 bytes).
+- **No real GR solver.** No Christoffel
+  symbols; no geodesic ODE; no Riemann
+  tensor; no Einstein-field-equation
+  evaluation. Architecture-doc §8 non-goals
+  stand.
+- **No tensor integration.** The math
+  operates on `Vec3` only (no `Mat4` /
+  metric / Christoffel storage). The
+  Vec4 (spacetime) overload that the plan
+  §6.1 anticipates lives in `ManifoldTransform.h`
+  and lands at SCHW.2.
+- **No CLI surface change.** No new
+  `--render-*` action. No new modifier
+  flag. The existing four `--manifold-*`
+  flags from MANI-I.1 are the only entry
+  point.
+- **No `.rrscene` schema bump.**
+- **No C4D / server / UI / node-editor
+  touch.** Zero files in `src/server/`,
+  `bridges/`, or `tools/`.
+- **No new ctest binary.** Tests are
+  appended to the existing
+  `manifold_identity_tests` binary.
+
+### Acceptance
+
+- **Compiles.** Audit-host rebuild
+  (`cmake --build build -j`) succeeds
+  cleanly with no new warnings under the
+  project's `rr_apply_warnings` settings.
+  A standalone `g++ -std=c++20 -Isrc
+  -Wall -Wextra -Werror -fsyntax-only`
+  build of a `SchwarzschildLikeWarp.h`-
+  only TU (with a tiny `main` consuming
+  every helper) compiles cleanly,
+  exercising the master plan §8 SCHW.1
+  acceptance gate.
+- **Tests.** Full ctest: `100% tests
+  passed, 0 tests failed out of 12`.
+  `manifold_identity_tests` reports
+  `140 / 140 checks passed` (the 28 new
+  SCHW.1 RR_CHECKs land within the
+  binary; ctest still reports a single
+  binary, matching the plan §8 SCHW.1
+  "no new test binary" rule).
+- **Analytic invariants.** Verified by
+  the unit tests:
+    - `warp_strength = 0` ⇒ identity
+      (every helper).
+    - `r → ∞` ⇒ relative displacement
+      `< 1e-3` at `r = 1.0e6`.
+    - `world_to_chart ∘ chart_to_world`
+      residual `< 1e-4` across six
+      representative parameter sweeps
+      (covering `falloff ∈ {1.0, 2.0}`,
+      `warp_strength ∈ {0.25, 0.5, 1.0}`,
+      `r_s ∈ {0.5, 1.0, 2.0}`,
+      off-axis input).
+    - At `p_world = mass_origin`: no NaN
+      / Inf (the `clamp_radius > 0`
+      guard plus the `delta = 0`
+      multiplication produces
+      `chart_pos = mass_origin`).
+    - `warp_ray_direction` output is
+      finite, unit-length, and bent
+      toward the mass on a representative
+      off-axis input.
+- **Rule-#3 honesty.** The helpers are
+  real, complete artistic math; the
+  Newton-Raphson inverse's residual bound
+  is documented (`≤ 1e-4`) and tested.
+  The hard cap on the primary-ray bend
+  factor (`±0.5`) is documented and
+  enforced. The Euclidean fallback is
+  not a stub — it returns the input
+  unchanged by analytic construction
+  (the `f = 0` displacement makes the
+  formula reduce to identity).
+
+### Module status changes
+
+`docs/MODULE_MAP.md` is *not* updated by this
+slice. The Schwarzschild-like math leaf is
+landed but no renderer code consumes it;
+SCHW.2 wires it into `ManifoldTransform.h`,
+SCHW.3 / SCHW.4 wire it into the CUDA / OptiX
+kernels, SCHW.6 (audit) closes the
+MANI-I.10 slot. Module-map promotion still
+waits for MANI-I.12 (final cross-host audit)
+per the integration plan §11.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:

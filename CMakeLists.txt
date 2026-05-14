@@ -307,6 +307,22 @@ target_link_libraries(rr_relativity INTERFACE rr_math)
 #                           Euclidean identity transform only at
 #                           this slice, non-Euclidean charts
 #                           passthrough.
+#   SchwarzschildLikeWarp.h - SCHW.1 closed-form artistic
+#                           Schwarzschild-like coordinate-warp
+#                           math leaf
+#                           (docs/SCHWARZSCHILD_LIKE_REMAP_PLAN.md):
+#                           `SchwarzschildLikeWarpParams` POD
+#                           (r_s / warp_strength / falloff /
+#                           clamp_radius) + validator + forward
+#                           radial warp + Newton-Raphson inverse
+#                           (bounded iteration; residual <= 1e-4)
+#                           + optional primary-ray warp
+#                           (hard-capped at +/-0.5). Bounded by
+#                           construction; Euclidean fallback at
+#                           warp_strength = 0 or r_s = 0. Not
+#                           consumed by the renderer this slice;
+#                           SCHW.2+ wires it into
+#                           ManifoldTransform.h.
 #
 # Skeleton stage: no renderer integration, no CUDA / OptiX
 # dependency, no behaviour change. Library exists so future slices

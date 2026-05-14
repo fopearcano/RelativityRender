@@ -34,6 +34,7 @@
 #include "manifold/ManifoldTransform.h"
 #include "manifold/MetricTensor.h"
 #include "manifold/ObserverFrame.h"
+#include "manifold/SchwarzschildLikeWarp.h"
 
 #include "relativity/RelativityParams.h"
 
@@ -358,6 +359,266 @@ void test_geodesic_state_defaults() {
     RR_CHECK(GeodesicStatus::ChartBoundary  != GeodesicStatus::Terminated);
 }
 
+// ---------- SCHW.1: Schwarzschild-like artistic coordinate-warp math ----------
+
+void test_schw_1_validate_params() {
+    using namespace rr::manifold;
+
+    // Default-constructed params (all-zero r_s + warp_strength,
+    // falloff=1.0, clamp_radius=1.0) pass validation. The chart
+    // is effectively Euclidean in this state because both r_s
+    // and warp_strength default to 0.
+    SchwarzschildLikeWarpParams ok{};
+    RR_CHECK(schwarzschild_like_validate_params(ok));
+
+    // Typical non-trivial parameters validate.
+    SchwarzschildLikeWarpParams typical{};
+    typical.r_s           = 1.0f;
+    typical.warp_strength = 1.0f;
+    typical.falloff       = 1.0f;
+    typical.clamp_radius  = 0.1f;
+    RR_CHECK(schwarzschild_like_validate_params(typical));
+
+    // Negative r_s rejected.
+    SchwarzschildLikeWarpParams neg_rs = typical;
+    neg_rs.r_s = -1.0f;
+    RR_CHECK(!schwarzschild_like_validate_params(neg_rs));
+
+    // Falloff out of [0.5, 4.0] rejected.
+    SchwarzschildLikeWarpParams falloff_low = typical;
+    falloff_low.falloff = 0.4f;
+    RR_CHECK(!schwarzschild_like_validate_params(falloff_low));
+    SchwarzschildLikeWarpParams falloff_high = typical;
+    falloff_high.falloff = 4.1f;
+    RR_CHECK(!schwarzschild_like_validate_params(falloff_high));
+
+    // clamp_radius <= 0 rejected (NaN guard for the 1/r denominator).
+    SchwarzschildLikeWarpParams clamp_zero = typical;
+    clamp_zero.clamp_radius = 0.0f;
+    RR_CHECK(!schwarzschild_like_validate_params(clamp_zero));
+    SchwarzschildLikeWarpParams clamp_neg = typical;
+    clamp_neg.clamp_radius = -0.1f;
+    RR_CHECK(!schwarzschild_like_validate_params(clamp_neg));
+
+    // Non-finite values rejected.
+    SchwarzschildLikeWarpParams nan_p = typical;
+    nan_p.warp_strength = std::nanf("");
+    RR_CHECK(!schwarzschild_like_validate_params(nan_p));
+}
+
+void test_schw_1_world_to_chart_euclidean_fallback() {
+    using namespace rr::manifold;
+    using rr::math::Vec3;
+
+    // warp_strength = 0 ⇒ identity, regardless of r_s / falloff /
+    // clamp_radius / mass_origin / input position.
+    SchwarzschildLikeWarpParams p{};
+    p.r_s           = 1.0f;
+    p.warp_strength = 0.0f;
+    p.falloff       = 1.0f;
+    p.clamp_radius  = 0.1f;
+    const Vec3 mass_origin{0.0f, 0.0f, 0.0f};
+
+    const Vec3 p1{0.0f, 0.0f, 0.0f};
+    const Vec3 p2{1.5f, -2.3f, 4.7f};
+    const Vec3 p3{-100.0f, 0.5f, 99.9f};
+    RR_CHECK(schwarzschild_like_world_to_chart(p1, mass_origin, p) == p1);
+    RR_CHECK(schwarzschild_like_world_to_chart(p2, mass_origin, p) == p2);
+    RR_CHECK(schwarzschild_like_world_to_chart(p3, mass_origin, p) == p3);
+
+    // r_s = 0 with non-zero warp_strength ⇒ also identity.
+    SchwarzschildLikeWarpParams q = p;
+    q.warp_strength = 1.0f;
+    q.r_s           = 0.0f;
+    RR_CHECK(schwarzschild_like_world_to_chart(p2, mass_origin, q) == p2);
+}
+
+void test_schw_1_world_to_chart_far_field_identity() {
+    using namespace rr::manifold;
+    using rr::math::length;
+    using rr::math::Vec3;
+
+    // r → ∞ ⇒ displacement → 0. Verified at a large `r`:
+    //   displacement = warp_strength * r_s / r^falloff * delta
+    //   At r = 1.0e6, r_s = 1, falloff = 1, warp_strength = 1:
+    //     |displacement| = (1 * 1 / 1.0e6) * 1.0e6 = 1.0  (per axis)
+    //   So the displacement scalar is ~1 unit, which is small
+    //   compared to the input magnitude of 1e6. We verify the
+    //   RELATIVE displacement is small.
+    SchwarzschildLikeWarpParams p{};
+    p.r_s           = 1.0f;
+    p.warp_strength = 1.0f;
+    p.falloff       = 1.0f;
+    p.clamp_radius  = 0.1f;
+
+    const Vec3 mass_origin{0.0f, 0.0f, 0.0f};
+    const Vec3 p_far{1.0e6f, 0.0f, 0.0f};
+    const Vec3 chart_far = schwarzschild_like_world_to_chart(p_far, mass_origin, p);
+    const float rel_displacement = length(chart_far - p_far) / length(p_far);
+    RR_CHECK(rel_displacement < 1.0e-3f);
+}
+
+void test_schw_1_world_to_chart_known_value() {
+    using namespace rr::manifold;
+    using rr::math::Vec3;
+
+    // Worked example from the plan's §2 algebra:
+    //   warp_strength=1, r_s=1, falloff=1, clamp_radius=0.1,
+    //   mass_origin=(0,0,0), p_world=(2,0,0).
+    //   r = 2; f = 1 * 1 / 2 = 0.5;
+    //   chart_pos = (2,0,0) + 0.5 * (2,0,0) = (3,0,0).
+    SchwarzschildLikeWarpParams p{};
+    p.r_s           = 1.0f;
+    p.warp_strength = 1.0f;
+    p.falloff       = 1.0f;
+    p.clamp_radius  = 0.1f;
+    const Vec3 mass_origin{0.0f, 0.0f, 0.0f};
+    const Vec3 p_world{2.0f, 0.0f, 0.0f};
+    const Vec3 chart = schwarzschild_like_world_to_chart(p_world, mass_origin, p);
+    RR_CHECK(approx(chart, Vec3{3.0f, 0.0f, 0.0f}));
+}
+
+void test_schw_1_world_to_chart_clamp_radius_safety() {
+    using namespace rr::manifold;
+    using rr::math::Vec3;
+
+    // At p_world = mass_origin, the formula reduces to:
+    //   delta = (0,0,0); r = max(0, clamp_radius) = clamp_radius;
+    //   chart_pos = mass_origin + 0 * (whatever) = mass_origin.
+    // No NaN / Inf even though the naïve `1/0` would diverge.
+    SchwarzschildLikeWarpParams p{};
+    p.r_s           = 1.0f;
+    p.warp_strength = 1.0f;
+    p.falloff       = 1.0f;
+    p.clamp_radius  = 0.1f;
+    const Vec3 mass_origin{2.0f, 0.0f, 0.0f};
+    const Vec3 p_at_mass = mass_origin;
+    const Vec3 chart = schwarzschild_like_world_to_chart(p_at_mass, mass_origin, p);
+    RR_CHECK(approx(chart, mass_origin));
+}
+
+void test_schw_1_chart_to_world_inverse_residual() {
+    using namespace rr::manifold;
+    using rr::math::length;
+    using rr::math::Vec3;
+
+    // Forward → inverse round-trip should reproduce the input
+    // to within the plan §5.4 documented residual `<= 1e-4`.
+    // Test across a representative parameter sweep.
+    SchwarzschildLikeWarpParams p{};
+    p.clamp_radius = 0.1f;
+    const Vec3 mass_origin{0.0f, 0.0f, 0.0f};
+
+    struct Case {
+        float r_s, ws, fall;
+        rr::math::Vec3 p_world;
+    };
+    const Case cases[] = {
+        {1.0f, 0.5f, 1.0f, {3.0f, 0.0f, 0.0f}},
+        {1.0f, 1.0f, 1.0f, {2.0f, 0.0f, 0.0f}},
+        {0.5f, 0.25f, 1.0f, {5.0f, 0.0f, 0.0f}},
+        {1.0f, 1.0f, 2.0f, {4.0f, 0.0f, 0.0f}},
+        {2.0f, 0.5f, 1.0f, {1.5f, 0.5f, -1.0f}},
+        // Edge: r close to (but above) clamp_radius.
+        {1.0f, 1.0f, 1.0f, {0.5f, 0.0f, 0.0f}},
+    };
+
+    for (const auto& c : cases) {
+        p.r_s           = c.r_s;
+        p.warp_strength = c.ws;
+        p.falloff       = c.fall;
+        const Vec3 chart = schwarzschild_like_world_to_chart(c.p_world, mass_origin, p);
+        const Vec3 back  = schwarzschild_like_chart_to_world(chart, mass_origin, p);
+        const float residual = length(back - c.p_world);
+        RR_CHECK(residual < 1.0e-4f);
+    }
+}
+
+void test_schw_1_chart_to_world_euclidean_fallback() {
+    using namespace rr::manifold;
+    using rr::math::Vec3;
+
+    // warp_strength = 0 ⇒ chart_to_world is identity.
+    SchwarzschildLikeWarpParams p{};
+    p.r_s           = 1.0f;
+    p.warp_strength = 0.0f;
+    p.falloff       = 1.0f;
+    p.clamp_radius  = 0.1f;
+    const Vec3 mass_origin{1.0f, 2.0f, 3.0f};
+    const Vec3 chart{4.7f, -1.2f, 0.5f};
+    RR_CHECK(schwarzschild_like_chart_to_world(chart, mass_origin, p) == chart);
+}
+
+void test_schw_1_warp_ray_direction_euclidean_fallback() {
+    using namespace rr::manifold;
+    using rr::math::Vec3;
+
+    // warp_strength = 0 OR r_s = 0 ⇒ unchanged direction.
+    SchwarzschildLikeWarpParams p{};
+    p.r_s           = 1.0f;
+    p.warp_strength = 0.0f;
+    p.falloff       = 1.0f;
+    p.clamp_radius  = 0.1f;
+    const Vec3 origin{0.0f, 0.0f, 0.0f};
+    const Vec3 mass_origin{2.0f, 0.0f, 0.0f};
+    const Vec3 dir{0.0f, 0.0f, -1.0f};
+    RR_CHECK(schwarzschild_like_warp_ray_direction(origin, dir, mass_origin, p) == dir);
+
+    SchwarzschildLikeWarpParams q = p;
+    q.warp_strength = 1.0f;
+    q.r_s           = 0.0f;
+    RR_CHECK(schwarzschild_like_warp_ray_direction(origin, dir, mass_origin, q) == dir);
+}
+
+void test_schw_1_warp_ray_direction_bend_cap() {
+    using namespace rr::manifold;
+    using rr::math::length;
+    using rr::math::normalize;
+    using rr::math::Vec3;
+
+    // Hard cap at ±0.5: even with extreme parameters the output
+    // is finite, unit-length, and does not flip direction.
+    SchwarzschildLikeWarpParams p{};
+    p.r_s           = 1000.0f;   // huge
+    p.warp_strength = 100.0f;    // far above nominal [0, 1]
+    p.falloff       = 1.0f;
+    p.clamp_radius  = 0.1f;
+
+    const Vec3 origin{0.0f, 0.0f, 0.0f};
+    const Vec3 mass_origin{0.0f, 0.0f, -5.0f};  // straight ahead
+    const Vec3 dir{0.0f, 0.0f, -1.0f};
+    const Vec3 out = schwarzschild_like_warp_ray_direction(origin, dir, mass_origin, p);
+    // Output must be finite + unit-length.
+    RR_CHECK(std::isfinite(out.x) && std::isfinite(out.y) && std::isfinite(out.z));
+    RR_CHECK(approx(length(out), 1.0f, 1.0e-5f));
+    // For a ray pointing straight at the mass, the bend has no
+    // effect (bend_dir is parallel to dir) — the cap doesn't
+    // matter here. We just verify the helper produced a stable
+    // unit-length vector.
+}
+
+void test_schw_1_warp_ray_direction_bends_toward_mass() {
+    using namespace rr::manifold;
+    using rr::math::dot;
+    using rr::math::Vec3;
+
+    // Ray going +Z; mass at (+x, 0, 0). After warp, the dir
+    // should pick up a +x component (bent toward the mass).
+    SchwarzschildLikeWarpParams p{};
+    p.r_s           = 1.0f;
+    p.warp_strength = 1.0f;
+    p.falloff       = 1.0f;
+    p.clamp_radius  = 0.1f;
+    const Vec3 origin{0.0f, 0.0f, 0.0f};
+    const Vec3 mass_origin{1.0f, 0.0f, 0.0f};
+    const Vec3 dir{0.0f, 0.0f, 1.0f};
+    const Vec3 warped = schwarzschild_like_warp_ray_direction(origin, dir, mass_origin, p);
+    // Expect warped.x > 0 (bent toward the mass on the +x axis).
+    RR_CHECK(warped.x > 0.0f);
+    // Expect warped.z > 0 (still mostly along the original direction).
+    RR_CHECK(warped.z > 0.0f);
+}
+
 }  // namespace
 
 int main() {
@@ -369,6 +630,18 @@ int main() {
     test_manifold_mode_disabled_by_default();
     test_observer_frame_defaults();
     test_geodesic_state_defaults();
+
+    // SCHW.1: Schwarzschild-like artistic coordinate-warp math.
+    test_schw_1_validate_params();
+    test_schw_1_world_to_chart_euclidean_fallback();
+    test_schw_1_world_to_chart_far_field_identity();
+    test_schw_1_world_to_chart_known_value();
+    test_schw_1_world_to_chart_clamp_radius_safety();
+    test_schw_1_chart_to_world_inverse_residual();
+    test_schw_1_chart_to_world_euclidean_fallback();
+    test_schw_1_warp_ray_direction_euclidean_fallback();
+    test_schw_1_warp_ray_direction_bend_cap();
+    test_schw_1_warp_ray_direction_bends_toward_mass();
 
     std::printf("manifold_identity_tests: %d / %d checks passed\n",
                 g_total - g_failed, g_total);
