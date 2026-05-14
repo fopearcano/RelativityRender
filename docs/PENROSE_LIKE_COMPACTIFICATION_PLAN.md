@@ -39,9 +39,10 @@ Kerr / Kruskal work as **NOT authorised** at the time
 of its writing, conditional on operator approval AND
 SCHW.5 closure. Both conditions are now met:
 
-- **Operator approval:** the current task brief
+- **Operator approval:** the prior task brief
   ("PENROSE.1 — Penrose-Like Compactification
-  Planning") explicitly authorises this design work.
+  Planning") explicitly authorised this design work
+  (the planning slice landed at commit `a84f8b2`).
 - **SCHW.5 closure:** confirmed at commit `73e9591` +
   completion audit `e4345ed`.
 
@@ -55,7 +56,7 @@ design doc as its operator-facing brief.
 **PENROSE.* ships an artistic, conformally-inspired
 coordinate-compactification chart that promotes the
 existing `CoordinateChartType::PenroseLikePlaceholder`
-enumerator (renamed to `PenroseLike` at PENROSE.1) to
+enumerator (renamed to `PenroseLike` at PENROSE.2) to
 a concrete implementation.** It is the second
 non-trivial chart family after the SchwarzschildLike
 arc; it shares the same architectural seams (the SCHW.*
@@ -117,7 +118,7 @@ What this slice deliberately is NOT:
   Curvature scalars (Ricci, Kretschmann) belong to
   the Field Interpretation Layer
   (`docs/FIELD_INTERPRETATION_LAYER.md` §6);
-  PENROSE.5 (fixture / debug viz) reuses the existing
+  PENROSE.6 (fixture / debug viz) reuses the existing
   `ManifoldCoordinates` AOV slot, not a new
   curvature slot.
 - **Not a `.rrscene` schema bump.** The mass-origin /
@@ -175,7 +176,7 @@ Properties:
   (R_max - r_chart)`, diverges at `r_chart = R_max`
   but stable strictly inside the chart.
 
-**PENROSE.1 ships Family A (`tanh`).** It is
+**PENROSE.2 ships Family A (`tanh`).** It is
 preferred because (a) the integration plan's MANI-I.11
 sketch (§9 of `docs/MANIFOLD_INTEGRATION_PLAN.md`)
 already names "`tanh`-style coordinate compression";
@@ -188,7 +189,7 @@ domain.
 
 Family B is **deferred to a future addendum** if the
 operator wants a rational-family alternative for
-aesthetic reasons; PENROSE.1 ships only one helper
+aesthetic reasons; PENROSE.2 ships only one helper
 family to keep the math leaf small.
 
 The chart preserves the **light transport pipeline**:
@@ -199,7 +200,7 @@ The chart preserves the **light transport pipeline**:
   the chart-space hit position written to the
   `ManifoldCoordinates` AOV via `world_to_chart`,
   and (b) optionally the primary-ray direction (NOT
-  shipped at PENROSE.1; deferred to a future slice
+  shipped at PENROSE.2; deferred to a future slice
   if the operator wants a "compactified
   primary-ray" mode). The beauty pass renders the
   scene as Euclidean.
@@ -654,9 +655,9 @@ with its own PENROSE.* sub-slice.
   Vec3)` helper in `src/manifold/ManifoldTransform.h`
   already branches on `t.chart.type == Euclidean`
   AND `t.chart.type == SchwarzschildLike`
-  (SCHW.3). PENROSE.2 extends the helper with a
+  (SCHW.3). PENROSE.3 extends the helper with a
   `t.chart.type == CoordinateChartType::PenroseLike`
-  arm that calls the new math helper from PENROSE.1.
+  arm that calls the new math helper from PENROSE.2.
 - The `Vec4` overload (spacetime) gets the same arm,
   treating the time component as invariant (the
   PenroseLike chart is static in coordinate time at
@@ -669,7 +670,7 @@ with its own PENROSE.* sub-slice.
 
 - The existing inverse helper in `ManifoldTransform.h`
   gains a PenroseLike arm that runs the closed-form
-  analytical inverse from PENROSE.1 (no Newton-
+  analytical inverse from PENROSE.2 (no Newton-
   Raphson required, unlike SCHW.1; the `atanh`
   formula gives a direct inverse).
 - The inverse helper's accuracy is documented;
@@ -732,13 +733,13 @@ The SCHW.9 dispatcher merge logic (`effective_manifold
 applies verbatim to PenroseLike. No new merge
 behaviour required.
 
-The fixture scene PENROSE.5 ships authors `chart:
+The fixture scene PENROSE.6 ships authors `chart:
 "penrose-like"` in its `manifold` block; the
 existing SCHW.9 scene parser (`apply_manifold` +
 `parse_chart_type`) already accepts this kebab-case
 chart name and maps it to
 `CoordinateChartType::PenroseLikePlaceholder`. The
-PENROSE.1 slice renames the enum value to
+PENROSE.2 slice renames the enum value to
 `PenroseLike` (dropping the `Placeholder` suffix);
 the parser is updated in the same slice to consume
 the renamed enum (the kebab-case name
@@ -758,7 +759,7 @@ SCHW.2 / SCHW.4 / SCHW.6 / SCHW.8 / SCHW.10 / SCHW.11
 per-slice audit posture.
 
 Each deferred check must be exercised on a CUDA +
-OptiX-SDK host before PENROSE.6 (audit) closes the
+OptiX-SDK host before PENROSE.7 (audit) closes the
 chart's per-slice gate:
 
 ### 9.1 Euclidean fallback bit-identity (CUDA + OptiX)
@@ -820,8 +821,8 @@ a documented signature:
   their world-space values.
 - Documented boundary at `r_chart = R_max`.
 
-The reference AOV PPM is pinned by PENROSE.5 +
-PENROSE.6 on a CUDA + OptiX-SDK host.
+The reference AOV PPM is pinned by PENROSE.6 +
+PENROSE.7 on a CUDA + OptiX-SDK host.
 
 ### 9.5 CUDA / OptiX byte-equivalence
 
@@ -857,7 +858,7 @@ audit gate. The chain is strict-prefix; each slice
 ships only after its predecessor is green (mirroring
 the SCHW.1 → SCHW.11 ladder cadence).
 
-### PENROSE.1 — Math helper (impl, math-leaf)
+### PENROSE.2 — Math helper (impl, math-leaf)
 
 - **Scope:** add a new header
   `src/manifold/PenroseLikeCompactification.h` (or
@@ -892,11 +893,11 @@ the SCHW.1 → SCHW.11 ladder cadence).
     SCHW.1's `1e-4` because the inverse is
     analytical, not iterative).
 - **What does NOT ship:** no `ManifoldTransform.h`
-  change yet (PENROSE.2); no kernel code change
-  (PENROSE.3 / PENROSE.4); no test binary other
+  change yet (PENROSE.3); no kernel code change
+  (PENROSE.4 / PENROSE.5); no test binary other
   than appending to `manifold_identity_tests`.
 
-### PENROSE.2 — CPU integration (impl, host-only)
+### PENROSE.3 — CPU integration (impl, host-only)
 
 - **Scope:** extend `src/manifold/ManifoldTransform.h`'s
   `world_to_chart` / `chart_to_world` helpers
@@ -913,7 +914,7 @@ the SCHW.1 → SCHW.11 ladder cadence).
   consumption; no AOV change; no beauty-pass
   change.
 
-### PENROSE.3 — CUDA integration (impl, GPU-side)
+### PENROSE.4 — CUDA integration (impl, GPU-side)
 
 - **Scope:** wire the PenroseLike arm into the
   CUDA kernel:
@@ -934,16 +935,16 @@ the SCHW.1 → SCHW.11 ladder cadence).
     byte-identical (mirroring SCHW.5's
     triple-gate + four-layer safety).
 - **What does NOT ship:** OptiX-side integration
-  (deferred to PENROSE.4); test binary additions
+  (deferred to PENROSE.5); test binary additions
   beyond the existing `manifold_identity_tests`.
 
-### PENROSE.4 — OptiX integration (impl, GPU-side)
+### PENROSE.5 — OptiX integration (impl, GPU-side)
 
-- **Scope:** mirror PENROSE.3 in the OptiX
+- **Scope:** mirror PENROSE.4 in the OptiX
   closest-hit program. The
   `OptixLaunchParams::manifold_mode` +
   `coordinate_chart` fields (MANI-I.5 + SCHW.7) are
-  already in place; PENROSE.4 wires the PenroseLike
+  already in place; PENROSE.5 wires the PenroseLike
   math into the kernel arm at
   `OptixPrograms.cu:773-795` (where the SCHW.7
   SchwarzschildLike arm sits).
@@ -964,7 +965,7 @@ the SCHW.1 → SCHW.11 ladder cadence).
   the new AOV (the denoiser still consumes Beauty /
   Albedo / Normal only).
 
-### PENROSE.5 — Fixture / debug visualization (impl, scene + dispatcher)
+### PENROSE.6 — Fixture / debug visualization (impl, scene + dispatcher)
 
 - **Scope:** parallel to SCHW.9's fixture work. Add
   a controlled diagnostic scene:
@@ -975,14 +976,14 @@ the SCHW.1 → SCHW.11 ladder cadence).
   chart="penrose-like", strength=0.5, debug_visualization=true`.
   No new parser surface required (the SCHW.9
   `apply_manifold` already accepts kebab-case
-  `penrose-like`; the PENROSE.1 enum rename keeps
+  `penrose-like`; the PENROSE.2 enum rename keeps
   the kebab-case name unchanged).
 - **Acceptance:**
   - Audit-host build green; ctest 12/12.
   - Fixture loads cleanly via `--scene-info` on
     the audit host.
   - Default scenes (the existing nine `.rrscene`
-    files) are byte-identical to the pre-PENROSE.5
+    files) are byte-identical to the pre-PENROSE.6
     state.
 - **What does NOT ship:** new CLI action; chart-
   parameter scene authoring (artistic defaults
@@ -990,7 +991,7 @@ the SCHW.1 → SCHW.11 ladder cadence).
   helper, mirroring SCHW.7's pattern); golden-PPM
   pinning (deferred to CUDA + OptiX-SDK host).
 
-### PENROSE.6 — Audit (docs only)
+### PENROSE.7 — Audit (docs only)
 
 - **Scope:** per-arc capstone verdict. Writes
   `docs/PENROSE_LIKE_COMPACTIFICATION_AUDIT.md`
@@ -999,13 +1000,13 @@ the SCHW.1 → SCHW.11 ladder cadence).
   1. Architecture scope stayed artistic / bounded,
      not full conformal compactification.
   2. CPU integration via `ManifoldTransform`
-     extension (PENROSE.2).
-  3. CUDA kernel arm wired (PENROSE.3).
+     extension (PENROSE.3).
+  3. CUDA kernel arm wired (PENROSE.4).
   4. OptiX kernel arm wired + cross-backend AOV
      byte-equivalence by single-source-of-truth
-     math (PENROSE.4).
+     math (PENROSE.5).
   5. Fixture scene exists and is isolated
-     (PENROSE.5).
+     (PENROSE.6).
   6. Default Euclidean / disabled / SchwarzschildLike
      output remains byte-identical.
   7. Bounded / no-NaN safety status.
@@ -1058,7 +1059,7 @@ or plan:
   helper if the operator wants a "compactified
   primary-ray" mode.
 - **Multi-chart scene authoring.** The fixture
-  scene PENROSE.5 ships authors a single
+  scene PENROSE.6 ships authors a single
   `manifold` block; multi-chart scenes are a
   future-arc concern.
 - **A Cinema 4D bridge / preview-UI integration.**
@@ -1097,29 +1098,29 @@ or plan:
 - `src/manifold/CoordinateChart.h` —
   `PenroseLikePlaceholder` enum + the
   `CoordinateChartParameters::compactification_scale`
-  slot PENROSE.1 promotes.
+  slot PENROSE.2 promotes.
 - `src/manifold/SchwarzschildLikeWarp.h` — the
-  precedent math leaf PENROSE.1 mirrors in shape.
+  precedent math leaf PENROSE.2 mirrors in shape.
 - `src/manifold/ManifoldTransform.h` — the seam
-  PENROSE.2 extends.
+  PENROSE.3 extends.
 - `src/manifold/ManifoldMode.h` — the activation
-  gate (`is_active(...)`) PENROSE.3 / PENROSE.4
+  gate (`is_active(...)`) PENROSE.4 / PENROSE.5
   reuse verbatim.
 - `src/cuda/CudaTestKernel.cu:615-655` — the
-  SCHW.5 CUDA kernel arm PENROSE.3 mirrors.
+  SCHW.5 CUDA kernel arm PENROSE.4 mirrors.
 - `src/optix/OptixPrograms.cu:773-795` — the
-  SCHW.7 OptiX kernel arm PENROSE.4 mirrors.
+  SCHW.7 OptiX kernel arm PENROSE.5 mirrors.
 - `src/io/SceneLoader.cpp::apply_manifold` — the
-  SCHW.9 scene-parser surface PENROSE.5 reuses
+  SCHW.9 scene-parser surface PENROSE.6 reuses
   verbatim (kebab-case `penrose-like` already
   parseable; only the C++ enumerator identifier
-  changes at PENROSE.1).
+  changes at PENROSE.2).
 - `scenes/test_schwarzschild_like_manifold.rrscene`
-  — the SCHW.9 fixture PENROSE.5 mirrors in
+  — the SCHW.9 fixture PENROSE.6 mirrors in
   shape.
 - `docs/SCHWARZSCHILD_LIKE_FIXTURE.md` — the
-  SCHW.9 fixture companion doc PENROSE.5 will
+  SCHW.9 fixture companion doc PENROSE.6 will
   parallel.
 - `tests/manifold_identity_tests.cpp` — the 198
-  RR_CHECK test suite PENROSE.* extends; PENROSE.1
-  + PENROSE.2 add new test functions.
+  RR_CHECK test suite PENROSE.* extends; PENROSE.2
+  + PENROSE.3 add new test functions.

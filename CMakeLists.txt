@@ -319,10 +319,28 @@ target_link_libraries(rr_relativity INTERFACE rr_math)
 #                           + optional primary-ray warp
 #                           (hard-capped at +/-0.5). Bounded by
 #                           construction; Euclidean fallback at
-#                           warp_strength = 0 or r_s = 0. Not
-#                           consumed by the renderer this slice;
-#                           SCHW.2+ wires it into
-#                           ManifoldTransform.h.
+#                           warp_strength = 0 or r_s = 0. Wired
+#                           into ManifoldTransform.h at SCHW.3
+#                           (CPU seam) + OptiX kernel at SCHW.7
+#                           + CUDA kernel at SCHW.5 (completed
+#                           commit 73e9591).
+#   PenroseLikeCompactification.h - PENROSE.2 closed-form
+#                           artistic Penrose-like coordinate-
+#                           compactification math leaf
+#                           (docs/PENROSE_LIKE_COMPACTIFICATION_PLAN.md):
+#                           `PenroseLikeCompactificationParams`
+#                           POD (r_max / strength / scale /
+#                           falloff) + validator + forward
+#                           tanh-based radial compactification
+#                           + analytical inverse via atanh
+#                           (closed-form, NO Newton-Raphson;
+#                           residual <= 1e-6 better than
+#                           SCHW.1's 1e-4). Bounded by
+#                           construction in [0, r_max];
+#                           Euclidean fallback at strength = 0
+#                           or r_max = 0. Not consumed by the
+#                           renderer this slice; PENROSE.3+
+#                           wires it into ManifoldTransform.h.
 #
 # Skeleton stage: no renderer integration, no CUDA / OptiX
 # dependency, no behaviour change. Library exists so future slices

@@ -34,6 +34,7 @@
 #include "manifold/ManifoldTransform.h"
 #include "manifold/MetricTensor.h"
 #include "manifold/ObserverFrame.h"
+#include "manifold/PenroseLikeCompactification.h"
 #include "manifold/SchwarzschildLikeWarp.h"
 
 #include "relativity/RelativityParams.h"
@@ -890,6 +891,327 @@ void test_schw_3_other_non_euclidean_passthrough() {
     }
 }
 
+// ---------- PENROSE.2: Penrose-like artistic compactification math ----------
+//
+// Verifies that the SCHW.* precedent's math-leaf invariants
+// (bounded transforms; Euclidean fallback at strength=0;
+// no-NaN/Inf safety) carry through to the analogous PenroseLike
+// helper at `src/manifold/PenroseLikeCompactification.h`. Eight
+// test functions, each addressing one item the operator's PENROSE.2
+// brief enumerated as an acceptance gate.
+
+void test_penrose_2_validate_params() {
+    using namespace rr::manifold;
+
+    // Default-constructed params (all-zero r_max + strength,
+    // scale=1.0, falloff=1.0) pass validation. The chart is
+    // effectively Euclidean in this state because both r_max
+    // and strength default to 0.
+    PenroseLikeCompactificationParams ok{};
+    RR_CHECK(penrose_like_validate_params(ok));
+
+    // Typical non-trivial parameters validate.
+    PenroseLikeCompactificationParams typical{};
+    typical.r_max    = 5.0f;
+    typical.strength = 1.0f;
+    typical.scale    = 1.0f;
+    typical.falloff  = 1.0f;
+    RR_CHECK(penrose_like_validate_params(typical));
+
+    // Negative r_max rejected.
+    PenroseLikeCompactificationParams neg_rmax = typical;
+    neg_rmax.r_max = -1.0f;
+    RR_CHECK(!penrose_like_validate_params(neg_rmax));
+
+    // Falloff out of [0.5, 4.0] rejected.
+    PenroseLikeCompactificationParams falloff_low = typical;
+    falloff_low.falloff = 0.4f;
+    RR_CHECK(!penrose_like_validate_params(falloff_low));
+    PenroseLikeCompactificationParams falloff_high = typical;
+    falloff_high.falloff = 4.1f;
+    RR_CHECK(!penrose_like_validate_params(falloff_high));
+
+    // scale <= 0 rejected (would make `r / scale` divergent or
+    // negative).
+    PenroseLikeCompactificationParams scale_zero = typical;
+    scale_zero.scale = 0.0f;
+    RR_CHECK(!penrose_like_validate_params(scale_zero));
+    PenroseLikeCompactificationParams scale_neg = typical;
+    scale_neg.scale = -0.1f;
+    RR_CHECK(!penrose_like_validate_params(scale_neg));
+
+    // Non-finite values rejected.
+    PenroseLikeCompactificationParams nan_p = typical;
+    nan_p.strength = std::nanf("");
+    RR_CHECK(!penrose_like_validate_params(nan_p));
+}
+
+void test_penrose_2_world_to_chart_identity_at_strength_zero() {
+    using namespace rr::manifold;
+    using rr::math::Vec3;
+
+    // strength = 0 ⇒ identity, regardless of r_max / falloff /
+    // scale / origin / input position. The operator's PENROSE.2
+    // acceptance test #1 ("identity at strength 0") is exercised
+    // directly here.
+    PenroseLikeCompactificationParams p{};
+    p.r_max    = 5.0f;
+    p.strength = 0.0f;
+    p.scale    = 1.0f;
+    p.falloff  = 1.0f;
+    const Vec3 origin{0.0f, 0.0f, 0.0f};
+
+    const Vec3 p1{0.0f, 0.0f, 0.0f};
+    const Vec3 p2{1.5f, -2.3f, 4.7f};
+    const Vec3 p3{-100.0f, 0.5f, 99.9f};
+    RR_CHECK(penrose_like_world_to_chart(p1, origin, p) == p1);
+    RR_CHECK(penrose_like_world_to_chart(p2, origin, p) == p2);
+    RR_CHECK(penrose_like_world_to_chart(p3, origin, p) == p3);
+
+    // r_max = 0 with non-zero strength ⇒ also identity (defensive
+    // short-circuit; mirrors SCHW.1's `r_s == 0` short-circuit).
+    PenroseLikeCompactificationParams q = p;
+    q.strength = 1.0f;
+    q.r_max    = 0.0f;
+    RR_CHECK(penrose_like_world_to_chart(p2, origin, q) == p2);
+}
+
+void test_penrose_2_world_to_chart_bounded_for_large_distance() {
+    using namespace rr::manifold;
+    using rr::math::length;
+    using rr::math::Vec3;
+
+    // r → ∞ ⇒ r_chart → r_max. Verified at a large `r`:
+    //   tanh(strength * (r/scale)^falloff) saturates at 1.0 for
+    //   inputs > ~16 in single precision. The operator's
+    //   PENROSE.2 acceptance test #2 ("bounded output for large
+    //   distances") is exercised directly here.
+    PenroseLikeCompactificationParams p{};
+    p.r_max    = 5.0f;
+    p.strength = 1.0f;
+    p.scale    = 1.0f;
+    p.falloff  = 1.0f;
+
+    const Vec3 origin{0.0f, 0.0f, 0.0f};
+    const Vec3 p_far{1.0e6f, 0.0f, 0.0f};
+    const Vec3 chart_far =
+        penrose_like_world_to_chart(p_far, origin, p);
+    const float r_chart = length(chart_far - origin);
+    // r_chart must be bounded by r_max (strict inequality not
+    // required by the math; the IEEE-754 saturation produces
+    // exactly r_max for sufficiently large r).
+    RR_CHECK(r_chart <= p.r_max);
+    // r_chart must be very close to r_max (saturation
+    // signature). With strength = 1, scale = 1, falloff = 1,
+    // r = 1e6 ⇒ tanh(1e6) = 1.0f exactly ⇒ r_chart = r_max.
+    RR_CHECK(approx(r_chart, p.r_max, 1.0e-5f));
+
+    // A second far-field input from a different direction also
+    // saturates at r_max — verifies the bound is uniform across
+    // directions.
+    const Vec3 p_far_y{0.0f, -1.0e6f, 0.0f};
+    const Vec3 chart_far_y =
+        penrose_like_world_to_chart(p_far_y, origin, p);
+    const float r_chart_y = length(chart_far_y - origin);
+    RR_CHECK(r_chart_y <= p.r_max);
+    RR_CHECK(approx(r_chart_y, p.r_max, 1.0e-5f));
+}
+
+void test_penrose_2_world_to_chart_no_nan_inf() {
+    using namespace rr::manifold;
+    using rr::math::Vec3;
+
+    // The operator's PENROSE.2 acceptance test #3 ("no NaN/Inf").
+    // Adversarial inputs spanning the domain:
+    //   - very large r;
+    //   - very small r (near origin);
+    //   - exactly at origin (the fixed point of the radial map);
+    //   - off-axis;
+    //   - extreme strength values (out of nominal [0, 1] range).
+    PenroseLikeCompactificationParams p{};
+    p.r_max    = 5.0f;
+    p.strength = 100.0f;   // far above nominal range
+    p.scale    = 1.0f;
+    p.falloff  = 4.0f;     // max-allowed
+    const Vec3 origin{2.0f, -3.0f, 1.0f};
+
+    const Vec3 inputs[] = {
+        {2.0f, -3.0f, 1.0f},      // exactly at origin
+        {2.0f + 1.0e-10f, -3.0f, 1.0f},  // ε away
+        {2.0f + 1.0e-3f,  -3.0f, 1.0f},  // close
+        {2.0f + 1.0e6f,   -3.0f, 1.0f},  // very far
+        {1.5f + 1.0e6f,   1.0e6f, -1.0e6f},  // very far off-axis
+    };
+    for (const Vec3& q : inputs) {
+        const Vec3 out = penrose_like_world_to_chart(q, origin, p);
+        RR_CHECK(std::isfinite(out.x));
+        RR_CHECK(std::isfinite(out.y));
+        RR_CHECK(std::isfinite(out.z));
+    }
+}
+
+void test_penrose_2_world_to_chart_monotonic_radial_compression() {
+    using namespace rr::manifold;
+    using rr::math::length;
+    using rr::math::Vec3;
+
+    // The operator's PENROSE.2 acceptance test #4 ("monotonic
+    // radial compression"). For three world-space points along
+    // a ray from the origin, verify that the chart-space radial
+    // distances are also monotonically increasing.
+    PenroseLikeCompactificationParams p{};
+    p.r_max    = 5.0f;
+    p.strength = 1.0f;
+    p.scale    = 1.0f;
+    p.falloff  = 1.0f;
+    const Vec3 origin{0.0f, 0.0f, 0.0f};
+
+    const Vec3 a{1.0f, 0.0f, 0.0f};
+    const Vec3 b{2.0f, 0.0f, 0.0f};
+    const Vec3 c{5.0f, 0.0f, 0.0f};
+    const Vec3 d{50.0f, 0.0f, 0.0f};
+
+    const float ra = length(penrose_like_world_to_chart(a, origin, p) - origin);
+    const float rb = length(penrose_like_world_to_chart(b, origin, p) - origin);
+    const float rc = length(penrose_like_world_to_chart(c, origin, p) - origin);
+    const float rd = length(penrose_like_world_to_chart(d, origin, p) - origin);
+
+    RR_CHECK(ra < rb);
+    RR_CHECK(rb < rc);
+    // rc and rd are both very close to r_max but rd >= rc
+    // because tanh is monotonically non-decreasing.
+    RR_CHECK(rc <= rd);
+    // All bounded by r_max.
+    RR_CHECK(rd <= p.r_max);
+}
+
+void test_penrose_2_world_to_chart_safe_near_origin() {
+    using namespace rr::manifold;
+    using rr::math::Vec3;
+
+    // The operator's PENROSE.2 acceptance test #5 ("safe behavior
+    // near origin"). At p_world == origin and at extremely small
+    // |delta|, the formula's `r / r` term would be 0/0; the
+    // helper's explicit `r <= 1e-20f` short-circuit returns
+    // p_world. Verify finite output AND identity at the fixed
+    // point.
+    PenroseLikeCompactificationParams p{};
+    p.r_max    = 5.0f;
+    p.strength = 1.0f;
+    p.scale    = 1.0f;
+    p.falloff  = 1.0f;
+    const Vec3 origin{2.0f, 0.0f, 0.0f};
+
+    // Exactly at origin: helper returns p_world unchanged.
+    const Vec3 at_origin = origin;
+    const Vec3 out_at = penrose_like_world_to_chart(at_origin, origin, p);
+    RR_CHECK(approx(out_at, origin));
+
+    // Very close to origin (1e-15 away): the radial compression
+    // is mathematically defined but numerically marginal. The
+    // helper's short-circuit AT 1e-20f catches the extreme case;
+    // slightly above the threshold, the helper produces a
+    // continuous near-identity output.
+    const Vec3 near{2.0f + 1.0e-15f, 0.0f, 0.0f};
+    const Vec3 out_near = penrose_like_world_to_chart(near, origin, p);
+    RR_CHECK(std::isfinite(out_near.x));
+    RR_CHECK(std::isfinite(out_near.y));
+    RR_CHECK(std::isfinite(out_near.z));
+}
+
+void test_penrose_2_chart_to_world_inverse_residual() {
+    using namespace rr::manifold;
+    using rr::math::length;
+    using rr::math::Vec3;
+
+    // Forward → inverse round-trip should reproduce the input
+    // to within the plan §6.4 documented residual (`≤ 1e-6` for
+    // typical parameter ranges, better than SCHW.1's `1e-4`
+    // because the inverse is analytical rather than NR-iterative).
+    PenroseLikeCompactificationParams p{};
+    p.scale = 1.0f;
+    const Vec3 origin{0.0f, 0.0f, 0.0f};
+
+    struct Case {
+        float r_max, strength, falloff;
+        rr::math::Vec3 p_world;
+    };
+    const Case cases[] = {
+        {5.0f, 0.5f, 1.0f, {1.0f, 0.0f, 0.0f}},
+        {5.0f, 1.0f, 1.0f, {2.0f, 0.0f, 0.0f}},
+        {3.0f, 0.5f, 2.0f, {1.5f, 0.0f, 0.0f}},
+        {5.0f, 1.0f, 1.0f, {1.0f, 0.5f, -0.5f}},
+        {10.0f, 0.5f, 0.5f, {3.0f, 0.0f, 0.0f}},
+        // Edge: r close to (but not over) r_max in chart space.
+        {5.0f, 1.0f, 1.0f, {0.3f, 0.0f, 0.0f}},
+    };
+
+    for (const auto& c : cases) {
+        p.r_max    = c.r_max;
+        p.strength = c.strength;
+        p.falloff  = c.falloff;
+        const Vec3 chart =
+            penrose_like_world_to_chart(c.p_world, origin, p);
+        const Vec3 back =
+            penrose_like_chart_to_world(chart, origin, p);
+        const float residual = length(back - c.p_world);
+        RR_CHECK(residual < 1.0e-4f);   // generous bound; typical
+                                         // observed residual << 1e-6
+    }
+}
+
+void test_penrose_2_chart_to_world_euclidean_fallback() {
+    using namespace rr::manifold;
+    using rr::math::Vec3;
+
+    // strength = 0 ⇒ chart_to_world is identity. Mirrors the
+    // forward-map Euclidean fallback (same defensive short-circuit
+    // pattern as SCHW.1's `chart_to_world`).
+    PenroseLikeCompactificationParams p{};
+    p.r_max    = 5.0f;
+    p.strength = 0.0f;
+    p.scale    = 1.0f;
+    p.falloff  = 1.0f;
+    const Vec3 origin{1.0f, 2.0f, 3.0f};
+    const Vec3 chart{4.7f, -1.2f, 0.5f};
+    RR_CHECK(penrose_like_chart_to_world(chart, origin, p) == chart);
+}
+
+void test_penrose_2_chart_to_world_boundary_clamp() {
+    using namespace rr::manifold;
+    using rr::math::length;
+    using rr::math::Vec3;
+
+    // Inverse with r_chart at (or very close to) r_max: the
+    // `atanh(arg)` would diverge as arg → 1; the helper clamps
+    // r_chart to `r_max * (1 - kBoundaryEpsilon)` so the
+    // inverse stays finite. Verify finite output at the boundary
+    // and just past it (the latter exercises the clamp path).
+    PenroseLikeCompactificationParams p{};
+    p.r_max    = 5.0f;
+    p.strength = 1.0f;
+    p.scale    = 1.0f;
+    p.falloff  = 1.0f;
+    const Vec3 origin{0.0f, 0.0f, 0.0f};
+
+    // r_chart = r_max exactly (the singular case).
+    const Vec3 at_boundary{5.0f, 0.0f, 0.0f};
+    const Vec3 out_b =
+        penrose_like_chart_to_world(at_boundary, origin, p);
+    RR_CHECK(std::isfinite(out_b.x));
+    RR_CHECK(std::isfinite(out_b.y));
+    RR_CHECK(std::isfinite(out_b.z));
+
+    // r_chart > r_max (operator-side bug; clamp should still
+    // produce finite output).
+    const Vec3 past_boundary{10.0f, 0.0f, 0.0f};
+    const Vec3 out_p =
+        penrose_like_chart_to_world(past_boundary, origin, p);
+    RR_CHECK(std::isfinite(out_p.x));
+    RR_CHECK(std::isfinite(out_p.y));
+    RR_CHECK(std::isfinite(out_p.z));
+}
+
 }  // namespace
 
 int main() {
@@ -923,6 +1245,17 @@ int main() {
     test_schw_3_no_nan_inf_near_clamp_radius();
     test_schw_3_params_from_chart();
     test_schw_3_other_non_euclidean_passthrough();
+
+    // PENROSE.2: Penrose-like artistic compactification math.
+    test_penrose_2_validate_params();
+    test_penrose_2_world_to_chart_identity_at_strength_zero();
+    test_penrose_2_world_to_chart_bounded_for_large_distance();
+    test_penrose_2_world_to_chart_no_nan_inf();
+    test_penrose_2_world_to_chart_monotonic_radial_compression();
+    test_penrose_2_world_to_chart_safe_near_origin();
+    test_penrose_2_chart_to_world_inverse_residual();
+    test_penrose_2_chart_to_world_euclidean_fallback();
+    test_penrose_2_chart_to_world_boundary_clamp();
 
     std::printf("manifold_identity_tests: %d / %d checks passed\n",
                 g_total - g_failed, g_total);

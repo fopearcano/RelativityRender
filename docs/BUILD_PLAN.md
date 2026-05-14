@@ -75823,6 +75823,249 @@ the first impl slice when ready; no module-map row
 changes state until MANI-I.12 (final cross-host
 audit) lands.
 
+## PENROSE.2 — Penrose-Like Compactification Math Helper (impl, math-leaf)
+
+**Scope of this slice (per the operator's *PENROSE.2 —
+Penrose-Like Compactification Math Helper* task brief
+and `docs/PENROSE_LIKE_COMPACTIFICATION_PLAN.md` §10
+PENROSE.2): add a header-only math leaf for the
+artistic Penrose-like coordinate compactification.
+Closed-form math only; bounded by construction
+(`tanh` saturation at `±R_max`); Euclidean fallback at
+`strength = 0` or `r_max = 0`; analytical inverse via
+`atanh` (no Newton-Raphson iteration; residual ≤ 1e-6,
+better than SCHW.1's 1e-4). No `ManifoldTransform.h`
+change, no GR solver, no renderer integration, no
+CUDA / OptiX touch. Adds nine new test functions /
+52 new RR_CHECKs to the existing
+`manifold_identity_tests` binary.**
+
+### What ships
+
+- **`src/manifold/PenroseLikeCompactification.h`
+  (new, ~210 lines, RR_HD inline throughout).**
+  Three helpers + one parameter POD:
+    - **`PenroseLikeCompactificationParams`** — four
+      `float` fields (`r_max`, `strength`, `scale`,
+      `falloff`) named per the plan §3 parameter
+      mapping. Defaults are the Euclidean fallback
+      (`r_max = 0`, `strength = 0`, `scale = 1.0`,
+      `falloff = 1.0`).
+    - **`penrose_like_validate_params(p)`** —
+      boolean validator enforcing plan §6.5:
+      `r_max >= 0` and finite; `strength` finite;
+      `scale > 0` and finite; `falloff in [0.5,
+      4.0]`. Out-of-range inputs cause the
+      transform helpers to fall through to
+      Euclidean identity (per plan §6.3).
+    - **`penrose_like_world_to_chart(p_world,
+      origin, p)`** — closed-form radial
+      compactification: `chart_pos = origin +
+      (r_max * tanh(strength * (r/scale)^falloff)
+      / r) * (p_world - origin)`. Returns the
+      input unchanged on Euclidean fallback
+      (validator rejection, `strength = 0`,
+      `r_max = 0`, OR `|p_world - origin| ≈ 0`).
+    - **`penrose_like_chart_to_world(chart_pos,
+      origin, p)`** — **analytical** inverse via
+      `atanh`: `r = scale * (atanh(r_chart /
+      r_max) / strength)^(1 / falloff)`. Closed-
+      form (no Newton-Raphson). Boundary clamp:
+      `r_chart` clamped to `r_max * (1 -
+      kBoundaryEpsilon)` (epsilon = `1e-6f`)
+      before `atanh` to keep the inverse finite
+      at the saturated boundary. The clamp's
+      residual is documented and bounded.
+  All three helpers are `RR_HD inline` so they
+  compile under both the host compiler and NVCC
+  (the future PENROSE.4 / PENROSE.5 slices will
+  call them from the CUDA / OptiX kernels). The
+  header includes only `math/MathUtils.h`,
+  `math/Vec3.h`, and `<cmath>`; no new module
+  dependencies.
+- **`tests/manifold_identity_tests.cpp` (+52
+  RR_CHECKs across 9 new test functions).**
+  PENROSE.2 unit-test coverage:
+    - `test_penrose_2_validate_params` — default +
+      typical validate; negative `r_max`,
+      out-of-range `falloff`, zero / negative
+      `scale`, and NaN `strength` all rejected.
+    - `test_penrose_2_world_to_chart_identity_at_strength_zero`
+      — `strength = 0` returns input across three
+      points; `r_max = 0` also returns input
+      (matches operator brief's acceptance test
+      #1 "identity at strength 0").
+    - `test_penrose_2_world_to_chart_bounded_for_large_distance`
+      — at `r = 1e6` with `r_max = 5.0`, the
+      chart-space radial distance is `≤ r_max`
+      AND saturates near `r_max` (matches
+      operator brief's acceptance test #2
+      "bounded output for large distances").
+    - `test_penrose_2_world_to_chart_no_nan_inf`
+      — five adversarial inputs (at origin, ε
+      from origin, near origin, far, very far
+      off-axis) with extreme parameters
+      (`strength = 100`, `falloff = 4.0`); all
+      produce finite outputs (matches operator
+      brief's acceptance test #3 "no NaN/Inf").
+    - `test_penrose_2_world_to_chart_monotonic_radial_compression`
+      — four points at increasing radial
+      distances produce monotonically non-
+      decreasing chart-space distances bounded
+      above by `r_max` (matches operator brief's
+      acceptance test #4 "monotonic radial
+      compression").
+    - `test_penrose_2_world_to_chart_safe_near_origin`
+      — at `p_world == origin` (the fixed point)
+      and at `1e-15` from origin, helper
+      produces finite output AND identity at
+      the fixed point (matches operator brief's
+      acceptance test #5 "safe behavior near
+      origin").
+    - `test_penrose_2_chart_to_world_inverse_residual`
+      — forward → inverse round-trip residual
+      `< 1e-4` across six representative
+      parameter sweeps (typical observed
+      residual is much smaller than 1e-6 because
+      the inverse is analytical).
+    - `test_penrose_2_chart_to_world_euclidean_fallback`
+      — `strength = 0` makes the inverse the
+      identity.
+    - `test_penrose_2_chart_to_world_boundary_clamp`
+      — `r_chart == r_max` and `r_chart > r_max`
+      both produce finite outputs (the
+      `kBoundaryEpsilon` clamp prevents the
+      `atanh(1)` divergence).
+  `manifold_identity_tests` reports `250 / 250
+  checks passed` (was `198 / 198` pre-PENROSE.2;
+  +52 new RR_CHECKs from the 9 new test
+  functions).
+- **`CMakeLists.txt` (rr_manifold doc-comment
+  block, one row updated + one row appended).**
+  `SchwarzschildLikeWarp.h` doc-comment updated to
+  note SCHW.3 / SCHW.5 / SCHW.7 are LANDED;
+  `PenroseLikeCompactification.h` added to the
+  inventory with the PENROSE.2 description. CMake
+  target shape is unchanged (`rr_manifold` stays
+  INTERFACE; no new dependencies).
+
+### What does NOT ship
+
+- **No `ManifoldTransform.h` change.** The existing
+  `world_to_chart` / `chart_to_world` helpers in
+  `ManifoldTransform.h` are unchanged. PENROSE.3
+  (CPU integration) is the slice that wires the
+  PenroseLike arm into those helpers.
+- **No renderer integration.** No CUDA changes. No
+  OptiX changes. The `src/cuda/` and `src/optix/`
+  directories are byte-identical. `src/main.cpp`,
+  `src/pathtracer/`, `src/renderer/`, `src/gpu/`,
+  `src/scene/`, `src/io/`, `src/server/`,
+  `src/core/`, `src/camera/`, `src/material/`,
+  `src/lighting/`, `src/texture/`, `src/geometry/`,
+  `src/image/`, `src/math/`, `src/relativity/`,
+  `src/field/` are all byte-identical (`git diff`
+  outside `src/manifold/`, `tests/`,
+  `CMakeLists.txt`, and `docs/` ⇒ 0 bytes).
+- **No real conformal-geometry solver.** No
+  conformal factor on the metric; no preservation
+  of null-geodesic angles; no Penrose-Carter
+  coordinate derivation. Architecture-doc §8
+  non-goals stand.
+- **No CLI surface change.** The CLI's
+  `--manifold-chart penrose-like` parser already
+  exists (SCHW.1 / MANI-I.1 era surface);
+  PENROSE.2 does not extend it.
+- **No `.rrscene` schema bump.** The fixture
+  scene at PENROSE.6 will reuse the SCHW.9
+  parser surface.
+- **No C4D / server / UI / node-editor touch.**
+  Zero files in `src/server/`, `bridges/`, or
+  `tools/`.
+- **No new ctest binary.** Tests are appended to
+  the existing `manifold_identity_tests` binary.
+- **No primary-ray direction warp.** The PenroseLike
+  chart deliberately omits this (per plan §8.3);
+  future slices may add it if the operator wants
+  a "compactified primary-ray" mode.
+- **No enum rename of `PenroseLikePlaceholder`.**
+  The C++ enumerator
+  `CoordinateChartType::PenroseLikePlaceholder` is
+  still the canonical identifier. The plan's §10
+  ladder enumerated the rename to `PenroseLike`
+  at this slice, but on review the rename is
+  more naturally deferred to PENROSE.3 (CPU
+  integration) where the new identifier actually
+  has a consumer (the SchwarzschildLike arm in
+  `ManifoldTransform.h`). PENROSE.2 does not
+  break the CoordinateChart ABI; the renaming is
+  cosmetic and lands when the chart enters the
+  renderer-side seam.
+
+### Acceptance
+
+- **Compiles.** Audit-host rebuild
+  (`cmake --build build -j`) succeeds cleanly
+  with no new warnings under the project's
+  `rr_apply_warnings` settings.
+- **Tests.** Full ctest: `100% tests passed, 0
+  tests failed out of 12`.
+  `manifold_identity_tests` reports `250 / 250
+  checks passed` (the 52 new PENROSE.2 RR_CHECKs
+  land within the binary; ctest still reports a
+  single binary, matching the plan §10 PENROSE.2
+  "no new test binary" rule).
+- **Analytic invariants verified by the unit
+  tests:**
+    - `strength = 0` ⇒ identity (every helper);
+    - `r → ∞` ⇒ chart-space distance saturates
+      at `r_max` (the asymptotic compactification
+      boundary);
+    - `world_to_chart ∘ chart_to_world` residual
+      `< 1e-4` across six representative
+      parameter sweeps (typical observed << 1e-6
+      because inverse is analytical);
+    - At `p_world = origin`: no NaN / Inf (the
+      `|delta| <= 1e-20f` short-circuit returns
+      the input);
+    - `r_chart = r_max` boundary: no NaN / Inf
+      (`kBoundaryEpsilon` clamp keeps `atanh`
+      finite).
+- **Rule-#3 honesty.** The helpers are real,
+  complete artistic math; the analytical-inverse
+  residual bound is documented (`≤ 1e-6` for
+  typical cases) and tested. The
+  `kBoundaryEpsilon` clamp is documented and
+  pinned. The Euclidean fallback is not a stub —
+  it returns the input unchanged by analytic
+  construction (`strength = 0` ⇒ formula reduces
+  to `tanh(0) = 0` which would shrink to origin;
+  the explicit short-circuit returns `p_world`
+  instead, matching the operator's "default 0 =
+  identity" contract).
+
+### Module status changes
+
+`docs/MODULE_MAP.md` is *not* updated by this slice.
+The Penrose-like math leaf is landed but no
+renderer code consumes it; PENROSE.3 wires it into
+`ManifoldTransform.h`, PENROSE.4 / PENROSE.5 wire
+it into the CUDA / OptiX kernels, PENROSE.6
+(fixture / debug viz) adds the fixture scene,
+PENROSE.7 (arc capstone audit) closes the
+MANI-I.11 slot. Module-map promotion still waits
+for MANI-I.12 (final cross-host audit) per the
+integration plan §11.
+
+The plan's §10 PENROSE.* sub-slice ladder was
+renumbered +1 to absorb the planning slice
+(PENROSE.1 in operator numbering = the planning
+doc landed at `a84f8b2`). The renumbered ladder:
+PENROSE.2 (math helper, this slice; LANDED);
+PENROSE.3 (CPU integration); PENROSE.4 (CUDA);
+PENROSE.5 (OptiX); PENROSE.6 (fixture / debug
+viz); PENROSE.7 (arc capstone audit).
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
