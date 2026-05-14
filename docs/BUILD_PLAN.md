@@ -74040,6 +74040,185 @@ renumbered from the original SCHW.4 in
 row changes state until MANI-I.12 (final cross-host
 audit) lands.
 
+## SCHW.6 — Schwarzschild-Like CUDA Warp Audit (docs only, forward-looking)
+
+**Scope of this slice (per the operator's *SCHW.6 —
+Schwarzschild-Like CUDA Warp Audit* task brief): write
+`docs/SCHWARZSCHILD_LIKE_CUDA_WARP_AUDIT.md`, a
+forward-looking CUDA-safety review of the structural
+bridge between the SCHW.1 math leaf, the SCHW.3
+`ManifoldTransform.h` seam, and the existing
+MANI-I.5 / MANI-I.8 CUDA kernel surface. Verifies the
+nine structural items the task brief enumerates —
+CUDA-safe warp helper exists; warp activates only on
+the intended gates; disabled/default no-op; Euclidean
+identity; bounded / no-NaN; OptiX untouched; build /
+test status; runtime CUDA-host status; verdict — and
+produces a PASS / REPAIR / BLOCKED verdict. The audit
+is forward-looking because the kernel-side activation
+slice (renumbered SCHW.5) has not yet landed;
+master-rule-#3 honesty requires the audit to
+explicitly note this state. Documentation only; no
+source code, no test, no CMake, no behavioural change.
+Inserts SCHW.6 as a per-slice audit slot AND renames
+the original SCHW.6-OptiX-integration → SCHW.7 (with
+cascade shifts SCHW.7→SCHW.8, SCHW.8→SCHW.9) in the
+`SCHWARZSCHILD_LIKE_REMAP_PLAN.md` §8 sub-slice
+ladder.**
+
+### What ships
+
+- **`docs/SCHWARZSCHILD_LIKE_CUDA_WARP_AUDIT.md`
+  (new).** Per-slice verdict document mirroring the
+  prior audit doc shape with one structural
+  enhancement (a "WHAT THIS AUDIT DOES NOT VERIFY"
+  section) for the forward-looking posture:
+    - **§1 VERDICT** — `PASS` (structural CUDA-safety
+      of the existing bridge); check #8 (runtime
+      CUDA-host status) DEFERRED on two grounds
+      (audit-host has no CUDA SDK; no kernel call
+      site invokes the chart-aware arm yet).
+    - **§2 PER-CHECK RESULTS** — nine-row evidence
+      table. Each row cites concrete file/line
+      observations:
+      `RR_HD inline` decoration on every SCHW.1
+      math leaf helper (`SchwarzschildLikeWarp.h:113`
+      / `:145` / `:196` / `:267`) and every SCHW.3
+      seam helper (`ManifoldTransform.h:158` /
+      `:186` / `:205` / `:226` / `:242` / `:261` /
+      `:289` / `:323` / `:347`); the activation
+      gate's three-layer decomposition (`enabled`
+      via `ManifoldMode.h:143-145` /
+      `CudaPathTracer.cuh:103`; `SchwarzschildLike`
+      via the SCHW.3 arm; `strength > 0` via the
+      math leaf short-circuit at
+      `SchwarzschildLikeWarp.h:153-154` — strength
+      dial currently hardcoded `1.0` in the seam,
+      runtime dial wires at SCHW.5); the unchanged
+      `CudaTestKernel.cu:582-602` AOV-write site;
+      Euclidean arm preserved verbatim from
+      MANIFOLD.5; four bounding/no-NaN mechanisms
+      inherited from SCHW.1; `git diff
+      fef3e50..b78fe98 -- src/optix/` returning
+      zero changes; ctest 12/12 +
+      `manifold_identity_tests: 198 / 198 checks
+      passed`.
+    - **§3 WHAT THIS AUDIT DOES NOT VERIFY** —
+      explicit scope-boundary section listing five
+      items the audit cannot check: no kernel-side
+      activation (SCHW.5 unlanded); no runtime
+      byte-identity verification (plan §7 deferred
+      to CUDA host); no strength-dial wiring
+      verification (slot ready, fills at SCHW.5);
+      no OptiX host-side AOV allocation (deferred
+      per MANI-I.9, closes at SCHW.7); no
+      primary-ray direction warp (signature lacks
+      `ray_origin`).
+    - **§4 REASONING SUMMARY** — four structural
+      elements of the bridge (math leaf at SCHW.1
+      `2da5780`; seam at SCHW.3 `b48c480`; kernel
+      signature at MANI-I.5 `a34e265`; AOV write
+      site at MANI-I.8 `094306f`); the bridge is
+      structurally complete; SCHW.5 will flip a
+      single `is_active(...)` guard in the
+      AOV-write region.
+    - **§5 NEXT** — names the SCHW.* sub-slice
+      renumbering (SCHW.6 audit inserted; SCHW.6 →
+      SCHW.7 / SCHW.7 → SCHW.8 / SCHW.8 → SCHW.9)
+      and points at SCHW.5 (CUDA integration) as
+      the next concrete impl commit; SCHW.5 is
+      structurally *before* SCHW.6 audit in the
+      per-slice ladder, but the audit is
+      forward-looking and gates SCHW.5 by verifying
+      the infrastructure SCHW.5 will plug into.
+- **`docs/SCHWARZSCHILD_LIKE_REMAP_PLAN.md` §8
+  (renumbered).** Three replace-all substitutions
+  shift every SCHW.x reference from §8 SCHW.6
+  onward (highest-to-lowest to avoid double-shifting):
+  SCHW.8 → SCHW.9, SCHW.7 → SCHW.8, SCHW.6 →
+  SCHW.7. A new "SCHW.6 — Audit (docs only)"
+  subsection is inserted between SCHW.5 (CUDA
+  integration) and the renumbered SCHW.7 (OptiX
+  integration). The new SCHW.6 subsection
+  documents the *forward-looking variant* explicitly
+  so future readers understand the audit was
+  inserted before its predecessor SCHW.5 landed,
+  with check #8 DEFERRED on documented grounds.
+  The plan's other sections (§1–§7, §9–§10) are
+  unchanged.
+
+### What does NOT ship
+
+- **No source code.** Nothing in any `src/` subtree
+  is touched (`git diff` outside `docs/` ⇒ 0 bytes).
+- **No new test binary.** ctest set unchanged at 12.
+- **No CMake change.** No new `rr_*` target; no
+  link-line change.
+- **No SCHW.5 (CUDA integration) implementation.**
+  The forward-looking audit explicitly defers the
+  kernel-side activation to SCHW.5. The audit
+  surveys the existing CUDA-safe infrastructure and
+  produces a PASS verdict for the *bridge's
+  safety properties*, not for a kernel-arm
+  activation that does not yet exist.
+- **No `BUILD_PLAN.md` historical-record rewrite.**
+  The MANI-I.* / SCHW.1 / SCHW.2 / SCHW.3 / SCHW.4
+  entries above stay as-is; this SCHW.6 entry is
+  additive.
+- **No `MODULE_MAP.md` update.** The per-slice audit
+  is doc-only; module-map promotion still waits for
+  MANI-I.12 (final cross-host audit) per the
+  integration plan §11.
+- **No update to the prior audit docs.** The
+  MANI-I.2 / MANI-I.4 / MANI-I.6 / MANI-I.9 /
+  SCHW.2 / SCHW.4 audit docs are preserved as
+  point-in-time historical snapshots.
+- **No integration plan §3 chain-diagram update.**
+  The SCHW.* renumbering is local to the
+  `SCHWARZSCHILD_LIKE_REMAP_PLAN.md` §8 sub-slice
+  ladder; the integration plan still references
+  MANI-I.10 as the Schwarzschild-like slice
+  (which contains the SCHW.* sub-slices). The
+  MANI-I.10 slot's content is unchanged.
+
+### Acceptance
+
+- **Compiles.** Documentation-only slice; no build
+  configuration touched. The audit-host build
+  remains at the post-SCHW.4 baseline (`100% tests
+  passed, 0 tests failed out of 12`;
+  `manifold_identity_tests: 198 / 198 checks
+  passed`; `cli_tests: 123/123 passed`;
+  `renderer_tests: 19 / 19 passed`).
+- **Internally consistent.** The nine-row evidence
+  table cites concrete file/line positions in
+  `SchwarzschildLikeWarp.h`, `ManifoldTransform.h`,
+  `CudaPathTracer.cu` / `.cuh`, `CudaTestKernel.cu`,
+  `ManifoldMode.h`, and `OptixLaunchParams.h` that
+  re-verify on the audit host; the renumbering in
+  `SCHWARZSCHILD_LIKE_REMAP_PLAN.md` §8 is verified
+  by reading the renumbered section headings.
+- **Verdict honesty.** The verdict is `PASS` because
+  the *structural* CUDA-safety checks pass — not
+  because of an arbitrary judgement call. Check #8
+  (runtime CUDA-host status) is DEFERRED on two
+  *documented* grounds (audit-host has no CUDA
+  SDK; no kernel call site invokes the chart-aware
+  arm yet — SCHW.5 unlanded). The §3 "WHAT THIS
+  AUDIT DOES NOT VERIFY" section explicitly
+  enumerates the five items the audit cannot
+  check, so a future reader of the audit doc
+  understands the scope-boundary.
+
+### Module status changes
+
+`docs/MODULE_MAP.md` is *not* updated by this slice.
+The SCHW.6 audit verdict (`PASS` structurally,
+`DEFERRED` runtime) authorises the operator to
+proceed to SCHW.5 (CUDA integration) when ready;
+no module-map row changes state until MANI-I.12
+(final cross-host audit) lands.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:

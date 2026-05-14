@@ -87,7 +87,7 @@ What this slice deliberately is NOT:
   Kretschmann-scalar and other curvature
   invariants belong to the Field Interpretation
   Layer (`docs/FIELD_INTERPRETATION_LAYER.md` §6);
-  SCHW.7 (debug visualization) reuses the existing
+  SCHW.8 (debug visualization) reuses the existing
   `ManifoldCoordinates` AOV slot, not a new
   curvature slot.
 - **Not a `.rrscene` schema bump.** The mass
@@ -231,7 +231,7 @@ parameter dial reaches:
 
 ### 4.2 Pseudo-lensing
 
-When SCHW.6 (OptiX integration) or SCHW.5 (CUDA
+When SCHW.7 (OptiX integration) or SCHW.5 (CUDA
 integration) opt into the **primary-ray direction
 warp** (§6.2 below), primary rays passing near the
 mass bend toward it, producing a gravitational-
@@ -353,7 +353,7 @@ SCHW.* sub-slices verify.
   terminates). The approximation's accuracy is
   documented (residual error ≤ `1e-4` at typical
   parameter ranges).
-- The approximate inverse's accuracy gates SCHW.8
+- The approximate inverse's accuracy gates SCHW.9
   (audit): the audit runs a forward+inverse
   round-trip on representative input points and
   verifies the residual is bounded.
@@ -371,7 +371,7 @@ SCHW.* sub-slices verify.
   kernel arm reads `manifold_mode` on the
   default; the kernel skips the AOV write when
   the pointer is null) extend naturally: SCHW.5
-  / SCHW.6 implementations gate their new code
+  / SCHW.7 implementations gate their new code
   behind `is_active(...)`, preserving the
   bit-identity invariant.
 
@@ -441,7 +441,7 @@ sub-slice.
   the ray cannot flip; the cap is bypassable only
   by a chart with `warpStrength > 1`, and even
   then the cap holds.
-- SCHW.5 (CUDA) and SCHW.6 (OptiX) opt into the
+- SCHW.5 (CUDA) and SCHW.7 (OptiX) opt into the
   ray warp at the raygen entry point. The
   primary-ray-only scope is what makes the slice
   tractable: the BSDF / NEE / MIS pipeline
@@ -459,7 +459,7 @@ sub-slice.
   deformation per pixel — the documented purpose
   of the debug AOV per the MANI-I.8 task
   definition.
-- SCHW.7 (debug visualization) refines the AOV's
+- SCHW.8 (debug visualization) refines the AOV's
   encoding for SchwarzschildLike: rather than
   raw chart-space hit position, the slice may
   emit the *displacement vector* `chart_pos -
@@ -481,7 +481,7 @@ no-CUDA / no-OptiX-SDK fallback, matching the
 (`docs/STAGE_19_DENOISER_AUDIT.md` Q1 / Q2 rubric).
 
 Each deferred check must be exercised on a CUDA +
-OptiX-SDK host before SCHW.8 (audit) closes the
+OptiX-SDK host before SCHW.9 (audit) closes the
 chart's per-slice gate:
 
 ### 7.1 Euclidean fallback bit-identity (CUDA)
@@ -534,7 +534,7 @@ a documented signature:
   AOV values match world-space positions).
 - A documented clamp shell at `r = clampRadius`.
 
-The reference AOV PPM is pinned by SCHW.7 + SCHW.8
+The reference AOV PPM is pinned by SCHW.8 + SCHW.9
 on a CUDA + OptiX-SDK host.
 
 ### 7.5 Beauty-pass lensing signature
@@ -544,7 +544,7 @@ Run with the primary-ray-direction warp enabled
 documented lensing signature: a sphere at known
 position behind the mass should appear "stretched"
 toward the lensing edge. The reference PPM is
-pinned by SCHW.8 audit.
+pinned by SCHW.9 audit.
 
 ### 7.6 Off-chart non-regression
 
@@ -619,7 +619,7 @@ slice ships only after its predecessor is green.
   audit shifts the SCHW.* sub-slice numbering
   by `+1` from the original plan
   (CPU integration moves SCHW.2 → SCHW.3, etc.;
-  the final audit slot moves SCHW.7 → SCHW.8).
+  the final audit slot moves SCHW.8 → SCHW.9).
 
 ### SCHW.3 — CPU integration (impl, host-only)
 
@@ -665,9 +665,9 @@ slice ships only after its predecessor is green.
   audit shifts the SCHW.* sub-slice numbering
   by `+1` from the post-SCHW.2 plan
   (CUDA integration moves SCHW.4 → SCHW.5;
-  OptiX integration moves SCHW.5 → SCHW.6;
-  debug visualization moves SCHW.6 → SCHW.7;
-  the final audit slot moves SCHW.7 → SCHW.8).
+  OptiX integration moves SCHW.5 → SCHW.7;
+  debug visualization moves SCHW.7 → SCHW.8;
+  the final audit slot moves SCHW.8 → SCHW.9).
 
 ### SCHW.5 — CUDA integration (impl, GPU-side)
 
@@ -693,20 +693,57 @@ slice ships only after its predecessor is green.
     `warp_strength = 0` (structurally
     guaranteed by the `is_active(...)` guard).
 - **What does NOT ship:** OptiX-side
-  integration (deferred to SCHW.6); test
+  integration (deferred to SCHW.7); test
   binary additions beyond the existing
   `renderer_tests` (the kernel arm is
   exercised end-to-end at runtime, not at
   unit-test level).
 
-### SCHW.6 — OptiX integration (impl, GPU-side)
+### SCHW.6 — Audit (docs only)
+
+- **Scope:** per-slice gate for SCHW.5. Writes
+  `docs/SCHWARZSCHILD_LIKE_CUDA_WARP_AUDIT.md`
+  verifying the nine structural items: CUDA-safe
+  warp helper exists; warp activates only on the
+  intended gates (`enabled + SchwarzschildLike +
+  strength > 0`); disabled/default mode remains
+  no-op; Euclidean mode remains identity;
+  bounded / no-NaN behavior; OptiX path was not
+  modified; build / test status; runtime CUDA-host
+  status (PASS / DEFERRED / BLOCKED); verdict.
+- **Forward-looking variant:** the audit may be
+  *forward-looking* and land before its predecessor
+  SCHW.5 if the operator wants the CUDA-safety
+  guarantees verified before the kernel-side
+  activation slice lands. In that case, check #8
+  (runtime CUDA-host status) is DEFERRED on two
+  grounds: audit-host has no CUDA SDK; no kernel
+  call site invokes the chart-aware arm yet. The
+  other eight checks PASS on the existing
+  structural CUDA-safety properties (RR_HD inline
+  math leaf; RR_HD inline seam; kernel signatures
+  accept `ManifoldMode`; OptiX untouched).
+- **Acceptance:** all eight structural checks PASS;
+  check #8 PASS or DEFERRED as appropriate; the
+  audit-host build remains at the post-SCHW.5
+  (or post-SCHW.4, in the forward-looking case)
+  baseline.
+- **What does NOT ship:** no source code; no test
+  binary changes; no CMake change. The audit
+  shifts the SCHW.* sub-slice numbering by `+1`
+  from the post-SCHW.4 plan (OptiX integration
+  moves SCHW.6 → SCHW.7; debug visualization
+  moves SCHW.7 → SCHW.8; the final audit slot
+  moves SCHW.8 → SCHW.9).
+
+### SCHW.7 — OptiX integration (impl, GPU-side)
 
 - **Scope:** mirror SCHW.5 in the OptiX
   closest-hit / miss programs. The
   `OptixLaunchParams::manifold_mode` field
   (MANI-I.5) and the
   `aov_manifold_coordinates` pointer field
-  (MANI-I.8) are already in place. SCHW.6
+  (MANI-I.8) are already in place. SCHW.7
   wires the SchwarzschildLike math into the
   programs' chart-aware arms AND lands the
   OptiX host-side allocation in
@@ -728,7 +765,7 @@ slice ships only after its predecessor is green.
   for the new AOV (the denoiser still consumes
   Beauty/Albedo/Normal only).
 
-### SCHW.7 — Debug visualization (impl, AOV-encoding refinement)
+### SCHW.8 — Debug visualization (impl, AOV-encoding refinement)
 
 - **Scope:** refine the
   `ManifoldCoordinates` AOV's encoding for the
@@ -742,14 +779,14 @@ slice ships only after its predecessor is green.
   - The chosen encoding is documented in
     `docs/MANIFOLD_DEBUG_AOV_TASK.md` (an
     addendum subsection).
-  - The reference PPM is pinned; SCHW.8 audit
+  - The reference PPM is pinned; SCHW.9 audit
     will `cmp` it against the renderer's
     output.
 - **What does NOT ship:** new AOV slot; the
   `ManifoldCoordinates` slot from MANI-I.8 is
   reused.
 
-### SCHW.8 — Audit (docs only)
+### SCHW.9 — Audit (docs only)
 
 - **Scope:** write
   `docs/SCHWARZSCHILD_LIKE_REMAP_AUDIT.md`,
@@ -764,9 +801,9 @@ slice ships only after its predecessor is green.
   3. CUDA kernel arm wired + AOV signature
      visible at runtime (SCHW.5).
   4. OptiX kernel arm wired + AOV signature
-     matches CUDA path (SCHW.6).
+     matches CUDA path (SCHW.7).
   5. Debug AOV encoding chosen + reference
-     PPM pinned (SCHW.7).
+     PPM pinned (SCHW.8).
   6. Beauty-pass byte-identity preserved on
      Euclidean default + `warp_strength = 0`.
   7. Safety invariants verified (no NaN, no
@@ -796,7 +833,7 @@ claim, or plan:
   ray. The chart is a coordinate remap, not a
   light-bending integrator.
 - A new AOV slot. The existing
-  `ManifoldCoordinates` AOV is reused; SCHW.7
+  `ManifoldCoordinates` AOV is reused; SCHW.8
   refines its encoding.
 - An OptiX denoiser change. The denoiser
   continues to consume Beauty / Albedo / Normal
@@ -830,7 +867,7 @@ claim, or plan:
   and §8 (non-goals).
 - `docs/MANIFOLD_DEBUG_AOV_TASK.md` (the
   preceding task definition for
-  `ManifoldCoordinates` — SCHW.7 reuses the
+  `ManifoldCoordinates` — SCHW.8 reuses the
   slot).
 - `docs/MANIFOLD_DEBUG_AOV_AUDIT.md` §4 (the
   immediately preceding per-slice audit that
@@ -843,13 +880,13 @@ claim, or plan:
   `transform_ray_like_direction` helpers SCHW.3
   extends).
 - `src/manifold/ManifoldMode.h` (`is_active`
-  helper SCHW.5 / SCHW.6 guards on).
+  helper SCHW.5 / SCHW.7 guards on).
 - `src/cuda/CudaTestKernel.cu` (the
   `ManifoldCoordinates` AOV arm SCHW.5
   extends).
 - `src/optix/OptixPrograms.cu` (the
-  `ManifoldCoordinates` AOV arm SCHW.6
+  `ManifoldCoordinates` AOV arm SCHW.7
   extends).
 - `src/optix/OptixRenderer.cpp`
-  (`render_aovs` host-side allocation SCHW.6
+  (`render_aovs` host-side allocation SCHW.7
   completes per the MANI-I.9 deferred item).
