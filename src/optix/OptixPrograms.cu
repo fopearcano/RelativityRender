@@ -302,6 +302,15 @@ extern "C" __global__ void __miss__radiance() {
             optixLaunchParams.aov_albedo[pix_idx_3 + 1] = color.y;
             optixLaunchParams.aov_albedo[pix_idx_3 + 2] = color.z;
         }
+        // MANI-I.8 — manifold debug coordinate-visualisation AOV
+        // (miss side). Writes `(0, 0, 0)` matching the Normal
+        // AOV's miss convention. Null-gated; see the closest-hit
+        // arm for the host-side allocation status.
+        if (optixLaunchParams.aov_manifold_coordinates != nullptr) {
+            optixLaunchParams.aov_manifold_coordinates[pix_idx_3 + 0] = 0.0f;
+            optixLaunchParams.aov_manifold_coordinates[pix_idx_3 + 1] = 0.0f;
+            optixLaunchParams.aov_manifold_coordinates[pix_idx_3 + 2] = 0.0f;
+        }
     }
 }
 
@@ -707,6 +716,34 @@ extern "C" __global__ void __closesthit__radiance() {
         optixLaunchParams.aov_beauty[pix_idx_3 + 0] = color.x;
         optixLaunchParams.aov_beauty[pix_idx_3 + 1] = color.y;
         optixLaunchParams.aov_beauty[pix_idx_3 + 2] = color.z;
+    }
+    // MANI-I.8 — manifold debug coordinate-visualisation AOV
+    // (hit side). Writes the world-space hit position
+    // `ro + t * rd` as the documented identity / neutral
+    // diagnostic. The chart-aware `world_to_chart` helper is
+    // the identity on the Euclidean / disabled default and
+    // no curved-chart math has landed yet per the MANI-I.8
+    // task brief. Null-gated so the slot is opt-in via the
+    // host-side allocator (currently CUDA-only;
+    // OptixRenderer::render_aovs does NOT allocate this
+    // slot today, so the field stays null at runtime and
+    // this arm short-circuits — the OptiX path's pre-MANI-I.8
+    // pixel output is byte-identical).
+    if (optixLaunchParams.aov_manifold_coordinates != nullptr) {
+        const uint3 idx_mc = optixGetLaunchIndex();
+        const int   x_mc   = static_cast<int>(idx_mc.x);
+        const int   y_mc   = static_cast<int>(idx_mc.y);
+        const int   W_mc   = optixLaunchParams.width;
+        const int   pix_idx_3 = (y_mc * W_mc + x_mc) * 3;
+        const float3 ro = optixGetWorldRayOrigin();
+        const float3 rd = optixGetWorldRayDirection();
+        const float  t  = optixGetRayTmax();
+        const float  px = ro.x + t * rd.x;
+        const float  py = ro.y + t * rd.y;
+        const float  pz = ro.z + t * rd.z;
+        optixLaunchParams.aov_manifold_coordinates[pix_idx_3 + 0] = px;
+        optixLaunchParams.aov_manifold_coordinates[pix_idx_3 + 1] = py;
+        optixLaunchParams.aov_manifold_coordinates[pix_idx_3 + 2] = pz;
     }
 }
 

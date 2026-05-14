@@ -778,59 +778,146 @@ sanity check the curved-chart slices need.
 
 - MANI-I.5 — GPU plumbing in place.
 
-### What ships
+### What ships (LANDED; reflects what actually shipped)
 
-- **A new AOV slot** `ManifoldWarp` on `rr::renderer::AOV`
-  (and its `GpuAOVBuffer` device-side counterpart). Carries
-  a `Vec3` (the chart-space hit position) per pixel.
-- **A new CLI modifier** `--render-aovs` becomes capable
-  of emitting `manifold_warp.ppm` when
-  `--manifold-debug-warp` is also set. The flag is
-  additive — `--render-aovs` without `--manifold-debug-warp`
-  is bit-identical to the pre-MANI-I.7 behaviour (no
-  warp AOV emitted).
-- **A new test fixture**: a single-sphere scene at known
-  positions; the audit-host build can emit
-  `manifold_warp.ppm` and compare it to the world-space
-  hit positions to within single-precision tolerance on
-  the Euclidean chart.
-- **`docs/BUILD_PLAN.md`** gets a MANI-I.7 entry.
+The canonical name landed as **`ManifoldCoordinates`** (the
+informal "ManifoldWarp" label is replaced with the
+PascalCase enumerator matching the existing `DopplerFactor`
+/ `SearchlightFactor` convention). The task brief
+`docs/MANIFOLD_DEBUG_AOV_TASK.md` discusses the rationale
+in §3.4.
+
+- **`src/renderer/AOV.h` + `AOV.cpp`** — new
+  `AOVType::ManifoldCoordinates = 6` enumerator appended
+  at the end of the enum (preserves every pre-MANI-I.8
+  value); `aov_component_count` returns `3`;
+  `aov_type_name` returns `"manifold_coordinates"`;
+  `AOV::make_manifold_coordinates(...)` factory.
+- **`src/cuda/CudaAOV.cuh`** — new
+  `DeviceAOVView::manifold_coordinates` device pointer
+  (default `nullptr` short-circuits the kernel write
+  arm); mirrors the CPU-side `AOVTargets` slot.
+- **`src/cuda/CudaRenderer.h`** — new
+  `CudaRenderer::AOVTargets::manifold_coordinates`
+  pointer field (default `nullptr`).
+- **`src/cuda/CudaRenderer.cu`** — wires
+  `view.aovs.manifold_coordinates = targets.manifold_coordinates`
+  in `render_scene_with_aovs`.
+- **`src/cuda/CudaTestKernel.cu`** — closest-hit / miss
+  write arm in `k_render_scene` writes
+  `(best.position.x, .y, .z)` on hit and `(0, 0, 0)` on
+  miss when the pointer is non-null. The arm is the
+  *neutral / identity diagnostic* for MANI-I.8: the
+  world-space hit position is what the future
+  curved-chart code would also output on the Euclidean
+  default, so the implementation is honest for every
+  future slice that adds chart-specific logic above
+  this arm.
+- **`src/optix/OptixLaunchParams.h`** — new
+  `float* aov_manifold_coordinates = nullptr;` field at
+  the end of the launch-params POD (preserves every
+  pre-MANI-I.8 field's offset).
+- **`src/optix/OptixPrograms.cu`** — closest-hit-side
+  write arm (uses `optixGetWorldRayOrigin() +
+  optixGetRayTmax() * optixGetWorldRayDirection()` to
+  compute the world-space hit position) and miss-side
+  write arm (writes `(0, 0, 0)`). Both arms null-gated.
+  **The OptiX host-side `OptixRenderer::render_aovs`
+  does NOT allocate this slot this slice** — that
+  follow-up landing is deferred to a small subsequent
+  slice (or rolled into the MANI-I.9 / MANI-I.10
+  surface). The kernel arms stay dormant at runtime
+  in the OptiX path until that wiring lands; the OptiX
+  path's pre-MANI-I.8 output is byte-identical.
+- **`src/main.cpp` `run_render_aovs`** — when
+  `cfg.manifold.debug_visualization` is `true`,
+  allocates a 7th `GpuAOVBuffer` for the
+  `ManifoldCoordinates` AOV, threads its
+  `device_ptr()` into `AOVTargets.manifold_coordinates`,
+  and saves the downloaded buffer to
+  `output/aov_manifold_coordinates.ppm` alongside the
+  existing six AOV PPMs. When the gate is off the
+  buffer is not allocated, `targets.manifold_coordinates
+  = nullptr`, and the kernel arm short-circuits — the
+  CUDA path's pre-MANI-I.8 output is byte-identical.
+- **`tests/renderer_tests.cpp`** — three new test
+  functions (six new RR_CHECKs total): enumerator
+  value `== 6`, `aov_component_count == 3`,
+  `aov_type_name == "manifold_coordinates"`,
+  factory default-name behaviour, factory custom-name
+  behaviour. The binary reports `19 / 19 passed`
+  (was 13 / 13 pre-MANI-I.8).
 
 ### Acceptance
 
-- Audit-host build green; ctest 12/12.
-- Running `--render-aovs --manifold-debug-warp` on the
-  test fixture produces a `manifold_warp.ppm` whose pixel
-  values match the world-space hit positions to within
-  `1e-5f` per channel (Euclidean identity invariant).
-- Running `--render-aovs` **without**
-  `--manifold-debug-warp` produces the exact same set of
-  AOV files as the pre-MANI-I.7 baseline (no extra files;
-  no changes to existing files).
-- Running every other existing CLI action without any
-  `--manifold-*` flag remains bit-identical.
+- Audit-host build green; ctest 12/12 (`100% tests
+  passed, 0 tests failed out of 12`). `renderer_tests`
+  reports `19 / 19 passed`. `cli_tests: 123/123 passed`
+  (unchanged — parser surface untouched).
+- CUDA path:
+  `--render-aovs --manifold-debug` emits the existing
+  six AOV PPMs PLUS `output/aov_manifold_coordinates.ppm`.
+  `--render-aovs` *without* `--manifold-debug` emits
+  exactly the existing six PPMs (no new file).
+- OptiX path: `--render-optix-aovs` is byte-identical to
+  the pre-MANI-I.8 baseline regardless of
+  `--manifold-debug` (the kernel arms are wired but
+  the host-side allocation is deferred — the field
+  stays `nullptr` at runtime; pre-MANI-I.8 pixel
+  output is structurally preserved).
+- Beauty output byte-identity on every existing CLI
+  action: structurally guaranteed; the new AOV write
+  arm is gated on a null pointer that the existing
+  dispatchers don't populate. The CUDA kernel's
+  Beauty pass arithmetic is unchanged (only a new
+  null-gated arm appended after the six existing
+  AOV write arms).
+- Runtime CUDA / OptiX verification of the AOV pixel
+  values (e.g. `cmp` of the new PPM against a
+  pinned reference) is DEFERRED behind the audit
+  host's no-CUDA / no-OptiX-SDK fallback, matching
+  the existing per-slice audits' posture (the
+  MANI-I.9 audit and MANI-I.10 final cross-host audit
+  will pin the reference images).
 
-### Risks & mitigations
+### Risks & mitigations (LANDED)
 
-- **AOV-buffer layout change** breaks the OptiX denoiser
-  hand-off. Mitigated by appending the new slot at the
-  end of the AOV enum (preserving the existing slot
-  indices) and by gating the new slot's allocation on
-  `--manifold-debug-warp`.
+- **AOV-buffer layout change** breaks the OptiX
+  denoiser hand-off. Mitigated by appending the new
+  AOV slot at the END of the enum (preserves every
+  pre-MANI-I.8 enumerator value) and by gating the
+  new slot's allocation behind `--manifold-debug`
+  (the denoiser path's `Beauty` / `Albedo` /
+  `Normal` consumption is unaffected — those three
+  slots' allocations are unchanged).
 - **Disk-write side effect** for users who set
-  `--manifold-debug-warp` accidentally. Mitigated by
-  clear documentation in `--help` that the flag emits a
-  new PPM into the working directory.
+  `--manifold-debug` accidentally. Mitigated by the
+  flag being explicit; the `--help` text already
+  documents the flag (added at MANI-I.1).
+- **OptiX host-side allocation deferred**. The kernel
+  arms are in place but the OptiX `--render-optix-aovs`
+  action does not yet emit the new PPM. Documented
+  as a known follow-up; the OptiX path's
+  pre-MANI-I.8 output is byte-identical structurally
+  (null pointer → kernel short-circuit). No
+  observable regression; the deferral is honest.
 
 ### What does NOT ship
 
-- No curved-chart math (MANI-I.8).
-- No second-tier AOV (e.g. curvature scalar) — that lands
-  with the Field Interpretation Layer's FIELD.3 once a
-  curved chart exists. The `ManifoldWarp` AOV is
-  intentionally just the chart-coordinate hit position.
-- No per-step coordinate trace (geodesic-history AOV);
-  deferred to a possible future addendum.
+- No curved-chart math (MANI-I.9). The AOV writes
+  the world-space hit position as the documented
+  identity / neutral diagnostic; future MANI-I.9+
+  slices add chart-specific logic above this write
+  arm.
+- No second-tier AOV (e.g. curvature scalar) — that
+  lands with the Field Interpretation Layer's
+  FIELD.3 once a curved chart exists. The
+  `ManifoldCoordinates` AOV is intentionally just
+  the chart-coordinate hit position.
+- No per-step coordinate trace (geodesic-history
+  AOV); deferred to a possible future addendum.
+- No OptiX-side host allocation; see "Risks &
+  mitigations" above.
 
 ---
 

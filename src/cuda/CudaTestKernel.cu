@@ -578,6 +578,27 @@ __global__ void k_render_scene(float* pixels, int width, int height,
     if (scene.aovs.searchlight_factor != nullptr) {
         scene.aovs.searchlight_factor[pix_idx_1] = D4;
     }
+    // MANI-I.8 — manifold debug coordinate-visualisation AOV.
+    // On hit: write the world-space hit position
+    // `(best.position.x, .y, .z)` as the documented identity /
+    // neutral diagnostic (the chart-aware `world_to_chart`
+    // helper is the identity on the Euclidean default, and
+    // no curved-chart math has landed yet per the MANI-I.8
+    // task brief's "no Schwarzschild/Penrose/Kerr behavior
+    // yet" rule). On miss: write `(0, 0, 0)` matching the
+    // Normal AOV's miss convention. Null-gated so the AOV
+    // pass is opt-in via `--render-aovs --manifold-debug`.
+    if (scene.aovs.manifold_coordinates != nullptr) {
+        if (best.hit) {
+            scene.aovs.manifold_coordinates[pix_idx_3 + 0] = best.position.x;
+            scene.aovs.manifold_coordinates[pix_idx_3 + 1] = best.position.y;
+            scene.aovs.manifold_coordinates[pix_idx_3 + 2] = best.position.z;
+        } else {
+            scene.aovs.manifold_coordinates[pix_idx_3 + 0] = 0.0f;
+            scene.aovs.manifold_coordinates[pix_idx_3 + 1] = 0.0f;
+            scene.aovs.manifold_coordinates[pix_idx_3 + 2] = 0.0f;
+        }
+    }
 }
 
 }  // namespace

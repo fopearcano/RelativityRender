@@ -3786,13 +3786,40 @@ int run_render_aovs(const rr::core::Config& cfg) {
         }
     }
 
+    // MANI-I.8 — opt-in 7th AOV: the manifold debug
+    // coordinate-visualisation slot. Allocated only when the
+    // operator passes `--manifold-debug` alongside
+    // `--render-aovs`, mirroring the dual-gate the task
+    // definition specifies (docs/MANIFOLD_DEBUG_AOV_TASK.md
+    // §2.2). When the gate is off, `aov_set` stays at six
+    // entries and the kernel's `manifold_coordinates` write
+    // arm short-circuits on the null pointer — every
+    // `--render-aovs` invocation without `--manifold-debug`
+    // is byte-identical to the pre-MANI-I.8 baseline.
+    rr::renderer::GpuAOVBuffer manifold_coords_buffer{
+        rr::renderer::AOV::make_manifold_coordinates()};
+    if (cfg.manifold.debug_visualization) {
+        if (!manifold_coords_buffer.resize(cfg.width, cfg.height)) {
+            rr::core::Logger::error("aovs: resize failed for "
+                                  + std::string(rr::renderer::aov_type_name(
+                                        rr::renderer::AOVType::ManifoldCoordinates)));
+            return 1;
+        }
+    }
+
     rr::cuda::CudaRenderer::AOVTargets targets;
-    targets.beauty             = aov_set[0].device_ptr();
-    targets.normal             = aov_set[1].device_ptr();
-    targets.depth              = aov_set[2].device_ptr();
-    targets.albedo             = aov_set[3].device_ptr();
-    targets.doppler_factor     = aov_set[4].device_ptr();
-    targets.searchlight_factor = aov_set[5].device_ptr();
+    targets.beauty               = aov_set[0].device_ptr();
+    targets.normal               = aov_set[1].device_ptr();
+    targets.depth                = aov_set[2].device_ptr();
+    targets.albedo               = aov_set[3].device_ptr();
+    targets.doppler_factor       = aov_set[4].device_ptr();
+    targets.searchlight_factor   = aov_set[5].device_ptr();
+    // MANI-I.8 — set only when the gate is on; otherwise
+    // stays at the documented `nullptr` default and the
+    // kernel skips the write arm.
+    targets.manifold_coordinates = cfg.manifold.debug_visualization
+                                   ? manifold_coords_buffer.device_ptr()
+                                   : nullptr;
 
     auto r = rr::cuda::CudaRenderer::render_scene_with_aovs(
         gpu_scene, cfg.width, cfg.height, targets);
@@ -3820,6 +3847,21 @@ int run_render_aovs(const rr::core::Config& cfg) {
     for (const auto& s : kSpecs) {
         if (!save_aov_to_ppm(aov_set[s.idx], s.path,
                              cfg.width, cfg.height, s.label)) {
+            all_ok = false;
+        }
+    }
+
+    // MANI-I.8 — save the manifold debug coordinate AOV
+    // when the gate is on. File name matches the existing
+    // AOV PPM convention `output/aov_<lowercase>.ppm`; the
+    // helper passes through `GpuAOVBuffer`'s standard
+    // download + PPM-write path so the encoding matches
+    // every other 3-channel AOV byte-for-byte.
+    if (cfg.manifold.debug_visualization) {
+        if (!save_aov_to_ppm(manifold_coords_buffer,
+                             "output/aov_manifold_coordinates.ppm",
+                             cfg.width, cfg.height,
+                             "AOV manifold coordinates")) {
             all_ok = false;
         }
     }

@@ -314,6 +314,22 @@ struct OptixLaunchParams {
     float* aov_doppler_factor     = nullptr;
     float* aov_searchlight_factor = nullptr;
 
+    // ---- MANI-I.8 manifold debug coordinate-visualisation AOV ----
+    //
+    // 3 floats / pixel (Vec3; world-space hit position on
+    // hit; `(0, 0, 0)` on miss). Mirrors the CUDA
+    // `DeviceAOVView::manifold_coordinates` slot. Default
+    // `nullptr` makes the OptiX closest-hit / miss
+    // programs' write arms short-circuit, preserving the
+    // pre-MANI-I.8 pixel output byte-for-byte. The
+    // host-side `OptixRenderer::render_aovs` does not
+    // currently allocate a buffer for this slot (that
+    // wiring lands in a follow-up); the field is in place
+    // so the kernel arms exist and so future hosts can
+    // populate the pointer without needing another
+    // OptixLaunchParams ABI bump.
+    float* aov_manifold_coordinates = nullptr;
+
     // ---- MANI-I.5 manifold rendering mode ----
     //
     // Per-launch Manifold Core mode the renderer reads to

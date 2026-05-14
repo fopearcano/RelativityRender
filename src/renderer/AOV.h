@@ -59,6 +59,20 @@ enum class AOVType : std::uint32_t {
     Albedo            = 3,
     DopplerFactor     = 4,
     SearchlightFactor = 5,
+    // MANI-I.8 — manifold debug coordinate-visualisation AOV.
+    // Writes a 3-component (Vec3) per-pixel value carrying the
+    // chart-space hit position for the active manifold mode.
+    // On the Euclidean / disabled default this equals the
+    // world-space hit position (the documented identity /
+    // neutral visualisation); future curved-chart slices make
+    // the AOV's pixel values diverge from world-space hit
+    // positions so an operator can *see* the chart's
+    // coordinate deformation. Miss pixels write `(0, 0, 0)`,
+    // matching the Normal AOV's miss convention. Opt-in:
+    // allocated only when the operator passes
+    // `--render-aovs --manifold-debug` (see
+    // `docs/MANIFOLD_DEBUG_AOV_TASK.md`).
+    ManifoldCoordinates = 6,
 };
 
 // Number of float channels an `AOVType` writes per pixel. Used by
@@ -108,6 +122,12 @@ public:
     [[nodiscard]] static AOV make_albedo(std::string name = {});
     [[nodiscard]] static AOV make_doppler_factor(std::string name = {});
     [[nodiscard]] static AOV make_searchlight_factor(std::string name = {});
+    // MANI-I.8 — manifold debug coordinate-visualisation AOV
+    // factory. Returns an `AOV` with
+    // `type() == AOVType::ManifoldCoordinates` and
+    // `name() == "manifold_coordinates"` (or the caller-
+    // supplied name).
+    [[nodiscard]] static AOV make_manifold_coordinates(std::string name = {});
 
     [[nodiscard]] AOVId              id()              const noexcept { return id_; }
     [[nodiscard]] AOVType            type()            const noexcept { return type_; }

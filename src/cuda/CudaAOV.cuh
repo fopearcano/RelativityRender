@@ -58,12 +58,25 @@ namespace rr::cuda {
 // path holds a `GpuAOVBuffer` per active pass and snapshots its
 // `device_ptr()` here).
 struct DeviceAOVView {
-    float* beauty             = nullptr;  // 3 floats / pixel
-    float* normal             = nullptr;  // 3 floats / pixel
-    float* depth              = nullptr;  // 1 float  / pixel
-    float* albedo             = nullptr;  // 3 floats / pixel
-    float* doppler_factor     = nullptr;  // 1 float  / pixel
-    float* searchlight_factor = nullptr;  // 1 float  / pixel
+    float* beauty               = nullptr;  // 3 floats / pixel
+    float* normal               = nullptr;  // 3 floats / pixel
+    float* depth                = nullptr;  // 1 float  / pixel
+    float* albedo               = nullptr;  // 3 floats / pixel
+    float* doppler_factor       = nullptr;  // 1 float  / pixel
+    float* searchlight_factor   = nullptr;  // 1 float  / pixel
+
+    // MANI-I.8 — manifold debug coordinate-visualisation AOV.
+    // Writes the per-pixel chart-space hit position
+    // `(world_hit.x, world_hit.y, world_hit.z)` on hit and
+    // `(0, 0, 0)` on miss (matches the Normal AOV's miss
+    // convention). The active manifold mode is read from
+    // launch params; for MANI-I.8 the kernel writes the
+    // world-space hit position regardless of chart selection
+    // — the documented identity / neutral diagnostic — because
+    // no curved-chart `world_to_chart` math has landed yet.
+    // Future MANI-I.9+ slices will branch on
+    // `manifold_mode.chart` inside this write arm.
+    float* manifold_coordinates = nullptr;  // 3 floats / pixel
 };
 
 }  // namespace rr::cuda

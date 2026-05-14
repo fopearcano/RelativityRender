@@ -6,12 +6,13 @@ namespace rr::renderer {
 
 int aov_component_count(AOVType type) noexcept {
     switch (type) {
-        case AOVType::Beauty:            return 3;
-        case AOVType::Normal:            return 3;
-        case AOVType::Depth:             return 1;
-        case AOVType::Albedo:            return 3;
-        case AOVType::DopplerFactor:     return 1;
-        case AOVType::SearchlightFactor: return 1;
+        case AOVType::Beauty:              return 3;
+        case AOVType::Normal:              return 3;
+        case AOVType::Depth:               return 1;
+        case AOVType::Albedo:              return 3;
+        case AOVType::DopplerFactor:       return 1;
+        case AOVType::SearchlightFactor:   return 1;
+        case AOVType::ManifoldCoordinates: return 3;
     }
     // Unknown enumerator. Returning 0 keeps the eventual renderer-
     // integration sub-stage's "size a buffer of N components"
@@ -22,12 +23,13 @@ int aov_component_count(AOVType type) noexcept {
 
 std::string_view aov_type_name(AOVType type) noexcept {
     switch (type) {
-        case AOVType::Beauty:            return "beauty";
-        case AOVType::Normal:            return "normal";
-        case AOVType::Depth:             return "depth";
-        case AOVType::Albedo:            return "albedo";
-        case AOVType::DopplerFactor:     return "doppler_factor";
-        case AOVType::SearchlightFactor: return "searchlight_factor";
+        case AOVType::Beauty:              return "beauty";
+        case AOVType::Normal:              return "normal";
+        case AOVType::Depth:               return "depth";
+        case AOVType::Albedo:              return "albedo";
+        case AOVType::DopplerFactor:       return "doppler_factor";
+        case AOVType::SearchlightFactor:   return "searchlight_factor";
+        case AOVType::ManifoldCoordinates: return "manifold_coordinates";
     }
     return "unknown";
 }
@@ -82,6 +84,15 @@ AOV AOV::make_searchlight_factor(std::string name) {
     aov.type_ = AOVType::SearchlightFactor;
     aov.name_ = name.empty() ? std::string(aov_type_name(AOVType::SearchlightFactor))
                              : std::move(name);
+    return aov;
+}
+
+AOV AOV::make_manifold_coordinates(std::string name) {
+    AOV aov;
+    aov.type_ = AOVType::ManifoldCoordinates;
+    aov.name_ = name.empty()
+                  ? std::string(aov_type_name(AOVType::ManifoldCoordinates))
+                  : std::move(name);
     return aov;
 }
 

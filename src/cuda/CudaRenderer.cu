@@ -280,12 +280,16 @@ CudaRenderer::Result CudaRenderer::render_scene_with_aovs(
     // Stage 14A.3: AOV write slot. The kernel skips per-pass
     // writes whose pointer is null; populating any subset of the
     // six is supported.
-    view.aovs.beauty             = targets.beauty;
-    view.aovs.normal             = targets.normal;
-    view.aovs.depth              = targets.depth;
-    view.aovs.albedo             = targets.albedo;
-    view.aovs.doppler_factor     = targets.doppler_factor;
-    view.aovs.searchlight_factor = targets.searchlight_factor;
+    view.aovs.beauty               = targets.beauty;
+    view.aovs.normal               = targets.normal;
+    view.aovs.depth                = targets.depth;
+    view.aovs.albedo               = targets.albedo;
+    view.aovs.doppler_factor       = targets.doppler_factor;
+    view.aovs.searchlight_factor   = targets.searchlight_factor;
+    // MANI-I.8 — null when not requested; the kernel's
+    // null-check skips the write arm and the per-pixel
+    // arithmetic for the existing six AOVs is unchanged.
+    view.aovs.manifold_coordinates = targets.manifold_coordinates;
 
     return run_kernel_render(width, height,
         [view](float* device_pixels, int w, int h) {

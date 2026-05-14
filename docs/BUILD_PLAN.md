@@ -72652,6 +72652,190 @@ runtime state; module-map promotion still waits
 for MANI-I.10 (final cross-host audit) per the
 integration plan §11.
 
+## MANI-I.8 — Manifold Debug AOV Implementation (impl, CUDA-full + OptiX-kernel-only)
+
+**Scope of this slice (per the operator's *MANI-I.8 —
+Manifold Debug AOV Implementation* task brief and
+`docs/MANIFOLD_DEBUG_AOV_TASK.md`): add the
+`AOVType::ManifoldCoordinates` AOV slot, wire the
+GPU-side write path on both backends, and emit
+`output/aov_manifold_coordinates.ppm` from the CUDA
+path when `--render-aovs --manifold-debug` is in
+effect. No curved-space math, no Schwarzschild /
+Penrose / Kerr behaviour, no C4D / server / UI /
+node-editor touch. The OptiX kernel arms are wired
+but the OptiX host-side `render_aovs` allocation
+is deferred (follow-up); the OptiX path's
+pre-MANI-I.8 output is byte-identical because the
+field stays `nullptr` at runtime.**
+
+### What ships
+
+- **`src/renderer/AOV.h` (+22 / -0 net).** Adds
+  `AOVType::ManifoldCoordinates = 6` at the end of
+  the enum (preserves every pre-MANI-I.8 enumerator
+  value) and the
+  `AOV::make_manifold_coordinates(std::string name = {})`
+  factory declaration.
+- **`src/renderer/AOV.cpp` (+20 / -16 net).**
+  `aov_component_count` returns `3` for the new
+  type; `aov_type_name` returns `"manifold_coordinates"`;
+  `AOV::make_manifold_coordinates` factory body
+  mirrors the existing factories' shape.
+- **`src/cuda/CudaAOV.cuh` (+14 / -7 net).** Adds
+  `DeviceAOVView::manifold_coordinates` (`float*`)
+  with a doc-comment block documenting the slot's
+  semantics (world-space hit position on hit,
+  `(0, 0, 0)` on miss; null-gated; identity /
+  neutral diagnostic for MANI-I.8).
+- **`src/cuda/CudaRenderer.h` (+12 / -6 net).** Adds
+  `CudaRenderer::AOVTargets::manifold_coordinates`
+  (default `nullptr`).
+- **`src/cuda/CudaRenderer.cu` (+10 / -6 net).**
+  Wires `view.aovs.manifold_coordinates =
+  targets.manifold_coordinates` in
+  `render_scene_with_aovs`.
+- **`src/cuda/CudaTestKernel.cu` (+21 / -0 net).**
+  Adds the closest-hit / miss AOV write arm in
+  `k_render_scene`. On hit writes
+  `(best.position.x, .y, .z)`; on miss writes
+  `(0, 0, 0)`. Null-gated; the arm short-circuits
+  when `scene.aovs.manifold_coordinates == nullptr`.
+- **`src/optix/OptixLaunchParams.h` (+16 / -0 net).**
+  Adds `float* aov_manifold_coordinates = nullptr`
+  field at the end of the launch-params POD
+  (preserves the offsets of every pre-MANI-I.8
+  field). Doc-comment notes that the host-side
+  `render_aovs` allocation is deferred to a
+  follow-up slice.
+- **`src/optix/OptixPrograms.cu` (+30 / -0 net).**
+  Adds the closest-hit and miss write arms.
+  Closest-hit computes the world-space hit position
+  via `optixGetWorldRayOrigin() + optixGetRayTmax()
+  * optixGetWorldRayDirection()`; miss writes
+  `(0, 0, 0)`. Both arms null-gated. The arms stay
+  dormant at runtime in the OptiX path until the
+  host-side allocation follow-up lands.
+- **`src/main.cpp` `run_render_aovs` (+32 / -7
+  net).** Allocates a 7th `GpuAOVBuffer` for
+  `AOVType::ManifoldCoordinates` only when
+  `cfg.manifold.debug_visualization` is `true`.
+  Threads the buffer's `device_ptr()` into
+  `targets.manifold_coordinates`. Saves
+  `output/aov_manifold_coordinates.ppm` after the
+  render via the existing `save_aov_to_ppm`
+  helper. When the gate is off the buffer is not
+  allocated, the pointer stays `nullptr`, and the
+  kernel arm short-circuits.
+- **`tests/renderer_tests.cpp` (+50 / -2 net).**
+  Adds three new MANI-I.8 test functions:
+    - `test_mani_i_8_manifold_coordinates_aov_type`
+      — enumerator value `== 6`,
+      `aov_component_count == 3`, `aov_type_name
+      == "manifold_coordinates"`.
+    - `test_mani_i_8_manifold_coordinates_factory_default_name`
+      — factory output `.type()` /
+      `.name()` / `.component_count()` defaults.
+    - `test_mani_i_8_manifold_coordinates_factory_custom_name`
+      — factory honours caller-supplied name.
+  `renderer_tests` reports `19 / 19 passed` (was
+  `13 / 13` pre-MANI-I.8; six new RR_CHECKs total).
+- **`docs/MANIFOLD_INTEGRATION_PLAN.md` §7
+  rewritten** to reflect the landed surface (CUDA
+  full plumb + OptiX kernel-arms-only; the
+  canonical AOV name landed as `ManifoldCoordinates`
+  rather than the informal "ManifoldWarp"; a "Risks
+  & mitigations (LANDED)" subsection documents the
+  OptiX host-side allocation deferral).
+
+### What does NOT ship
+
+- **No curved-space math.** The CUDA kernel arm
+  writes `best.position` (world-space hit position)
+  directly; no call into a `world_to_chart` helper
+  yet. Master rule #3 honesty: the arm is the real
+  identity / neutral diagnostic for every chart
+  type, including the reserved
+  `*Like` / `*LikePlaceholder` ones, because no
+  curved-chart math has landed yet.
+- **No OptiX host-side `render_aovs` allocation.**
+  The OptiX `--render-optix-aovs` action's
+  dispatcher is unchanged; it does not allocate
+  the new AOV's device buffer and does not save
+  `output/optix_aov_manifold_coordinates.ppm`.
+  The OptiX kernel arms ARE wired so the
+  follow-up host-side slice is a small drop-in
+  (allocate buffer + thread pointer + download +
+  save). The OptiX path's pre-MANI-I.8 output is
+  byte-identical structurally (null pointer →
+  kernel short-circuit).
+- **No `make_default_aov_set()` change.** The
+  factory still returns six entries; the 7th is
+  allocated separately and only when the gate
+  is on. Preserves the existing five-callsite
+  contract (any code that hardcodes "six AOVs"
+  stays correct).
+- **No `.rrscene` schema bump.**
+- **No new `--render-*` action.** The two-flag
+  composition `--render-aovs --manifold-debug`
+  is the entry point.
+- **No denoiser change.** The OptiX denoiser
+  continues to consume Beauty / Albedo / Normal
+  only.
+- **No C4D / server / UI / node-editor touch.**
+
+### Acceptance
+
+- **Compiles.** Audit-host rebuild
+  (`cmake --build build -j`) succeeds cleanly.
+  No new warnings. The rebuild fan-out is
+  contained to TUs that include the modified
+  `AOV.h` / `CudaAOV.cuh` / `CudaRenderer.h` /
+  `OptixLaunchParams.h` headers — about six TUs.
+- **Tests.** Full ctest: `100% tests passed, 0
+  tests failed out of 12`. `renderer_tests`
+  reports `19 / 19 passed` (six new RR_CHECKs
+  across three MANI-I.8 test functions).
+  `cli_tests: 123/123 passed` (unchanged —
+  parser surface untouched).
+- **Bit-identity invariant.** The kernel write
+  arm is gated on the device-pointer's
+  non-nullness, so the CUDA dispatcher that does
+  not populate the pointer skips the write
+  entirely. The existing six AOV write arms are
+  unchanged. The Beauty pass arithmetic is
+  unchanged. Pre-MANI-I.8 reference outputs
+  reproduce bit-for-bit.
+- **Runtime CUDA verification (DEFERRED).** A
+  CUDA host can run
+  `--render-aovs --manifold-debug` against the
+  built-in scene fixture and verify that
+  `output/aov_manifold_coordinates.ppm` exists,
+  has the documented file size (width × height ×
+  3 floats), and per-pixel values match the
+  world-space hit positions to within `1e-5f`.
+  Deferred behind the audit host's no-CUDA gate;
+  matches the existing audit-host runtime-
+  deferral rubric.
+- **Rule-#3 honesty.** The CUDA path is fully
+  wired end-to-end and emits a real PPM. The
+  OptiX path's kernel arms are real (the
+  arithmetic is correct; the null-gate is
+  honest), but the host-side allocation is
+  documented as a deferred follow-up — no
+  pretending the OptiX PPM is emitted.
+
+### Module status changes
+
+`docs/MODULE_MAP.md` is *not* updated by this slice.
+The CUDA `AOV / render-passes` module gains a
+seventh AOV slot (operator-visible at
+`--render-aovs --manifold-debug`); the OptiX
+backend gains the kernel arms but stays "host-side
+allocation deferred". Module-map promotion still
+waits for MANI-I.10 (final cross-host audit) per
+the integration plan §11.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:

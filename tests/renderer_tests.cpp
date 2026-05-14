@@ -21,8 +21,10 @@
 // the underlying CUDA backend is unavailable).
 
 #include "renderer/AccumulationBuffer.h"
+#include "renderer/AOV.h"
 
 #include <cstdio>
+#include <string>
 
 namespace {
 
@@ -91,12 +93,63 @@ void test_resize_same_dimensions_twice_keeps_zero_samples() {
           || (accum.width() == 0  && accum.height() == 0));
 }
 
+// MANI-I.8 — manifold debug coordinate AOV type registration.
+// Verifies the data-model surface lands correctly: the new
+// enumerator value, component count, lowercase name, and
+// `AOV::make_manifold_coordinates(...)` factory all behave
+// as the task definition's §6.1 structural PASS criteria
+// require.
+void test_mani_i_8_manifold_coordinates_aov_type() {
+    using rr::renderer::AOV;
+    using rr::renderer::AOVType;
+
+    // Enumerator value is 6 (appended at the end of the
+    // enum; preserves the offsets of every pre-MANI-I.8
+    // enumerator).
+    RR_CHECK(static_cast<unsigned>(AOVType::ManifoldCoordinates) == 6u);
+
+    // Component count is 3 (Vec3 per pixel).
+    RR_CHECK(rr::renderer::aov_component_count(
+                 AOVType::ManifoldCoordinates) == 3);
+
+    // Stable lowercase name for filenames / log output.
+    RR_CHECK(rr::renderer::aov_type_name(
+                 AOVType::ManifoldCoordinates) == "manifold_coordinates");
+}
+
+void test_mani_i_8_manifold_coordinates_factory_default_name() {
+    using rr::renderer::AOV;
+    using rr::renderer::AOVType;
+
+    // Factory with no explicit name uses the lowercase
+    // enum name as the AOV's name.
+    AOV aov = AOV::make_manifold_coordinates();
+    RR_CHECK(aov.type()            == AOVType::ManifoldCoordinates);
+    RR_CHECK(aov.name()            == "manifold_coordinates");
+    RR_CHECK(aov.component_count() == 3);
+}
+
+void test_mani_i_8_manifold_coordinates_factory_custom_name() {
+    using rr::renderer::AOV;
+    using rr::renderer::AOVType;
+
+    // Factory honours a caller-supplied name.
+    AOV aov = AOV::make_manifold_coordinates("custom_manifold_dbg");
+    RR_CHECK(aov.type() == AOVType::ManifoldCoordinates);
+    RR_CHECK(aov.name() == "custom_manifold_dbg");
+}
+
 }  // namespace
 
 int main() {
     test_default_state();
     test_resize_zero_dimensions_returns_to_default();
     test_resize_same_dimensions_twice_keeps_zero_samples();
+
+    // MANI-I.8: manifold debug coordinate AOV type registration.
+    test_mani_i_8_manifold_coordinates_aov_type();
+    test_mani_i_8_manifold_coordinates_factory_default_name();
+    test_mani_i_8_manifold_coordinates_factory_custom_name();
 
     std::printf("renderer_tests: %d / %d passed\n",
                 g_total - g_failed, g_total);

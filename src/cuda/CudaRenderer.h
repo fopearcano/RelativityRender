@@ -155,12 +155,19 @@ public:
     // `AccumulationBuffer` (rr_renderer) is fed into
     // `launch_accumulate` (rr_gpu) by raw `float*` pointer.
     struct AOVTargets {
-        float* beauty             = nullptr;
-        float* normal             = nullptr;
-        float* depth              = nullptr;
-        float* albedo             = nullptr;
-        float* doppler_factor     = nullptr;
-        float* searchlight_factor = nullptr;
+        float* beauty               = nullptr;
+        float* normal               = nullptr;
+        float* depth                = nullptr;
+        float* albedo               = nullptr;
+        float* doppler_factor       = nullptr;
+        float* searchlight_factor   = nullptr;
+        // MANI-I.8 — manifold debug coordinate-visualisation
+        // AOV. Default `nullptr` means "not requested"; the
+        // kernel skips the write arm and the existing six
+        // AOVs are byte-identical to the pre-MANI-I.8
+        // baseline. Set to a device buffer pointer when
+        // `--render-aovs --manifold-debug` is in effect.
+        float* manifold_coordinates = nullptr;
     };
 
     [[nodiscard]] static Result render_scene_with_aovs(
