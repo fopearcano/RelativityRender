@@ -70212,6 +70212,184 @@ Minkowski-chart-wrap slice (architecture-doc §10 step 1) that
 threads `world_to_chart` / `transform_ray_like_direction`
 through the path-tracer ray-gen step.
 
+## MANIFOLD.6 — Manifold Mode Config (impl, model-only)
+
+**Scope of this slice (per the operator's *MANIFOLD.6 — Manifold
+Mode Config* task brief): repurpose
+`src/manifold/ManifoldMode.h` from the MANIFOLD.1 compatibility
+alias (`using ManifoldMode = CoordinateChartType;`) to its
+production form — a per-render config struct that composes a
+`CoordinateChartType` selection with the artist-facing toggles
+the renderer will read to decide *how* the Manifold Core
+engages. Default-constructed value reproduces today's renderer
+behaviour bit-for-bit. No CLI surface (deferred to a later
+slice). No renderer behaviour change. The MANIFOLD.1 alias is
+removed; no external consumer existed.**
+
+### What ships
+
+- **`src/manifold/ManifoldMode.h` (rewritten, +99 / -23 net,
+  ~75% doc-comment density).** The MANIFOLD.1 alias body
+  (`using ManifoldMode = CoordinateChartType;`) is replaced by
+  the production `ManifoldMode` config struct + a
+  `disabled_manifold_mode()` factory.
+    - **`ManifoldMode` POD (six fields).**
+        - `enabled` (`bool`, default `false`) — master switch.
+          `false` means the entire Manifold Core surface is
+          disabled and the renderer falls back to its
+          pre-pivot behaviour bit-for-bit regardless of what
+          the other fields say.
+        - `chart` (`CoordinateChartType`, default `Euclidean`)
+          — which chart family is active. Composes the
+          MANIFOLD.1 enum into the config without duplicating
+          it.
+        - `strength` (`float`, default `0.0f`) — interpolation
+          factor between identity-rendering (`0`) and full
+          manifold-rendering (`1`). Lets an artist dial down
+          the chart's effect without lying about which chart
+          is selected. Default `0` means "no chart effect"
+          even when `enabled = true`.
+        - `debug_visualization` (`bool`, default `false`) —
+          overlay chart-level diagnostics on the beauty pass
+          (chart boundaries, geodesic colouring, curvature
+          scalars, observer-frame markers). The future
+          implementation lives in the
+          Perceptual-Field-Interpretation sibling
+          (architecture-doc §6).
+        - `preserve_light_speed_normally` (`bool`, default
+          `true`) — Phase 2 axiom per architecture-doc §4.1.
+          `true` means light propagates at the chart-local
+          speed `c` and the coordinate system is what bends.
+        - `transform_coordinates_instead_of_light` (`bool`,
+          default `true`) — Phase 2 axiom sibling per
+          architecture-doc §4.1. `true` means deform the
+          coordinate chart rather than the light field
+          itself. Setting both Phase-2 axioms to `false`
+          selects the Phase 1 field-perception stance per
+          architecture-doc §5.
+    - **`disabled_manifold_mode()`** factory (`RR_HD inline`).
+      Returns `ManifoldMode{}`. Matches the factory convention
+      of the other manifold modules (`euclidean_chart()`,
+      `minkowski_metric()`, `rest_frame()`,
+      `default_geodesic_state()`, `identity_transform()`).
+  Header preamble carries the full history note (Skeleton-stage
+  enum → MANIFOLD.1 alias → MANIFOLD.6 struct), a field-by-field
+  walkthrough, and an explicit "Default-constructed value"
+  paragraph pinning the "preserves current output by default"
+  contract.
+- **Field naming.** Snake_case throughout, matching the
+  closest analog `rr::relativity::RelativityParams` and the
+  project's wider convention. The task brief's camelCase
+  spellings (`debugVisualization`,
+  `preserveLightSpeedNormally`,
+  `transformCoordinatesInsteadOfLight`) map mechanically to
+  `debug_visualization` /
+  `preserve_light_speed_normally` /
+  `transform_coordinates_instead_of_light`.
+- **`CMakeLists.txt` (rr_manifold doc-comment block, one row
+  refreshed).** `ManifoldMode.h`'s entry now lists the config
+  struct's six fields, the `disabled_manifold_mode()` factory,
+  and the MANIFOLD.6 alias-removal note. CMake target shape
+  and link line are unchanged from MANIFOLD.3.
+- **`src/manifold/README.md` (file-table row refreshed).**
+  `ManifoldMode.h`'s row now lists the config struct's six
+  fields, the factory, the "no output change" default, and the
+  alias-removal note.
+
+### What does NOT ship
+
+- **No CLI surface.** No `--manifold-mode`, `--enable-manifold`,
+  or any other flag plumbs this struct from the command line.
+  Architecture-doc §10 makes the CLI surface a separate slice
+  that lands after the Minkowski-chart-wrap implementation
+  proves the data flow end-to-end; this slice just makes the
+  config shape available.
+- **No renderer-behaviour change.** Nothing in `src/cuda/`,
+  `src/optix/`, `src/pathtracer/`, `src/renderer/`,
+  `src/gpu/`, `src/scene/`, `src/io/`, `src/server/`,
+  `src/main.cpp`, `src/core/`, `src/camera/`,
+  `src/material/`, `src/lighting/`, `src/texture/`,
+  `src/geometry/`, `src/image/`, `src/math/`,
+  `src/relativity/`, or `tests/` is touched (`git diff`
+  outside `src/manifold/`, `CMakeLists.txt`, and
+  `docs/BUILD_PLAN.md` ⇒ 0 bytes). The renderer reads the
+  legacy `rr::relativity::Observer` and `RelativityParams`
+  directly, exactly as before.
+- **No `ManifoldTransform` change.** The transform aggregate
+  still carries `{chart, metric, observer}`; the new
+  `ManifoldMode` is *not* added as a fourth member. The
+  config is intentionally a separate concern (per-render
+  artist toggles vs per-render chart / metric / observer
+  geometry); the future renderer surface will consume both
+  together but they remain independently constructable for
+  testability.
+- **No scene-file integration.** `RRSCENE_FORMAT.md`,
+  `src/io/SceneLoader.cpp`, `src/io/SceneWriter.cpp`, the
+  `.rrscene` fixtures, and `src/scene/Scene.h` are
+  byte-identical. Persisting `ManifoldMode` into / out of
+  scene files is a separate slice.
+- **No coordinate-chart consumption.** The `chart` field is
+  stored on the config but no code path reads it yet; the
+  Minkowski-chart-wrap slice will be the first consumer.
+- **No deletion of `CoordinateChart.h`, `MetricTensor.h`,
+  `ObserverFrame.h`, `GeodesicState.h`, or
+  `ManifoldTransform.h`.** Only `ManifoldMode.h` is
+  rewritten.
+- **No test binary.** `ctest` set unchanged.
+
+### Acceptance
+
+- **Compiles.** Audit-host rebuild (`cmake --build build -j`)
+  succeeds. The new `ManifoldMode.h` includes only
+  `manifold/CoordinateChart.h` and `math/MathUtils.h` (for
+  `RR_HD`); no circular dep is introduced. A standalone
+  `g++ -std=c++20 -Isrc -Wall -Wextra -Werror` build of a
+  `ManifoldMode.h`-consuming TU compiles cleanly.
+- **Validates.** A standalone runtime check exercises the new
+  surface:
+    - `ManifoldMode{}` has the six documented defaults
+      (`enabled = false`, `chart = Euclidean`,
+      `strength = 0`, `debug_visualization = false`,
+      `preserve_light_speed_normally = true`,
+      `transform_coordinates_instead_of_light = true`).
+    - `disabled_manifold_mode()` produces the same value.
+    - The Phase-2 default flags
+      (`preserve_light_speed_normally` and
+      `transform_coordinates_instead_of_light`) are both
+      `true` (architecture-doc §4 "Phase 2 as the core").
+    - Individual fields can be set independently and read
+      back unchanged.
+    - `ManifoldMode` is trivially copyable and standard-layout
+      (compile-time `static_assert`s); `sizeof(ManifoldMode)
+      == 16` bytes on the audit host (small enough to ride
+      along the per-render config easily).
+    - The MANIFOLD.1 alias is confirmed removed:
+      `static_assert(!std::is_same_v<ManifoldMode,
+      CoordinateChartType>, ...)` passes — `ManifoldMode` is
+      a struct, not the enum.
+    - `ManifoldTransform` does NOT hold a `ManifoldMode`
+      member; the config is independent of the transform
+      aggregate.
+- **No behaviour change.** All 11 ctest binaries pass
+  (`100% tests passed, 0 tests failed out of 11`) — same set
+  and outputs as the MANIFOLD.5 acceptance line.
+- **Rule-#3 honesty.** The six config fields are real
+  data with documented semantics; no field pretends to
+  drive behaviour it does not yet drive (the renderer-side
+  consumers land in later slices). The `disabled_manifold_mode()`
+  factory really does return the documented "no output
+  change" default. The MANIFOLD.1 alias removal is
+  acknowledged explicitly in the file's history note,
+  not silently rewritten.
+
+### Module status changes
+
+`docs/MODULE_MAP.md` is *not* updated by this slice. The
+config shape is now in place but no renderer code consumes it;
+module-map promotion still waits for the Minkowski-chart-wrap
+slice (architecture-doc §10 step 1) that becomes the first
+real consumer of any `src/manifold/` POD.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:

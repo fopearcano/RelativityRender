@@ -250,11 +250,17 @@ target_link_libraries(rr_relativity INTERFACE rr_math)
 #                           `identity_chart()` helpers (§3.1).
 #                           Promoted to its canonical shape by
 #                           MANIFOLD.1.
-#   ManifoldMode.h        - compatibility alias header
-#                           (`using ManifoldMode =
-#                           CoordinateChartType;`); kept so older
-#                           callers compile. Canonical enum lives
-#                           in CoordinateChart.h.
+#   ManifoldMode.h        - per-render config struct
+#                           `ManifoldMode` (enabled / chart /
+#                           strength / debug_visualization /
+#                           preserve_light_speed_normally /
+#                           transform_coordinates_instead_of_light)
+#                           + `disabled_manifold_mode()` factory.
+#                           Default is "disabled, Euclidean,
+#                           strength 0, no output change".
+#                           Promoted to its MANIFOLD.6 shape;
+#                           the MANIFOLD.1 alias to
+#                           CoordinateChartType is removed.
 #   MetricTensor.h        - 4x4 row-major `g_{mu nu}` POD in
 #                           mostly-plus signature + `at(i, j)`
 #                           accessors + `minkowski_metric()` /
