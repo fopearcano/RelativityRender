@@ -69264,11 +69264,144 @@ SDK-
 equipped
 host.
 
+## Manifold Core Skeleton — `src/manifold/` header skeleton (impl, skeleton-only)
+
+**Scope of this slice (per the operator's *Manifold Core Skeleton*
+task brief): land the source-level home of the Manifold Core defined
+in `docs/MANIFOLD_RENDERING_ARCHITECTURE.md` §3 as header-only POD
+types under `src/manifold/`. No renderer integration, no CUDA /
+OptiX changes, no kernel changes, no behaviour change. Every
+existing test keeps passing bit-for-bit; the existing executable,
+libraries, and ctest set are untouched.**
+
+### What ships
+
+- **`src/manifold/ManifoldMode.h` (new).** Enum class naming the
+  chart slots the architecture doc reserves: `Identity` (selectable
+  today; wraps today's renderer behaviour as the Minkowski +
+  constant-velocity-frame specialisation per architecture-doc §7.1)
+  plus reserved-but-inert placeholders for `Schwarzschild`,
+  `KruskalSzekeres`, `Penrose`, and `Kerr`. The placeholders carry
+  no defined behaviour beyond holding the tag.
+- **`src/manifold/CoordinateChart.h` (new).** Coordinate-chart POD
+  carrying a `ManifoldMode` tag plus an `inline constexpr
+  identity_chart()` helper. Implements the architecture-doc §3.1
+  contract surface; per-chart forward / inverse / domain helpers
+  are deferred to the future curved-chart slices (the Identity
+  chart's versions of all three are no-ops and therefore need no
+  member function).
+- **`src/manifold/MetricTensor.h` (new).** Symmetric rank-(0,2)
+  metric tensor POD storing the components as a flat 4x4 row-major
+  `float g[16]` in mostly-plus signature `(-, +, +, +)`. `RR_HD
+  inline minkowski_metric()` returns the flat default.
+  Architecture-doc §3.2 contract surface. Christoffel symbols are
+  NOT stored on the POD; they are a derived quantity owned by the
+  future geodesic integrator per architecture-doc §3.2's
+  analytic-vs-numerical footnote.
+- **`src/manifold/ObserverFrame.h` (new).** Tetrad (`right` / `up`
+  / `forward` `Vec3`s) plus a three-velocity `beta` `Vec3` POD with
+  a scene-rest default. `RR_HD inline rest_frame()` helper.
+  Architecture-doc §3.3 contract surface. The existing
+  `src/relativity/` helpers (`aberrateDirection`, `dopplerFactor`,
+  `searchlightFactor`, `applyDopplerColor`, `PrecomputedRelativity`)
+  are NOT touched; this header documents how the observer frame
+  subsumes them as the Minkowski + constant-velocity-frame
+  specialisation per architecture-doc §7.2. The subsumption is
+  structural-only until the chart-aware-seam slice wires it in.
+- **`src/manifold/GeodesicState.h` (new).** Null-geodesic state POD
+  (`position` `Vec3`, `momentum` `Vec3`) plus a `GeodesicStatus`
+  enum with `InFlight` / `ChartBoundary` / `Terminated` entries
+  matching the architecture-doc §3.4 single-step return contract.
+  No integrator is shipped this slice.
+- **`src/manifold/ManifoldTransform.h` (new).** Aggregate
+  `{CoordinateChart, MetricTensor, ObserverFrame}` POD plus an
+  `inline identity_transform()` helper. Architecture-doc §3.5
+  spacetime-deformation-layer contract surface. The
+  default-constructed aggregate describes today's renderer
+  behaviour — the "no behaviour change" contract is encoded in
+  the type's default member initialisers (chart defaults to
+  `Identity`, metric defaults to flat Minkowski, observer defaults
+  to scene rest).
+- **`src/manifold/README.md` (new).** Module orientation: file
+  table mapping each header to its architecture-doc section, the
+  intentionally-NOT-here list (no integrator, no Schwarzschild
+  metric, no kernel, no path-tracer wiring, no deletion of
+  `src/relativity/`, no test binary), and the CMake-target note.
+- **`CMakeLists.txt` (+27 lines, ~22 of which are doc comments).**
+  New `rr_manifold` INTERFACE library mirroring `rr_relativity`'s
+  pattern: `add_library(rr_manifold INTERFACE)`,
+  `target_include_directories(rr_manifold INTERFACE src)`,
+  `target_link_libraries(rr_manifold INTERFACE rr_math)`. Not
+  linked into any other target this slice — `rr_scene`, `rr_gpu`,
+  `rr_optix`, `rr_pathtracer`, `rr_renderer`, the main executable,
+  and every test stay byte-identical at the link line.
+
+### What does NOT ship
+
+- No geodesic integrator (lands at the chart-aware-seam slice per
+  architecture-doc §10 step 2).
+- No Schwarzschild / Kruskal-Szekeres / Penrose / Kerr metric data
+  (each lands in its own milestone per architecture-doc §10
+  steps 3–6).
+- No CUDA / OptiX kernel change. The `src/cuda/`, `src/optix/`,
+  `src/pathtracer/`, `src/renderer/`, `src/gpu/`, `src/scene/`,
+  `src/io/`, `src/server/`, `src/main.cpp`, `src/core/`,
+  `src/camera/`, `src/material/`, `src/lighting/`, `src/texture/`,
+  `src/geometry/`, `src/image/`, `src/math/`, `src/relativity/`,
+  and `tests/` trees are byte-identical (`git diff` outside
+  `src/manifold/`, `CMakeLists.txt`, and `docs/BUILD_PLAN.md` ⇒
+  0 bytes).
+- No deletion of `src/relativity/`. Its helpers continue to be the
+  Minkowski + constant-velocity-frame specialisation per
+  architecture-doc §7.2; this slice does not consume them.
+- No CLI surface change. No new `--render-*` action. No new test
+  binary. `ctest` set unchanged.
+
+### Acceptance
+
+- **Compiles.** Audit-host build (`cmake -S . -B build
+  -DRR_BUILD_TESTS=ON` then `cmake --build build -j`)
+  reconfigures and rebuilds cleanly; `rr_manifold` is created as
+  an INTERFACE library. The new headers expose only PODs and
+  `RR_HD inline` helpers; nothing in the existing translation-unit
+  set newly includes `src/manifold/`, so there is no rebuild
+  fan-out outside the new directory and the CMakeLists addition.
+- **No behaviour change.** All 11 ctest binaries pass on the
+  audit-host build (`100% tests passed, 0 tests failed out of 11`)
+  — `math_tests`, `image_tests`, `gpu_tests`, `pathtracer_tests`,
+  `pathtracer_nee_tests`, `pathtracer_bsdf_tests`,
+  `pathtracer_mis_tests`, `cli_tests`, `relativity_tests`,
+  `demo_tests`, `renderer_tests`. No reference image regenerated;
+  no AOV changed; no CLI flag added.
+- **Rule-#3 honesty.** The new headers are real, complete
+  implementations of the *Identity / Minkowski / rest-frame*
+  degenerate case. They are NOT stubs pretending to be a
+  Schwarzschild metric or a geodesic integrator. The placeholder
+  entries in `ManifoldMode` are documented as inert; selecting one
+  has no defined behaviour beyond carrying the tag, and no chart
+  dispatch consumes them yet.
+
+### Module status changes
+
+`docs/MODULE_MAP.md` is *not* updated by this slice. The Manifold
+Core does not yet have a per-module-table entry; it acquires one
+when the next slice (Manifold Core — Minkowski chart wrap) lands
+real consumers per architecture-doc §10 step 1. The
+architecture-doc §10 milestone order is unchanged.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
 
-- continue 12A: append the remaining design sections to
+- **continue the Manifold Core Pivot:** implement the *Minkowski
+  chart wrap* (architecture-doc §10 step 1) — a host-side adaptor
+  that consumes the existing `Camera` + `Observer` +
+  `RelativityParams` and produces a `ManifoldTransform{}`
+  equivalent, with byte-identical-image tests against the current
+  relativistic kernels. This is the smallest concrete consumer of
+  `rr_manifold` and is the prerequisite for the chart-aware-seam
+  slice (§10 step 2) and the Schwarzschild chart (§10 step 3);
+- *or* continue 12A: append the remaining design sections to
   `OPTIX_BACKEND_PLAN.md` — Intersection program design
   (currently covered inline in §10.2 / §9.4 but a
   dedicated section becomes useful when custom IS lands),

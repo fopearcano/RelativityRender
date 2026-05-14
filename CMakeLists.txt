@@ -237,6 +237,33 @@ add_library(rr_relativity INTERFACE)
 target_include_directories(rr_relativity INTERFACE src)
 target_link_libraries(rr_relativity INTERFACE rr_math)
 
+# rr_manifold: header-only Manifold Core skeleton
+# (`docs/MANIFOLD_RENDERING_ARCHITECTURE.md` §3).
+#
+#   ManifoldMode.h        - enum of chart identities (Identity only;
+#                           Schwarzschild / Kruskal / Penrose / Kerr
+#                           reserved as inert placeholders).
+#   CoordinateChart.h     - chart POD + `identity_chart()` helper
+#                           (§3.1).
+#   MetricTensor.h        - 4x4 mostly-plus metric POD +
+#                           `minkowski_metric()` helper (§3.2).
+#   ObserverFrame.h       - tetrad + 3-velocity POD +
+#                           `rest_frame()` helper (§3.3).
+#   GeodesicState.h       - null-geodesic state POD +
+#                           `GeodesicStatus` enum (§3.4).
+#   ManifoldTransform.h   - aggregate {chart, metric, observer} POD +
+#                           `identity_transform()` helper (§3.5,
+#                           spacetime deformation layer).
+#
+# Skeleton stage: no renderer integration, no CUDA / OptiX
+# dependency, no behaviour change. Library exists so future slices
+# (Minkowski chart wrap, chart-aware seam, Schwarzschild chart) have
+# a stable include path; not linked into any other target this
+# slice.
+add_library(rr_manifold INTERFACE)
+target_include_directories(rr_manifold INTERFACE src)
+target_link_libraries(rr_manifold INTERFACE rr_math)
+
 # rr_scene: host-side authoring scene container.
 #
 # Owns the camera, render settings, Observer + RelativityParams, the
