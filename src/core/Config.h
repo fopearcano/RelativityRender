@@ -1,5 +1,7 @@
 #pragma once
 
+#include "manifold/ManifoldMode.h"
+
 #include <string>
 
 namespace rr::core {
@@ -87,6 +89,46 @@ struct Config {
     // to a follow-up slice; this slice ships only the CUDA-
     // side wiring per the user's narrow scope).
     bool        enable_nee       = false;
+
+    // Manifold Core Pivot (MANI-I.1) — per-render manifold-
+    // rendering mode the renderer will eventually read to
+    // decide *how* the Manifold Core engages with the
+    // existing CUDA / OptiX path tracer (see
+    // `docs/MANIFOLD_INTEGRATION_PLAN.md` §4-§5). Populated
+    // by the four `--manifold-*` modifier flags:
+    //
+    //   - `--manifold-enable`              sets
+    //                                      `manifold.enabled = true`.
+    //   - `--manifold-chart <name>`        sets
+    //                                      `manifold.chart` to a
+    //                                      `CoordinateChartType`
+    //                                      enumerator. Legal names
+    //                                      (case-sensitive):
+    //                                      `euclidean`,
+    //                                      `schwarzschild-like`,
+    //                                      `kruskal-like`,
+    //                                      `penrose-like`,
+    //                                      `kerr-like`.
+    //   - `--manifold-strength <float>`    sets
+    //                                      `manifold.strength`.
+    //   - `--manifold-debug`               sets
+    //                                      `manifold.debug_visualization
+    //                                      = true`.
+    //
+    // The default value `ManifoldMode{}` (`enabled = false`,
+    // `chart = Euclidean`, `strength = 0`, no debug overlay,
+    // both Phase-2 axioms set) is the "no output change"
+    // anchor: every existing CLI action without any
+    // `--manifold-*` flag produces pixel-bit-identical output
+    // to the pre-pivot renderer.
+    //
+    // MANI-I.1 scope: parsed and stored on Config; no
+    // RenderSettings / renderer / GPU consumption yet.
+    // MANI-I.2 plumbs this field into `RenderSettings`;
+    // MANI-I.3 is the first GPU touch. The four flags above
+    // are accepted and recorded on Config from this slice
+    // forward.
+    rr::manifold::ManifoldMode manifold;
 
     // Returns an empty string when the configuration is internally
     // consistent. Otherwise returns a human-readable description of

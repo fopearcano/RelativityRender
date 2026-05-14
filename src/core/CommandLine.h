@@ -292,6 +292,37 @@ namespace rr::core {
 //                           default for --render-direct-lighting is
 //                           "output/gpu_direct_lighting.ppm".
 //                           Ignored for --render-relativistic.
+//   --manifold-enable       MANI-I.1 modifier flag (not an action).
+//                           Sets `Config::manifold.enabled = true`.
+//                           Default off matches the pre-pivot
+//                           renderer byte-for-byte. Mirrors the
+//                           `--denoise` / `--enable-nee` presence-
+//                           only shape.
+//   --manifold-chart <name> MANI-I.1 modifier flag. Selects the
+//                           chart family on the active
+//                           `ManifoldMode`. Accepted (case-
+//                           sensitive) values: `euclidean`,
+//                           `schwarzschild-like`, `kruskal-like`,
+//                           `penrose-like`, `kerr-like`. Maps to
+//                           the `CoordinateChartType` enumerator.
+//                           Unknown values produce a parse error
+//                           listing the legal names.
+//   --manifold-strength <float>
+//                           MANI-I.1 modifier flag. Sets
+//                           `Config::manifold.strength` to the
+//                           parsed float. Nominal range `[0, 1]`;
+//                           out-of-range values pass through
+//                           (the renderer may extrapolate per
+//                           `ManifoldMode::strength`'s contract).
+//                           Default `0.0f` means "no chart
+//                           effect" even when --manifold-enable
+//                           is set.
+//   --manifold-debug        MANI-I.1 modifier flag (not an action).
+//                           Sets `Config::manifold.
+//                           debug_visualization = true`. Reserved
+//                           for the MANI-I.4 debug coordinate-warp
+//                           AOV; no observable behaviour change
+//                           this slice.
 //   --width  <int>          Render width in pixels  (default 1280).
 //   --height <int>          Render height in pixels (default 720).
 //

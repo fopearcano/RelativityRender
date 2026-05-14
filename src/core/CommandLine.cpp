@@ -1,6 +1,7 @@
 #include "core/CommandLine.h"
 
 #include "core/Version.h"
+#include "manifold/CoordinateChart.h"
 
 #include <charconv>
 #include <sstream>
@@ -11,6 +12,32 @@
 namespace rr::core {
 
 namespace {
+
+// MANI-I.1 — Parse a kebab-case `--manifold-chart` value into the
+// matching `rr::manifold::CoordinateChartType` enumerator. Returns
+// `false` on unknown input; the parser arm produces an error
+// message listing the legal names. Case-sensitive matching mirrors
+// the rest of the CLI parser's strict-token contract.
+bool parse_chart_type(std::string_view s,
+                      rr::manifold::CoordinateChartType& out) {
+    using rr::manifold::CoordinateChartType;
+    if (s == "euclidean") {
+        out = CoordinateChartType::Euclidean;               return true;
+    }
+    if (s == "schwarzschild-like") {
+        out = CoordinateChartType::SchwarzschildLike;       return true;
+    }
+    if (s == "kruskal-like") {
+        out = CoordinateChartType::KruskalLikePlaceholder;  return true;
+    }
+    if (s == "penrose-like") {
+        out = CoordinateChartType::PenroseLikePlaceholder;  return true;
+    }
+    if (s == "kerr-like") {
+        out = CoordinateChartType::KerrLikePlaceholder;     return true;
+    }
+    return false;
+}
 
 bool parse_int(std::string_view s, int& out) {
     int value = 0;
@@ -492,6 +519,64 @@ CommandLine::ParseResult CommandLine::parse(int argc, char** argv) {
                 return r;
             }
             r.config.firefly_clamp = clamp_value;
+        } else if (a == "--manifold-enable") {
+            // MANI-I.1 modifier flag (NOT an action). Sets
+            // `r.config.manifold.enabled = true`. Mirrors the
+            // `--denoise` / `--enable-nee` presence-only shape.
+            // Default off matches the pre-pivot renderer byte-
+            // for-byte; flipping the field alone is a no-op
+            // until MANI-I.3 wires the GPU consumer.
+            r.config.manifold.enabled = true;
+        } else if (a == "--manifold-chart") {
+            // MANI-I.1 modifier flag. Takes one value naming the
+            // chart family. Legal names (case-sensitive,
+            // kebab-case): euclidean, schwarzschild-like,
+            // kruskal-like, penrose-like, kerr-like. Maps to the
+            // `CoordinateChartType` enumerator on the active
+            // `ManifoldMode`. Unknown values are a parse error
+            // with a message listing the legal names.
+            if (!take_value(argc, argv, i, a, value, r.error_message)) {
+                r.action = Action::Error;
+                return r;
+            }
+            if (!parse_chart_type(value, r.config.manifold.chart)) {
+                r.action        = Action::Error;
+                r.error_message = "invalid --manifold-chart value: "
+                                + std::string(value)
+                                + " (expected one of: euclidean, "
+                                  "schwarzschild-like, kruskal-like, "
+                                  "penrose-like, kerr-like)";
+                return r;
+            }
+        } else if (a == "--manifold-strength") {
+            // MANI-I.1 modifier flag. Takes one float. Sets
+            // `r.config.manifold.strength`. Per `ManifoldMode`'s
+            // contract the field's nominal range is `[0, 1]` but
+            // values outside that range are not clamped at parse
+            // time — the renderer may extrapolate (e.g. for
+            // stylised over-deformation) at the artist's risk.
+            // Only a non-finite / non-parseable string is
+            // rejected here.
+            if (!take_value(argc, argv, i, a, value, r.error_message)) {
+                r.action = Action::Error;
+                return r;
+            }
+            float strength = 0.0f;
+            const auto* end = value.data() + value.size();
+            const auto  res = std::from_chars(value.data(), end, strength);
+            if (res.ec != std::errc{} || res.ptr != end) {
+                r.action        = Action::Error;
+                r.error_message = "invalid float for --manifold-strength: "
+                                + std::string(value);
+                return r;
+            }
+            r.config.manifold.strength = strength;
+        } else if (a == "--manifold-debug") {
+            // MANI-I.1 modifier flag (NOT an action). Sets
+            // `r.config.manifold.debug_visualization = true`.
+            // Reserved for the MANI-I.4 debug coordinate-warp
+            // AOV; no observable behaviour change this slice.
+            r.config.manifold.debug_visualization = true;
         } else if (a == "--width") {
             if (!take_value(argc, argv, i, a, value, r.error_message)) {
                 r.action = Action::Error;
@@ -991,6 +1076,54 @@ std::string CommandLine::usage(std::string_view argv0) {
                                   "contribute\n"
        << "                        zero through the NEE branch (no MIS "
                                   "yet).\n"
+       << "  --manifold-enable     MANI-I.1 modifier flag (not an action). "
+                                  "Engages the\n"
+       << "                        Manifold Core's manifold-rendering "
+                                  "surface. Default off\n"
+       << "                        matches the pre-pivot renderer "
+                                  "byte-for-byte. The other\n"
+       << "                        --manifold-* flags configure the mode; "
+                                  "the renderer is the\n"
+       << "                        consumer that reads them (deferred to "
+                                  "MANI-I.3 and later).\n"
+       << "  --manifold-chart <name>\n"
+       << "                        MANI-I.1 modifier flag. Selects the "
+                                  "chart family. Accepted\n"
+       << "                        values (case-sensitive):\n"
+       << "                          euclidean           (default; "
+                                  "identity case, no warp)\n"
+       << "                          schwarzschild-like  (reserved; no "
+                                  "kernel yet)\n"
+       << "                          kruskal-like        (reserved; no "
+                                  "kernel yet)\n"
+       << "                          penrose-like        (reserved; no "
+                                  "kernel yet)\n"
+       << "                          kerr-like           (reserved; no "
+                                  "kernel yet)\n"
+       << "                        The *-like names match the "
+                                  "CoordinateChartType enum's\n"
+       << "                        \"*Like / *LikePlaceholder\" "
+                                  "convention per master rule #3\n"
+       << "                        (no fake stubs). Unknown values "
+                                  "are a parse error.\n"
+       << "  --manifold-strength <float>\n"
+       << "                        MANI-I.1 modifier flag. Sets the "
+                                  "strength scalar on the\n"
+       << "                        active ManifoldMode in nominal [0, "
+                                  "1]; out-of-range values\n"
+       << "                        pass through (the renderer may "
+                                  "extrapolate per the\n"
+       << "                        ManifoldMode::strength contract). "
+                                  "Default 0 means \"no\n"
+       << "                        chart effect\" even when "
+                                  "--manifold-enable is set.\n"
+       << "  --manifold-debug      MANI-I.1 modifier flag (not an action). "
+                                  "Sets the\n"
+       << "                        ManifoldMode::debug_visualization "
+                                  "toggle. Reserved for the\n"
+       << "                        MANI-I.4 debug coordinate-warp AOV; "
+                                  "no observable\n"
+       << "                        behaviour yet.\n"
        << "  --width  <int>        Render width in pixels "
                                   "(default 1280).\n"
        << "  --height <int>        Render height in pixels "

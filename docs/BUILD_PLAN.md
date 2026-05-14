@@ -71551,6 +71551,209 @@ state until a MANI-I.* slice with real renderer-side
 behaviour lands (gate is still MANI-I.7 audit per the
 integration plan §10).
 
+## MANI-I.1 — Manifold CLI Config (impl, CLI-only)
+
+**Scope of this slice (per the operator's *MANI-I.1 —
+Manifold CLI Config* task brief and
+`docs/MANIFOLD_INTEGRATION_PLAN.md` §4): expose the
+manifold-rendering mode through four new `--manifold-*`
+CLI flags that populate a host-side
+`rr::manifold::ManifoldMode` value on `rr::core::Config`.
+No CUDA / OptiX / renderer / coordinate-warp / C4D /
+server / UI / node-editor change. ctest grows from 12/12
+to 12/12 with the cli_tests binary gaining 13 new
+parser-test cases (M1–M13).**
+
+### What ships
+
+- **`src/core/Config.h` (+44 / -1 net).** Adds a
+  `rr::manifold::ManifoldMode manifold` member to
+  `Config` plus a 40-line doc-comment block citing the
+  four CLI flags, the default "no output change" anchor
+  contract, and the MANI-I.2 / MANI-I.3 prerequisite
+  chain. Pulls `manifold/ManifoldMode.h` (header-only
+  POD shipped at MANIFOLD.6; no new link
+  dependency — `rr_field` and `rr_manifold` remain
+  unlinked from any renderer target, in line with the
+  Manifold Core Foundation Audit verdict).
+- **`src/core/CommandLine.cpp` (+88 / -1 net).** Two
+  additions:
+    - A `parse_chart_type(string_view,
+      CoordinateChartType&)` helper in the anonymous
+      namespace mapping the five legal kebab-case names
+      (`euclidean`, `schwarzschild-like`,
+      `kruskal-like`, `penrose-like`, `kerr-like`) to
+      the matching `CoordinateChartType` enumerator.
+      Case-sensitive (matches the rest of the parser's
+      strict-token contract).
+    - Four new parser arms in the main `parse()` loop:
+        - **`--manifold-enable`** — presence-only
+          switch. Sets `r.config.manifold.enabled =
+          true`.
+        - **`--manifold-chart <name>`** — takes one
+          kebab-case value; routes through
+          `parse_chart_type`. Unknown values produce a
+          parse error message that names the offending
+          token and lists every legal alternative.
+        - **`--manifold-strength <float>`** — takes one
+          float. Parsed via `std::from_chars`. Out-of-
+          range values pass through (per the
+          `ManifoldMode::strength` contract); only a
+          non-parseable string is rejected.
+        - **`--manifold-debug`** — presence-only switch.
+          Sets `r.config.manifold.debug_visualization =
+          true`. Reserved for the MANI-I.4 debug
+          coordinate-warp AOV.
+- **`src/core/CommandLine.h` (+30 lines, doc-block).**
+  Header docstring extended with a four-flag block
+  documenting each `--manifold-*` flag's role,
+  defaults, accepted values, and downstream consumer
+  slice.
+- **`src/core/CommandLine.cpp` (usage text, +44 lines).**
+  Four new entries in the `--help` output, each citing
+  MANI-I.1, naming the legal accepted values
+  (for `--manifold-chart`), and pinning the default
+  byte-identity invariant.
+- **`tests/cli_tests.cpp` (+13 test cases, +149 lines).**
+  Thirteen MANI-I.1 cases M1–M13:
+    - **M1** default-off (no flag) — all four manifold
+      fields at the documented defaults.
+    - **M2** `--manifold-enable` alone flips only
+      `enabled`; other fields stay default.
+    - **M3** each-value dispatch — all five
+      `--manifold-chart` legal names map to the
+      matching `CoordinateChartType` enumerator.
+    - **M4** unknown chart value rejected with an
+      error message naming the offending token AND
+      listing every legal alternative.
+    - **M5** case-mismatch on the chart value rejected
+      (parser is case-sensitive — `Euclidean` does NOT
+      alias to `euclidean`).
+    - **M6** `--manifold-strength 0.75` parses to
+      `0.75f`.
+    - **M7** out-of-range strength values (`-0.5`,
+      `2.0`) pass through to the renderer per the
+      `ManifoldMode::strength` contract.
+    - **M8** non-parseable strength value (`abc`)
+      rejected with a clear error message.
+    - **M9** `--manifold-debug` alone flips only
+      `debug_visualization`.
+    - **M10** all four flags compose; each field
+      lands on its matching member without cross-flag
+      interference.
+    - **M11** order-independence — the four flags
+      interleave with action / scene-path / other
+      modifiers (`--enable-nee`) cleanly.
+    - **M12** `--manifold-chart` followed by another
+      `--*` token rejected (the existing
+      `take_value` contract refuses to swallow flags
+      as values).
+    - **M13** default-off byte-identity across 7
+      diverse argv vectors (combinations of
+      `--render-pathtrace`,
+      `--render-optix-pathtrace`,
+      `--render-aovs --denoise`,
+      `--render-demo --beta`, `--firefly-clamp`,
+      `--width` / `--height`) — the four manifold
+      fields stay at the pre-pivot defaults across
+      every vector.
+- **`docs/MANIFOLD_INTEGRATION_PLAN.md` (§4 updated).**
+  The "what ships" section is updated to reflect the
+  actual landed four-flag surface
+  (`--manifold-enable` / `--manifold-chart` /
+  `--manifold-strength` / `--manifold-debug`) instead
+  of the original three-flag draft
+  (`--manifold-mode` / `--manifold-strength` /
+  `--manifold-debug-warp`). A "naming refinement"
+  paragraph explains the rationale: the chart selector
+  and the enable bit are split so artists can dial one
+  axis without flipping the other, mirroring the
+  FIELD.1-era enabled-vs-strength separation. The
+  acceptance section pins 13 cli_tests cases; the
+  "what does NOT ship" section pins the Config-not-
+  RenderSettings boundary.
+
+### What does NOT ship
+
+- **No CUDA changes.** Zero files in `src/cuda/`. No
+  `OptixLaunchParams` field added; no kernel signature
+  change.
+- **No OptiX changes.** Zero files in `src/optix/`. The
+  PTX-embed helper is untouched.
+- **No renderer behaviour change.** Nothing in
+  `src/pathtracer/`, `src/renderer/`, `src/gpu/`,
+  `src/scene/`, `src/io/`, `src/server/`, `src/main.cpp`,
+  `src/camera/`, `src/material/`, `src/lighting/`,
+  `src/texture/`, `src/geometry/`, `src/image/`,
+  `src/math/`, `src/relativity/`, `src/manifold/`, or
+  `src/field/` is touched. Every existing CLI action's
+  dispatcher ignores `Config::manifold` this slice.
+- **No coordinate warp.** The `--manifold-debug` flag
+  flips the `debug_visualization` toggle but no kernel
+  consumes it; the future MANI-I.4 debug coordinate-
+  warp AOV is the consumer.
+- **No `RenderSettings` change.** The
+  `rr::scene::RenderSettings` POD is byte-identical to
+  the pre-MANI-I.1 baseline. MANI-I.2 is the slice
+  that plumbs the field into `RenderSettings`.
+- **No C4D / server / UI / node-editor touch.** Zero
+  files in `src/server/`. No `bridges/c4d_bridge/`,
+  `bridges/c4d_native/`, `tools/node_editor/`, or
+  `tools/preview_ui/` directories created.
+- **No new ctest binary.** `cli_tests` grows from 7
+  test cases to 20 test cases (the test count is
+  internal to the binary; ctest itself still reports
+  12/12 binaries).
+- **No `.rrscene` schema bump.** The field is parsed
+  from the CLI only; scene-file serialisation lands
+  later (per the integration plan §4 "what does not
+  ship").
+
+### Acceptance
+
+- **Compiles.** Audit-host rebuild
+  (`cmake --build build -j`) succeeds cleanly. Pulling
+  `manifold/ManifoldMode.h` into `Config.h` and
+  `manifold/CoordinateChart.h` into `CommandLine.cpp`
+  triggers a one-time recompile of `Config.cpp` /
+  `CommandLine.cpp` (in both the main executable and
+  the `cli_tests` binary, both of which compile those
+  TUs directly per the existing CMake setup). No link
+  line changes; no warnings under the project's
+  `rr_apply_warnings` settings.
+- **Tests.** Full ctest: `100% tests passed, 0 tests
+  failed out of 12`. The `cli_tests` binary reports
+  `cli_tests: 123/123 passed` (was 110/110 pre-MANI-I.1
+  — the 13 new MANI-I.1 cases add 110 → 123).
+- **`--help` surface.** Running `RelativityRender
+  --help` shows the four `--manifold-*` flags each
+  with a dedicated help block citing MANI-I.1 and the
+  future consumer slice (MANI-I.2 / MANI-I.4).
+- **Bit-identity invariant.** Every existing CLI
+  action's dispatcher ignores `Config::manifold`,
+  structurally guaranteeing byte-identical output to
+  the pre-MANI-I.1 baseline on every CLI action when
+  no `--manifold-*` flag is set. Verified at the
+  parser surface by test M13 across 7 representative
+  argv vectors.
+- **Rule-#3 honesty.** The four shipping flags drive
+  real fields with documented runtime effect (the
+  fields exist on `Config` and the parser populates
+  them correctly); the absence of a downstream
+  consumer is documented (deferred to MANI-I.2 /
+  MANI-I.3 / MANI-I.4 per the integration plan). The
+  "what does NOT ship" list is exhaustive across the
+  16 renderer subdirectories the foundation audit
+  enumerated.
+
+### Module status changes
+
+`docs/MODULE_MAP.md` is *not* updated by this slice.
+The CLI parser now plumbs the manifold mode into
+`Config` but no renderer code reads it; module-map
+promotion still waits for the audit slice (MANI-I.7)
+per the integration plan §10.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:

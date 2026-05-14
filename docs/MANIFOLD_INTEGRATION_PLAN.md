@@ -211,43 +211,80 @@ ships only after its predecessor is green:
 
 ### Goal
 
-Add three new CLI flags that populate an
-`rr::scene::ManifoldMode` value the rest of the chain will
-consume. Host-only this slice; no `RenderSettings`,
-no renderer, no GPU code touched.
+Add four new CLI flags that populate an
+`rr::manifold::ManifoldMode` value on `rr::core::Config`
+the rest of the chain will consume. Host-only this slice;
+no `RenderSettings`, no renderer, no GPU code touched.
 
 ### Prerequisites
 
 - MANIFOLD.6 (`src/manifold/ManifoldMode.h` config struct
   shipped) — already green.
 
-### What ships
+### What ships (LANDED; this section reflects what actually shipped)
 
-- **`src/core/CommandLine.cpp`** parses the three flags:
-  - `--manifold-mode <Euclidean|SchwarzschildLike|
-    KruskalLikePlaceholder|PenroseLikePlaceholder|
-    KerrLikePlaceholder>` — default `Euclidean`. Selects
-    `CoordinateChartType` per MANIFOLD.1.
-  - `--manifold-strength <float>` — default `0.0f`.
-    Sets `ManifoldMode::strength`.
-  - `--manifold-debug-warp` — switch flag. Sets
-    `ManifoldMode::debug_visualization = true`.
+- **`src/core/Config.h`** gains a
+  `rr::manifold::ManifoldMode manifold` field. The
+  default value is the documented
+  `disabled_manifold_mode()` anchor (enabled=false,
+  chart=Euclidean, strength=0, debug=off) — every
+  existing CLI invocation without a `--manifold-*` flag
+  produces pixel-bit-identical output to the pre-pivot
+  renderer.
+- **`src/core/CommandLine.cpp`** parses four flags:
+  - `--manifold-enable` — presence-only switch. Sets
+    `manifold.enabled = true`. Mirrors the
+    `--denoise` / `--enable-nee` shape.
+  - `--manifold-chart <name>` — takes one value naming
+    the chart family. Legal names (case-sensitive,
+    kebab-case): `euclidean`, `schwarzschild-like`,
+    `kruskal-like`, `penrose-like`, `kerr-like`. Maps
+    to `CoordinateChartType` per MANIFOLD.1. Unknown
+    values are a parse error with a message listing
+    every legal name.
+  - `--manifold-strength <float>` — sets
+    `manifold.strength`. Nominal `[0, 1]`; out-of-range
+    values pass through to the renderer (per the
+    `ManifoldMode::strength` contract). Only a non-
+    parseable string is rejected at parse time.
+  - `--manifold-debug` — presence-only switch. Sets
+    `manifold.debug_visualization = true`. Reserved
+    for the MANI-I.4 debug coordinate-warp AOV; no
+    observable behaviour change this slice.
+
+  (Naming refinement vs the original plan: the original
+  draft of this section proposed `--manifold-mode` as a
+  single flag combining the chart selector and an
+  implicit enable bit, plus `--manifold-debug-warp` for
+  the debug toggle. MANI-I.1 split the chart selector
+  from the enable bit — `--manifold-enable` is now a
+  dedicated presence-only flag — and renamed
+  `--manifold-debug-warp` to `--manifold-debug` to reflect
+  that the toggle flips a general `debug_visualization`
+  field, not a warp-AOV-specific one. The four-flag
+  surface lets an artist tweak `chart` / `strength` /
+  `debug` without flipping the master switch and vice
+  versa, matching the FIELD.1-era idiom for
+  enabled-vs-strength separation.)
 - **`tests/cli_tests.cpp`** (existing binary) gains
-  assertions that:
-  - the new flags parse to the documented enum / float
-    values;
-  - unknown chart-type strings fail with a clean error;
-  - the flags compose with existing flags
-    (`--render-scene`, `--enable-nee`, `--firefly-clamp`,
-    etc.) without dropping or shadowing them.
+  13 MANI-I.1 test cases (M1–M13) covering: default-off
+  anchors, each-value chart dispatch, unknown-chart
+  rejection, case-sensitivity, in/out-of-range strength
+  values, non-parseable strength rejection, debug flag
+  presence, four-flag combination, order-independence,
+  missing-value rejection, and default-off byte-identity
+  with other modifier flags
+  (`--denoise` / `--enable-nee` / `--firefly-clamp` /
+  `--beta` / `--width` / `--height`).
 - **`docs/BUILD_PLAN.md`** gets a MANI-I.1 entry.
 
 ### Acceptance
 
 - Audit-host build green; ctest 12/12 (no new binary).
-- The new flags appear in `--help` output. The
-  `RelativityRender` executable's `--help` text has a
-  dedicated "Manifold options" section.
+- The four new flags appear in `--help` output, each
+  with a dedicated help block citing the MANI-I.1 slice
+  and the future consumer slice (MANI-I.2 for the
+  config plumb, MANI-I.4 for `--manifold-debug`).
 - Running every existing CLI action **without** any
   `--manifold-*` flag produces bit-identical output to
   the pre-MANI-I.1 baseline (the renderer ignores the
@@ -270,12 +307,20 @@ no renderer, no GPU code touched.
 ### What does NOT ship
 
 - No `RenderSettings` field for the manifold (MANI-I.2).
+  The field lives only on `Config` (the CLI parser's
+  struct) this slice; the renderer's render-time config
+  shape is unchanged.
 - No renderer call site that reads the populated value.
+  Every CLI action's dispatcher ignores `Config::manifold`
+  this slice.
 - No GPU change.
 - No new AOV.
 - No `.rrscene` serialisation of the manifold mode (lands
   later, alongside MANI-I.5 when artists need to author
   curved-chart scenes through the file format).
+- No `--manifold-*` modifier flag is wired into the
+  action-mutual-exclusion list (the four flags are
+  modifiers, not actions).
 
 ---
 
