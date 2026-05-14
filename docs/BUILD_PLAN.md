@@ -76897,6 +76897,157 @@ Module-map promotion still waits for MANI-I.12
 (final cross-host audit) per the integration plan
 §11.
 
+## PENROSE.7 — Penrose-Like CUDA Integration Audit (docs only)
+
+**Scope of this slice (per the operator's *PENROSE.7 —
+Penrose-Like CUDA Integration Audit* task brief): write
+`docs/PENROSE_LIKE_CUDA_INTEGRATION_AUDIT.md`, the
+per-slice verdict document for PENROSE.6 (`2859acd`).
+Verifies the ten structural items the task brief
+enumerates — CUDA-safe Penrose-like helper exists; GPU
+payload supports PenroseLike chart; activation
+conditions are correct; disabled/default no-op;
+Euclidean identity; Schwarzschild unchanged; OptiX path
+not modified; build/test status; runtime CUDA-host
+status; verdict — and produces a PASS / REPAIR /
+BLOCKED verdict that gates progression to the OptiX
+integration slice (renumbered PENROSE.8). Documentation
+only; no source code, no test, no CMake, no behavioural
+change. Inserts PENROSE.7 as a per-slice audit slot AND
+renames the original PENROSE.7-OptiX-integration →
+PENROSE.8 (with cascade shifts PENROSE.8→PENROSE.9,
+PENROSE.9→PENROSE.10) in the
+`PENROSE_LIKE_COMPACTIFICATION_PLAN.md` §10 sub-slice
+ladder.**
+
+### What ships
+
+- **`docs/PENROSE_LIKE_CUDA_INTEGRATION_AUDIT.md`
+  (new).** Per-slice verdict document mirroring the
+  prior audit doc shape (SCHW.6 / SCHW.5-completion /
+  PENROSE.5 / etc.):
+    - **§1 VERDICT** — `PASS` (structural CUDA-side
+      warp bridge verified); check #9 (runtime
+      CUDA-host status) DEFERRED on documented
+      audit-host limitations.
+    - **§2 PER-CHECK RESULTS** — ten-row evidence
+      table. Each row cites concrete file/line
+      observations: the PENROSE.2 math leaf
+      `RR_HD inline` decoration carrying through to
+      CUDA at `CudaTestKernel.cu:16` (include) +
+      `:661-679` (invocation); the SCHW.5 plumbing
+      reuse (CudaSceneView and AOVTargets manifold
+      payload added at `73e9591`, designed
+      chart-family-agnostic, carries PenroseLike
+      unchanged); triple-gate at `CudaTestKernel.cu
+      :644-648` mirroring SCHW.5's gate exactly
+      with enum-tag swap; four-layer
+      disabled-mode safety (host allocation gate
+      + kernel null gate + both triple-gates'
+      inactive branches + math-leaf fallback);
+      Euclidean is_active(...) returns false by
+      design; SCHW.5 arm preserved verbatim with
+      `else if` separator + enum-tag mutual
+      exclusion; `git diff -- src/optix/` returns
+      0 bytes; ctest 12/12 +
+      `manifold_identity_tests 312/312`.
+    - **§3 WHAT THIS AUDIT DOES NOT VERIFY** —
+      explicit scope-boundary section listing five
+      items: no runtime device-side verification
+      (deferred to CUDA-equipped host); no
+      cross-backend byte-identity comparison (no
+      SDK on audit host); no `CudaPathTracer.cu`
+      PenroseLike arm; no primary-ray direction
+      warp; no chart-parameter scene-authoring; no
+      multi-chart composition (ManifoldStack
+      concept deferred).
+    - **§4 REASONING SUMMARY** — two surface
+      changes (the CUDA kernel arm extension +
+      main.cpp builder extension); per-invariant
+      verification analysis showing each check is
+      inherited from prior slices or
+      structurally guaranteed.
+    - **§5 NEXT** — names the PENROSE.* sub-slice
+      renumbering (PENROSE.7 audit inserted;
+      PENROSE.7 → PENROSE.8 / PENROSE.8 →
+      PENROSE.9 / PENROSE.9 → PENROSE.10) and
+      points at PENROSE.8 (OptiX integration) as
+      the next concrete impl commit.
+- **`docs/PENROSE_LIKE_COMPACTIFICATION_PLAN.md`
+  §10 (renumbered).** Three replace-all
+  substitutions shift every PENROSE.x reference
+  from §10 PENROSE.7 onward (highest-to-lowest to
+  avoid double-shifting): PENROSE.9 → PENROSE.10,
+  PENROSE.8 → PENROSE.9, PENROSE.7 → PENROSE.8. A
+  new "PENROSE.7 — Audit (docs only)" subsection
+  is inserted between PENROSE.6 (LANDED) and the
+  renumbered PENROSE.8 (OptiX integration). The
+  plan's other sections (§1–§9, §11–§12) are
+  unchanged.
+
+### What does NOT ship
+
+- **No source code.** Nothing in any `src/` subtree
+  is touched (`git diff` outside `docs/` ⇒ 0 bytes).
+- **No new test binary.** ctest set unchanged at 12.
+- **No CMake change.** No new `rr_*` target; no
+  link-line change.
+- **No `BUILD_PLAN.md` historical-record rewrite.**
+  The MANI-I.* / SCHW.* / PENROSE.1–PENROSE.6
+  entries above stay as-is; this PENROSE.7 entry
+  is additive.
+- **No `MODULE_MAP.md` update.** The per-slice
+  audit is doc-only.
+- **No update to the prior audit docs.** The
+  MANI-I.* / SCHW.* / PENROSE.3 / PENROSE.5 audit
+  docs are preserved as point-in-time historical
+  snapshots.
+- **No integration plan §3 chain-diagram update.**
+- **No Kerr / Kruskal work.**
+- **No C4D / server / UI / node-editor touch.**
+
+### Acceptance
+
+- **Compiles.** Documentation-only slice; no build
+  configuration touched. The audit-host build
+  remains at the post-PENROSE.6 baseline (`100%
+  tests passed, 0 tests failed out of 12`;
+  `manifold_identity_tests: 312/312`;
+  `cli_tests: 123/123`; `renderer_tests: 19/19`).
+- **Internally consistent.** The ten-row evidence
+  table cites concrete file/line positions in
+  `CudaTestKernel.cu` (lines 16, 614, 639-648,
+  649-660, 661-679, 691-693),
+  `PenroseLikeCompactification.h` (lines 160,
+  214, 222-223, 269), `ManifoldMode.h:143-145`,
+  and `main.cpp::run_render_aovs` that re-verify
+  on the audit host; the renumbering in
+  `PENROSE_LIKE_COMPACTIFICATION_PLAN.md` §10 is
+  verified by reading the renumbered section
+  headings.
+- **Verdict honesty.** The verdict is `PASS`
+  because the structural CUDA-side checks pass —
+  not because of an arbitrary judgement call.
+  Check #9 (runtime CUDA-host status) is DEFERRED
+  on documented audit-host limitations (no CUDA
+  SDK; CUDA TUs compile but cannot link / launch).
+  The §3 "WHAT THIS AUDIT DOES NOT VERIFY" section
+  explicitly enumerates the five items the audit
+  cannot check. The Schwarzschild-unchanged
+  invariant (check #6) is **diff-verified** by
+  the byte-identity of the SCHW.5 region of the
+  CUDA arm pre- and post-PENROSE.6.
+
+### Module status changes
+
+`docs/MODULE_MAP.md` is *not* updated by this slice.
+The PENROSE.7 audit verdict (`PASS`) authorises the
+operator to proceed to PENROSE.8 (OptiX integration;
+renumbered from the original PENROSE.7 in
+`PENROSE_LIKE_COMPACTIFICATION_PLAN.md` §10); no
+module-map row changes state until MANI-I.12 (final
+cross-host audit) lands.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
