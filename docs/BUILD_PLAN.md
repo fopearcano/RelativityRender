@@ -75042,6 +75042,205 @@ dispatcher-merge logic); no module-map row changes
 state until MANI-I.12 (final cross-host audit)
 lands.
 
+## SCHW.11 — Schwarzschild-Like Arc Capstone Audit (docs only)
+
+**Scope of this slice (per the operator's *SCHW.11 —
+Schwarzschild-Like Arc Capstone Audit* task brief):
+write `docs/SCHWARZSCHILD_LIKE_ARC_AUDIT.md`, the
+per-arc capstone verdict closing the SCHW.1 → SCHW.10
+ladder and the MANI-I.10 integration slot.
+Synthesises the eight prior per-slice audit verdicts
+(SCHW.2 / SCHW.4 / SCHW.6 / SCHW.8 / SCHW.10 +
+MANIFOLD_CORE_FOUNDATION_AUDIT.md) into a single
+arc-level verdict, surveys remaining risks, and
+recommends the next safe stage. Ten audit items per
+the operator's brief; verdict
+**PASS_WITH_RUNTIME_DEFERRED**. Documentation only;
+no source code, no test, no CMake, no behavioural
+change. Updates the plan §8 SCHW.11 entry to LANDED.**
+
+### What ships
+
+- **`docs/SCHWARZSCHILD_LIKE_ARC_AUDIT.md`
+  (new).** The arc capstone verdict document:
+    - **§1 VERDICT** — `PASS_WITH_RUNTIME_DEFERRED`.
+      All landed slices' per-slice audits returned
+      PASS; SCHW.5 (CUDA-side kernel wiring) is an
+      acknowledged deferred gap, not a regression;
+      runtime fixture-render suite DEFERRED to a
+      CUDA + OptiX-SDK host. No REPAIR, no BLOCKED.
+    - **§2 ARC TIMELINE** — ten-commit summary
+      table mapping each SCHW.x slot to its commit
+      hash + kind + per-slice verdict; cumulative-
+      diff inventory (header / source additions,
+      manifold_identity_tests grew from 112 to
+      198 RR_CHECKs, fixture / docs added,
+      ctest count unchanged at 12).
+    - **§3 PER-CHECK RESULTS** — ten-row evidence
+      table. Each row cites the prior per-slice
+      audit + concrete file/line references:
+      architecture scope stayed bounded (no
+      Christoffel symbols, no geodesic ODE);
+      CPU seam supports SchwarzschildLike via
+      SCHW.3 (verified at SCHW.4 with 58 new
+      RR_CHECKs); CUDA bridge PARTIAL (math leaf
+      RR_HD inline + signature plumbed at
+      MANI-I.5 + MANI-I.8 AOV slot, but kernel
+      arm itself unlanded — SCHW.5 gap); OptiX
+      bridge fully wired at SCHW.7 (verified at
+      SCHW.8); fixture isolated at SCHW.9
+      (verified at SCHW.10); default Euclidean /
+      disabled output bit-identical across six
+      defensive layers; bounded / no-NaN via four
+      math-leaf guards inherited from SCHW.1 /
+      SCHW.2; runtime DEFERRED with per-slice
+      summary; five remaining risks catalogued;
+      next safe stage recommendation (SCHW.5
+      CUDA-side wiring).
+    - **§4 ARCHITECTURAL SCOPE** — explicit "what
+      the arc IS" / "what the arc IS NOT" lists
+      consistent with architecture-doc §3 ontology
+      and §8 non-goals.
+    - **§5 CROSS-CUTTING INVARIANT CHECK** —
+      bit-identity, master rule #3 (no fake stubs),
+      and §8 non-goals verified across the arc.
+    - **§6 BUILD + TEST STATUS** — audit-host
+      build clean; ctest 12/12;
+      manifold_identity_tests 198/198; cli_tests
+      123/123; renderer_tests 19/19;
+      relativity_tests unchanged; OptiX OFF stub
+      signatures preserved.
+    - **§7 WHAT THIS AUDIT DOES NOT VERIFY** —
+      explicit scope boundary (no end-to-end
+      runtime render, no cross-backend byte-
+      identity comparison, no golden-PPM pinning,
+      no path-tracer integration, no Cinema 4D
+      work, no Penrose/Kerr/Kruskal work).
+    - **§8 RECOMMENDATION TO OPERATOR** — three
+      tractable options on the audit host with
+      recommended priority order (SCHW.5
+      highest, CLI consumption-gap closure
+      medium, primary-ray direction warp lower);
+      explicit deferral of Penrose/Kerr/Kruskal
+      per the operator's brief.
+    - **§9 REFERENCES** — fifteen-entry reference
+      list spanning the master instructions, the
+      architecture doc, the integration plan, the
+      remap plan, the five per-slice audit docs,
+      the foundation audit, the fixture doc, the
+      seven source files the arc touched, and
+      the test file.
+- **`docs/SCHWARZSCHILD_LIKE_REMAP_PLAN.md` §8 SCHW.11
+  entry rewrite.** The stale "write
+  SCHWARZSCHILD_LIKE_REMAP_AUDIT.md" entry with the
+  obsolete eight-item checklist is replaced with
+  the actually-landed scope (ten audit items, the
+  PASS_WITH_RUNTIME_DEFERRED verdict, the
+  references to the eight prior per-slice audits,
+  and the LANDED marker). The plan's other
+  sections (§1–§7, §9–§10) are unchanged.
+
+### What does NOT ship
+
+- **No source code.** Nothing in any `src/` subtree
+  is touched (`git diff` outside `docs/` ⇒ 0 bytes).
+- **No new test binary.** ctest set unchanged at 12.
+- **No CMake change.** No new `rr_*` target; no
+  link-line change.
+- **No `BUILD_PLAN.md` historical-record rewrite.**
+  The MANI-I.* / SCHW.1–SCHW.10 entries above stay
+  as-is; this SCHW.11 entry is additive.
+- **No `MODULE_MAP.md` update.** The per-slice
+  audit / capstone is doc-only; module-map
+  promotion still waits for MANI-I.12 (final
+  cross-host audit) per the integration plan §11.
+- **No update to the prior audit docs.** The
+  MANI-I.2 / MANI-I.4 / MANI-I.6 / MANI-I.9 /
+  SCHW.2 / SCHW.4 / SCHW.6 / SCHW.8 / SCHW.10
+  audit docs are preserved as point-in-time
+  historical snapshots; the arc capstone
+  references them as inputs without rewriting
+  their verdicts.
+- **No integration plan §3 chain-diagram update.**
+  The arc capstone closes the MANI-I.10 slot's
+  internal SCHW.* ladder; the integration plan's
+  chain diagram still references MANI-I.10 as a
+  single slot (which now contains a completed
+  SCHW.* sub-arc).
+- **No Penrose / Kerr / Kruskal work.** Operator
+  brief explicitly forbids; the `*LikePlaceholder`
+  charts remain reserved-but-inert per MANIFOLD.1.
+- **No Cinema 4D / server / UI / node-editor
+  touch.** Operator brief explicitly forbids;
+  architecture-doc §8 non-goals stand.
+- **No SCHW.5 (CUDA kernel) implementation.** The
+  capstone identifies SCHW.5 as the highest-
+  priority tractable next stage but does NOT
+  implement it (the capstone is doc-only per the
+  operator's brief).
+
+### Acceptance
+
+- **Compiles.** Documentation-only slice; no build
+  configuration touched. The audit-host build
+  remains at the post-SCHW.10 baseline (`100%
+  tests passed, 0 tests failed out of 12`;
+  `manifold_identity_tests: 198 / 198 checks
+  passed`; `cli_tests: 123/123 passed`;
+  `renderer_tests: 19 / 19 passed`).
+- **Internally consistent.** The ten-row evidence
+  table cites concrete commit hashes (`2da5780`,
+  `c799621`, `b48c480`, `b78fe98`, `6660bb4`,
+  `fc71aed`, `fd7084f`, `f102dd3`, `3a390be`) and
+  file/line positions in
+  `SchwarzschildLikeWarp.h`, `ManifoldTransform.h`,
+  `CudaPathTracer.cu`, `CudaTestKernel.cu`,
+  `OptixPrograms.cu`, `OptixLaunchParams.h`,
+  `OptixRenderer.cpp`, `Scene.h`,
+  `SceneLoader.cpp`, and `main.cpp` that
+  re-verify on the audit host. Per-slice audit
+  references match the actual prior audit
+  documents in `docs/`.
+- **Verdict honesty.** The verdict is
+  `PASS_WITH_RUNTIME_DEFERRED` because the
+  structural arc-level checks pass — not because
+  of an arbitrary judgement call. Check #3 is
+  marked **PARTIAL** (CUDA bridge unlanded —
+  honest acknowledgement, not a regression);
+  check #8 is **DEFERRED** on documented
+  audit-host limitations; checks #9 / #10
+  catalogue remaining risks + recommendations
+  rather than rendering pass/fail (the
+  operator's brief explicitly asked for these
+  as audit items). The §7 "WHAT THIS AUDIT DOES
+  NOT VERIFY" section explicitly enumerates the
+  six items the audit cannot check.
+
+### Module status changes
+
+`docs/MODULE_MAP.md` is *not* updated by this slice.
+The SCHW.11 capstone verdict (`PASS_WITH_RUNTIME_DEFERRED`)
+closes the MANI-I.10 slot for the audit-host
+portion; module-map promotion still waits for
+MANI-I.12 (final cross-host audit) per the
+integration plan §11.
+
+The capstone authorises the operator to proceed to
+one of:
+- **SCHW.5** (recommended) — close the CUDA-side
+  kernel-wiring gap;
+- **CLI consumption-gap closure** — single-line
+  extension to `--render-optix-aovs` accepting a
+  `<scene-path>` argument;
+- **Manifold-orthogonal work** — Field
+  Interpretation Layer (Phase 1), other
+  path-tracer features.
+
+Explicitly NOT authorised by this capstone:
+**Penrose / Kerr / Kruskal work** (operator brief
+forbids; `*LikePlaceholder` charts remain
+reserved-but-inert).
+
 ## Next stage
 
 When prompted, the natural follow-ups are:

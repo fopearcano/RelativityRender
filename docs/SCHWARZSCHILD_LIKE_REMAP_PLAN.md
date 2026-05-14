@@ -863,33 +863,63 @@ slice ships only after its predecessor is green.
   from the post-SCHW.8 plan (the final audit slot
   moves SCHW.10 → SCHW.11).
 
-### SCHW.11 — Audit (docs only)
+### SCHW.11 — Arc capstone audit (docs only) — LANDED
 
-- **Scope:** write
-  `docs/SCHWARZSCHILD_LIKE_REMAP_AUDIT.md`,
-  the per-slice verdict that closes the SCHW.*
-  ladder and the MANI-I.10 slot. Audit
-  checklist mirrors the MANI-I.6 / MANI-I.9
-  posture:
-  1. Schwarzschild-like math helper exists +
-     unit-test green (SCHW.1).
-  2. CPU integration via `ManifoldTransform`
-     extension (SCHW.3).
-  3. CUDA kernel arm wired + AOV signature
-     visible at runtime (SCHW.5).
-  4. OptiX kernel arm wired + AOV signature
-     matches CUDA path (SCHW.7).
-  5. Debug AOV encoding chosen + reference
-     PPM pinned (SCHW.9).
-  6. Beauty-pass byte-identity preserved on
-     Euclidean default + `warp_strength = 0`.
-  7. Safety invariants verified (no NaN, no
-     Inf, bounded displacement).
-  8. PASS / REPAIR / BLOCKED verdict.
-- **Acceptance:** audit-host build green;
-  ctest 12/12; the verdict authorises
-  proceeding to MANI-I.11 (Penrose-like) per
-  the renumbered integration plan §9.
+- **Scope:** writes
+  `docs/SCHWARZSCHILD_LIKE_ARC_AUDIT.md`, the
+  per-arc capstone verdict that closes the SCHW.1
+  → SCHW.10 ladder and the MANI-I.10 slot.
+  Synthesises the eight prior per-slice audit
+  verdicts (SCHW.2 / SCHW.4 / SCHW.6 / SCHW.8 /
+  SCHW.10 + MANIFOLD_CORE_FOUNDATION_AUDIT.md)
+  into a single arc-level verdict, catalogues the
+  remaining risks, and recommends the next safe
+  stage. Ten audit items per the operator's
+  capstone brief:
+  1. Architecture scope stayed artistic / bounded,
+     not full GR.
+  2. CPU manifold transform supports
+     SchwarzschildLike safely (SCHW.3 / SCHW.4).
+  3. CUDA warp bridge exists and is default-no-op
+     (SCHW.5 PARTIAL — kernel wiring still
+     deferred; infrastructure verified by
+     SCHW.6 forward-looking audit).
+  4. OptiX warp bridge mirrors CUDA behavior
+     structurally (SCHW.7 / SCHW.8; today AHEAD
+     of CUDA because SCHW.5 unlanded).
+  5. Fixture scene exists and is isolated
+     (SCHW.9 / SCHW.10).
+  6. Default Euclidean / disabled output remains
+     byte-identical (six-layer safety analysis).
+  7. Bounded / no-NaN safety status (four
+     math-leaf guards inherited from SCHW.1 /
+     SCHW.2).
+  8. Runtime CUDA / OptiX validation status:
+     DEFERRED on documented audit-host
+     limitations.
+  9. Remaining risks: five gaps catalogued
+     (SCHW.5 unlanded; consumption-gap CLI
+     extension; no primary-ray warp; no
+     chart-parameter scene authoring; no
+     runtime PPM regression suite).
+  10. Recommended next safe stage: SCHW.5
+      (CUDA-side kernel wiring) as the
+      highest-priority tractable continuation.
+- **Verdict:** **PASS_WITH_RUNTIME_DEFERRED**.
+  All landed slices' per-slice audits returned
+  PASS; the SCHW.5 PARTIAL is an acknowledged
+  deferred gap, not a regression; the runtime
+  fixture-render suite is DEFERRED to a CUDA +
+  OptiX-SDK host. No REPAIR required; no BLOCKED
+  item outstanding.
+- **Acceptance:** audit-host build green; ctest
+  12/12; `manifold_identity_tests: 198 / 198
+  checks passed`. The verdict closes the
+  MANI-I.10 slot for the audit-host portion;
+  deferred items become PASS-able when SCHW.5
+  lands + a CUDA + OptiX-SDK host runs the
+  plan §7 fixture renders + the consumption-gap
+  CLI extension lands.
 
 ---
 
