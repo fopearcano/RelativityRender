@@ -76523,6 +76523,169 @@ closes the MANI-I.11 slot. Module-map promotion
 still waits for MANI-I.12 (final cross-host audit)
 per the integration plan §11.
 
+## PENROSE.5 — Penrose-Like CPU Integration Audit (docs only)
+
+**Scope of this slice (per the operator's *PENROSE.5 —
+Penrose-Like CPU Integration Audit* task brief): write
+`docs/PENROSE_LIKE_CPU_INTEGRATION_AUDIT.md`, the
+per-slice verdict document for PENROSE.4 (`bd2046e`).
+Verifies the nine structural items the task brief
+enumerates — ManifoldTransform supports PenroseLike
+chart; disabled/default identity; Euclidean identity;
+strength 0 identity; PenroseLike transform is bounded;
+large coordinates avoid NaN/Inf; no CUDA/OptiX behavior
+changed; build/test status; verdict — and produces a
+PASS / REPAIR / BLOCKED verdict that gates progression
+to the CUDA integration slice (renumbered PENROSE.6).
+Documentation only; no source code, no test, no CMake,
+no behavioural change. Inserts PENROSE.5 as a per-slice
+audit slot AND renames the original
+PENROSE.5-CUDA-integration → PENROSE.6 (with cascade
+shifts PENROSE.6→PENROSE.7, PENROSE.7→PENROSE.8,
+PENROSE.8→PENROSE.9) in the
+`PENROSE_LIKE_COMPACTIFICATION_PLAN.md` §10 sub-slice
+ladder.**
+
+### What ships
+
+- **`docs/PENROSE_LIKE_CPU_INTEGRATION_AUDIT.md`
+  (new).** Per-slice verdict document mirroring the
+  prior audit doc shape (SCHW.4 / PENROSE.3 / etc.):
+    - **§1 VERDICT** — `PASS`. All eight structural
+      checks return PASS; no REPAIR or BLOCKED item.
+    - **§2 PER-CHECK RESULTS** — nine-row evidence
+      table. Each row cites concrete file/line
+      observations:
+      `penrose_like_params_from` builder at
+      `ManifoldTransform.h:222`; Vec3/Vec4
+      world_to_chart/chart_to_world PenroseLike
+      arms at `:261-266` / `:286-291` / `:359-368` /
+      `:397-406`; enum rename
+      `PenroseLikePlaceholder` → `PenroseLike` with
+      6 call-site updates; structural enum-tag gate
+      preserving the Euclidean and SchwarzschildLike
+      defaults; the PENROSE.2 math leaf's bounded-
+      by-construction property inherited via direct
+      delegation; `tanh` saturation guaranteeing no
+      NaN/Inf for large coordinates; `git diff
+      1bf3f2a..bd2046e --name-only` restricted to
+      nine files (no CUDA/OptiX/pathtracer hits);
+      ctest 12/12 + `manifold_identity_tests:
+      312 / 312 checks passed`.
+    - **§3 REASONING SUMMARY** — recap of the
+      PENROSE.4 commit's six host-side surface
+      changes (header include, builder helper,
+      four chart-aware arms, enum rename);
+      structural-guarantee analysis for the
+      bit-identity invariants (enum-tag gate +
+      verbatim Euclidean-arm preservation);
+      inheritance of the bounded-transform and
+      no-NaN/Inf invariants from the PENROSE.2
+      math leaf (already audited at PENROSE.3);
+      empirical verification via `test_penrose_4_*`
+      test functions.
+    - **§4 NEXT** — names the PENROSE.* sub-slice
+      renumbering (PENROSE.5 audit inserted;
+      PENROSE.5 → PENROSE.6 / PENROSE.6 →
+      PENROSE.7 / PENROSE.7 → PENROSE.8 /
+      PENROSE.8 → PENROSE.9) and points at
+      PENROSE.6 (CUDA integration) as the next
+      concrete slice.
+- **`docs/PENROSE_LIKE_COMPACTIFICATION_PLAN.md`
+  §10 (renumbered).** Four replace-all
+  substitutions shift every PENROSE.x reference
+  from §10 PENROSE.5 onward (highest-to-lowest to
+  avoid double-shifting): PENROSE.8 → PENROSE.9,
+  PENROSE.7 → PENROSE.8, PENROSE.6 → PENROSE.7,
+  PENROSE.5 → PENROSE.6. A new "PENROSE.5 —
+  Audit (docs only)" subsection is inserted between
+  PENROSE.4 (LANDED) and the renumbered PENROSE.6
+  (CUDA integration). The plan's other sections
+  (§1–§9, §11–§12) are unchanged.
+
+### What does NOT ship
+
+- **No source code.** Nothing in any `src/` subtree
+  is touched (`git diff` outside `docs/` ⇒ 0 bytes).
+- **No new test binary.** ctest set unchanged at 12.
+- **No CMake change.** No new `rr_*` target; no
+  link-line change.
+- **No `BUILD_PLAN.md` historical-record rewrite.**
+  The MANI-I.* / SCHW.* / PENROSE.1–PENROSE.4
+  entries above stay as-is; this PENROSE.5 entry is
+  additive.
+- **No `MODULE_MAP.md` update.** The per-slice
+  audit is doc-only; module-map promotion still
+  waits for MANI-I.12 (final cross-host audit)
+  per the integration plan §11.
+- **No update to the prior audit docs.** The
+  MANI-I.2 / MANI-I.4 / MANI-I.6 / MANI-I.9 /
+  SCHW.2 / SCHW.4 / SCHW.6 / SCHW.8 / SCHW.10 /
+  SCHW.11 / SCHW.5-completion / PENROSE.3 audit
+  docs are preserved as point-in-time historical
+  snapshots.
+- **No integration plan §3 chain-diagram update.**
+  The PENROSE.* renumbering is local to the
+  `PENROSE_LIKE_COMPACTIFICATION_PLAN.md` §10
+  sub-slice ladder; the integration plan still
+  references MANI-I.11 as the Penrose-like slice
+  (which contains the PENROSE.* sub-slices).
+- **No Kerr / Kruskal work.** Architecture-doc §8
+  non-goals stand.
+- **No C4D / server / UI / node-editor touch.**
+
+### Acceptance
+
+- **Compiles.** Documentation-only slice; no build
+  configuration touched. The audit-host build
+  remains at the post-PENROSE.4 baseline (`100%
+  tests passed, 0 tests failed out of 12`;
+  `manifold_identity_tests: 312 / 312 checks
+  passed`; `cli_tests: 123/123 passed`;
+  `renderer_tests: 19 / 19 passed`).
+- **Internally consistent.** The nine-row evidence
+  table cites concrete file/line positions in
+  `ManifoldTransform.h`, `CoordinateChart.h`,
+  `PenroseLikeCompactification.h`, and named test
+  functions in `manifold_identity_tests.cpp`
+  (test_penrose_4_* at lines 1228 / 1248 / 1275 /
+  1303 / 1340 / 1379 / 1418 / 1448) that re-verify
+  on the audit host; the renumbering in
+  `PENROSE_LIKE_COMPACTIFICATION_PLAN.md` §10 is
+  verified by reading the renumbered section
+  headings.
+- **Verdict honesty.** The verdict is `PASS`
+  because the structural checks pass — not
+  because of an arbitrary judgement call. Every
+  claim in the evidence table is backed by a
+  file + line citation or by a named test
+  function. The disabled-mode-identity invariant
+  (check #2) is **structurally guaranteed** by the
+  enum-tag gate; the Euclidean-identity invariant
+  (check #3) is **bit-preserving** because the
+  Euclidean arm's expression is unchanged from
+  MANIFOLD.5; the strength-0-identity (check #4)
+  is inherited from the math leaf's `r_max = 0`
+  short-circuit; the bounded-transform invariant
+  (check #5) is **mathematically guaranteed by
+  `tanh` saturation**; the no-NaN/Inf invariant
+  (check #6) is inherited from PENROSE.2; the
+  no-renderer-behavior-change invariant (check
+  #7) is **structurally guaranteed** because no
+  kernel call site invokes the new arm (verified
+  by `git diff --name-only` filtered against the
+  GPU subtree).
+
+### Module status changes
+
+`docs/MODULE_MAP.md` is *not* updated by this slice.
+The PENROSE.5 audit verdict (`PASS`) authorises the
+operator to proceed to PENROSE.6 (CUDA integration;
+renumbered from the original PENROSE.5 in
+`PENROSE_LIKE_COMPACTIFICATION_PLAN.md` §10); no
+module-map row changes state until MANI-I.12 (final
+cross-host audit) lands.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
