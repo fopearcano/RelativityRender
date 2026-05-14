@@ -73898,6 +73898,148 @@ AOV encoding, SCHW.7 (audit) closes the MANI-I.10
 slot. Module-map promotion still waits for MANI-I.12
 (final cross-host audit) per the integration plan §11.
 
+## SCHW.4 — Schwarzschild-Like CPU Integration Audit (docs only)
+
+**Scope of this slice (per the operator's *SCHW.4 —
+Schwarzschild-Like CPU Integration Audit* task brief):
+write `docs/SCHWARZSCHILD_LIKE_CPU_INTEGRATION_AUDIT.md`,
+the per-slice verdict document for SCHW.3 (`b48c480`).
+Verifies the eight structural items the task brief
+enumerates — ManifoldTransform supports SchwarzschildLike
+chart; disabled/default mode remains identity; Euclidean
+chart remains identity; Schwarzschild-like transform is
+bounded; near-clamp behavior avoids NaN/Inf; no
+CUDA/OptiX behavior changed; build/test status; verdict
+— and produces a PASS / REPAIR / BLOCKED verdict that
+gates progression to the CUDA integration slice
+(renumbered SCHW.5). Documentation only; no source
+code, no test, no CMake, no behavioural change. Inserts
+SCHW.4 as a per-slice audit slot AND renames the original
+SCHW.4-CUDA-integration → SCHW.5 (with cascade shifts
+SCHW.5→SCHW.6, SCHW.6→SCHW.7, SCHW.7→SCHW.8) in the
+`SCHWARZSCHILD_LIKE_REMAP_PLAN.md` §8 sub-slice ladder.**
+
+### What ships
+
+- **`docs/SCHWARZSCHILD_LIKE_CPU_INTEGRATION_AUDIT.md`
+  (new).** Per-slice verdict document mirroring the
+  prior audit doc shape:
+    - **§1 VERDICT** — `PASS`. All seven structural
+      checks return PASS; no REPAIR or BLOCKED item.
+    - **§2 PER-CHECK RESULTS** — eight-row evidence
+      table. Each row cites concrete file/line
+      observations:
+      `schwarzschild_like_params_from` builder at
+      `ManifoldTransform.h:158-167`; Vec3/Vec4
+      world_to_chart/chart_to_world SchwarzschildLike
+      arms at `:191-196` / `:210-215` / `:272-281` /
+      `:299-308`; structural enum-tag gate on
+      `CoordinateChartType::SchwarzschildLike`
+      preserving the Euclidean default; the SCHW.1
+      math leaf's bounded-by-construction property
+      inherited via direct delegation; clamp-radius
+      safety verified at the Vec4 singular case;
+      `git diff c799621..b48c480 --name-only`
+      restricted to three files (no renderer-side
+      hits); ctest 12/12 + `manifold_identity_tests:
+      198 / 198 checks passed`.
+    - **§3 REASONING SUMMARY** — recap of the SCHW.3
+      commit's five host-side surface changes (header
+      include, builder helper, four chart-aware arms);
+      structural-guarantee analysis for the
+      bit-identity invariants (enum-tag gate +
+      verbatim Euclidean-arm preservation); inheritance
+      of the bounded-transform and no-NaN/Inf
+      invariants from the SCHW.1 math leaf (already
+      audited at SCHW.2); empirical verification via
+      `test_schw_3_*` test functions.
+    - **§4 NEXT** — names the SCHW.* sub-slice
+      renumbering (SCHW.4 audit inserted; SCHW.4 →
+      SCHW.5 / SCHW.5 → SCHW.6 / SCHW.6 → SCHW.7 /
+      SCHW.7 → SCHW.8) and points at SCHW.5 (CUDA
+      integration) as the next concrete slice.
+- **`docs/SCHWARZSCHILD_LIKE_REMAP_PLAN.md` §8
+  (renumbered).** Four replace-all substitutions
+  shift every SCHW.x reference from §8 SCHW.4
+  onward (highest-to-lowest to avoid double-shifting):
+  SCHW.7 → SCHW.8, SCHW.6 → SCHW.7, SCHW.5 → SCHW.6,
+  SCHW.4 → SCHW.5. A new "SCHW.4 — Audit (docs only)"
+  subsection is inserted between SCHW.3 (CPU
+  integration; LANDED) and the renumbered SCHW.5
+  (CUDA integration). The plan's other sections
+  (§1–§7, §9–§10) are unchanged.
+
+### What does NOT ship
+
+- **No source code.** Nothing in any `src/` subtree
+  is touched (`git diff` outside `docs/` ⇒ 0 bytes).
+- **No new test binary.** ctest set unchanged at 12.
+- **No CMake change.** No new `rr_*` target; no
+  link-line change.
+- **No `BUILD_PLAN.md` historical-record rewrite.**
+  The MANI-I.* / SCHW.1 / SCHW.2 / SCHW.3 entries
+  above stay as-is; this SCHW.4 entry is additive.
+- **No `MODULE_MAP.md` update.** The per-slice audit
+  is doc-only; module-map promotion still waits for
+  MANI-I.12 (final cross-host audit) per the
+  integration plan §11.
+- **No update to the prior audit docs.** The
+  MANI-I.2 / MANI-I.4 / MANI-I.6 / MANI-I.9 /
+  SCHW.2 audit docs are preserved as point-in-time
+  historical snapshots of the renumbering state at
+  their time of writing.
+- **No integration plan §3 chain-diagram update.**
+  The SCHW.* renumbering is local to the
+  `SCHWARZSCHILD_LIKE_REMAP_PLAN.md` §8 sub-slice
+  ladder; the integration plan still references
+  MANI-I.10 as the Schwarzschild-like slice (which
+  contains the SCHW.* sub-slices). The MANI-I.10
+  slot's content is unchanged.
+
+### Acceptance
+
+- **Compiles.** Documentation-only slice; no build
+  configuration touched. The audit-host build remains
+  at the post-SCHW.3 baseline (`100% tests passed, 0
+  tests failed out of 12`; `manifold_identity_tests:
+  198 / 198 checks passed`; `cli_tests: 123/123
+  passed`; `renderer_tests: 19 / 19 passed`).
+- **Internally consistent.** The eight-row evidence
+  table cites concrete file/line positions in
+  `ManifoldTransform.h` and named test functions in
+  `manifold_identity_tests.cpp` that re-verify on the
+  audit host; the renumbering in
+  `SCHWARZSCHILD_LIKE_REMAP_PLAN.md` §8 is verified
+  by reading the renumbered section headings.
+- **Verdict honesty.** The verdict is `PASS` because
+  the structural checks pass — not because of an
+  arbitrary judgement call. Every claim in the
+  evidence table is backed by a file + line citation
+  or by a named test function. The
+  disabled-mode-identity invariant (check #2) is
+  **structurally guaranteed** by the enum-tag gate
+  (default `CoordinateChart{}.type = Euclidean`); the
+  Euclidean-identity invariant (check #3) is **bit-
+  preserving** because the Euclidean arm's expression
+  is unchanged from MANIFOLD.5; the bounded-transform
+  and no-NaN/Inf invariants (checks #4 / #5) are
+  **inherited from SCHW.1** via direct math-leaf
+  delegation; the no-renderer-behavior-change
+  invariant (check #6) is **structurally guaranteed**
+  because no kernel call site invokes the new arms
+  (verified by `git diff --name-only` filtered
+  against 18 renderer subdirectories).
+
+### Module status changes
+
+`docs/MODULE_MAP.md` is *not* updated by this slice.
+The SCHW.4 audit verdict (`PASS`) authorises the
+operator to proceed to SCHW.5 (CUDA integration;
+renumbered from the original SCHW.4 in
+`SCHWARZSCHILD_LIKE_REMAP_PLAN.md` §8); no module-map
+row changes state until MANI-I.12 (final cross-host
+audit) lands.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
