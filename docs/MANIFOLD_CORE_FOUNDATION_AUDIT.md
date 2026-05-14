@@ -92,13 +92,15 @@ architecture doc: it names the MANI-I.* slices that will
 move the renderer from "manifold POD exists but no
 consumer" (today) to "Schwarzschild-like + Penrose-like
 artistic charts available with bit-identical Euclidean
-fallback" (post-MANI-I.7 in the original seven-slice plan,
-which the MANI-I.2 audit renumbered to post-MANI-I.7
-under the current eight-slice plan; see
-`docs/MANIFOLD_CLI_CONFIG_AUDIT.md` §4 and the integration
-plan §3 chain diagram). Each slice carries its own
-acceptance gate that includes a pixel-bit-identity check
-on at least seven enumerated CLI actions.
+fallback" (post-MANI-I.8 under the current nine-slice
+plan, after the MANI-I.2 / MANI-I.4 per-slice audits and
+the MANI-I.5 / MANI-I.6 GPU-side slices land; see
+`docs/MANIFOLD_CLI_CONFIG_AUDIT.md` §4,
+`docs/MANIFOLD_RENDER_CONFIG_BRIDGE_AUDIT.md` §4, and
+the integration plan §3 chain diagram). Each slice
+carries its own acceptance gate that includes a
+pixel-bit-identity check on at least seven enumerated
+CLI actions.
 
 ---
 

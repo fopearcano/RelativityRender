@@ -72034,6 +72034,153 @@ consumers; module-map promotion still waits for
 MANI-I.8 (final cross-host audit) per the
 integration plan §11.
 
+## MANI-I.4 — Manifold Render Config Bridge Audit (docs only)
+
+**Scope of this slice (per the operator's *MANI-I.4 —
+Manifold Render Config Bridge Audit* task brief):
+write `docs/MANIFOLD_RENDER_CONFIG_BRIDGE_AUDIT.md`,
+the per-slice verdict document for MANI-I.3 (`d677b2c`).
+Verifies the seven items the task brief enumerates —
+ManifoldMode reaches a renderer-facing config, defaults
+remain disabled / Euclidean, the render-start log line
+is wired correctly, no CUDA / OptiX behaviour changed,
+no output changes by default, build / test green — and
+produces a PASS / REPAIR / BLOCKED verdict that gates
+progression to the Euclidean-identity GPU path
+(renumbered MANI-I.5). Documentation only; no source
+code, no test, no CMake, no behavioural change. Inserts
+MANI-I.4 as a per-slice audit slot into the integration
+plan §3 chain diagram and renumbers MANI-I.4 → MANI-I.5,
+MANI-I.5 → MANI-I.6, ... MANI-I.8 → MANI-I.9
+accordingly across the integration plan.**
+
+### What ships
+
+- **`docs/MANIFOLD_RENDER_CONFIG_BRIDGE_AUDIT.md`
+  (new).** Per-slice verdict document mirroring the
+  `MANIFOLD_CORE_FOUNDATION_AUDIT.md` /
+  `MANIFOLD_CLI_CONFIG_AUDIT.md` shape:
+    - **§1 VERDICT** — `PASS`. All seven checks return
+      PASS; no REPAIR or BLOCKED item is found.
+    - **§2 PER-CHECK RESULTS** — seven-row evidence
+      table. Each row cites a concrete observation
+      with file / line references:
+      `PathTraceConfig::manifold` declared at
+      `src/pathtracer/PathTracer.h:189`;
+      `pcfg.manifold = cfg.manifold;` at
+      `src/main.cpp:2492`;
+      `format_manifold_mode` helper at
+      `src/main.cpp:152` with exhaustive enum switch;
+      both log-line sites at
+      `src/main.cpp:1641` (OptiX) and
+      `src/main.cpp:2559` (CUDA); zero files in
+      `src/cuda/` or `src/optix/` per the MANI-I.3
+      commit diff; ctest 12/12 + cli_tests 123/123;
+      structurally guaranteed bit-identity (no kernel
+      reads `pcfg.manifold`).
+    - **§3 REASONING SUMMARY** — recap of the
+      MANI-I.3 commit's five-file scope, the
+      five-TU rebuild fan-out from the rr_pathtracer
+      → rr_manifold INTERFACE link, and the
+      audit-host runtime-deferral rationale
+      (both pathtrace dispatchers short-circuit
+      before the log site on no-CUDA / no-OptiX-SDK
+      fallback, matching the existing firefly_clamp
+      / enable_nee log lines' visibility).
+    - **§4 NEXT** — names the integration-plan
+      renumbering (MANI-I.4 audit inserted; MANI-I.4
+      → MANI-I.5 GPU identity → MANI-I.5 → MANI-I.6
+      debug-warp AOV → ... → MANI-I.8 → MANI-I.9
+      final audit) and points at MANI-I.5 as the
+      next concrete slice the operator may prompt
+      for.
+- **`docs/MANIFOLD_INTEGRATION_PLAN.md` (renumbered).**
+  Five replace-all substitutions shift every
+  MANI-I.x reference at the kernel-side and audit
+  end of the chain (highest-to-lowest to avoid
+  double-shifting): MANI-I.8 → MANI-I.9, MANI-I.7
+  → MANI-I.8, MANI-I.6 → MANI-I.7, MANI-I.5 →
+  MANI-I.6, MANI-I.4 → MANI-I.5. The §3 chain
+  diagram is rewritten by hand to insert a new
+  MANI-I.4 box (Render Config Bridge Audit,
+  doc-only, points at the new audit doc) and to
+  update the "Why this ordering?" prose with a
+  per-slice-audit rationale citing both the
+  MANI-I.2 and MANI-I.4 audit slots. The section
+  heading numbers (§4 MANI-I.1 → §5 MANI-I.3 → §6
+  MANI-I.5 → ... → §10 MANI-I.9 → §11 Non-goals →
+  §12 References) are kept stable; the audit
+  slice does not get its own slice section in the
+  integration plan because the audit doc itself
+  is the authoritative artifact.
+- **`docs/MANIFOLD_RENDERING_ARCHITECTURE.md`
+  (cross-reference update).** §10 operational-view
+  pointer reads "MANI-I.1 through MANI-I.9" after
+  this slice (was "MANI-I.1 through MANI-I.8").
+- **`docs/MANIFOLD_CORE_FOUNDATION_AUDIT.md`
+  (cross-reference update).** §3 reasoning-
+  summary forward-looking statement updated to
+  point at the nine-slice plan, name both the
+  MANI-I.2 and MANI-I.4 audit slots, and cite
+  the new MANIFOLD_RENDER_CONFIG_BRIDGE_AUDIT.md
+  alongside MANIFOLD_CLI_CONFIG_AUDIT.md.
+
+### What does NOT ship
+
+- **No source code.** Nothing in any `src/`
+  subtree is touched (`git diff` outside `docs/`
+  ⇒ 0 bytes).
+- **No new test binary.** ctest set unchanged at
+  12.
+- **No CMake change.** No new `rr_*` target; no
+  link-line change.
+- **No `BUILD_PLAN.md` historical-record
+  rewrite.** The MANI-I.1 / MANI-I.2 / MANI-I.3
+  entries above stay as-is; this MANI-I.4 entry
+  is additive.
+- **No `MODULE_MAP.md` update.** The per-slice
+  audit is doc-only; module-map promotion still
+  waits for MANI-I.9 (final cross-host audit)
+  per the integration plan §11.
+- **No update to `MANIFOLD_CLI_CONFIG_AUDIT.md`.**
+  The MANI-I.2 audit doc is a historical
+  snapshot of the renumbering state at its time
+  of writing; its forward-looking references
+  (which named MANI-I.8 as the final audit) are
+  preserved as historical record.
+
+### Acceptance
+
+- **Compiles.** Documentation-only slice; no
+  build configuration touched. The audit-host
+  build remains at the post-MANI-I.3 baseline
+  (`100% tests passed, 0 tests failed out of 12`;
+  `cli_tests: 123/123 passed`).
+- **Internally consistent.** The seven-row
+  evidence table cites concrete file / line
+  positions that can be re-verified on the audit
+  host; the renumbering in the integration plan
+  is verified by a final `grep MANI-I.` pass
+  showing every reference uses the nine-slice
+  numbering with MANI-I.4 as the new audit slot.
+- **Verdict honesty.** The verdict is `PASS`
+  because the structural checks pass — not
+  because of an arbitrary judgement call. The
+  bit-identity invariant is **structurally
+  guaranteed**, not just empirically observed —
+  no kernel reads `pcfg.manifold`, so there is no
+  code path through which the new config field
+  could affect a pixel.
+
+### Module status changes
+
+`docs/MODULE_MAP.md` is *not* updated by this slice.
+The MANI-I.4 audit verdict (`PASS`) authorises the
+operator to proceed to MANI-I.5 (Euclidean identity
+GPU path under the renumbered integration plan §6);
+no module-map row changes state until MANI-I.9
+(final cross-host audit) lands.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
