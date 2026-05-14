@@ -638,18 +638,19 @@ layer's first concrete module lands.
 
 ## 9. First implementation slice (deferred)
 
-The Field Interpretation Layer **does not start
-implementation in this stage**. The architecture-doc §10
-milestone order places the layer after the Manifold Core's
-Schwarzschild chart slice (§10 step 3) — Phase 1 needs at
-least one curved chart to exercise the curvature-field /
-emission pipeline meaningfully.
+The Field Interpretation Layer's **first source-level slice
+ships the skeleton** (FIELD.1 — Field Interpretation
+Skeleton), introducing the type infrastructure under
+`src/field/` (`FieldType.h`, `ScalarField.h`,
+`FieldMapping.h`, `FieldInterpreter.h`) without any
+interpretation kernel or renderer integration. The skeleton
+is the prerequisite for every later FIELD.x milestone.
 
-The first Phase 1 implementation slice, scheduled to land
-after architecture-doc §10 step 3 (Schwarzschild chart) is
-green, will be:
+The first **non-skeleton** Phase 1 implementation slice,
+scheduled to land after architecture-doc §10 step 3
+(Schwarzschild chart) is green, will be:
 
-**FIELD.1 — Kretschmann-scalar Diagnostic AOV.**
+**FIELD.2 — Kretschmann-scalar Diagnostic AOV.**
 
 - **Field type:** curvature field (§3.4); specifically
   the Kretschmann scalar
@@ -667,17 +668,23 @@ green, will be:
   position matches the closed-form
   `48 M² / r⁶` along a radial line to within
   single-precision tolerance.
-- **Out of scope for the first slice:** beauty-pass
+- **Out of scope for this slice:** beauty-pass
   modulation, distortion, density, chromatic shift,
   artist-supplied field samplers. Subsequent slices
-  (FIELD.2+) add those channels one at a time, each
+  (FIELD.3+) add those channels one at a time, each
   with its own reference image and its own
   `BUILD_PLAN.md` entry.
 
-A later addendum will detail FIELD.2 (artist-supplied
-scalar texture → emission) and FIELD.3 (probability-
-amplitude sampler → density-and-hue). Both wait on
-FIELD.1's contract surface to land.
+Later milestones reserved by the design (each will get its
+own slice and its own addendum once FIELD.2's contract
+surface lands):
+
+- **FIELD.3** — artist-supplied scalar texture → emission;
+- **FIELD.4** — probability-amplitude sampler → density-
+  and-hue;
+- additional channels (chromatic shift, clamped
+  distortion, beauty-pass colour modulation) interleaved
+  per artist demand.
 
 ---
 

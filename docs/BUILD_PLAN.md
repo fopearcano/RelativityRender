@@ -70706,6 +70706,194 @@ milestone (FIELD.1 — Kretschmann-scalar diagnostic AOV)
 that lands after the Schwarzschild chart slice in the
 architecture-doc §10 order.
 
+## FIELD.1 — Field Interpretation Skeleton (impl, skeleton-only)
+
+**Scope of this slice (per the operator's *FIELD.1 — Field
+Interpretation Skeleton* task brief): land the source-level
+home of the Field Interpretation Layer designed in
+`docs/FIELD_INTERPRETATION_LAYER.md` as header-only POD types
+under `src/field/`. No renderer integration, no kernel
+implementation, no quantum-field simulation, no behaviour
+change. Every existing test keeps passing bit-for-bit; the
+existing executable, libraries, and ctest set are untouched.
+The design doc is renumbered so the Kretschmann-scalar
+diagnostic AOV milestone moves from FIELD.1 to FIELD.2 (this
+skeleton becomes FIELD.1, the prerequisite for every later
+FIELD.x).**
+
+### What ships
+
+- **`src/field/FieldType.h` (new).** `enum class FieldType`
+  with five entries naming the design-doc §3 slots: `Scalar`
+  (concrete this slice; the only entry with a shipping
+  sampler), `Vector`, `Tensor`, `Curvature`,
+  `ProbabilityAmplitudePlaceholder` (the latter four are
+  reserved-but-inert placeholders; each comment explicitly
+  marks itself as "no sampler this slice" per master rule
+  #3).
+- **`src/field/ScalarField.h` (new).** Constant-value
+  scalar-field POD with a single `float value = 0.0f`
+  member, plus a `RR_HD inline float sample(const
+  ScalarField&, rr::math::Vec4)` free function that returns
+  `f.value` regardless of the chart event, plus a
+  `zero_scalar_field()` factory. The simplest real sampler;
+  not a stub. Future scalar-field shapes (texture / procedural
+  / function-pointer) will land as separate types with their
+  own `sample` overloads.
+- **`src/field/FieldMapping.h` (new).** `FieldOutputChannel`
+  enum (six entries matching the design-doc §4.1-§4.6
+  channels: `Color`, `Emission`, `Distortion`, `Density`,
+  `ChromaticShift`, `DiagnosticAOV`), plus `FieldMapping`
+  POD wiring `input_type` -> `output_channel` with `strength`
+  and `output_clamp`, plus a `disabled_field_mapping()`
+  factory. Default is the safest no-op: scalar -> diagnostic
+  AOV at strength 0 (diagnostic AOV is the only channel that
+  never touches the beauty pass, so even an enabled module
+  with non-zero strength cannot regress the renderer's pixel
+  pipeline by mistake).
+- **`src/field/FieldInterpreter.h` (new).** `FieldInterpreter`
+  POD describing a Phase 1 module's metadata: `name`
+  (`const char*`, default `"disabled"`), `enabled` (`bool`,
+  default `false`), `mapping` (`FieldMapping`, default
+  no-op), `strength` (`float`, default `0`). Includes a
+  `disabled_field_interpreter()` factory and an
+  `effective_strength(FieldInterpreter)` helper that returns
+  `mapping.strength * strength` when enabled, `0` otherwise.
+  The composition makes the layer's "enabled but quiet"
+  state explicit: an artist can wire a module without
+  contributing anything until they raise either strength.
+- **`src/field/README.md` (new).** Module orientation: file
+  table mapping each header to its design-doc section; the
+  intentionally-NOT-here list (vector / tensor / curvature
+  / amplitude samplers; texture-backed / procedural scalar
+  fields; interpretation kernels; renderer hooks; chart-
+  region predicates; Klein-Gordon / Schrödinger / Dirac
+  evolvers; Einstein-field-equation solvers; CLI / scene-
+  file Phase-1 plumbing); the CMake target note; the
+  zero-test-binary-this-slice note.
+- **`CMakeLists.txt` (+38 lines, ~33 of which are
+  doc-comment).** New `rr_field` INTERFACE library mirroring
+  `rr_manifold`'s skeleton-stage pattern:
+  `add_library(rr_field INTERFACE)`,
+  `target_include_directories(rr_field INTERFACE src)`,
+  `target_link_libraries(rr_field INTERFACE rr_math)`. Links
+  only `rr_math` (for `Vec4` in the scalar-field sample
+  function); the design-doc §8 permits future read-only
+  deps on `rr_manifold` / `rr_image` / `rr_scene` but no
+  real kernel needs them yet, so they are not linked at this
+  slice. Not linked into any other target — `rr_scene`,
+  `rr_gpu`, `rr_optix`, `rr_pathtracer`, `rr_renderer`, the
+  main executable, and every test stay byte-identical at the
+  link line.
+- **`docs/FIELD_INTERPRETATION_LAYER.md` §9 (renumbered).**
+  The "first implementation slice" section is rewritten so
+  FIELD.1 names this skeleton and FIELD.2 names the
+  Kretschmann-scalar diagnostic AOV (formerly FIELD.1 in the
+  design doc, before this slice landed). Subsequent
+  milestones in the §9 list are renumbered consistently
+  (FIELD.3 = artist-supplied scalar texture → emission,
+  FIELD.4 = probability-amplitude → density-and-hue).
+
+### What does NOT ship
+
+- **No interpretation kernel.** The per-sample `f` that
+  maps a field value into an output contribution
+  (design-doc §4.2's
+  `L_field(x_step) = κ_emission · f(field_sampler(x_step))`)
+  is a future per-module decision; the skeleton ships only
+  the metadata records.
+- **No `ManifoldTransform` consumption.** `rr_field` does
+  not include any `manifold/*` header this slice;
+  `rr_manifold` is not in the `rr_field` link line.
+  Future kernel slices will introduce the dep when they
+  actually consume the Manifold Core's read-only surface
+  (design-doc §5.1).
+- **No vector / tensor / curvature / amplitude samplers.**
+  Each is reserved as an inert `FieldType` slot only;
+  master rule #3 forbids shipping placeholder sampler
+  PODs before they have a real implementation.
+- **No quantum simulation.** Design-doc §7 non-goal
+  reiterated: scalar / wavefunction fields are input data,
+  never the solution of a Klein-Gordon / Schrödinger /
+  Dirac evolution.
+- **No renderer integration.** Nothing in `src/cuda/`,
+  `src/optix/`, `src/pathtracer/`, `src/renderer/`,
+  `src/gpu/`, `src/scene/`, `src/io/`, `src/server/`,
+  `src/main.cpp`, `src/core/`, `src/camera/`,
+  `src/material/`, `src/lighting/`, `src/texture/`,
+  `src/geometry/`, `src/image/`, `src/math/`,
+  `src/relativity/`, `src/manifold/`, or `tests/` is
+  touched (`git diff` outside `src/field/`,
+  `CMakeLists.txt`, `docs/FIELD_INTERPRETATION_LAYER.md`,
+  and `docs/BUILD_PLAN.md` ⇒ 0 bytes).
+- **No CLI surface change.** No `--field-*` flag plumbed.
+  Phase 1 is opt-in per-scene via field-interpreter
+  attachment; CLI / scene-file plumbing lands in
+  FIELD.3+ per the renumbered design-doc §9.
+- **No dedicated test binary.** ctest set unchanged at 12.
+  A future FIELD.x slice that ships a real kernel
+  introduces a `field_*_tests.cpp` ctest target.
+
+### Acceptance
+
+- **Compiles.** Audit-host reconfigure + rebuild
+  (`cmake -S . -B build` then `cmake --build build -j`)
+  succeeds. `rr_field` is created as a header-only
+  INTERFACE library. The new headers expose only PODs and
+  `RR_HD inline` helpers; nothing in the existing
+  translation-unit set newly includes `src/field/`, so
+  there is no rebuild fan-out outside the new directory
+  and the CMake addition.
+- **Validates.** A standalone runtime check
+  (`g++ -std=c++20 -Isrc -Wall -Wextra -Werror`) exercises
+  the four shipping types end-to-end:
+    - `FieldType` enumerators distinct and in declared
+      order;
+    - `ScalarField{}` returns `0` regardless of chart
+      event; non-zero value returns the same constant
+      everywhere; `zero_scalar_field()` factory matches
+      the default;
+    - `FieldOutputChannel` enumerators distinct;
+    - `FieldMapping{}` is the documented no-op
+      (`Scalar → DiagnosticAOV`, strength `0`, clamp `1`);
+      `disabled_field_mapping()` matches;
+    - `FieldInterpreter{}` is the disabled module
+      (`name = "disabled"`, `enabled = false`,
+      `strength = 0`, mapping disabled);
+    - `effective_strength` returns `0` on the disabled
+      default, `0` on an enabled module with zero
+      strength, `mapping.strength * strength` on a fully
+      configured enabled module, and `0` again when the
+      module is disabled (the `enabled` gate overrides
+      strength composition);
+    - all four types are trivially copyable + standard-
+      layout; `sizeof(ScalarField) = 4` bytes,
+      `sizeof(FieldMapping) = 16` bytes,
+      `sizeof(FieldInterpreter) = 32` bytes — compact
+      enough for future per-scene config without bloat.
+- **No behaviour change.** All 12 ctest binaries pass
+  (`100% tests passed, 0 tests failed out of 12`) — same
+  set and outputs as the post-MANIFOLD.7 acceptance line.
+- **Rule-#3 honesty.** The new headers are real,
+  complete implementations of the *disabled* state (the
+  constant-zero scalar field really does return `0`
+  everywhere; the disabled interpreter really emits zero
+  contribution; the diagnostic-AOV default channel
+  really cannot regress the beauty pass). The four
+  non-`Scalar` `FieldType` enumerators are documented as
+  inert placeholders, not stubs; no fake sampler header
+  is created for them.
+
+### Module status changes
+
+`docs/MODULE_MAP.md` is *not* updated by this slice. The
+Field Interpretation Layer now has its source-level home
+in place but still has no renderer consumer and no test
+binary; module-map promotion waits for the first FIELD.x
+implementation milestone with a real interpretation kernel
+(FIELD.2 — Kretschmann-scalar diagnostic AOV per the
+renumbered design-doc §9).
+
 ## Next stage
 
 When prompted, the natural follow-ups are:

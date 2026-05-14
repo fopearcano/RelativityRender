@@ -328,6 +328,45 @@ target_include_directories(rr_manifold INTERFACE src)
 # for documentation.
 target_link_libraries(rr_manifold INTERFACE rr_math rr_relativity)
 
+# rr_field: header-only Field Interpretation Layer skeleton
+# (`docs/FIELD_INTERPRETATION_LAYER.md`). Phase 1 of the
+# Manifold Core Pivot - optional perception-transcoding from
+# non-light fields into the renderer's visible channels.
+#
+#   FieldType.h           - enum naming the five field-type
+#                           slots (Scalar concrete; Vector /
+#                           Tensor / Curvature /
+#                           ProbabilityAmplitudePlaceholder
+#                           reserved as inert placeholders).
+#   ScalarField.h         - constant-value scalar field POD +
+#                           `sample(ScalarField, Vec4)` free
+#                           function + `zero_scalar_field()`
+#                           factory.
+#   FieldMapping.h        - `FieldOutputChannel` enum (Color /
+#                           Emission / Distortion / Density /
+#                           ChromaticShift / DiagnosticAOV) +
+#                           `FieldMapping` POD wiring
+#                           input_type -> output_channel with
+#                           strength + clamp + the
+#                           `disabled_field_mapping()` factory.
+#   FieldInterpreter.h    - `FieldInterpreter` POD describing a
+#                           Phase 1 module's metadata (name,
+#                           enabled, mapping, strength) +
+#                           `disabled_field_interpreter()` /
+#                           `effective_strength()` helpers.
+#
+# Skeleton stage (FIELD.1): no renderer integration, no kernel
+# implementation, no behaviour change. Library exists so future
+# slices (FIELD.2 Kretschmann-scalar diagnostic AOV onward)
+# have a stable include path; not linked into any other target
+# this slice. Links only rr_math (for Vec4 in the scalar-field
+# sample function); the design-doc §8 permits future read-only
+# deps on rr_manifold / rr_image / rr_scene when concrete
+# kernels need them.
+add_library(rr_field INTERFACE)
+target_include_directories(rr_field INTERFACE src)
+target_link_libraries(rr_field INTERFACE rr_math)
+
 # rr_scene: host-side authoring scene container.
 #
 # Owns the camera, render settings, Observer + RelativityParams, the
