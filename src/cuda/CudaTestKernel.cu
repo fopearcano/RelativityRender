@@ -13,6 +13,7 @@
 #include "cuda/CudaKernels.cuh"
 #include "cuda/CudaScene.cuh"
 #include "lighting/Light.h"
+#include "manifold/PenroseLikeCompactification.h"  // PENROSE.6: shared compactification
 #include "manifold/SchwarzschildLikeWarp.h"  // SCHW.5: shared artistic warp
 #include "material/MaterialTypes.h"
 #include "relativity/RelativityMath.cuh"
@@ -615,23 +616,37 @@ __global__ void k_render_scene(float* pixels, int width, int height,
         if (best.hit) {
             rr::math::Vec3 hit_pos{
                 best.position.x, best.position.y, best.position.z};
-            // SCHW.5 activation gate: enabled AND
-            // chart == SchwarzschildLike AND strength > 0.
+            // SCHW.5 / PENROSE.6 activation gate: enabled AND
+            // `chart` matches a chart family with a wired arm
+            // (currently SchwarzschildLike or PenroseLike) AND
+            // `strength > 0`.
+            //
             // `is_active(manifold_mode)` already requires
-            // `enabled && chart != Euclidean`; the
-            // explicit `chart == SchwarzschildLike` check
-            // structurally bypasses the other `*Like` /
-            // `*LikePlaceholder` chart families
-            // (Kruskal / Penrose / Kerr) routing through
-            // SchwarzschildLike math silently — master
-            // rule #3 + audited at SCHW.4 as
-            // `test_schw_3_other_non_euclidean_passthrough`.
-            const bool active =
+            // `enabled && chart != Euclidean`; the explicit
+            // per-family check structurally bypasses other
+            // `*Like` / `*LikePlaceholder` chart families
+            // (Kruskal / Kerr) routing through any chart-aware
+            // math silently — master rule #3 + audited at
+            // SCHW.4 + PENROSE.5 (the
+            // `test_*_other_non_euclidean_passthrough` tests).
+            //
+            // The two chart arms are **mutually exclusive** at
+            // this slice: today only one
+            // `manifold_mode.chart` can be active per launch.
+            // A future ManifoldStack concept (sketched in
+            // `PENROSE_LIKE_COMPACTIFICATION_PLAN.md` §7.3) may
+            // allow composition; not in scope here.
+            const bool schwarzschild_active =
                 rr::manifold::is_active(scene.manifold_mode)
              && scene.manifold_mode.chart
                     == rr::manifold::CoordinateChartType::SchwarzschildLike
              && scene.manifold_mode.strength > 0.0f;
-            if (active) {
+            const bool penrose_active =
+                rr::manifold::is_active(scene.manifold_mode)
+             && scene.manifold_mode.chart
+                    == rr::manifold::CoordinateChartType::PenroseLike
+             && scene.manifold_mode.strength > 0.0f;
+            if (schwarzschild_active) {
                 rr::manifold::SchwarzschildLikeWarpParams sp;
                 sp.r_s = scene.coordinate_chart.params.mass;
                 sp.warp_strength = scene.manifold_mode.strength;
@@ -643,6 +658,34 @@ __global__ void k_render_scene(float* pixels, int width, int height,
                         hit_pos,
                         scene.coordinate_chart.origin,
                         sp);
+            } else if (penrose_active) {
+                // PENROSE.6: PenroseLike compactification —
+                // mirrors the SchwarzschildLike SCHW.5 arm
+                // above. Parameter encoding follows the
+                // `PENROSE_LIKE_COMPACTIFICATION_PLAN.md` §3
+                // reinterpretation table:
+                //   chart.params.mass → r_max
+                //   chart.params.spin → falloff
+                //   chart.params.compactification_scale → scale
+                //     (CANONICAL named use of the field per
+                //     MANIFOLD.1)
+                // Strength is threaded from the runtime
+                // `manifold_mode.strength` dial. The math
+                // leaf's `tanh` saturation guarantees
+                // bounded output (r_chart ≤ r_max) and no
+                // NaN/Inf for any finite input — verified at
+                // PENROSE.3 audit.
+                rr::manifold::PenroseLikeCompactificationParams pp;
+                pp.r_max    = scene.coordinate_chart.params.mass;
+                pp.strength = scene.manifold_mode.strength;
+                pp.scale    =
+                    scene.coordinate_chart.params.compactification_scale;
+                pp.falloff  = scene.coordinate_chart.params.spin;
+                hit_pos =
+                    rr::manifold::penrose_like_world_to_chart(
+                        hit_pos,
+                        scene.coordinate_chart.origin,
+                        pp);
             }
             scene.aovs.manifold_coordinates[pix_idx_3 + 0] = hit_pos.x;
             scene.aovs.manifold_coordinates[pix_idx_3 + 1] = hit_pos.y;

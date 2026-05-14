@@ -3928,6 +3928,26 @@ int run_render_aovs(const rr::core::Config& cfg) {
         cuda_manifold_chart.params.mass             = 1.0f;
         cuda_manifold_chart.params.spin             = 1.0f;
         cuda_manifold_chart.params.compactification_scale = 0.1f;
+    } else if (effective_cuda_manifold.chart
+            == rr::manifold::CoordinateChartType::PenroseLike) {
+        // PENROSE.6 — artistic defaults for the PenroseLike
+        // chart on the CUDA path. Mirrors the SchwarzschildLike
+        // helper above; values consistent with the PENROSE.4
+        // test fixture `make_penrose_like_chart` in
+        // `manifold_identity_tests.cpp` (mass→r_max=5.0,
+        // spin→falloff=1.0, compactification_scale→scale=1.0).
+        // These produce the documented "asymptotic
+        // compactification onto r_max = 5.0" visual signature
+        // when `--manifold-enable --manifold-chart
+        // penrose-like --manifold-strength <s> --manifold-debug`
+        // is in effect. The triple-gate at
+        // `CudaTestKernel.cu`'s AOV-write site reads
+        // these via the same `targets.coordinate_chart`
+        // payload the SchwarzschildLike arm uses.
+        cuda_manifold_chart.name                    = "penrose-like";
+        cuda_manifold_chart.params.mass             = 5.0f;
+        cuda_manifold_chart.params.spin             = 1.0f;
+        cuda_manifold_chart.params.compactification_scale = 1.0f;
     }
     targets.manifold_mode    = effective_cuda_manifold;
     targets.coordinate_chart = cuda_manifold_chart;
