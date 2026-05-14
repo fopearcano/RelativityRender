@@ -19,6 +19,7 @@
 // the kernel short and reuses the progressive-accumulation
 // infrastructure unchanged.
 
+#include "manifold/ManifoldMode.h"  // MANI-I.5: trailing launcher arg
 #include "math/Vec3.h"
 
 namespace rr::gpu { class GpuScene; }
@@ -91,6 +92,14 @@ namespace rr::cuda {
                                            rr::math::Vec3           env_color,
                                            float                    env_intensity,
                                            float                    firefly_clamp,
-                                           bool                     enable_nee);
+                                           bool                     enable_nee,
+                                           // MANI-I.5: per-launch Manifold Core mode. Default
+                                           // `disabled_manifold_mode()` keeps every existing
+                                           // caller's output bit-for-bit (the kernel does NOT
+                                           // consume this field this slice; the host launcher
+                                           // accepts it so the plumbing is in place for
+                                           // MANI-I.6+ to flip a guard without changing the
+                                           // launcher signature again).
+                                           rr::manifold::ManifoldMode manifold_mode = {});
 
 }  // namespace rr::cuda

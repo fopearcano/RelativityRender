@@ -2,6 +2,7 @@
 
 #include "image/Image.h"
 #include "gpu/GpuBuffer.h"  // OptiX Gap A Step 1: GpuBuffer<float> for retained AOV device buffers
+#include "manifold/ManifoldMode.h"  // MANI-I.5: trailing render_pathtrace_progressive arg
 
 #include <string>
 #include <vector>
@@ -297,7 +298,15 @@ public:
         unsigned int seed,
         const std::vector<int>& checkpoint_samples,
         float firefly_clamp = 0.0f,    // PT-P.24
-        bool  enable_nee   = false) noexcept;  // NEE.4
+        bool  enable_nee   = false,    // NEE.4
+        // MANI-I.5: per-launch Manifold Core mode. Default
+        // `disabled_manifold_mode()` keeps every existing
+        // caller's output bit-for-bit (the renderer's kernels
+        // do not consume this field this slice; the field
+        // rides in `OptixLaunchParams::manifold_mode` so
+        // MANI-I.6 / MANI-I.7+ can flip a guard without
+        // re-growing the launch-params POD).
+        rr::manifold::ManifoldMode manifold_mode = {}) noexcept;
 
     // Stage 20K basic direct-lighting render. Same first-non-
     // empty-mesh selection + GAS-build path as render_mesh_scene.

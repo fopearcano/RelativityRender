@@ -4,6 +4,7 @@
 #include "cuda/CudaTexture.cuh"        // Stage 20M: DeviceTextureView
 #include "geometry/Triangle.h"         // Stage 20M: per-vertex UV indexing
 #include "lighting/Light.h"            // Stage 20K: Light POD union
+#include "manifold/ManifoldMode.h"     // MANI-I.5: per-launch manifold mode
 #include "math/Vec2.h"                 // Stage 20M: per-vertex UVs
 #include "relativity/RelativityParams.h"
 
@@ -312,6 +313,35 @@ struct OptixLaunchParams {
     float* aov_albedo             = nullptr;
     float* aov_doppler_factor     = nullptr;
     float* aov_searchlight_factor = nullptr;
+
+    // ---- MANI-I.5 manifold rendering mode ----
+    //
+    // Per-launch Manifold Core mode the renderer reads to
+    // decide *whether* the Manifold Core should engage with
+    // the chart-aware ray seam. Default-constructed
+    // `ManifoldMode{}` ("disabled, Euclidean, strength 0,
+    // debug off") preserves every existing entry-point's
+    // pixel output bit-for-bit because:
+    //   - `is_active(manifold_mode)` returns `false` (the
+    //     `enabled` bit is `false`), so any future kernel
+    //     guard short-circuits before any chart math runs;
+    //   - even with `enabled = true`, the active chart is
+    //     `Euclidean` by default, and `is_active(...)` only
+    //     returns `true` for non-Euclidean families;
+    //   - no MANI-I.5 code path actually reads this field
+    //     in any kernel (the MANI-I.5 scope is plumbing
+    //     only — the field exists on the launch-params POD
+    //     so MANI-I.6 / MANI-I.7+ can flip a single guard
+    //     to enable per-chart logic without growing the
+    //     POD again).
+    //
+    // Populated by the OptiX dispatcher
+    // (`OptixRenderer::render_pathtrace_progressive`'s
+    // trailing `manifold_mode` parameter — same shape as
+    // the existing `firefly_clamp` / `enable_nee`
+    // arguments). Default value preserves the byte-identity
+    // invariant the integration plan §2 declares.
+    rr::manifold::ManifoldMode manifold_mode{};
 };
 
 }  // namespace rr::optix

@@ -1643,7 +1643,14 @@ int run_render_optix_pathtrace(const rr::core::Config& cfg) {
         load.scene, cfg.width, cfg.height,
         kMaxBounces, kSeed, kCheckpoints,
         /*firefly_clamp=*/cfg.firefly_clamp,
-        /*enable_nee=*/cfg.enable_nee);  // NEE.5b: from --enable-nee
+        /*enable_nee=*/cfg.enable_nee,    // NEE.5b: from --enable-nee
+        // MANI-I.5: thread the operator's manifold mode through
+        // to the OptiX dispatcher. Default disabled_manifold_mode
+        // makes is_active(...) return false; the device-side
+        // OptixLaunchParams::manifold_mode field carries the
+        // value but no kernel consumes it this slice (MANI-I.6+
+        // wires the kernel-side guard).
+        /*manifold_mode=*/cfg.manifold);
     if (!pr.ok) {
         Logger::error("optix path-trace progressive render failed: "
                     + pr.message);

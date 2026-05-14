@@ -134,7 +134,14 @@ PathTraceResult PathTracer::render(const rr::gpu::GpuScene& scene,
                 cfg.environment_color,
                 cfg.environment_intensity,
                 cfg.firefly_clamp,
-                cfg.enable_nee)) {
+                cfg.enable_nee,
+                // MANI-I.5: thread the operator's manifold mode
+                // through to the CUDA launcher. The kernel does
+                // NOT consume the field this slice (the launcher
+                // accepts but ignores it via [[maybe_unused]]);
+                // the wiring is in place for MANI-I.6+ to flip
+                // a kernel-side guard.
+                cfg.manifold)) {
             result.message =
                 "pathtrace sample-kernel launch failed at iteration "
                 + std::to_string(s);

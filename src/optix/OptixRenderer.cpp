@@ -1545,7 +1545,8 @@ OptixRenderer::render_pathtrace_progressive(
     unsigned int seed,
     const std::vector<int>& checkpoint_samples,
     float firefly_clamp,
-    bool  enable_nee) noexcept {
+    bool  enable_nee,
+    rr::manifold::ManifoldMode manifold_mode) noexcept {
     PathtraceProgressiveResult R;
 
     if (width <= 0 || height <= 0) {
@@ -1802,6 +1803,17 @@ OptixRenderer::render_pathtrace_progressive(
         params.seed          = seed;
         params.firefly_clamp = firefly_clamp;  // PT-P.24
         params.enable_nee    = enable_nee;     // NEE.4
+        // MANI-I.5: per-launch Manifold Core mode. Default
+        // `disabled_manifold_mode()` (`enabled = false`,
+        // chart = Euclidean, strength = 0, debug = off) makes
+        // `rr::manifold::is_active(params.manifold_mode)`
+        // return `false`, so any future kernel guard
+        // short-circuits before any chart math runs. The
+        // `__raygen__pathtrace` program does NOT consume
+        // this field this slice; the wiring is in place so
+        // MANI-I.6+ slices can flip a single guard without
+        // re-growing the launch-params POD.
+        params.manifold_mode = manifold_mode;
         // NEE.5b: lights uploaded once before the spp
         // loop (see `d_lights` block above). Same pointer
         // + count for every per-launch params write; the

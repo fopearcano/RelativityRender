@@ -414,7 +414,17 @@ bool launch_pathtrace_sample(float*                   device_sample_pixels,
                              rr::math::Vec3           env_color,
                              float                    env_intensity,
                              float                    firefly_clamp,
-                             bool                     enable_nee) {
+                             bool                     enable_nee,
+                             // MANI-I.5: per-launch Manifold Core mode. The
+                             // kernel does NOT consume this field this slice;
+                             // the parameter is accepted at the host launcher
+                             // so callers can plumb cfg.manifold without a
+                             // future signature break. is_active(manifold_mode)
+                             // returns false on the documented disabled /
+                             // Euclidean default, so MANI-I.6+ slices that
+                             // wire a kernel-side guard get a structurally
+                             // safe no-op fallback.
+                             [[maybe_unused]] rr::manifold::ManifoldMode manifold_mode) {
     // PT-P.24: defence-in-depth on the host validator's
     // `firefly_clamp >= 0.0f` rejection. The host-side
     // `PathTracer::render` already returns an error message

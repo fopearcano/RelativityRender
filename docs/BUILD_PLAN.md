@@ -72181,6 +72181,190 @@ GPU path under the renumbered integration plan §6);
 no module-map row changes state until MANI-I.9
 (final cross-host audit) lands.
 
+## MANI-I.5 — Euclidean Identity GPU Path (impl, GPU-plumb-only)
+
+**Scope of this slice (per the operator's *MANI-I.5 —
+Euclidean Identity GPU Path* task brief and
+`docs/MANIFOLD_INTEGRATION_PLAN.md` §6): first GPU
+touch. The manifold mode now rides through to the
+GPU-side launch parameter surface (OptiX) and the
+GPU-side host launcher signature (CUDA). The
+default `disabled_manifold_mode()` value flows to
+the device but no kernel reads it; output is
+structurally bit-identical to the pre-MANI-I.5
+baseline. No Schwarzschild / Kruskal / Penrose /
+Kerr math; no coordinate warp; no debug AOV; no
+C4D / server / UI / node-editor touch. ctest stays
+12/12; cli_tests stays 123/123.**
+
+### What ships
+
+- **`src/manifold/ManifoldMode.h` (+25 / -0 net).**
+  Adds `RR_HD inline bool is_active(const ManifoldMode&)`
+  returning `m.enabled && m.chart !=
+  CoordinateChartType::Euclidean`. Single-condition
+  guard the GPU kernels will eventually flip when
+  curved-chart logic lands; today no kernel calls
+  it but the helper is reachable from both backends'
+  device code via the existing `rr_manifold` /
+  `rr_optix` / `rr_pathtracer` INTERFACE link chain.
+- **`src/optix/OptixLaunchParams.h` (+33 / -1 net).**
+  Adds `rr::manifold::ManifoldMode manifold_mode{}`
+  as the trailing field of `OptixLaunchParams`
+  (preserves the offsets of every pre-MANI-I.5
+  field). 32-line doc-comment block citing the
+  disabled-default "no output change" contract
+  plus the MANI-I.6+ plumbing rationale. Adds
+  `#include "manifold/ManifoldMode.h"`.
+- **`src/optix/OptixRenderer.h` (+10 / -1 net).**
+  `render_pathtrace_progressive` gains a trailing
+  `rr::manifold::ManifoldMode manifold_mode = {}`
+  parameter (default = disabled). Header pulls
+  `manifold/ManifoldMode.h`.
+- **`src/optix/OptixRenderer.cpp` (+14 / -2 net).**
+  Threads the new parameter through the
+  function-body signature and populates
+  `params.manifold_mode = manifold_mode;`
+  immediately after the existing
+  `params.firefly_clamp` / `params.enable_nee`
+  populates inside `render_pathtrace_progressive`.
+- **`src/cuda/CudaPathTracer.cuh` (+10 / -1 net).**
+  `launch_pathtrace_sample` gains a trailing
+  `rr::manifold::ManifoldMode manifold_mode = {}`
+  parameter (default = disabled). Header pulls
+  `manifold/ManifoldMode.h`.
+- **`src/cuda/CudaPathTracer.cu` (+11 / -1 net).**
+  The launcher's function-body signature accepts
+  the new parameter with the `[[maybe_unused]]`
+  attribute — the CUDA kernel does NOT consume the
+  field this slice; the launcher's signature
+  change is the GPU-side plumbing.
+- **`src/pathtracer/PathTracer.cpp` (+8 / -1
+  net).** `PathTracer::render` passes
+  `cfg.manifold` as the new trailing argument to
+  every `launch_pathtrace_sample` call site (one
+  call site inside the per-spp loop).
+- **`src/main.cpp` (+8 / -1 net).**
+  `run_render_optix_pathtrace` passes
+  `cfg.manifold` as the new trailing argument to
+  `render_pathtrace_progressive`.
+- **`CMakeLists.txt` (+8 / -1 net).**
+  `target_link_libraries(rr_optix PUBLIC
+  rr_manifold)` so consumers of `rr_optix` see the
+  manifold header transitively (the
+  `OptixLaunchParams::manifold_mode` field is in a
+  public header). Header-only INTERFACE link.
+- **`docs/MANIFOLD_INTEGRATION_PLAN.md` §6
+  rewritten** to reflect the landed surface
+  (no `ManifoldTransform` field this slice; no
+  kernel-side ray-gen seam this slice; `is_active`
+  helper added; rr_optix link-line update; etc.).
+  An "Implementation choice notes" subsection
+  documents the FP-byte-identity reason for not
+  inserting a `transform_ray_like_direction(...)`
+  call on the Euclidean default this slice.
+
+### What does NOT ship
+
+- **No Schwarzschild / Kruskal / Penrose / Kerr
+  math.** The reserved `*Like` / `*LikePlaceholder`
+  chart enumerators are accepted at the CLI parser
+  and now ride through to the launch-params /
+  launcher arg, but no kernel branches on chart
+  type yet.
+- **No coordinate warp.** No kernel ARM reads
+  `pcfg.manifold` or `params.manifold_mode`. The
+  field rides to the device's `__constant__`
+  symbol (OptiX) and to the launcher's argument
+  list (CUDA), but no device-side instruction
+  consumes it. Structurally guarantees bit-
+  identity to the pre-MANI-I.5 baseline.
+- **No `ManifoldTransform` field on launch
+  params.** Deferred to MANI-I.7's first
+  curved-chart slice (which actually needs to
+  read the transform on device, after a
+  GPU-friendly POD strip on
+  `CoordinateChart::name`).
+- **No kernel-side ray-gen seam.** The kernel
+  does not call
+  `transform_ray_like_direction(...)` — its
+  IEEE-754 `sqrt + multiply` chain could drift
+  by 1 ULP per component even on a unit-length
+  input with `scale = 1.0f`, and that would
+  break the bit-identity invariant on the
+  existing reference images. MANI-I.6+ slices
+  that introduce curved-chart logic place the
+  call *inside* an `is_active(mode)` guard so
+  the Euclidean / disabled fast path stays
+  bit-exact.
+- **No hit-shading seam.** Same FP-drift
+  reasoning. The existing kernels continue to
+  consume `Observer` / `RelativityParams`
+  directly; the manifold module's
+  `to_relativity_observer(...)` bridge stays
+  available for MANI-I.6+ to use when it is the
+  active code path.
+- **No new AOV.** MANI-I.6 ships the debug
+  coordinate-warp AOV.
+- **No new test binary.** ctest set unchanged
+  at 12. `cli_tests` reports `123/123 passed`
+  (the parser surface is unchanged from
+  MANI-I.4's post-audit baseline).
+- **No C4D / server / UI / node-editor
+  touch.** Zero files in `src/server/`,
+  `bridges/`, or `tools/`.
+
+### Acceptance
+
+- **Compiles.** Audit-host rebuild
+  (`cmake --build build -j`) succeeds. The
+  `rr_optix` PUBLIC link to `rr_manifold` pulls
+  the manifold header into every `rr_optix`
+  consumer (the main executable; the
+  audit-host fallback build still works because
+  the manifold module is header-only).
+- **Tests.** Full ctest: `100% tests passed,
+  0 tests failed out of 12`. `cli_tests`
+  reports `123/123 passed` (unchanged from
+  MANI-I.4).
+- **Standalone helper check.** A
+  `g++ -std=c++20 -Isrc -Wall -Wextra -Werror`
+  build of an `is_active`-consuming TU
+  verifies: disabled+Euclidean → false;
+  enabled+Euclidean → false; enabled+
+  Schwarzschild-like → true; disabled+
+  Schwarzschild-like → false. The guard
+  semantics are correct.
+- **Bit-identity invariant.** Structurally
+  guaranteed: no kernel arm reads
+  `manifold_mode`. The CUDA kernel takes the
+  arg as `[[maybe_unused]]`; the OptiX
+  device-side programs do not reference
+  `optixLaunchParams.manifold_mode`. A future
+  cross-host audit on a CUDA + OptiX-SDK host
+  re-verifies by `cmp`-ing every pre-MANI-I.5
+  reference PPM.
+- **Rule-#3 honesty.** The `is_active` helper
+  ships as real code that the future MANI-I.6+
+  guards will call; it is not a stub. The
+  `[[maybe_unused]]` attribute on the CUDA
+  launcher's new argument is documented in
+  the launcher's doc-comment as the explicit
+  plumbing-without-consumption stance. The
+  `OptixLaunchParams::manifold_mode` field's
+  doc-comment names the slice (MANI-I.6+)
+  that will introduce the first consumer.
+
+### Module status changes
+
+`docs/MODULE_MAP.md` is *not* updated by this slice.
+`rr_optix` now transitively pulls `rr_manifold` (the
+include is on the public header surface); `rr_gpu`
+already pulled it via `rr_pathtracer` since MANI-I.3.
+Module-map promotion still waits for MANI-I.9
+(final cross-host audit) per the integration plan
+§11.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:

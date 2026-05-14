@@ -122,4 +122,26 @@ RR_HD inline ManifoldMode disabled_manifold_mode() {
     return ManifoldMode{};
 }
 
+// MANI-I.5 — Returns true iff the Manifold Core is engaged AND
+// the active chart is non-Euclidean. Used by the GPU-side
+// kernels (CUDA `k_pathtrace_sample`, OptiX
+// `__raygen__pathtrace`) as the gate for any future
+// chart-aware ray transform: when this returns false, the
+// kernel takes its existing pre-pivot code path and produces
+// pixel-bit-identical output. When this returns true, the
+// kernel is allowed to apply a chart-specific coordinate
+// remap.
+//
+// Note: today no chart family beyond Euclidean has a concrete
+// implementation, so even when `enabled = true` and `chart`
+// is one of the `*Like` / `*LikePlaceholder` reserved
+// enumerators, the kernel falls back to the existing code
+// path until MANI-I.6 (debug-warp AOV) and MANI-I.7+ (curved
+// charts) wire the per-chart logic. This helper exists so
+// the wiring is in place for those future slices to flip a
+// single guard.
+RR_HD inline bool is_active(const ManifoldMode& m) {
+    return m.enabled && m.chart != CoordinateChartType::Euclidean;
+}
+
 }

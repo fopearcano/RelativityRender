@@ -592,7 +592,14 @@ if(RR_ENABLE_OPTIX)
     # fallback satisfies the symbol). PRIVATE - the timer is used
     # only inside OptixRenderer.cpp; the rr_optix public header
     # surface is unchanged.
+    # MANI-I.5: rr_optix consumes `rr::manifold::ManifoldMode`
+    # in its public `OptixLaunchParams.h` and
+    # `OptixRenderer.h`. PUBLIC-link rr_manifold so consumers
+    # of rr_optix (RelativityRender executable today) see the
+    # manifold header transitively. Header-only INTERFACE
+    # link; no .cpp / link-order impact.
     target_link_libraries(rr_optix PRIVATE rr_gpu)
+    target_link_libraries(rr_optix PUBLIC  rr_manifold)
     rr_apply_warnings(rr_optix)
     # PUBLIC so consumers of rr_optix see the same macro state
     # the library was compiled against. Today only OptixBackend.cpp
