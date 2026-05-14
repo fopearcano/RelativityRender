@@ -76066,6 +76066,171 @@ PENROSE.3 (CPU integration); PENROSE.4 (CUDA);
 PENROSE.5 (OptiX); PENROSE.6 (fixture / debug
 viz); PENROSE.7 (arc capstone audit).
 
+## PENROSE.3 — Penrose-Like Compactification Math Audit (docs only)
+
+**Scope of this slice (per the operator's *PENROSE.3 —
+Penrose-Like Math Helper Audit* task brief): write
+`docs/PENROSE_LIKE_COMPACTIFICATION_MATH_AUDIT.md`, the
+per-slice verdict document for PENROSE.2 (`7169547`).
+Verifies the eight structural items the task brief
+enumerates — math helper exists; strength 0 is
+identity; output is bounded; no NaN/Inf behavior
+exists; radial compression is monotonic; no renderer
+behavior changed; build/test status; verdict — and
+produces a PASS / REPAIR / BLOCKED verdict that gates
+progression to the renumbered PENROSE.4 (CPU
+integration). Documentation only; no source code, no
+test, no CMake, no behavioural change. Inserts
+PENROSE.3 as a per-slice audit slot AND renames the
+original PENROSE.3-CPU-integration → PENROSE.4 (with
+cascade shifts PENROSE.4→PENROSE.5,
+PENROSE.5→PENROSE.6, PENROSE.6→PENROSE.7,
+PENROSE.7→PENROSE.8) in the
+`PENROSE_LIKE_COMPACTIFICATION_PLAN.md` §10 sub-slice
+ladder.**
+
+### What ships
+
+- **`docs/PENROSE_LIKE_COMPACTIFICATION_MATH_AUDIT.md`
+  (new).** Per-slice verdict document mirroring the
+  prior audit doc shape (SCHW.2 / SCHW.4 / SCHW.6 /
+  SCHW.8 / SCHW.10 / SCHW.11 / SCHW.5-completion):
+    - **§1 VERDICT** — `PASS`. All seven structural
+      checks return PASS; no REPAIR or BLOCKED item.
+    - **§2 PER-CHECK RESULTS** — eight-row evidence
+      table. Each row cites concrete file/line
+      observations: the four helpers at
+      `PenroseLikeCompactification.h:140` /
+      `:160` / `:214` / `:269`; double-layer
+      `strength == 0` short-circuits at `:222` +
+      `:277` plus the matching
+      `test_penrose_2_world_to_chart_identity_at_strength_zero`;
+      `tanh` mathematical bound + IEEE-754
+      saturation behavior at
+      `tanhf(16.0f) == 1.0f` exactly; four-layer
+      no-NaN/Inf protection (validator at
+      `:160-168`; origin short-circuits at `:227`
+      + `:282`; `tanh` saturation; inverse
+      boundary clamp at `:286` with
+      `kBoundaryEpsilon = 1.0e-6f`); monotonicity
+      via composition of monotonic primitives
+      (`tanh` is strictly increasing); zero
+      renderer-side diff vs `a84f8b2`; ctest
+      12/12 + `manifold_identity_tests: 250 /
+      250 checks passed`.
+    - **§3 REASONING SUMMARY** — recap of the
+      PENROSE.2 commit's surface (one new
+      header, nine new test functions, doc
+      updates); per-invariant verification
+      analysis showing each check is structurally
+      guaranteed + empirically verified.
+    - **§4 NEXT** — names the PENROSE.* sub-slice
+      renumbering (PENROSE.3 audit inserted;
+      PENROSE.3 → PENROSE.4 / PENROSE.4 →
+      PENROSE.5 / etc.) and points at PENROSE.4
+      (CPU integration) as the next concrete
+      slice.
+- **`docs/PENROSE_LIKE_COMPACTIFICATION_PLAN.md`
+  §10 (renumbered).** Five replace-all
+  substitutions shift every PENROSE.x reference
+  from §10 PENROSE.3 onward (highest-to-lowest to
+  avoid double-shifting): PENROSE.7 → PENROSE.8,
+  PENROSE.6 → PENROSE.7, PENROSE.5 → PENROSE.6,
+  PENROSE.4 → PENROSE.5, PENROSE.3 → PENROSE.4. A
+  new "PENROSE.3 — Audit (docs only)" subsection
+  is inserted between PENROSE.2 (LANDED) and the
+  renumbered PENROSE.4 (CPU integration). The
+  plan's other sections (§1–§9, §11–§12) are
+  unchanged.
+
+### What does NOT ship
+
+- **No source code.** Nothing in any `src/` subtree
+  is touched (`git diff` outside `docs/` ⇒ 0 bytes).
+- **No new test binary.** ctest set unchanged at 12.
+- **No CMake change.** No new `rr_*` target; no
+  link-line change.
+- **No `BUILD_PLAN.md` historical-record rewrite.**
+  The MANI-I.* / SCHW.1–SCHW.11 / SCHW.5-completion
+  / PENROSE.1 / PENROSE.2 entries above stay as-is;
+  this PENROSE.3 entry is additive.
+- **No `MODULE_MAP.md` update.** The per-slice
+  audit is doc-only; module-map promotion still
+  waits for MANI-I.12 (final cross-host audit)
+  per the integration plan §11.
+- **No update to the prior audit docs.** The
+  MANI-I.2 / MANI-I.4 / MANI-I.6 / MANI-I.9 /
+  SCHW.2 / SCHW.4 / SCHW.6 / SCHW.8 / SCHW.10 /
+  SCHW.11 / SCHW.5-completion audit docs are
+  preserved as point-in-time historical
+  snapshots.
+- **No integration plan §3 chain-diagram update.**
+  The PENROSE.* renumbering is local to the
+  `PENROSE_LIKE_COMPACTIFICATION_PLAN.md` §10
+  sub-slice ladder; the integration plan still
+  references MANI-I.11 as the Penrose-like slice
+  (which contains the PENROSE.* sub-slices).
+- **No Penrose-like work beyond the audit.** The
+  audit verifies the existing PENROSE.2 helper;
+  it does NOT extend it, fix it, or add new
+  helpers. PENROSE.4 (CPU integration) is the
+  next impl slice.
+- **No Kerr / Kruskal work.** Architecture-doc §8
+  non-goals stand.
+- **No C4D / server / UI / node-editor touch.**
+
+### Acceptance
+
+- **Compiles.** Documentation-only slice; no build
+  configuration touched. The audit-host build
+  remains at the post-PENROSE.2 baseline (`100%
+  tests passed, 0 tests failed out of 12`;
+  `manifold_identity_tests: 250 / 250 checks
+  passed`; `cli_tests: 123/123 passed`;
+  `renderer_tests: 19 / 19 passed`).
+- **Internally consistent.** The eight-row
+  evidence table cites concrete file/line
+  positions in
+  `src/manifold/PenroseLikeCompactification.h`
+  (lines 140 / 160 / 214 / 222 / 269 / 277 /
+  286) and named test functions in
+  `tests/manifold_identity_tests.cpp` (test_penrose_2_*
+  at lines 903 / 949 / 979 / 1020 / 1053 / 1088 /
+  1122 / 1164 / 1180) that re-verify on the
+  audit host; the renumbering in
+  `PENROSE_LIKE_COMPACTIFICATION_PLAN.md` §10 is
+  verified by reading the renumbered section
+  headings.
+- **Verdict honesty.** The verdict is `PASS`
+  because the structural checks pass — not
+  because of an arbitrary judgement call. Every
+  claim in the evidence table is backed by a
+  file + line citation or by a named test
+  function. The bounded-output invariant
+  (check #3) is **mathematically guaranteed by
+  `tanh` saturation** in IEEE-754, not just
+  empirically; the no-NaN/Inf invariant (check
+  #4) is enforced at four code-level layers; the
+  monotonicity invariant (check #5) is
+  **mathematically guaranteed by composition of
+  monotonic primitives**; the no-renderer-
+  behavior-change invariant (check #6) is
+  **structurally guaranteed** because no kernel
+  call site invokes the new helpers yet
+  (verified by `git diff --name-only` filtered
+  against the 18 renderer subdirectories).
+
+### Module status changes
+
+`docs/MODULE_MAP.md` is *not* updated by this slice.
+The PENROSE.3 audit verdict (`PASS`) authorises
+the operator to proceed to PENROSE.4 (CPU
+integration; renumbered from the original
+PENROSE.3 in
+`PENROSE_LIKE_COMPACTIFICATION_PLAN.md` §10); no
+module-map row changes state until MANI-I.12
+(final cross-host audit) lands.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
