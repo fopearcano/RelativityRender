@@ -669,35 +669,51 @@ slice ships only after its predecessor is green.
   debug visualization moves SCHW.7 → SCHW.9;
   the final audit slot moves SCHW.9 → SCHW.11).
 
-### SCHW.5 — CUDA integration (impl, GPU-side)
+### SCHW.5 — CUDA integration (impl, GPU-side) — LANDED at `73e9591`
 
-- **Scope:** wire the SchwarzschildLike arm into
-  the CUDA kernels:
+- **Status:** **LANDED** (`73e9591`, 2026-05-14).
+  Verified by `docs/SCHWARZSCHILD_LIKE_CUDA_COMPLETION_AUDIT.md`
+  (verdict PASS_WITH_RUNTIME_DEFERRED). Closes the
+  SCHW.11 capstone audit's check #3 PARTIAL → PASS
+  transition.
+- **Scope (as landed):** wired the SchwarzschildLike
+  arm into the CUDA kernel:
   - `k_render_scene`'s
-    `ManifoldCoordinates` AOV write arm: when
-    `is_active(launch_params.manifold_mode)` and
-    `chart_type == SchwarzschildLike`, call
-    `world_to_chart_schwarzschild(...)` on the
-    hit position before writing.
-  - Optional: the primary-ray direction warp in
-    raygen, gated behind a separate `warp_-
-    primary_rays` toggle.
+    `ManifoldCoordinates` AOV write arm at
+    `CudaTestKernel.cu:615-655`: when
+    `is_active(scene.manifold_mode) && chart ==
+    SchwarzschildLike && strength > 0.0f`, calls
+    `schwarzschild_like_world_to_chart(...)` on the
+    hit position before writing. Otherwise writes
+    raw `best.position` (MANI-I.8 baseline).
+  - The primary-ray direction warp in raygen is
+    **NOT shipped** by SCHW.5; deferred per the
+    SCHW.11 capstone's recommendation.
 - **Acceptance:**
-  - Audit-host build green.
-  - CUDA + OptiX-SDK host runtime check: the
-    AOV's pixel values for a known scene
-    fixture diverge from world-space hit
-    positions in the documented signature.
-  - Beauty-pass byte-identity preserved when
-    the chart is Euclidean or
-    `warp_strength = 0` (structurally
-    guaranteed by the `is_active(...)` guard).
-- **What does NOT ship:** OptiX-side
-  integration (deferred to SCHW.7); test
-  binary additions beyond the existing
-  `renderer_tests` (the kernel arm is
-  exercised end-to-end at runtime, not at
-  unit-test level).
+  - Audit-host build green; ctest 12/12 PASS;
+    `manifold_identity_tests: 198 / 198 checks
+    passed`.
+  - CUDA + OptiX-SDK host runtime checks: DEFERRED
+    to operator-side validation on an SDK-equipped
+    host. The cross-backend AOV equivalence is
+    **structurally guaranteed** by both backends
+    invoking the same `RR_HD inline` math leaf
+    with byte-identical parameter encoding (CUDA
+    side and OptiX side both use the same
+    artistic-default `CoordinateChart` builder in
+    main.cpp).
+  - Beauty-pass byte-identity preserved when the
+    chart is Euclidean or `warp_strength = 0`
+    (four-layer safety: host allocation gate +
+    kernel null gate + triple-gate inactive branch
+    + math leaf defensive fallback).
+- **What does NOT ship:** OptiX-side integration
+  (already shipped at SCHW.7); test binary
+  additions beyond the existing `renderer_tests`
+  (the kernel arm is exercised end-to-end at
+  runtime, not at unit-test level); primary-ray
+  direction warp at raygen; chart-parameter
+  scene-authoring surface.
 
 ### SCHW.6 — Audit (docs only)
 

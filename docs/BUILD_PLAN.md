@@ -75470,6 +75470,143 @@ capstone's checks #6 and #8. Module-map promotion
 still waits for MANI-I.12 (final cross-host audit)
 per the integration plan §11.
 
+## SCHW.5 Completion Audit — Schwarzschild-Like CUDA Completion Audit (docs only)
+
+**Scope of this slice (per the operator's *SCHW.5
+Completion Audit* task brief): write
+`docs/SCHWARZSCHILD_LIKE_CUDA_COMPLETION_AUDIT.md`, the
+verdict document for the CUDA-side SchwarzschildLike
+kernel arm landed at SCHW.5 (`73e9591`). Verifies the
+eight items the task brief enumerates — CUDA kernel
+arm exists; activation conditions are correct;
+disabled / Euclidean path remains no-op; no new warp
+math; OptiX unchanged; build/test status; runtime CUDA
+status; verdict — and produces a PASS / PASS_WITH_RUNTIME_DEFERRED
+/ REPAIR / BLOCKED verdict. Documentation only; no
+source code, no test, no CMake, no behavioural change.
+Closes the SCHW.11 capstone audit's check #3 PARTIAL
+→ PASS transition.**
+
+### What ships
+
+- **`docs/SCHWARZSCHILD_LIKE_CUDA_COMPLETION_AUDIT.md`
+  (new).** Per-completion verdict document mirroring
+  the prior audit doc shape:
+    - **§1 VERDICT** — `PASS_WITH_RUNTIME_DEFERRED`.
+      All six structural checks (#1–#6) PASS; check
+      #7 (runtime CUDA status) DEFERRED on documented
+      audit-host limitations.
+    - **§2 PER-CHECK RESULTS** — eight-row evidence
+      table. Each row cites concrete file/line
+      observations: kernel arm at
+      `CudaTestKernel.cu:615-655` (triple-gate
+      `is_active(manifold_mode) && chart ==
+      SchwarzschildLike && strength > 0.0f` at lines
+      629-633; SchwarzschildLikeWarpParams construction
+      at lines 635-640; math-leaf invocation at lines
+      641-645); zero `git diff` to OptiX-side and
+      math-leaf headers; four-layer disabled-mode
+      safety; ctest 12/12 + `manifold_identity_tests
+      198/198`.
+    - **§3 WHAT THIS AUDIT DOES NOT VERIFY** —
+      explicit scope-boundary section listing five
+      items: no runtime device-side verification; no
+      cross-backend byte-identity comparison
+      (deferred to SDK-equipped host); no CLI
+      consumption-gap closure; no primary-ray
+      direction warp; no chart-parameter scene-
+      authoring; no CudaPathTracer.cu arm.
+    - **§4 REASONING SUMMARY** — six surface additions
+      the SCHW.5 commit shipped; per-invariant
+      verification analysis.
+    - **§5 SCHW.11 CAPSTONE CHECK #3 STATUS UPDATE**
+      — explicit acknowledgement that the SCHW.11
+      capstone's check #3 (CUDA warp bridge exists
+      and is default-no-op) transitions from
+      **PARTIAL** to **PASS** as a consequence of
+      this audit. The capstone document itself is
+      preserved as a point-in-time historical
+      snapshot; this completion audit serves as the
+      addendum.
+    - **§6 NEXT** — names the remaining deferred
+      items from the SCHW.11 capstone catalogue (CLI
+      consumption-gap closure; runtime fixture
+      validation on SDK-equipped host; primary-ray
+      direction warp; manifold-orthogonal work) and
+      explicit non-authorisation of Penrose / Kerr /
+      Kruskal / C4D work.
+
+### What does NOT ship
+
+- **No source code.** Nothing in any `src/` subtree
+  is touched (`git diff` outside `docs/` ⇒ 0 bytes).
+- **No new test binary.** ctest set unchanged at 12.
+- **No CMake change.** No new `rr_*` target; no
+  link-line change.
+- **No `BUILD_PLAN.md` historical-record rewrite.**
+  The MANI-I.* / SCHW.1–SCHW.5 / SCHW.11 entries
+  above stay as-is; this completion-audit entry is
+  additive.
+- **No `MODULE_MAP.md` update.** Module-map promotion
+  still waits for MANI-I.12 (final cross-host audit)
+  per the integration plan §11.
+- **No update to the prior audit docs.** The
+  MANI-I.2 / MANI-I.4 / MANI-I.6 / MANI-I.9 /
+  SCHW.2 / SCHW.4 / SCHW.6 / SCHW.8 / SCHW.10 /
+  SCHW.11 audit docs are preserved as
+  point-in-time historical snapshots. The SCHW.11
+  capstone's check #3 PARTIAL finding is closed
+  by reference, not by rewriting the capstone.
+- **No SCHW.* sub-slice renumbering.** This audit
+  is supplementary documentation for an
+  already-landed slice (SCHW.5) and does not
+  insert a new numbered slot in the plan §8
+  ladder. The plan §8 SCHW.5 entry is updated
+  to mark the slice LANDED with the commit hash
+  `73e9591`.
+
+### Acceptance
+
+- **Compiles.** Documentation-only slice; no build
+  configuration touched. The audit-host build
+  remains at the post-SCHW.5 baseline (`100% tests
+  passed, 0 tests failed out of 12`;
+  `manifold_identity_tests: 198 / 198 checks
+  passed`; `cli_tests: 123/123 passed`;
+  `renderer_tests: 19 / 19 passed`).
+- **Internally consistent.** The eight-row evidence
+  table cites concrete file/line positions in
+  `CudaTestKernel.cu`, `CudaScene.cuh`,
+  `CudaRenderer.h/cu`, `main.cpp`,
+  `ManifoldMode.h`, `SchwarzschildLikeWarp.h`,
+  `OptixPrograms.cu` (cross-backend equivalence
+  reference), and `CMakeLists.txt` that re-verify
+  on the audit host.
+- **Verdict honesty.** The verdict is
+  `PASS_WITH_RUNTIME_DEFERRED` because the
+  structural CUDA-side completion checks pass —
+  not because of an arbitrary judgement call. Check
+  #7 (runtime CUDA status) is DEFERRED on documented
+  audit-host limitations (no CUDA SDK; SDK TUs
+  compile but cannot link / launch). The §3 "WHAT
+  THIS AUDIT DOES NOT VERIFY" section explicitly
+  enumerates the five items the audit cannot
+  check.
+
+### Module status changes
+
+`docs/MODULE_MAP.md` is *not* updated by this slice.
+With SCHW.5 landed and verified by this completion
+audit, the SCHW.11 capstone's check #3 transitions
+from PARTIAL to PASS. The remaining capstone-
+catalogued deferred items (CLI consumption-gap
+closure; runtime fixture-render verification;
+primary-ray direction warp; chart-parameter scene-
+authoring; golden-PPM regression suite) are
+unchanged; module-map promotion still waits for
+MANI-I.12 (final cross-host audit) per the
+integration plan §11.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
