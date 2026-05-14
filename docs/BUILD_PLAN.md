@@ -74876,6 +74876,172 @@ dispatcher merge logic is in place; module-map
 promotion still waits for MANI-I.12 (final cross-host
 audit) per the integration plan §11.
 
+## SCHW.10 — Schwarzschild-Like Fixture Audit (docs only)
+
+**Scope of this slice (per the operator's *SCHW.10 —
+Schwarzschild-Like Fixture Audit* task brief): write
+`docs/SCHWARZSCHILD_LIKE_FIXTURE_AUDIT.md`, the
+per-slice verdict document for SCHW.9 (`f102dd3`).
+Verifies the seven structural items the task brief
+enumerates — fixture scene exists; fixture uses
+SchwarzschildLike manifold mode; values are
+bounded/safe; default scenes remain unchanged; parser
+changes are minimal; CUDA/OptiX runtime status;
+verdict — and produces a PASS / REPAIR / BLOCKED
+verdict. Documentation only; no source code, no test,
+no CMake, no behavioural change. Inserts SCHW.10 as a
+per-slice audit slot AND renames the original
+SCHW.10-final-audit → SCHW.11 (one cascade shift) in
+the `SCHWARZSCHILD_LIKE_REMAP_PLAN.md` §8 sub-slice
+ladder. The stale SCHW.9 entry in the plan §8 is
+brought in sync with the actually-landed scope (the
+operator's SCHW.9 task brief consolidated "debug
+visualization" with the fixture work).**
+
+### What ships
+
+- **`docs/SCHWARZSCHILD_LIKE_FIXTURE_AUDIT.md`
+  (new).** Per-slice verdict document mirroring the
+  prior audit doc shape:
+    - **§1 VERDICT** — `PASS` (fixture is safe and
+      isolated; parser surface is minimal and
+      additive; default scenes are byte-identical);
+      check #6 (runtime CUDA/OptiX-host status)
+      DEFERRED on documented audit-host limitations.
+    - **§2 PER-CHECK RESULTS** — seven-row evidence
+      table. Each row cites concrete file/line
+      observations: the fixture file's presence at
+      `scenes/test_schwarzschild_like_manifold.rrscene`
+      (size 2321 bytes, exclusive new entry per
+      `git diff --name-only -- scenes/`); the
+      fixture's `manifold` block content at lines
+      19-24; the three-layer bounded/safe-values
+      analysis (ManifoldMode-side validator;
+      dispatcher artistic defaults; math-leaf
+      bounding guards inherited from
+      SCHW.1/SCHW.2/SCHW.4/SCHW.6/SCHW.8); the
+      eight pre-existing fixture files'
+      byte-identical mtime `May 14 04:15`; the
+      parser diff of 119 added lines composed of
+      three minimal surface additions (two
+      includes, one helper, one parser function
+      plus 13-line dispatcher wire-up); the
+      DEFERRED runtime status with two grounds
+      (audit-host has no CUDA/OptiX SDK; the
+      consumption-gap CLI extension is not yet
+      landed).
+    - **§3 WHAT THIS AUDIT DOES NOT VERIFY** —
+      explicit scope-boundary section listing five
+      items the audit cannot check: no end-to-end
+      runtime render; no consumption-gap closure
+      (no existing CLI action loads the fixture
+      into a manifold-aware render); no CUDA-side
+      SchwarzschildLike arm (SCHW.5 still
+      deferred); no chart-parameter authoring
+      surface; no `.rrscene` schema version-bump
+      verification.
+    - **§4 REASONING SUMMARY** — six structural
+      surface additions the SCHW.9 commit ships
+      (fixture file, Scene POD slot, parser
+      surface, dispatcher merge, CMake link
+      addition, fixture-companion doc); the seven
+      audit invariants verified.
+    - **§5 NEXT** — names the SCHW.* sub-slice
+      renumbering (SCHW.10 audit inserted; SCHW.10
+      → SCHW.11) and points at one of SCHW.5
+      (CUDA integration), SCHW.11 (final audit),
+      or the CLI consumption-gap closure as the
+      next concrete commit.
+- **`docs/SCHWARZSCHILD_LIKE_REMAP_PLAN.md` §8
+  (renumbered + corrected).** Two surface changes:
+    - **Renumber:** one replace-all substitution
+      shifts the original SCHW.10 (final audit)
+      → SCHW.11. A new "SCHW.10 — Audit (docs
+      only)" subsection is inserted between the
+      SCHW.9 entry and the renumbered SCHW.11.
+    - **SCHW.9 entry correction:** the stale SCHW.9
+      "Debug visualization (AOV-encoding
+      refinement)" entry is rewritten to match the
+      actually-landed scope at `f102dd3`
+      ("Debug visualization + fixture (impl,
+      scene-loader + fixture)"). The new entry
+      documents the five surface additions
+      (fixture file, scene-parser support, Scene
+      POD slot, dispatcher merge logic,
+      fixture-companion doc) and the explicit
+      deferral of the AOV-encoding refinement
+      decision to a future encoding-refinement
+      slice if requested.
+
+### What does NOT ship
+
+- **No source code.** Nothing in any `src/` subtree
+  is touched (`git diff` outside `docs/` ⇒ 0 bytes).
+- **No new test binary.** ctest set unchanged at 12.
+- **No CMake change.** No new `rr_*` target; no
+  link-line change.
+- **No `BUILD_PLAN.md` historical-record rewrite.**
+  The MANI-I.* / SCHW.1–SCHW.9 entries above stay
+  as-is; this SCHW.10 entry is additive.
+- **No `MODULE_MAP.md` update.** The per-slice audit
+  is doc-only; module-map promotion still waits for
+  MANI-I.12 (final cross-host audit) per the
+  integration plan §11.
+- **No update to the prior audit docs.** The
+  MANI-I.2 / MANI-I.4 / MANI-I.6 / MANI-I.9 /
+  SCHW.2 / SCHW.4 / SCHW.6 / SCHW.8 audit docs
+  are preserved as point-in-time historical
+  snapshots.
+- **No integration plan §3 chain-diagram update.**
+  The SCHW.* renumbering is local to the
+  `SCHWARZSCHILD_LIKE_REMAP_PLAN.md` §8 sub-slice
+  ladder.
+
+### Acceptance
+
+- **Compiles.** Documentation-only slice; no build
+  configuration touched. The audit-host build
+  remains at the post-SCHW.9 baseline (`100% tests
+  passed, 0 tests failed out of 12`;
+  `manifold_identity_tests: 198 / 198 checks
+  passed`; `cli_tests: 123/123 passed`;
+  `renderer_tests: 19 / 19 passed`).
+- **Internally consistent.** The seven-row evidence
+  table cites concrete file/line positions in
+  `scenes/test_schwarzschild_like_manifold.rrscene`,
+  `src/io/SceneLoader.cpp`, `src/scene/Scene.h`,
+  `src/main.cpp`, and `src/manifold/SchwarzschildLikeWarp.h`
+  that re-verify on the audit host; the
+  renumbering in
+  `SCHWARZSCHILD_LIKE_REMAP_PLAN.md` §8 is verified
+  by reading the renumbered section headings.
+- **Verdict honesty.** The verdict is `PASS`
+  because the structural fixture-safety checks
+  pass — not because of an arbitrary judgement
+  call. Check #6 (CUDA/OptiX runtime status) is
+  DEFERRED on documented audit-host limitations
+  (no SDK on the audit host; consumption-gap
+  CLI extension not yet landed). The §3 "WHAT
+  THIS AUDIT DOES NOT VERIFY" section explicitly
+  enumerates the five items the audit cannot
+  check, so a future reader understands the
+  scope-boundary.
+
+### Module status changes
+
+`docs/MODULE_MAP.md` is *not* updated by this slice.
+The SCHW.10 audit verdict (`PASS` structurally,
+`DEFERRED` runtime) authorises the operator to
+proceed to either SCHW.5 (CUDA-side kernel wiring),
+SCHW.11 (final audit), or a CLI consumption-gap
+closure (single-line extension to
+`--render-optix-aovs` that accepts a scene-file
+argument so the fixture end-to-end engages the
+SchwarzschildLike warp via the existing
+dispatcher-merge logic); no module-map row changes
+state until MANI-I.12 (final cross-host audit)
+lands.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:

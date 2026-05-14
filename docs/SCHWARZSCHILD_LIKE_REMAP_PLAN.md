@@ -353,7 +353,7 @@ SCHW.* sub-slices verify.
   terminates). The approximation's accuracy is
   documented (residual error ≤ `1e-4` at typical
   parameter ranges).
-- The approximate inverse's accuracy gates SCHW.10
+- The approximate inverse's accuracy gates SCHW.11
   (audit): the audit runs a forward+inverse
   round-trip on representative input points and
   verifies the residual is bounded.
@@ -481,7 +481,7 @@ no-CUDA / no-OptiX-SDK fallback, matching the
 (`docs/STAGE_19_DENOISER_AUDIT.md` Q1 / Q2 rubric).
 
 Each deferred check must be exercised on a CUDA +
-OptiX-SDK host before SCHW.10 (audit) closes the
+OptiX-SDK host before SCHW.11 (audit) closes the
 chart's per-slice gate:
 
 ### 7.1 Euclidean fallback bit-identity (CUDA)
@@ -534,7 +534,7 @@ a documented signature:
   AOV values match world-space positions).
 - A documented clamp shell at `r = clampRadius`.
 
-The reference AOV PPM is pinned by SCHW.9 + SCHW.10
+The reference AOV PPM is pinned by SCHW.9 + SCHW.11
 on a CUDA + OptiX-SDK host.
 
 ### 7.5 Beauty-pass lensing signature
@@ -544,7 +544,7 @@ Run with the primary-ray-direction warp enabled
 documented lensing signature: a sphere at known
 position behind the mass should appear "stretched"
 toward the lensing edge. The reference PPM is
-pinned by SCHW.10 audit.
+pinned by SCHW.11 audit.
 
 ### 7.6 Off-chart non-regression
 
@@ -619,7 +619,7 @@ slice ships only after its predecessor is green.
   audit shifts the SCHW.* sub-slice numbering
   by `+1` from the original plan
   (CPU integration moves SCHW.2 → SCHW.3, etc.;
-  the final audit slot moves SCHW.9 → SCHW.10).
+  the final audit slot moves SCHW.9 → SCHW.11).
 
 ### SCHW.3 — CPU integration (impl, host-only)
 
@@ -667,7 +667,7 @@ slice ships only after its predecessor is green.
   (CUDA integration moves SCHW.4 → SCHW.5;
   OptiX integration moves SCHW.5 → SCHW.7;
   debug visualization moves SCHW.7 → SCHW.9;
-  the final audit slot moves SCHW.9 → SCHW.10).
+  the final audit slot moves SCHW.9 → SCHW.11).
 
 ### SCHW.5 — CUDA integration (impl, GPU-side)
 
@@ -734,7 +734,7 @@ slice ships only after its predecessor is green.
   from the post-SCHW.4 plan (OptiX integration
   moves SCHW.6 → SCHW.7; debug visualization
   moves SCHW.7 → SCHW.9; the final audit slot
-  moves SCHW.9 → SCHW.10).
+  moves SCHW.9 → SCHW.11).
 
 ### SCHW.7 — OptiX integration (impl, GPU-side)
 
@@ -789,30 +789,81 @@ slice ships only after its predecessor is green.
   the SCHW.* sub-slice numbering by `+1` from the
   post-SCHW.6 plan (debug visualization moves
   SCHW.8 → SCHW.9; the final audit slot moves
-  SCHW.9 → SCHW.10).
+  SCHW.9 → SCHW.11).
 
-### SCHW.9 — Debug visualization (impl, AOV-encoding refinement)
+### SCHW.9 — Debug visualization + fixture (impl, scene-loader + fixture)
 
-- **Scope:** refine the
-  `ManifoldCoordinates` AOV's encoding for the
-  SchwarzschildLike chart. The choice between
-  "raw chart-space hit position" (current
-  MANI-I.8 behaviour) and "displacement vector
-  `chart_pos - world_pos`" is decided at this
-  slice. The chosen encoding is pinned by a
-  reference PPM in the `tests/goldens/` set.
+- **Scope:** consolidate the operator's "debug
+  visualization" goal with the SCHW.* ladder's
+  canonical fixture-scene need. Adds (a) a
+  controlled fixture scene
+  (`scenes/test_schwarzschild_like_manifold.rrscene`)
+  with six visible marker spheres + ground-plane
+  mesh + a `manifold` block authoring all four
+  parser-supported `ManifoldMode` fields
+  (`enabled=true`, `chart="schwarzschild-like"`,
+  `strength=0.5`, `debug_visualization=true`);
+  (b) minimal scene-parser support for the
+  `manifold` block (`apply_manifold` +
+  `parse_chart_type` helpers in
+  `src/io/SceneLoader.cpp`); (c) a `Scene::manifold`
+  POD slot; (d) dispatcher merge logic in
+  `src/main.cpp::run_render_optix_aovs` /
+  `run_render_aovs` resolving `effective_manifold =
+  cfg.manifold.enabled ? cfg.manifold :
+  scene.manifold`; (e) a fixture-companion doc
+  (`docs/SCHWARZSCHILD_LIKE_FIXTURE.md`). The
+  `ManifoldCoordinates` AOV encoding decision the
+  original SCHW.9 brief enumerated is deferred to a
+  future encoding-refinement slice if the operator
+  requests it — SCHW.9 (this slice) reuses the
+  existing raw-chart-space-position encoding the
+  MANI-I.8 / SCHW.7 wiring already produces.
 - **Acceptance:**
-  - The chosen encoding is documented in
-    `docs/MANIFOLD_DEBUG_AOV_TASK.md` (an
-    addendum subsection).
-  - The reference PPM is pinned; SCHW.10 audit
-    will `cmp` it against the renderer's
-    output.
-- **What does NOT ship:** new AOV slot; the
-  `ManifoldCoordinates` slot from MANI-I.8 is
-  reused.
+  - Audit-host build green; ctest 12/12 PASS;
+    `manifold_identity_tests: 198/198 checks
+    passed`.
+  - Fixture loads cleanly via
+    `--scene-info scenes/test_schwarzschild_like_manifold.rrscene`
+    on the audit host.
+  - Default scenes byte-identical to the
+    pre-SCHW.9 baseline (verified by
+    `git diff --name-only -- scenes/`
+    returning exactly the new fixture).
+- **What does NOT ship:** no new warp math; no
+  CUDA-side kernel wiring (SCHW.5 still
+  deferred); no chart-parameter scene authoring;
+  no new CLI action that loads the fixture
+  through `--render-*` (the dispatcher merge
+  logic is in place but `--render-optix-aovs` /
+  `--render-aovs` continue to build scenes
+  inline). The runtime CUDA + OptiX-SDK
+  end-to-end render is deferred to a future
+  slice OR to operator-side validation on an
+  SDK-equipped host.
 
 ### SCHW.10 — Audit (docs only)
+
+- **Scope:** per-slice gate for SCHW.9. Writes
+  `docs/SCHWARZSCHILD_LIKE_FIXTURE_AUDIT.md`
+  verifying the seven structural items: fixture
+  scene exists; fixture uses SchwarzschildLike
+  manifold mode; values are bounded/safe; default
+  scenes remain unchanged; parser changes are
+  minimal; CUDA/OptiX runtime status (PASS /
+  DEFERRED / BLOCKED); verdict.
+- **Acceptance:** all six structural checks PASS;
+  check #6 (runtime status) DEFERRED on
+  documented audit-host limitations; the
+  audit-host build remains at the post-SCHW.9
+  baseline.
+- **What does NOT ship:** no source code; no test
+  binary changes; no CMake change. The audit
+  shifts the SCHW.* sub-slice numbering by `+1`
+  from the post-SCHW.8 plan (the final audit slot
+  moves SCHW.10 → SCHW.11).
+
+### SCHW.11 — Audit (docs only)
 
 - **Scope:** write
   `docs/SCHWARZSCHILD_LIKE_REMAP_AUDIT.md`,
