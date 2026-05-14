@@ -71418,6 +71418,139 @@ The Manifold Core's integration sequence is now
 module-map promotion still waits for the audit slice
 (MANI-I.7) per the integration plan §10.
 
+## Manifold Core Foundation Audit (docs only)
+
+**Scope of this slice (per the operator's *Manifold Core
+Foundation Audit* task brief): write
+`docs/MANIFOLD_CORE_FOUNDATION_AUDIT.md`, a verdict
+document checking that the first 14 commits of the
+Manifold Core Pivot (architecture doc → MANIFOLD.1-.7 →
+FIELD design doc → FIELD.1-.3 → Manifold Integration Plan)
+are safe and non-destructive across eight structural
+items. Documentation only; no source code, no test, no
+CMake, no behavioural change. The audit is the foundation
+gate for the seven MANI-I.* integration slices.**
+
+### What ships
+
+- **`docs/MANIFOLD_CORE_FOUNDATION_AUDIT.md` (new, ~110
+  lines).** Four-section verdict document matching the
+  `docs/STAGE_13_AUDIT_VERDICT.md` shape:
+    - **§1 VERDICT** — `PASS`. All eight structural
+      checks return PASS; no REPAIR / BLOCKED items.
+    - **§2 Per-check results** — a table with one row
+      per check (1 architecture doc exists, 2 manifold
+      module exists, 3 default mode disabled / no-op,
+      4 identity tests pass, 5 field interpretation
+      optional, 6 no renderer behaviour changed, 7 no
+      CUDA / OptiX path changed, 8 no C4D / server / UI /
+      node-editor touched). Each row carries the result
+      verdict and the concrete evidence (file paths,
+      line counts, commit hashes, ctest result lines).
+    - **§3 Reasoning summary** — synthesises the 14
+      commits: two architecture / design / planning
+      docs (`MANIFOLD_RENDERING_ARCHITECTURE.md` 634
+      lines, `FIELD_INTERPRETATION_LAYER.md` 737 lines,
+      `MANIFOLD_INTEGRATION_PLAN.md` 907 lines), two
+      INTERFACE libraries (`rr_manifold` six headers,
+      `rr_field` four headers), one ctest binary
+      (`manifold_identity_tests` 112 assertions). The
+      Phase 1 / Phase 2 boundary is codified at the
+      type-system level: `rr_field` cannot depend on
+      `rr_manifold`'s mutable state; `rr_manifold`
+      cannot depend on `rr_field`. The integration plan
+      is named as the operational complement to the
+      architecture doc.
+    - **§4 NEXT** — `MANI-I.1` (CLI config only) is the
+      next concrete slice; alternative paths
+      (continue FIELD data-model slices; run a
+      CUDA + OptiX-SDK host pass) listed.
+  Per-check evidence summary:
+    1. PASS — `docs/MANIFOLD_RENDERING_ARCHITECTURE.md`
+       present (634 lines, commit `671c57f`).
+    2. PASS — `src/manifold/` present with six headers
+       + README (~1192 lines); `rr_manifold` INTERFACE
+       library wired in `CMakeLists.txt`.
+    3. PASS — `ManifoldMode{}` defaults match the
+       documented "disabled, Euclidean, strength 0, no
+       output change" anchor field-by-field;
+       `ManifoldTransform{}` aggregates Euclidean /
+       Minkowski / scene-rest defaults.
+    4. PASS — `tests/manifold_identity_tests.cpp`
+       (376 lines, 112 assertions, 8 test groups) wired
+       as ctest binary #10; full audit-host run:
+       `100% tests passed, 0 tests failed out of 12`.
+    5. PASS — Phase 1 declared explicitly optional in
+       `FIELD_INTERPRETATION_LAYER.md` §1 / §6 / §7 /
+       §8; `src/field/` POD types are header-only;
+       `rr_field` linked into no other target;
+       `FieldInterpreter::enabled` defaults to `false`.
+    6. PASS — `git diff main..HEAD` returns zero files
+       across all 16 renderer subdirectories
+       (`src/cuda/`, `src/optix/`, `src/pathtracer/`,
+       `src/renderer/`, `src/gpu/`, `src/scene/`,
+       `src/io/`, `src/main.cpp`, `src/core/`,
+       `src/camera/`, `src/material/`, `src/lighting/`,
+       `src/texture/`, `src/geometry/`, `src/image/`,
+       `src/math/`, `src/relativity/`). All 12 ctest
+       binaries pass byte-identically to baseline.
+    7. PASS — sub-case of check 6: zero files in
+       `src/cuda/` or `src/optix/`. No
+       `OptixLaunchParams` field added; no
+       `__raygen__pathtrace` / `k_pathtrace_sample`
+       signature change. PTX embed helper untouched.
+    8. PASS — zero files in `src/server/`. No
+       `bridges/c4d_bridge/`, `bridges/c4d_native/`,
+       `tools/node_editor/`, `tools/preview_ui/`
+       directories created. Pre-existing
+       `tools/verify_cuda_host.py` unchanged. No
+       `.rrscene` schema bump.
+
+### What does NOT ship
+
+- **No source code.** Nothing in `src/manifold/`,
+  `src/field/`, `src/relativity/`, `src/cuda/`,
+  `src/optix/`, `src/pathtracer/`, `src/renderer/`,
+  `src/gpu/`, `src/scene/`, `src/io/`, `src/server/`,
+  `src/main.cpp`, `src/core/`, `src/camera/`,
+  `src/material/`, `src/lighting/`, `src/texture/`,
+  `src/geometry/`, `src/image/`, or `src/math/` is
+  touched (`git diff` outside `docs/` ⇒ 0 bytes).
+- **No new test binary.** ctest set unchanged at 12.
+- **No CMake change.** No new `rr_*` target.
+- **No source-code-side repair.** The audit returns
+  PASS on every check; no REPAIR action is opened.
+- **No MANI-I.* slice started.** The audit is the
+  *gate* for MANI-I.1+; landing the gate is this
+  slice's only deliverable.
+
+### Acceptance
+
+- **Compiles.** Documentation-only slice; no build
+  configuration touched. The audit-host build remains
+  at the post-Manifold-Integration-Plan baseline
+  (`100% tests passed, 0 tests failed out of 12`).
+- **Internally consistent.** The audit doc cross-
+  references `MANIFOLD_RENDERING_ARCHITECTURE.md`,
+  `FIELD_INTERPRETATION_LAYER.md`, and
+  `MANIFOLD_INTEGRATION_PLAN.md` correctly; per-check
+  evidence cites concrete file paths, line counts, and
+  commit hashes; the verdict is reproducible from the
+  evidence rows.
+- **Master-rule honesty.** Every PASS in the audit is
+  backed by concrete evidence (file paths, diff scope,
+  ctest result lines). No PASS is asserted without
+  citation; no REPAIR / BLOCKED is hidden.
+
+### Module status changes
+
+`docs/MODULE_MAP.md` is *not* updated by this slice.
+The audit verdict (`PASS`) authorises the operator to
+proceed to MANI-I.1, but no module-map row changes
+state until a MANI-I.* slice with real renderer-side
+behaviour lands (gate is still MANI-I.7 audit per the
+integration plan §10).
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
