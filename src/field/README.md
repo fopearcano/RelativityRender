@@ -18,7 +18,7 @@ change. The directory ships:
 | File | Design-doc section | Role |
 |------|--------------------|------|
 | `FieldType.h`        | §3            | Enum naming the five field-type slots (Scalar, Vector, Tensor, Curvature, ProbabilityAmplitudePlaceholder). Only `Scalar` has a concrete sampler this slice. |
-| `ScalarField.h`      | §3.1          | Constant-value scalar field POD + `sample(ScalarField, Vec4)` free function + `zero_scalar_field()` factory. The simplest real sampler; not a stub. |
+| `ScalarField.h`      | §3.1          | `ConstantScalarField` POD (uniform value + advisory `min_value`/`max_value` range) and `SampledScalarField` POD placeholder (`domain_min`/`domain_max` + `default_value` + range), plus `evaluate(field, Vec3)` / `evaluate(field, Vec4)` overloads for both types and `zero_constant_scalar_field()` / `zero_sampled_scalar_field()` factories. Promoted to its FIELD.2 shape. The sampled type's in-domain backend (texture / grid / procedural) is deferred. |
 | `FieldMapping.h`     | §4            | `FieldOutputChannel` enum (six entries matching §4.1-§4.6) + `FieldMapping` POD wiring `input_type` -> `output_channel` with `strength` and `output_clamp` + `disabled_field_mapping()` factory. |
 | `FieldInterpreter.h` | §6            | `FieldInterpreter` POD describing a Phase 1 module's metadata (`name`, `enabled`, `mapping`, `strength`) + `disabled_field_interpreter()` factory + `effective_strength(...)` helper. |
 

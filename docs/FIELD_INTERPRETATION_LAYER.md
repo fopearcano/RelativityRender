@@ -636,21 +636,38 @@ layer's first concrete module lands.
 
 ---
 
-## 9. First implementation slice (deferred)
+## 9. Milestone order
 
-The Field Interpretation Layer's **first source-level slice
-ships the skeleton** (FIELD.1 — Field Interpretation
-Skeleton), introducing the type infrastructure under
-`src/field/` (`FieldType.h`, `ScalarField.h`,
-`FieldMapping.h`, `FieldInterpreter.h`) without any
-interpretation kernel or renderer integration. The skeleton
-is the prerequisite for every later FIELD.x milestone.
+The Field Interpretation Layer's source-level slices land
+in the order below. Data-model slices (§3 POD shapes) ship
+first so each later kernel slice can consume a stable type
+surface; kernel slices (§4 channel implementations) follow
+once their prerequisites are green.
 
-The first **non-skeleton** Phase 1 implementation slice,
+### Data-model slices (already shipped or imminent)
+
+- **FIELD.1 — Field Interpretation Skeleton.** Lands the
+  source-level home of the layer under `src/field/`
+  (`FieldType.h`, `ScalarField.h`, `FieldMapping.h`,
+  `FieldInterpreter.h`) plus the README; introduces
+  `rr_field` as an INTERFACE library. No interpretation
+  kernel, no renderer integration. Prerequisite for every
+  later FIELD.x.
+- **FIELD.2 — Scalar Field Model.** Promotes
+  `ScalarField.h` to the full two-kind model
+  (`ConstantScalarField` + `SampledScalarField`
+  placeholder), adds `evaluate(field, Vec3)` /
+  `evaluate(field, Vec4)` overloads, and adds advisory
+  value-range metadata. Still data-model only; the sampled
+  type's in-domain backend is deferred to a later slice.
+
+### Kernel slices (deferred behind Manifold Core milestones)
+
+The first **kernel-bearing** Phase 1 implementation slice,
 scheduled to land after architecture-doc §10 step 3
 (Schwarzschild chart) is green, will be:
 
-**FIELD.2 — Kretschmann-scalar Diagnostic AOV.**
+**FIELD.3 — Kretschmann-scalar Diagnostic AOV.**
 
 - **Field type:** curvature field (§3.4); specifically
   the Kretschmann scalar
@@ -670,17 +687,16 @@ scheduled to land after architecture-doc §10 step 3
   single-precision tolerance.
 - **Out of scope for this slice:** beauty-pass
   modulation, distortion, density, chromatic shift,
-  artist-supplied field samplers. Subsequent slices
-  (FIELD.3+) add those channels one at a time, each
-  with its own reference image and its own
-  `BUILD_PLAN.md` entry.
+  artist-supplied field samplers.
 
 Later milestones reserved by the design (each will get its
-own slice and its own addendum once FIELD.2's contract
+own slice and its own addendum once FIELD.3's contract
 surface lands):
 
-- **FIELD.3** — artist-supplied scalar texture → emission;
-- **FIELD.4** — probability-amplitude sampler → density-
+- **FIELD.4** — artist-supplied scalar texture → emission
+  (consumes the FIELD.2 `SampledScalarField` placeholder's
+  backend once the chart-aware texture pipeline ships);
+- **FIELD.5** — probability-amplitude sampler → density-
   and-hue;
 - additional channels (chromatic shift, clamped
   distortion, beauty-pass colour modulation) interleaved

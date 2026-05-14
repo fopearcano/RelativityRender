@@ -338,10 +338,18 @@ target_link_libraries(rr_manifold INTERFACE rr_math rr_relativity)
 #                           Tensor / Curvature /
 #                           ProbabilityAmplitudePlaceholder
 #                           reserved as inert placeholders).
-#   ScalarField.h         - constant-value scalar field POD +
-#                           `sample(ScalarField, Vec4)` free
-#                           function + `zero_scalar_field()`
-#                           factory.
+#   ScalarField.h         - `ConstantScalarField` POD (uniform
+#                           value + advisory min_value/max_value
+#                           range) + `SampledScalarField` POD
+#                           placeholder (domain_min/domain_max
+#                           + default_value + range) +
+#                           `evaluate(field, Vec3)` /
+#                           `evaluate(field, Vec4)` overloads
+#                           for both types +
+#                           `zero_constant_scalar_field()` /
+#                           `zero_sampled_scalar_field()`
+#                           factories. Promoted to its FIELD.2
+#                           shape; sampled-backend deferred.
 #   FieldMapping.h        - `FieldOutputChannel` enum (Color /
 #                           Emission / Distortion / Density /
 #                           ChromaticShift / DiagnosticAOV) +

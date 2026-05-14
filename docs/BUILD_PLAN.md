@@ -70894,6 +70894,182 @@ implementation milestone with a real interpretation kernel
 (FIELD.2 — Kretschmann-scalar diagnostic AOV per the
 renumbered design-doc §9).
 
+## FIELD.2 — Scalar Field Model (impl, data-model-only)
+
+**Scope of this slice (per the operator's *FIELD.2 — Scalar
+Field Model* task brief): promote `src/field/ScalarField.h`
+from the FIELD.1 single-`ScalarField`-POD skeleton to the
+two-kind scalar-field model the Field Interpretation Layer
+design doc §3.1 specifies — a constant scalar field, a
+sampled scalar field placeholder, `evaluate(field, Vec3)` /
+`evaluate(field, Vec4)` overloads for both, and advisory
+value-range metadata on each POD. CPU-side data model only;
+no rendering integration, no quantum simulation, no
+behavioural change. The slice renumbers the design-doc §9
+milestone list: the Kretschmann-scalar diagnostic AOV moves
+from FIELD.2 to FIELD.3, artist-supplied texture → emission
+moves to FIELD.4, and probability-amplitude → density-and-
+hue moves to FIELD.5; FIELD.1 / FIELD.2 remain the
+data-model slices already shipped.**
+
+### What ships
+
+- **`src/field/ScalarField.h` (rewritten, +148 / -50 net,
+  ~70% doc-comment density).** Replaces the FIELD.1
+  single-POD skeleton with two scalar-field kinds plus a
+  uniform `evaluate(...)` API:
+    - **`ConstantScalarField` POD** — uniform-value field.
+      Fields: `value` (default `0.0f`); advisory range
+      metadata `min_value` (default `0.0f`) and `max_value`
+      (default `1.0f`). The simplest real sampler; not a
+      stub. `evaluate(...)` returns `f.value` regardless of
+      position.
+    - **`SampledScalarField` POD placeholder** — represents
+      a sampled scalar field whose backend (texture / grid /
+      procedural) has not landed yet. Fields: `domain_min` /
+      `domain_max` (`Vec3` chart-coordinate bounding box,
+      defaults empty at origin); `default_value` (returned
+      outside the domain or when no backend is wired,
+      default `0.0f`); the same advisory range metadata
+      `min_value` (`0.0f`) and `max_value` (`1.0f`).
+      `evaluate(...)` returns `default_value` everywhere
+      this slice — honestly reporting the placeholder state
+      until a backend lands.
+    - **`evaluate(ConstantScalarField, Vec3)`** /
+      **`evaluate(ConstantScalarField, Vec4)`** (`RR_HD
+      inline`). Both return `f.value`.
+    - **`evaluate(SampledScalarField, Vec3)`** /
+      **`evaluate(SampledScalarField, Vec4)`** (`RR_HD
+      inline`). Both return `f.default_value`.
+    - **`zero_constant_scalar_field()`** /
+      **`zero_sampled_scalar_field()`** factories. The
+      FIELD.1-era `zero_scalar_field()` and `sample(...)`
+      symbols are removed — they were unused outside the
+      skeleton's standalone check, so no caller-side
+      churn happens here.
+  Header preamble carries the field-by-field rationale, the
+  "Value-range metadata" advisory contract, and an explicit
+  "What does NOT live here this slice" section listing the
+  deferred items (texture / grid / procedural backend,
+  chart-aware `ManifoldTransform` consumption, quantum-
+  field evolvers, renderer integration).
+- **`CMakeLists.txt` (rr_field doc-comment block, one row
+  refreshed).** `ScalarField.h`'s entry now lists both POD
+  types, both factory functions, the two `evaluate(...)`
+  overloads, the advisory range metadata, and the
+  "sampled-backend deferred" note. CMake target shape and
+  link line are unchanged from FIELD.1 (still
+  `rr_field INTERFACE rr_math`).
+- **`src/field/README.md` (file-table row refreshed).**
+  `ScalarField.h`'s row now lists both POD types, both
+  factories, the `evaluate` overloads, the range-metadata
+  fields, and the deferred-backend caveat. The FIELD.2
+  promotion is called out explicitly.
+
+### What does NOT ship
+
+- **No texture / grid / procedural backend for
+  `SampledScalarField`.** The POD carries the metadata a
+  future backend will consume, but `evaluate(...)` honestly
+  returns `default_value` everywhere this slice. Master
+  rule #3 forbids shipping a fake backend.
+- **No chart-aware sampling.** Neither `evaluate(...)`
+  overload reads a `ManifoldTransform`. `rr_field` still
+  does not include any `manifold/*` header and is not
+  linked against `rr_manifold`.
+- **No quantum-field simulation.** Design-doc §7 non-goal
+  reiterated: scalar fields are input data only; the
+  renderer never evolves a Klein-Gordon, Schrödinger, or
+  Dirac wavefunction. Both POD types are *data*, not
+  *integrators*.
+- **No renderer integration.** Nothing in `src/cuda/`,
+  `src/optix/`, `src/pathtracer/`, `src/renderer/`,
+  `src/gpu/`, `src/scene/`, `src/io/`, `src/server/`,
+  `src/main.cpp`, `src/core/`, `src/camera/`,
+  `src/material/`, `src/lighting/`, `src/texture/`,
+  `src/geometry/`, `src/image/`, `src/math/`,
+  `src/relativity/`, `src/manifold/`, or `tests/` is
+  touched (`git diff` outside `src/field/`,
+  `CMakeLists.txt`, and `docs/BUILD_PLAN.md` ⇒ 0 bytes).
+- **No FieldInterpreter or FieldMapping change.** Their
+  consumption of `ScalarField` flows through unchanged:
+  neither POD carries a `ScalarField` member, and the
+  `FieldType::Scalar` enumerator on `FieldMapping::input_type`
+  is type-agnostic between the constant and sampled
+  shapes — future kernel slices will choose which shape
+  they consume per-module.
+- **No CLI surface change.** No `--field-*` flag plumbed.
+  Phase 1 is opt-in per-scene via field-interpreter
+  attachment; CLI / scene-file plumbing lands in FIELD.3+
+  per the renumbered design-doc §9.
+- **No dedicated test binary.** ctest set unchanged at 12.
+
+### Acceptance
+
+- **Compiles.** Audit-host rebuild
+  (`cmake --build build -j`) succeeds against the same
+  configuration as FIELD.1. The new header is included by
+  no current consumer; nothing in the existing translation-
+  unit set newly references either `ConstantScalarField` or
+  `SampledScalarField`. A standalone
+  `g++ -std=c++20 -Isrc -Wall -Wextra -Werror` build of a
+  `ScalarField.h`-consuming TU compiles cleanly.
+- **Validates.** A standalone runtime check exercises the
+  promoted surface:
+    - `ConstantScalarField{}` has the documented defaults
+      (`value = 0`, `min_value = 0`, `max_value = 1`).
+    - `evaluate(c, Vec3{...})` and `evaluate(c, Vec4{...})`
+      both return `c.value` regardless of the position /
+      event input across representative coordinates
+      (including `1e6` / `-1e6`-scale outliers).
+    - Non-zero `ConstantScalarField{value = 3.14}` returns
+      `3.14` everywhere on both overloads.
+    - `SampledScalarField{}` has the documented defaults
+      (empty domain at origin, `default_value = 0`, range
+      `[0, 1]`).
+    - `evaluate(s, ...)` returns `default_value` everywhere
+      on both overloads — confirming the honest placeholder
+      behaviour both inside and outside the (empty) domain.
+    - A `SampledScalarField` with non-empty domain
+      (`[-1, +1]³`) and non-zero `default_value` still
+      returns `default_value` even at the chart origin
+      (inside the domain), demonstrating the slice's
+      "no-backend-wired" contract.
+    - Factories `zero_constant_scalar_field()` /
+      `zero_sampled_scalar_field()` match the default
+      initialisers.
+    - Both POD types are trivially copyable and
+      standard-layout (static_asserts); sizes are
+      `sizeof(ConstantScalarField) = 12` bytes and
+      `sizeof(SampledScalarField) = 36` bytes — both
+      compact enough for future per-scene scalar-field
+      libraries.
+    - FIELD.1 partners `FieldInterpreter` /
+      `FieldMapping` still compile alongside the promoted
+      header; the `FieldType::Scalar` enumerator and the
+      `effective_strength(...)` helper behave unchanged.
+- **No behaviour change.** All 12 ctest binaries pass
+  (`100% tests passed, 0 tests failed out of 12`) — same
+  set and outputs as the FIELD.1 acceptance line.
+- **Rule-#3 honesty.** `ConstantScalarField` is a real,
+  complete sampler (a constant truly is constant
+  everywhere). `SampledScalarField`'s `evaluate(...)`
+  returns the documented `default_value` rather than a
+  fake "as if a backend were wired" value — the data
+  model is honest about not having a backend yet. The
+  advisory range metadata is documented as advisory, not
+  enforced.
+
+### Module status changes
+
+`docs/MODULE_MAP.md` is *not* updated by this slice. The
+scalar-field model is now *shaped* in both constant and
+sampled-placeholder forms but still has no renderer
+consumer; module-map promotion still waits for FIELD.3 (the
+first kernel-bearing interpretation slice per the
+renumbered design-doc §9 — Kretschmann-scalar diagnostic
+AOV, behind the Schwarzschild chart).
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
