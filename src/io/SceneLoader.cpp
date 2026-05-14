@@ -5,6 +5,8 @@
 #include "geometry/Sphere.h"
 #include "geometry/Triangle.h"
 #include "lighting/Light.h"
+#include "manifold/CoordinateChart.h"
+#include "manifold/ManifoldMode.h"
 #include "material/MaterialTypes.h"
 #include "math/Transform.h"
 #include "math/Vec2.h"
@@ -877,6 +879,105 @@ bool apply_relativity(const JsonValue& obj,
     return true;
 }
 
+// SCHW.9 — parse a kebab-case chart name into a
+// `CoordinateChartType` enumerator. Mirrors the CLI parser
+// (`src/core/CommandLine.cpp::parse_chart_type`); duplicated
+// at the scene-loader scope to avoid widening the
+// `rr_core` -> `rr_io` dependency edge. The five accepted
+// names are the canonical chart-family identifiers per the
+// MANIFOLD.1 + SCHW.* design (`euclidean`, `schwarzschild-
+// like`, `kruskal-like`, `penrose-like`, `kerr-like`).
+bool parse_chart_type(const std::string& s,
+                      rr::manifold::CoordinateChartType& out) {
+    using rr::manifold::CoordinateChartType;
+    if (s == "euclidean") {
+        out = CoordinateChartType::Euclidean;               return true;
+    }
+    if (s == "schwarzschild-like") {
+        out = CoordinateChartType::SchwarzschildLike;       return true;
+    }
+    if (s == "kruskal-like") {
+        out = CoordinateChartType::KruskalLikePlaceholder;  return true;
+    }
+    if (s == "penrose-like") {
+        out = CoordinateChartType::PenroseLikePlaceholder;  return true;
+    }
+    if (s == "kerr-like") {
+        out = CoordinateChartType::KerrLikePlaceholder;     return true;
+    }
+    return false;
+}
+
+// SCHW.9 — apply the `manifold` block onto a `ManifoldMode`.
+// Minimal parser surface, scoped to the SCHW.* sub-slice
+// ladder's "test fixture" needs (the operator's brief
+// explicitly forbids broadening the scene format beyond the
+// fixture's needs). Four fields supported, each optional:
+//
+//   - `enabled`             (bool, default false)
+//   - `chart`               (string; one of the five
+//                            kebab-case chart names parsed by
+//                            `parse_chart_type`; default
+//                            "euclidean")
+//   - `strength`            (float, default 0.0)
+//   - `debug_visualization` (bool, default false; also accepts
+//                            the camelCase shorthand
+//                            `debugVisualization` matching the
+//                            CLI's `--manifold-debug` flag)
+//
+// Chart-side parameters (`CoordinateChart::params.{mass,
+// spin, compactification_scale, origin}`) are NOT exposed by
+// the scene parser at this slice; renderer dispatchers
+// supply artistic defaults per SCHW.7's main.cpp helper
+// (`mass=1.0`, `spin=1.0`, `compactification_scale=0.1`,
+// `origin=(0,0,0)`). Future slices may broaden the scene
+// surface to cover chart parameters; SCHW.9 deliberately
+// scopes to ManifoldMode only.
+bool apply_manifold(const JsonValue& obj,
+                    rr::manifold::ManifoldMode& mode,
+                    std::string& err) {
+    if (obj.kind != JsonKind::Object) {
+        err = "'manifold' must be a JSON object";
+        return false;
+    }
+
+    if (const auto* v = obj.find("enabled")) {
+        if (!to_bool(*v, mode.enabled, err,
+                     "manifold.enabled")) return false;
+    }
+
+    if (const auto* v = obj.find("chart")) {
+        std::string chart_str;
+        if (!to_string(*v, chart_str, err,
+                       "manifold.chart")) return false;
+        if (!parse_chart_type(chart_str, mode.chart)) {
+            err = "manifold.chart has unknown value '" + chart_str
+                + "' (expected one of: euclidean, "
+                  "schwarzschild-like, kruskal-like, "
+                  "penrose-like, kerr-like)";
+            return false;
+        }
+    }
+
+    if (const auto* v = obj.find("strength")) {
+        if (!to_float(*v, mode.strength, err,
+                      "manifold.strength")) return false;
+    }
+
+    // canonical snake_case; the CLI uses `--manifold-debug` so
+    // the camelCase `debugVisualization` shorthand matches the
+    // C++ field name directly for authoring convenience
+    // (mirrors the relativity block's
+    // canonical/shorthand precedent at line ~707).
+    if (const auto* v = obj.find_or(
+            "debug_visualization", "debugVisualization")) {
+        if (!to_bool(*v, mode.debug_visualization, err,
+                     "manifold.debug_visualization")) return false;
+    }
+
+    return true;
+}
+
 // Apply a single materials-array entry onto `out`. Validates id /
 // per-channel ranges, accepts both canonical snake_case and the
 // `MaterialParams` C++-camelCase aliases (`baseColor`,
@@ -1677,6 +1778,23 @@ LoadResult parse(const std::string& text) {
         std::string apply_err;
         if (!apply_relativity(*rel_v, result.scene.observer,
                               result.scene.relativity, apply_err)) {
+            result.error_message = apply_err;
+            return result;
+        }
+    }
+
+    // manifold (optional). SCHW.9 surface: four ManifoldMode
+    // fields (`enabled`, `chart`, `strength`,
+    // `debug_visualization`). Default `ManifoldMode{}` is the
+    // pre-pivot disabled / Euclidean / strength-0 anchor.
+    // Renderer dispatchers may merge `scene.manifold` with the
+    // CLI-side `cfg.manifold` per main.cpp's policy (CLI wins
+    // when `cfg.manifold.enabled = true`; scene fills in
+    // otherwise).
+    if (const JsonValue* mani_v = root.find("manifold")) {
+        std::string apply_err;
+        if (!apply_manifold(*mani_v, result.scene.manifold,
+                            apply_err)) {
             result.error_message = apply_err;
             return result;
         }

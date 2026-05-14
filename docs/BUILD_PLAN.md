@@ -74650,6 +74650,232 @@ visualization refinement); no module-map row changes
 state until MANI-I.12 (final cross-host audit)
 lands.
 
+## SCHW.9 — Schwarzschild-Like Debug Visualization + Fixture (impl, scene-loader + fixture)
+
+**Scope of this slice (per the operator's *SCHW.9 —
+Schwarzschild-Like Debug Visualization + Fixture* task
+brief and `docs/SCHWARZSCHILD_LIKE_REMAP_PLAN.md` §8
+SCHW.9): add a controlled diagnostic scene/output for
+the Schwarzschild-like manifold warp by (a) creating a
+fixture scene with the minimum geometry / camera /
+manifold settings that exercise the SCHW.7 OptiX warp
+bridge on a CUDA + OptiX-SDK host; (b) adding minimal
+scene-parser support for the `ManifoldMode` fields the
+fixture authors (`enabled`, `chart`, `strength`,
+`debug_visualization`); (c) wiring the scene-loaded
+manifold into the host dispatcher so a scene-aware action
+can engage the chart without requiring CLI flags; (d)
+documenting the fixture's purpose, expected visual
+behavior, default/no-op comparison, and the runtime
+CUDA/OptiX status (DEFERRED on the audit host).
+Compiles with OptiX OFF and ON; no warp-math, no GR
+solver, no C4D/server/UI/node-editor touch.**
+
+### What ships
+
+- **`scenes/test_schwarzschild_like_manifold.rrscene`
+  (new).** The canonical Schwarzschild-like fixture
+  scene:
+    - Render settings: `1280 × 720`, `samples_per_pixel
+      = 1`, `max_depth = 1` (fast audit-host validation;
+      the SchwarzschildLike chart affects the
+      `ManifoldCoordinates` AOV, not the bounce loop).
+    - Camera at `(0, 1.2, 6.0)` looking toward the
+      mass origin, FoV `45°`.
+    - **`manifold` block** (the SCHW.9 surface):
+      `enabled: true`, `chart: "schwarzschild-like"`,
+      `strength: 0.5` (moderate; well below the
+      math leaf's `±0.5` bend cap), `debug_visualization:
+      true`.
+    - Six visible spheres at known radial distances from
+      the mass origin (`centre`, `near-right`, `near-up`,
+      `near-front`, `far-right`, `far-left`) — provides
+      a clear "is the warp engaged?" visual signal
+      across the radial distance range
+      `r ∈ [~0.5, 3.0]`.
+    - One ground-plane mesh (`y = 0`, `12 × 12` extent) so
+      the OptiX `render_aovs` "first non-empty mesh"
+      picker has a target.
+    - Two lights (directional key + environment sky).
+    - No `relativity` block — relativistic perception
+      is intentionally disabled so the AOV signature
+      reflects the chart's coordinate deformation only.
+    - No chart-parameter authoring; dispatcher uses
+      SCHW.7 artistic defaults (`mass=1.0`,
+      `spin=1.0`, `compactification_scale=0.1`,
+      `origin=(0,0,0)`). Safe by construction (no
+      extreme / singular values; the clamp-radius
+      guard prevents `1/r^falloff` singularity at the
+      mass origin).
+- **`src/scene/Scene.h` (extended).** Adds the
+  `rr::manifold::ManifoldMode manifold` field to the
+  `Scene` POD (next to `relativity`). Default
+  `ManifoldMode{}` is the pre-pivot
+  disabled / Euclidean / strength-0 no-op anchor,
+  preserving the byte-identity invariant for every
+  existing scene that does not author a `manifold`
+  block.
+- **`src/scene/Scene.cpp` (extended).** `Scene::clear()`
+  resets the new `manifold` field to
+  `ManifoldMode{}` (mirrors the existing `relativity`
+  reset).
+- **`src/io/SceneLoader.cpp` (extended).** Three
+  surface additions:
+    - **`parse_chart_type(string, CoordinateChartType&)`**
+      — local helper that parses the five kebab-case
+      chart names (`euclidean`, `schwarzschild-like`,
+      `kruskal-like`, `penrose-like`, `kerr-like`)
+      into the `CoordinateChartType` enumerator.
+      Duplicates the CLI's `parse_chart_type` (in
+      `src/core/CommandLine.cpp`) to avoid widening
+      the `rr_core` → `rr_io` dependency edge.
+    - **`apply_manifold(JsonValue&, ManifoldMode&,
+      string& err)`** — parses the `manifold` JSON
+      block into `ManifoldMode`. Four supported fields,
+      all optional:
+      `enabled` (bool, default `false`),
+      `chart` (string, default `"euclidean"`),
+      `strength` (float, default `0.0`),
+      `debug_visualization` (bool, default `false`;
+      accepts `debugVisualization` camelCase alias
+      matching the CLI's `--manifold-debug` flag).
+      Chart-side parameters are NOT exposed (operator
+      brief: "do not broaden scene format beyond this
+      fixture's needs").
+    - **Top-level dispatcher.** Wires the `manifold`
+      block into the SceneLoader's `parse_scene`
+      driver right after the `relativity` block, with
+      the same optional-field semantics.
+- **`src/main.cpp` (extended).** Two dispatcher arms
+  gain the SCHW.9 merge policy:
+    - **`run_render_optix_aovs`:** introduces
+      `effective_manifold = cfg.manifold.enabled
+      ? cfg.manifold : scene.manifold` — CLI wins on
+      explicit `--manifold-enable`; scene fills in
+      otherwise. The OptiX dispatcher's
+      `render_aovs(..., effective_manifold,
+      manifold_chart)` call uses the merged value;
+      the PPM save guard reads
+      `effective_manifold.debug_visualization`.
+    - **`run_render_aovs`:** mirrors the same merge
+      for the CUDA `--render-aovs` path (the CUDA
+      kernel's SchwarzschildLike arm is still
+      SCHW.5-deferred, so this only affects AOV
+      buffer allocation and PPM save gating; the
+      kernel writes raw `best.position` per
+      MANI-I.8). When SCHW.5 lands, the same merge
+      will activate the CUDA-side warp.
+- **`CMakeLists.txt` (extended).** `rr_scene`'s
+  PUBLIC link adds `rr_manifold` (mirrors MANI-I.3's
+  `rr_pathtracer → rr_manifold` link). `rr_manifold`
+  is INTERFACE-only so no build artifact changes;
+  the explicit link documents the dependency.
+- **`docs/SCHWARZSCHILD_LIKE_FIXTURE.md` (new).**
+  Authoritative fixture-companion doc with §1
+  Purpose, §2 Fixture composition (render settings /
+  camera / manifold block / geometry table / lighting
+  / what is deliberately omitted), §3 Expected visual
+  behavior (per-sphere radial-warp signature
+  predictions), §4 Expected default / no-op comparison
+  (three override mechanisms producing byte-identical
+  pre-SCHW.7 baseline), §5 Current consumption status
+  (parser-loadable today; renderer consumption requires
+  a future CLI extension to thread scene files into
+  `--render-optix-aovs`), §6 Runtime CUDA/OptiX status
+  (DEFERRED on the audit host; specific runtime checks
+  enumerated), §7 References.
+
+### What does NOT ship
+
+- **No new warp math.** The SCHW.1 math leaf is reused
+  verbatim. SCHW.9 adds the fixture + parser surface
+  + dispatcher merge; no new math.
+- **No full GR solver.** Architecture-doc §8 non-goals
+  stand.
+- **No Penrose / Kerr / Kruskal authoring surface.**
+  The fixture is SchwarzschildLike-only.
+- **No new CLI action.** `--render-optix-aovs` and
+  `--render-aovs` continue to build their scenes
+  inline; they do not yet accept the fixture as a
+  scene-file argument. The dispatcher's merge logic
+  is in place (dead-code today for the inline-scene
+  paths; activates when a future single-line CLI
+  extension adds the `<scene-path>` argument to either
+  action).
+- **No SCHW.5 (CUDA kernel) wiring.** The CUDA-side
+  SchwarzschildLike arm is still deferred. The CUDA
+  dispatcher's merge logic is in place; when SCHW.5
+  lands, the fixture will activate the warp on the
+  CUDA path as well.
+- **No chart-parameter scene-authoring.** The
+  `CoordinateChart::params` slots are not exposed via
+  the scene parser. Dispatcher supplies SCHW.7
+  artistic defaults.
+- **No alteration of default scenes.** The eight
+  existing `.rrscene` files are byte-identical to
+  the post-SCHW.8 baseline. Only the new
+  `test_schwarzschild_like_manifold.rrscene` is
+  added.
+- **No new ctest binary.** ctest set unchanged at 12.
+- **No C4D / server / UI / node-editor touch.**
+- **No `.rrscene` format version bump.** The
+  `manifold` block is an optional top-level key
+  alongside the existing optional `relativity`
+  block; the schema version stays at `1.0.0`.
+
+### Acceptance
+
+- **Compiles with OptiX OFF and ON.** Audit-host
+  rebuild succeeds cleanly with no new warnings under
+  `rr_apply_warnings`. The OptiX-OFF audit-host stub
+  path is preserved (`run_render_optix_aovs` still
+  returns the documented "requires OptiX" error on
+  the audit host).
+- **Tests.** Full ctest: `100% tests passed, 0 tests
+  failed out of 12`. No regression vs the post-SCHW.8
+  baseline (`manifold_identity_tests: 198 / 198 checks
+  passed`; `cli_tests: 123/123`; `renderer_tests:
+  19/19`; `relativity_tests` unchanged).
+- **Fixture loads cleanly.**
+  `RelativityRender --scene-info
+  scenes/test_schwarzschild_like_manifold.rrscene`
+  succeeds on the audit host with no parse errors
+  (the scene-info printer reads through the parser's
+  successful exit path; the `manifold` block is
+  consumed silently by the parser even though the
+  printer does not list it).
+- **Default no-op preserved.** The existing eight
+  `.rrscene` files do not author a `manifold` block;
+  the parser's optional-field handling leaves
+  `scene.manifold = ManifoldMode{}` for those scenes;
+  dispatcher merge resolves to the existing CLI
+  default. Every existing render action produces
+  byte-identical output to the pre-SCHW.9 baseline.
+- **Documentation honest about consumption gap.** The
+  fixture doc explicitly notes that no existing CLI
+  action loads the fixture's `manifold` block into a
+  manifold-aware render (both `--render-optix-aovs`
+  and `--render-aovs` build inline scenes); the
+  dispatcher merge logic is in place for the future
+  CLI extension that would tie the fixture together
+  end-to-end. The CUDA-side warp engagement is
+  additionally gated on the SCHW.5 (deferred) kernel
+  arm.
+- **Runtime CUDA/OptiX status:** DEFERRED on the
+  audit host per the standard per-slice posture
+  (MANI-I.6 / MANI-I.9 / SCHW.2 / SCHW.4 / SCHW.6 /
+  SCHW.8). The fixture doc §6 enumerates the runtime
+  checks the operator should exercise on a CUDA +
+  OptiX-SDK host once the future CLI extension lands.
+
+### Module status changes
+
+`docs/MODULE_MAP.md` is *not* updated by this slice.
+The SCHW.9 fixture is parser-loadable and the
+dispatcher merge logic is in place; module-map
+promotion still waits for MANI-I.12 (final cross-host
+audit) per the integration plan §11.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:

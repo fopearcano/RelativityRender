@@ -4,6 +4,7 @@
 #include "geometry/Mesh.h"
 #include "geometry/Sphere.h"
 #include "lighting/Light.h"
+#include "manifold/ManifoldMode.h"
 #include "material/MaterialTypes.h"
 #include "relativity/RelativityParams.h"
 #include "scene/RenderSettings.h"
@@ -100,6 +101,19 @@ struct Scene {
     RenderSettings                    render_settings;
     rr::relativity::Observer          observer;     // 3-velocity in c-units
     rr::relativity::RelativityParams  relativity;   // artist-facing toggles + max_beta
+
+    // SCHW.9 — per-scene Manifold Core mode authored in the
+    // scene file's optional `manifold` block. Default
+    // `ManifoldMode{}` is the disabled / Euclidean / strength-0
+    // no-op anchor (matches the CLI default
+    // `disabled_manifold_mode()` from MANI-I.1). When the scene
+    // file authors any of the supported fields (`enabled`,
+    // `chart`, `strength`, `debug_visualization`), the value is
+    // recorded here; renderer dispatchers may merge with the
+    // CLI-side `cfg.manifold` per main.cpp's policy (CLI wins
+    // on explicit `--manifold-enable`; scene fills in when the
+    // CLI default is in force).
+    rr::manifold::ManifoldMode        manifold;
 
     std::vector<SceneSphere>          spheres;
 

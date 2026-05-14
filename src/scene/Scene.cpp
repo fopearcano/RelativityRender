@@ -16,6 +16,7 @@ void Scene::clear() {
     render_settings = RenderSettings{};
     observer        = rr::relativity::Observer{};
     relativity      = rr::relativity::RelativityParams{};
+    manifold        = rr::manifold::ManifoldMode{};
 }
 
 int validate_material_texture_ids(

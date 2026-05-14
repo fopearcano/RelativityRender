@@ -413,7 +413,7 @@ add_library(rr_scene STATIC
     src/scene/Scene.cpp
 )
 target_include_directories(rr_scene PUBLIC src)
-target_link_libraries(rr_scene PUBLIC rr_math rr_camera rr_geometry rr_relativity rr_material rr_lighting)
+target_link_libraries(rr_scene PUBLIC rr_math rr_camera rr_geometry rr_relativity rr_material rr_lighting rr_manifold)
 rr_apply_warnings(rr_scene)
 
 # rr_pathtracer: GPU-safe sampling foundation (Stage 11A; master

@@ -2058,34 +2058,49 @@ int run_render_optix_aovs(const rr::core::Config& cfg) {
                   "optix-sdk).");
     return 1;
 #else
+    // SCHW.7 / SCHW.9 — resolve the per-launch
+    // `ManifoldMode` from the CLI (`cfg.manifold`) and the
+    // scene file (`scene.manifold`, populated by the SCHW.9
+    // parser when the scene authors a `manifold` block).
+    // Policy: CLI wins on explicit `--manifold-enable`;
+    // otherwise the scene fills in. This lets a fixture
+    // scene engage the manifold without requiring CLI
+    // flags (the SCHW.9 fixture
+    // `scenes/test_schwarzschild_like_manifold.rrscene`
+    // relies on this).
+    const rr::manifold::ManifoldMode effective_manifold =
+        cfg.manifold.enabled ? cfg.manifold : scene.manifold;
+
     // SCHW.7 — build a per-launch `CoordinateChart` from the
-    // operator's `cfg.manifold` selection. The
+    // resolved manifold mode. The
     // `CoordinateChart` POD carries the chart's identity +
     // origin + `CoordinateChartParameters` (mass / spin /
     // compactification_scale / reserved). The default
-    // `cfg.manifold.chart = Euclidean` maps onto the
-    // pre-SCHW.7 byte-identity baseline because
+    // `chart = Euclidean` maps onto the pre-SCHW.7
+    // byte-identity baseline because
     // `is_active(manifold_mode)` returns `false` for
     // Euclidean and the kernel arm short-circuits.
     //
     // For SchwarzschildLike, the chart parameters are not
-    // yet CLI-exposed; the slice supplies sensible artistic
-    // defaults — `mass = 1.0`, `spin = 1.0`,
+    // yet CLI-exposed and the SCHW.9 scene parser
+    // deliberately scopes to `ManifoldMode` fields only
+    // (no CoordinateChart parameters per the operator's
+    // "do not broaden scene format beyond this fixture's
+    // needs" rule). This dispatcher supplies sensible
+    // artistic defaults — `mass = 1.0`, `spin = 1.0`,
     // `compactification_scale = 0.1`, `origin = (0,0,0)` —
     // matching the SCHW.3 test fixture
     // (`make_schwarzschild_like_chart` in
     // `manifold_identity_tests.cpp`). These values make the
     // chart's warp immediately visible on the
     // `aov_manifold_coordinates` AOV when the operator
-    // passes `--manifold-enable --manifold-chart
-    // schwarzschild-like --manifold-strength <s>
-    // --manifold-debug`. Future slices can plumb chart-
-    // parameter CLI flags (or scene-file authoring) without
-    // an ABI bump because the slot already exists on the
-    // `CoordinateChart` POD.
+    // engages the chart via CLI or scene file. Future
+    // slices can plumb chart-parameter CLI flags (or scene-
+    // file authoring) without an ABI bump because the slot
+    // already exists on the `CoordinateChart` POD.
     rr::manifold::CoordinateChart manifold_chart{};
-    manifold_chart.type = cfg.manifold.chart;
-    if (cfg.manifold.chart
+    manifold_chart.type = effective_manifold.chart;
+    if (effective_manifold.chart
             == rr::manifold::CoordinateChartType::SchwarzschildLike) {
         manifold_chart.name                    = "schwarzschild-like";
         manifold_chart.params.mass             = 1.0f;
@@ -2094,7 +2109,7 @@ int run_render_optix_aovs(const rr::core::Config& cfg) {
     }
     auto r = rr::optix::OptixRenderer::render_aovs(
         scene, lights, cfg.width, cfg.height,
-        cfg.manifold, manifold_chart);
+        effective_manifold, manifold_chart);
     if (!r.ok) {
         Logger::error("optix aovs render failed: " + r.message);
         return 1;
@@ -2143,16 +2158,17 @@ int run_render_optix_aovs(const rr::core::Config& cfg) {
     all_ok &= save_one(r.searchlight_factor,
                        "output/optix_aov_searchlight.ppm",
                        "OptiX AOV searchlight");
-    // SCHW.7 — save the OptiX manifold debug coordinate
-    // AOV when the operator opted in. The kernel arm short-
-    // circuits when the device buffer is null, so on the
-    // default `cfg.manifold.debug_visualization = false`
+    // SCHW.7 / SCHW.9 — save the OptiX manifold debug
+    // coordinate AOV when the resolved manifold mode opted
+    // in. The kernel arm short-circuits when the device
+    // buffer is null, so on the default
+    // `effective_manifold.debug_visualization = false`
     // path `r.manifold_coordinates` stays as the empty
     // `Image{}` and we don't emit a PPM. File name mirrors
     // the CUDA path's
     // `output/aov_manifold_coordinates.ppm` convention with
     // the OptiX-side `optix_aov_*` stem.
-    if (cfg.manifold.debug_visualization) {
+    if (effective_manifold.debug_visualization) {
         all_ok &= save_one(r.manifold_coordinates,
                            "output/optix_aov_manifold_coordinates.ppm",
                            "OptiX AOV manifold coordinates");
@@ -3838,16 +3854,29 @@ int run_render_aovs(const rr::core::Config& cfg) {
     // MANI-I.8 — opt-in 7th AOV: the manifold debug
     // coordinate-visualisation slot. Allocated only when the
     // operator passes `--manifold-debug` alongside
-    // `--render-aovs`, mirroring the dual-gate the task
+    // `--render-aovs` — OR when the loaded scene authors a
+    // `manifold.debug_visualization = true` block (SCHW.9
+    // scene-side surface). The dual-gate the task
     // definition specifies (docs/MANIFOLD_DEBUG_AOV_TASK.md
-    // §2.2). When the gate is off, `aov_set` stays at six
-    // entries and the kernel's `manifold_coordinates` write
-    // arm short-circuits on the null pointer — every
-    // `--render-aovs` invocation without `--manifold-debug`
-    // is byte-identical to the pre-MANI-I.8 baseline.
+    // §2.2) is mirrored here. When the gate is off,
+    // `aov_set` stays at six entries and the kernel's
+    // `manifold_coordinates` write arm short-circuits on
+    // the null pointer — every `--render-aovs` invocation
+    // without `--manifold-debug` AND without a scene-side
+    // override is byte-identical to the pre-MANI-I.8
+    // baseline.
+    //
+    // SCHW.9 merge policy (mirrors the OptiX dispatcher
+    // above): CLI wins on explicit `cfg.manifold.enabled =
+    // true`; otherwise the scene's `manifold` block fills
+    // in. This lets `scenes/test_schwarzschild_like_manifold
+    // .rrscene` engage the AOV without requiring CLI
+    // flags.
+    const rr::manifold::ManifoldMode effective_cuda_manifold =
+        cfg.manifold.enabled ? cfg.manifold : scene.manifold;
     rr::renderer::GpuAOVBuffer manifold_coords_buffer{
         rr::renderer::AOV::make_manifold_coordinates()};
-    if (cfg.manifold.debug_visualization) {
+    if (effective_cuda_manifold.debug_visualization) {
         if (!manifold_coords_buffer.resize(cfg.width, cfg.height)) {
             rr::core::Logger::error("aovs: resize failed for "
                                   + std::string(rr::renderer::aov_type_name(
@@ -3863,10 +3892,14 @@ int run_render_aovs(const rr::core::Config& cfg) {
     targets.albedo               = aov_set[3].device_ptr();
     targets.doppler_factor       = aov_set[4].device_ptr();
     targets.searchlight_factor   = aov_set[5].device_ptr();
-    // MANI-I.8 — set only when the gate is on; otherwise
-    // stays at the documented `nullptr` default and the
-    // kernel skips the write arm.
-    targets.manifold_coordinates = cfg.manifold.debug_visualization
+    // MANI-I.8 / SCHW.9 — set only when the gate is on;
+    // otherwise stays at the documented `nullptr` default
+    // and the kernel skips the write arm. SCHW.5 will
+    // extend the CUDA kernel to invoke the SchwarzschildLike
+    // warp when the manifold is engaged; until then the
+    // CUDA kernel writes the raw `best.position` per
+    // MANI-I.8 (the AOV reflects this verbatim).
+    targets.manifold_coordinates = effective_cuda_manifold.debug_visualization
                                    ? manifold_coords_buffer.device_ptr()
                                    : nullptr;
 
@@ -3900,13 +3933,14 @@ int run_render_aovs(const rr::core::Config& cfg) {
         }
     }
 
-    // MANI-I.8 — save the manifold debug coordinate AOV
-    // when the gate is on. File name matches the existing
-    // AOV PPM convention `output/aov_<lowercase>.ppm`; the
-    // helper passes through `GpuAOVBuffer`'s standard
-    // download + PPM-write path so the encoding matches
-    // every other 3-channel AOV byte-for-byte.
-    if (cfg.manifold.debug_visualization) {
+    // MANI-I.8 / SCHW.9 — save the manifold debug coordinate
+    // AOV when the resolved gate (CLI OR scene-side) is on.
+    // File name matches the existing AOV PPM convention
+    // `output/aov_<lowercase>.ppm`; the helper passes
+    // through `GpuAOVBuffer`'s standard download + PPM-write
+    // path so the encoding matches every other 3-channel
+    // AOV byte-for-byte.
+    if (effective_cuda_manifold.debug_visualization) {
         if (!save_aov_to_ppm(manifold_coords_buffer,
                              "output/aov_manifold_coordinates.ppm",
                              cfg.width, cfg.height,
