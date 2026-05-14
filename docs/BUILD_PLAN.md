@@ -71259,6 +71259,165 @@ promotion still waits for FIELD.3 (the renumbered
 kernel-bearing slice — Kretschmann-scalar diagnostic AOV,
 behind the Schwarzschild chart).
 
+## Manifold Integration Plan (docs only)
+
+**Scope of this slice (per the operator's *Manifold
+Integration Plan* task brief): write
+`docs/MANIFOLD_INTEGRATION_PLAN.md`, the operational
+planning document specifying how the manifold layer's POD
+surface (already shipped through MANIFOLD.1-MANIFOLD.7)
+will be threaded into the existing CUDA / OptiX renderer
+across seven incremental slices, without breaking the
+pre-pivot pixel output at any intermediate state. Names
+and scopes the seven slices (MANI-I.1 CLI config →
+MANI-I.2 renderer config → MANI-I.3 Euclidean identity
+GPU path → MANI-I.4 debug coordinate-warp AOV → MANI-I.5
+Schwarzschild-like artistic remap → MANI-I.6 Penrose-like
+compactification → MANI-I.7 audit). Cross-reference from
+`MANIFOLD_RENDERING_ARCHITECTURE.md` §10. Documentation
+only; no source code, no test, no CMake, no behavioural
+change. None of the MANI-I.* slices is started here.**
+
+### What ships
+
+- **`docs/MANIFOLD_INTEGRATION_PLAN.md` (new, ~750 lines).**
+  Twelve-section operational plan matching the
+  `MANIFOLD_RENDERING_ARCHITECTURE.md` /
+  `FIELD_INTERPRETATION_LAYER.md` shape:
+    - **§1 Purpose & scope** — the manifold POD layer is
+      shipped (12/12 ctest, 112-assertion identity
+      coverage) but has zero renderer consumers; this
+      plan integrates it.
+    - **§2 Integration principle** — *Never break the
+      current renderer*. Pixel-bit-identity on the
+      default `ManifoldMode{}` is the merge gate every
+      slice crosses. Three opt-in layers (CLI default →
+      config default → GPU default) carry the invariant.
+    - **§3 Slice ordering & dependencies** — ASCII chain
+      diagram for the seven slices plus the rationale
+      for each ordering choice.
+    - **§4 MANI-I.1 — CLI config only.** Adds
+      `--manifold-mode` / `--manifold-strength` /
+      `--manifold-debug-warp` flags; populates an
+      `rr::manifold::ManifoldMode` host-side value; no
+      RenderSettings or GPU touch. `cli_tests` gains
+      parser assertions.
+    - **§5 MANI-I.2 — pass ManifoldMode into renderer
+      config.** Adds a `manifold` field to
+      `RenderSettings` (or a sibling struct); CLI
+      populates it; renderer logs the value at launch
+      but does not consume it. `renderer_tests` gains
+      copy / move assertions.
+    - **§6 MANI-I.3 — Euclidean identity GPU path.**
+      First GPU touch. CUDA / OptiX kernels read
+      `ManifoldMode` and `ManifoldTransform`; on the
+      Euclidean default the chart-aware seam is the
+      identity. Bit-identity on at least 7 named CLI
+      actions (`--render-scene`, `--render-mesh-scene`,
+      `--render-material-scene`, `--render-direct-
+      lighting`, `--render-aovs`, `--render-relativistic`,
+      `--render-pathtrace`) is the acceptance gate.
+    - **§7 MANI-I.4 — debug coordinate-warp AOV.** New
+      `ManifoldWarp` AOV slot writes per-pixel chart-
+      space hit position. Visual sanity check for the
+      future curved-chart slices. AOV-buffer layout
+      additive only (slot appended, no reorder).
+    - **§8 MANI-I.5 — Schwarzschild-like artistic
+      coordinate remap.** First non-trivial chart;
+      closed-form artistic remap (NOT physical
+      Schwarzschild — master rule #3 / architecture-doc
+      §8 non-goal). Off-path bit-identical; on-path
+      acceptance is a measured deflection-angle match to
+      the remap formula. New audit doc
+      `docs/MANI_I_5_SCHWARZSCHILD_AUDIT.md`.
+    - **§9 MANI-I.6 — Penrose-like compactification
+      visualisation.** Second non-trivial chart;
+      `tanh`-style conformal compactification. Off-path
+      bit-identical; on-path matches the closed-form
+      boundary mapping. Renames
+      `PenroseLikePlaceholder` → `PenroseLike` (with
+      one-slice typed alias). New audit doc.
+    - **§10 MANI-I.7 — audit.** Cross-host runtime audit
+      pinning every invariant from MANI-I.1 onward:
+      bit-identity regression on every off-path,
+      reference-image pinning on every on-path, launch-
+      params layout, AOV-buffer layout, log-line
+      uniqueness, performance regression cap (5%).
+      Merge gate for the whole programme.
+    - **§11 Non-goals** — no geodesic integrator, no
+      path-tracer replacement, no module-map promotion
+      (operator-gated), no Field-Interpretation kernel
+      slice, no relativistic-camera rewrite, no Cinema-
+      4D-bridge touch.
+    - **§12 References** — cross-refs to master
+      instructions, architecture doc, field-
+      interpretation doc, master architecture, module
+      map, dev rules, and the `src/manifold/*` /
+      `src/relativity/*` / `src/scene/RenderSettings.h`
+      / `src/core/CommandLine.cpp` /
+      `src/renderer/AOV.h` /
+      `tests/manifold_identity_tests.cpp` surfaces every
+      MANI-I.* slice touches.
+- **`docs/MANIFOLD_RENDERING_ARCHITECTURE.md` §10 preface
+  (+7 lines).** A one-paragraph pointer adds the
+  integration plan as the operational-view complement to
+  the existing source-side milestone list. The existing
+  six-bullet milestone roster (Minkowski-chart wrap →
+  Schwarzschild → Kruskal-Szekeres → Penrose → Kerr →
+  FieldInterpretation first slice) is unchanged in
+  content; only the section preamble gains the
+  cross-reference.
+
+### What does NOT ship
+
+- **No source code.** Nothing in `src/manifold/`,
+  `src/field/`, `src/relativity/`, `src/cuda/`,
+  `src/optix/`, `src/pathtracer/`, `src/renderer/`,
+  `src/gpu/`, `src/scene/`, `src/io/`, `src/server/`,
+  `src/main.cpp`, `src/core/`, `src/camera/`,
+  `src/material/`, `src/lighting/`, `src/texture/`,
+  `src/geometry/`, `src/image/`, or `src/math/` is
+  touched (`git diff` outside `docs/` ⇒ 0 bytes).
+- **No new test binary.** ctest set unchanged at 12.
+- **No CMake change.** No new `rr_*` target.
+- **No MANI-I.* slice started.** The seven slices are
+  *named, scoped, and acceptance-criteria-pinned* in
+  the plan doc, not started. Master rule #3
+  ("no fake stubs"): no source artifact pretends to
+  implement a slice the plan describes.
+- **No design-doc renumbering for the Field
+  Interpretation Layer.** FIELD.x kernel slices remain
+  gated on MANI-I.5 / MANI-I.6 per the prior renumbering.
+
+### Acceptance
+
+- **Compiles.** Documentation-only slice; no build
+  configuration touched. The audit-host build remains at
+  the post-FIELD.3 baseline (`100% tests passed, 0 tests
+  failed out of 12`).
+- **Internally consistent.** The new plan doc cross-
+  references `MANIFOLD_RENDERING_ARCHITECTURE.md` §3 /
+  §5 / §7 / §8 / §10 correctly; the per-slice acceptance
+  gates are stated as bit-identity invariants on
+  enumerated CLI actions (not vague "no regression"
+  claims); the non-goals in §11 are consistent with
+  architecture-doc §8.
+- **Master-rule honesty.** Every slice that introduces
+  a new GPU code path documents an explicit off-path /
+  on-path acceptance pair; the curved-chart slices
+  (MANI-I.5, MANI-I.6) document their artistic vs
+  physical status explicitly; the audit slice
+  (MANI-I.7) is documented as a merge gate, not a
+  source-edit step.
+
+### Module status changes
+
+`docs/MODULE_MAP.md` is *not* updated by this slice.
+The Manifold Core's integration sequence is now
+*named and planned* but no source change has landed;
+module-map promotion still waits for the audit slice
+(MANI-I.7) per the integration plan §10.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:

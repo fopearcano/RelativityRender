@@ -555,7 +555,15 @@ The existing forbidden-dependency matrix in `docs/MASTER_ARCHITECTURE.md`
 ## 10. What lands next
 
 This document is the **only** deliverable of the *Manifold Core Pivot —
-Architecture Doc* stage. The next concrete commits, in order, each as
+Architecture Doc* stage. The operational sequence of slices that
+threads the Manifold Core's POD surface into the existing CUDA / OptiX
+renderer is specified in
+[`docs/MANIFOLD_INTEGRATION_PLAN.md`](MANIFOLD_INTEGRATION_PLAN.md)
+(MANI-I.1 through MANI-I.7); the high-level list below is the source-
+side milestone view, the integration-plan doc is the renderer-side
+operational view, and the two are read together.
+
+The next concrete commits, in order, each as
 its own incremental slice with tests and a BUILD_PLAN.md entry:
 
 1. **Manifold Core — Minkowski chart.** Implements the identity chart,
