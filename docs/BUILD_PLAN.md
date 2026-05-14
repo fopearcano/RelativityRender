@@ -71884,6 +71884,156 @@ plumb under the renumbered integration plan §5); no
 module-map row changes state until MANI-I.8 (final
 audit) lands.
 
+## MANI-I.3 — Manifold Render Config Bridge (impl, host-only plumb)
+
+**Scope of this slice (per the operator's *MANI-I.3 —
+Manifold Render Config Bridge* task brief and
+`docs/MANIFOLD_INTEGRATION_PLAN.md` §5): thread the
+parsed `Config::manifold` through the path tracer's
+runtime configuration struct (`PathTraceConfig`) and
+emit a single render-launch log line echoing the
+operator's selected manifold mode. No coordinate warp,
+no CUDA kernel behaviour change, no OptiX program
+behaviour change, no visual output change, no
+C4D / server / UI / node-editor touch. ctest stays at
+12/12; cli_tests stays at 123/123.**
+
+### What ships
+
+- **`src/pathtracer/PathTracer.h` (+17 / -1 net).**
+  Adds a `rr::manifold::ManifoldMode manifold` member
+  to `PathTraceConfig` plus a 15-line doc-comment
+  block citing MANI-I.3 / MANI-I.4 / the disabled-
+  default "no output change" contract. Pulls
+  `manifold/ManifoldMode.h` (the MANIFOLD.6 POD;
+  header-only).
+- **`CMakeLists.txt` (rr_pathtracer link line + doc
+  comment, +9 / -1 net).**
+  `target_link_libraries(rr_pathtracer INTERFACE
+  rr_math rr_manifold)` — header-only INTERFACE link
+  so the manifold header propagates to every
+  consumer of `rr_pathtracer` transitively (the main
+  executable and the `rr_renderer` static library
+  both pick it up).
+- **`src/main.cpp` (+54 / -1 net).** Three additions:
+    - A new `format_manifold_mode(ManifoldMode)`
+      helper in the anonymous namespace, placed
+      next to `log_gpu_timing` for grouping.
+      Formats the mode into a single
+      human-readable line
+      (`"<enabled|disabled> (chart=<kebab>, strength=<f>,
+       debug=<on|off>)"`); the chart-name mapping
+      mirrors the kebab-case strings the
+      `--manifold-chart` CLI flag accepts.
+    - In `run_render_pathtrace` (CUDA pathtrace
+      dispatcher), copies `cfg.manifold` into
+      `pcfg.manifold` at the `PathTraceConfig`
+      construction site (alongside the existing
+      `pcfg.firefly_clamp` / `pcfg.enable_nee`
+      assignments); emits a
+      `Logger::info("manifold         : ...")` line
+      after the existing `enable_nee` log line.
+    - In `run_render_optix_pathtrace` (OptiX
+      pathtrace dispatcher), emits the same-shape
+      `manifold` log line after the existing
+      `enable_nee` log line, before the OptiX
+      renderer is invoked.
+- **`docs/MANIFOLD_INTEGRATION_PLAN.md` §5
+  (rewritten).** §5's "What ships" / "What does NOT
+  ship" / "Acceptance" / "Risks & mitigations"
+  blocks updated to reflect what actually landed
+  (PathTraceConfig home, not RenderSettings; log line
+  on the OptiX dispatcher pre-call and the CUDA
+  dispatcher post-spp-loop; no `renderer_tests`
+  expansion this slice; audit-host runtime
+  observation deferred behind the existing CUDA /
+  OptiX-SDK gate). An "Implementation choice"
+  paragraph explains the PathTraceConfig-over-
+  RenderSettings decision: `PathTraceConfig` is the
+  per-render runtime config the path tracer actually
+  consumes, so the field lives there rather than on
+  `rr::scene::RenderSettings`. Storing it on
+  `RenderSettings` would have required a `.rrscene`
+  parser / writer change that the integration plan's
+  existing non-goal defers.
+
+### What does NOT ship
+
+- **No coordinate warp.** The CUDA `k_pathtrace_sample`
+  kernel and the OptiX `__raygen__pathtrace` program
+  do NOT consume `pcfg.manifold` this slice. MANI-I.4
+  is the first slice that wires the field into either
+  backend's GPU code path.
+- **No CUDA kernel behaviour change.** Zero files in
+  `src/cuda/`.
+- **No OptiX program behaviour change.** Zero files in
+  `src/optix/`.
+- **No visual output change.** No reference image
+  regenerated. Default `disabled_manifold_mode()` on
+  `pcfg.manifold` flows through; the kernel ignores
+  the field; pixel output is bit-identical to the
+  pre-MANI-I.3 baseline structurally.
+- **No `RenderSettings` change.** The scene-file POD
+  (`rr::scene::RenderSettings`) is byte-identical. The
+  `.rrscene` parser / writer is untouched.
+- **No new test binary.** ctest set unchanged at 12;
+  `cli_tests` stays at 123/123 assertions (the
+  parser surface MANI-I.1 shipped is unchanged this
+  slice).
+- **No C4D / server / UI / node-editor touch.** Zero
+  files in `src/server/`. No `bridges/c4d_bridge/`,
+  `bridges/c4d_native/`, `tools/node_editor/`, or
+  `tools/preview_ui/` directories created.
+
+### Acceptance
+
+- **Compiles.** Audit-host rebuild
+  (`cmake --build build -j`) succeeds. The
+  `rr_pathtracer` INTERFACE link pulls
+  `rr_manifold` transitively into `rr_renderer` and
+  the main executable; the rebuild fan-out is limited
+  to the TUs that included `pathtracer/PathTracer.h`
+  (5 files: `src/pathtracer/PathTracer.cpp`,
+  `src/main.cpp`, and three `rr_renderer` TUs).
+- **Tests.** Full ctest: `100% tests passed, 0 tests
+  failed out of 12`. `cli_tests` reports
+  `123/123 passed` (unchanged — MANI-I.3 does not
+  touch the parser).
+- **Bit-identity invariant.** No CUDA / OptiX kernel
+  reads `pcfg.manifold`, structurally guaranteeing
+  byte-identical pixel output to the pre-MANI-I.3
+  baseline on every existing CLI action regardless
+  of the `--manifold-*` flags' values.
+- **Render-start log line.** On a CUDA + OptiX-SDK
+  host, both `--render-pathtrace` and
+  `--render-optix-pathtrace` emit a single
+  `manifold         : ...` log line at render-launch
+  time. Audit-host observation is deferred behind
+  the existing CUDA / OptiX-SDK gate, matching the
+  existing `firefly_clamp` / `enable_nee` log lines'
+  visibility on the same audit host (both
+  short-circuit before the log site on no-CUDA /
+  no-OptiX-SDK fallback).
+- **Rule-#3 honesty.** The new `pcfg.manifold` field
+  is real data the future GPU slices will read
+  (MANI-I.4 onward); the absence of a downstream
+  kernel consumer this slice is documented explicitly
+  in the header doc-comment and in the integration
+  plan §5's "What does NOT ship" block. The
+  `format_manifold_mode` helper performs an
+  exhaustive enum switch (no default-clause hidden
+  fallthrough) so every `CoordinateChartType`
+  enumerator gets an honest kebab-case name.
+
+### Module status changes
+
+`docs/MODULE_MAP.md` is *not* updated by this slice.
+`rr_pathtracer` now transitively links `rr_manifold`,
+but the manifold module still has zero kernel-side
+consumers; module-map promotion still waits for
+MANI-I.8 (final cross-host audit) per the
+integration plan §11.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:

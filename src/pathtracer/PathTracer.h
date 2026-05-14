@@ -1,6 +1,7 @@
 #pragma once
 
 #include "image/Image.h"
+#include "manifold/ManifoldMode.h"
 #include "math/Vec3.h"
 
 #include <string>
@@ -170,6 +171,22 @@ struct PathTraceConfig {
     // the guarded call site so the wiring compiles end-to-
     // end. No caller passes `true` today.
     bool enable_nee = false;
+
+    // MANI-I.3 — per-render Manifold Core mode the renderer
+    // will eventually consult to decide *how* the Manifold
+    // Core engages (see
+    // `docs/MANIFOLD_INTEGRATION_PLAN.md` §5). Plumbed from
+    // `rr::core::Config::manifold` (shipped at MANI-I.1) into
+    // every `PathTraceConfig` construction site in
+    // `src/main.cpp`. Default
+    // `disabled_manifold_mode()` (`enabled = false`,
+    // `chart = Euclidean`, `strength = 0`, `debug = off`)
+    // preserves the pre-pivot renderer output bit-for-bit;
+    // MANI-I.3 ships only the field + host-side echo log line,
+    // no kernel consumption — the CUDA path-trace kernel and
+    // the OptiX `__raygen__pathtrace` program continue to
+    // ignore this field. MANI-I.4 is the first GPU touch.
+    rr::manifold::ManifoldMode manifold;
 };
 
 // Result of a path-trace render. Mirrors the shape used by every

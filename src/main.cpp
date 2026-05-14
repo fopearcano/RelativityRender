@@ -138,6 +138,40 @@ inline void log_gpu_timing(const char* label,
     }
 }
 
+// MANI-I.3 — format an `rr::manifold::ManifoldMode` into a single
+// human-readable line for the render-start log. Mirrors the
+// kebab-case chart-family names the `--manifold-chart` CLI flag
+// accepts (see `CommandLine.cpp::parse_chart_type`); the output
+// format is
+//
+//   "<enabled|disabled> (chart=<kebab>, strength=<f>, debug=<on|off>)"
+//
+// so an operator scanning the render-start log can confirm
+// exactly what `Config::manifold` was populated to. MANI-I.3
+// scope: log only — no kernel reads the mode this slice.
+inline std::string format_manifold_mode(
+        const rr::manifold::ManifoldMode& m) {
+    using rr::manifold::CoordinateChartType;
+    const char* chart_name = "euclidean";
+    switch (m.chart) {
+        case CoordinateChartType::Euclidean:
+            chart_name = "euclidean";              break;
+        case CoordinateChartType::SchwarzschildLike:
+            chart_name = "schwarzschild-like";     break;
+        case CoordinateChartType::KruskalLikePlaceholder:
+            chart_name = "kruskal-like";           break;
+        case CoordinateChartType::PenroseLikePlaceholder:
+            chart_name = "penrose-like";           break;
+        case CoordinateChartType::KerrLikePlaceholder:
+            chart_name = "kerr-like";              break;
+    }
+    return std::string(m.enabled ? "enabled" : "disabled")
+         + " (chart="    + chart_name
+         + ", strength=" + std::to_string(m.strength)
+         + ", debug="    + (m.debug_visualization ? "on" : "off")
+         + ")";
+}
+
 // Stage 19C.1: denoiser-friendly timing log. Same shape as
 // `log_gpu_timing` but uses the `ms/frame` + `frames/sec`
 // metric framing instead of `rays/sec` (the denoiser does
@@ -1594,6 +1628,17 @@ int run_render_optix_pathtrace(const rr::core::Config& cfg) {
     Logger::info(std::string("enable_nee       : ")
                + (cfg.enable_nee ? "true (enabled)"
                                  : "false (disabled)"));
+    // MANI-I.3: log the operator's selected manifold mode
+    // BEFORE the renderer is invoked so the value is visible
+    // even when the renderer fails on the audit-host (no OptiX
+    // SDK) fallback. Same 17-column label width idiom as the
+    // firefly_clamp / enable_nee lines above. The OptiX
+    // `__raygen__pathtrace` program does NOT consume
+    // `cfg.manifold` this slice (MANI-I.3 is a host-only
+    // plumb); MANI-I.4 is the first slice that wires the
+    // mode into either backend's GPU code path.
+    Logger::info(std::string("manifold         : ")
+               + format_manifold_mode(cfg.manifold));
     auto pr = rr::optix::OptixRenderer::render_pathtrace_progressive(
         load.scene, cfg.width, cfg.height,
         kMaxBounces, kSeed, kCheckpoints,
@@ -2435,6 +2480,16 @@ int run_render_pathtrace(const rr::core::Config& cfg) {
         // its dispatcher-default `false` regardless of CLI
         // input.
         pcfg.enable_nee = cfg.enable_nee;
+        // MANI-I.3 — thread the operator's --manifold-* choices
+        // through to the path tracer's per-render config.
+        // Default `disabled_manifold_mode()` (enabled=false,
+        // chart=Euclidean, strength=0, debug=off) preserves the
+        // pre-pivot renderer output bit-for-bit; the kernel does
+        // NOT consume `pcfg.manifold` this slice — only the
+        // host-side echo log a few lines below reads it.
+        // MANI-I.4 is the first slice that wires the field into
+        // either backend's GPU code path.
+        pcfg.manifold = cfg.manifold;
         // Other PathTraceConfig fields (max_bounces, seed,
         // environment_color, environment_intensity) keep their
         // defaults. The defaults produce a moderate cool sky tint
@@ -2493,6 +2548,15 @@ int run_render_pathtrace(const rr::core::Config& cfg) {
         Logger::info(std::string("enable_nee       : ")
                    + (pcfg.enable_nee ? "true (enabled)"
                                       : "false (disabled)"));
+        // MANI-I.3: log the operator's selected manifold mode
+        // after the per-spp render returns. Same 17-column
+        // label width idiom as the firefly_clamp / enable_nee
+        // lines above. The CUDA `k_pathtrace_sample` kernel
+        // does NOT consume `pcfg.manifold` this slice; the
+        // line emits so the operator can confirm what was
+        // populated even though the kernel ignored it.
+        Logger::info(std::string("manifold         : ")
+                   + format_manifold_mode(pcfg.manifold));
 
         if (!save_image_or_error(r.image, run.path, run.label,
                                  width, height)) {

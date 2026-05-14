@@ -363,64 +363,116 @@ behaviour change.
 
 - MANI-I.1 — CLI parsing in place.
 
-### What ships
+### What ships (LANDED; reflects what actually shipped)
 
-- **`src/scene/RenderSettings.h`** (or a sibling struct
-  `rr::scene::ManifoldSettings`, chosen at implementation
-  time per the existing `RenderSettings` shape) gains a
-  `rr::manifold::ManifoldMode manifold` member. Default
-  value is the `disabled_manifold_mode()` "no output
-  change" anchor.
-- **`src/core/CommandLine.cpp`** populates
-  `RenderSettings::manifold` from the MANI-I.1 parsed
-  values.
-- **The renderer's host-side orchestration** (the
-  `PathTracer` / `CudaRenderer` / `OptixRenderer` host
-  surface) logs the populated value at render-launch time
-  for visibility (single one-line log entry) but does
-  **not** consume it on the device.
-- **`tests/renderer_tests.cpp`** (existing binary) gains
-  assertions that `RenderSettings{}` defaults the manifold
-  field correctly and that setting it preserves the field
-  through copy / move.
+- **`src/pathtracer/PathTracer.h`** gains a
+  `rr::manifold::ManifoldMode manifold` member on
+  `PathTraceConfig`. Default value is the
+  `disabled_manifold_mode()` "no output change" anchor.
+  (Implementation choice: `PathTraceConfig` is the
+  per-render runtime config the path tracer actually
+  consumes, so the field lives there rather than on
+  `rr::scene::RenderSettings`. The original plan offered
+  either as the home; `PathTraceConfig` is the cleaner
+  choice because it avoids touching the `.rrscene`
+  scene-file surface, deferring the file-format change
+  to a later slice where it has a real artist-facing
+  reason to land.)
+- **`CMakeLists.txt`**
+  `target_link_libraries(rr_pathtracer INTERFACE rr_math
+  rr_manifold)` — `rr_pathtracer` now propagates the
+  manifold header to its consumers (header-only
+  INTERFACE link; `rr_renderer` and the main
+  executable both pick this up transitively).
+- **`src/main.cpp`**:
+    - The CUDA pathtrace dispatcher
+      (`run_render_pathtrace`) copies
+      `cfg.manifold` into `pcfg.manifold` at every
+      `PathTraceConfig` construction site (alongside
+      the existing `pcfg.firefly_clamp` / `pcfg.enable_nee`
+      assignments).
+    - A small `format_manifold_mode(ManifoldMode)`
+      helper in the anonymous namespace formats the
+      mode into a single human-readable line
+      (`"<enabled|disabled> (chart=<kebab>, strength=<f>,
+       debug=<on|off>)"`) — the chart-name mapping
+      mirrors the kebab-case strings the
+      `--manifold-chart` CLI flag accepts.
+    - Both the OptiX pathtrace dispatcher
+      (`run_render_optix_pathtrace`) and the CUDA
+      pathtrace dispatcher emit a single
+      `Logger::info("manifold         : ...")` line at
+      render-launch time, alongside the existing
+      `firefly_clamp` / `enable_nee` log lines.
 - **`docs/BUILD_PLAN.md`** gets a MANI-I.3 entry.
-
-### Acceptance
-
-- Audit-host build green; ctest 12/12.
-- The host log at `--render-scene` invocation now mentions
-  the active `ManifoldMode` (a single line: "manifold:
-  Euclidean, strength=0, debug=off"). This log is the
-  only observable behaviour change.
-- Running every existing CLI action without any
-  `--manifold-*` flag produces bit-identical pixel output
-  to the pre-MANI-I.3 baseline.
-- The new `manifold` field on `RenderSettings` is
-  serialisable / deserialisable through copy construction
-  and through `Scene` aggregate copies (verified by the
-  `renderer_tests` additions).
-
-### Risks & mitigations
-
-- **`RenderSettings` ABI break** for any code that
-  initialises the struct field-by-field. Mitigated by
-  using member-default initialisation so the new field
-  picks up the disabled default without forcing call-site
-  changes.
-- **Cinema 4D bridge** (not yet shipped, but planned per
-  master order #21): the bridge will eventually need to
-  populate this field. Mitigated by documenting the
-  field's role in the `RenderSettings` header so the
-  bridge implementor sees it.
 
 ### What does NOT ship
 
-- No GPU consumption of the field (MANI-I.4).
-- No serialisation into the `.rrscene` file format
-  (deferred to after MANI-I.6; the file format only
-  acquires the field when artists need to author
-  curved-chart scenes).
-- No new CLI flag (covered by MANI-I.1).
+- **No `RenderSettings` change.** The scene-file POD
+  (`rr::scene::RenderSettings`) is byte-identical. The
+  `.rrscene` parser / writer is untouched. This defers
+  the file-format change to a later slice (per the
+  integration plan's existing "no file-format bump in
+  MANI-I.3" non-goal).
+- **No GPU consumption of the field.** The CUDA
+  `k_pathtrace_sample` kernel and the OptiX
+  `__raygen__pathtrace` program both ignore
+  `pcfg.manifold`. MANI-I.4 is the first slice that
+  wires the field into either backend's GPU code path.
+- **No new CLI flag.** Covered by MANI-I.1.
+- **No new `renderer_tests` assertions.** The MANI-I.3
+  surface is host-only plumb + log line; the cli_tests
+  binary already verifies the parser shape end-to-end
+  (123/123 assertions across 20 test cases including
+  the 13 MANI-I.1 cases). A new `renderer_tests` case
+  would have to mock `gpu_scene.upload_*` to exercise
+  the plumb path, which is scope creep for this slice.
+
+### Acceptance
+
+- Audit-host build green; ctest 12/12. `cli_tests`
+  reports `123/123 passed` (unchanged from MANI-I.1).
+- A `--render-pathtrace` or `--render-optix-pathtrace`
+  invocation on a CUDA + OptiX-SDK host emits a single
+  `manifold         : <enabled|disabled> (chart=...,
+  strength=..., debug=...)` log line at render-launch
+  time, alongside the existing `firefly_clamp` /
+  `enable_nee` lines.
+- Running every existing CLI action without any
+  `--manifold-*` flag produces bit-identical pixel
+  output to the pre-MANI-I.3 baseline (structurally
+  guaranteed: no kernel reads `pcfg.manifold`).
+- Audit-host observation: both dispatchers'
+  audit-host-fallback paths short-circuit *before*
+  the log line (no CUDA / no OptiX SDK), matching the
+  existing `firefly_clamp` / `enable_nee` log lines'
+  visibility on the same audit host. Runtime
+  observation of the new log line is therefore
+  audit-host-deferred, identical to the deferral on
+  the prior log lines.
+
+### Risks & mitigations
+
+- **`rr_pathtracer` consumer rebuild fan-out** from the
+  new `rr_manifold` INTERFACE link. Mitigated by
+  rr_manifold's header-only nature — the rebuild is
+  limited to TUs that already included
+  `pathtracer/PathTracer.h`, and the new include is
+  a small POD header.
+- **`PathTraceConfig` ABI break** for any code that
+  initialises the struct field-by-field. Mitigated by
+  using member-default initialisation so the new field
+  picks up the disabled default without forcing
+  call-site changes; the only call site in the tree
+  (main.cpp's `pcfg.samples_per_pixel = ...` block)
+  is updated as part of this slice.
+- **Cinema 4D bridge** (not yet shipped, but planned
+  per master order #21): the bridge will eventually
+  need to populate this field. Mitigated by
+  documenting the field's role in the
+  `PathTraceConfig` header so the bridge implementor
+  sees it; when the file-format slice lands, the
+  bridge plumb extends naturally.
 
 ---
 

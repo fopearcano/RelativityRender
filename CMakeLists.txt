@@ -410,7 +410,17 @@ rr_apply_warnings(rr_scene)
 # kPi / kTwoPi / max by value.
 add_library(rr_pathtracer INTERFACE)
 target_include_directories(rr_pathtracer INTERFACE src)
-target_link_libraries(rr_pathtracer INTERFACE rr_math)
+# rr_pathtracer links rr_manifold since MANI-I.3: the new
+# `PathTraceConfig::manifold` member in
+# `pathtracer/PathTracer.h` consumes
+# `rr::manifold::ManifoldMode` by value, so any consumer of
+# `rr_pathtracer` must see the manifold header. The link is
+# header-only INTERFACE; rr_manifold itself transitively
+# pulls rr_math + rr_relativity, so the explicit rr_math
+# link below is redundant but kept for documentation.
+# MANI-I.3 scope: host-side plumb only — no kernel reads the
+# new `manifold` field this slice.
+target_link_libraries(rr_pathtracer INTERFACE rr_math rr_manifold)
 
 # rr_renderer: host-side renderer pieces that don't fit cleanly
 # inside `rr_gpu` (CUDA backend) or `rr_image` (host buffers).
