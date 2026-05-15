@@ -77813,6 +77813,208 @@ audit; renumbered from the original PENROSE.11 in
 module-map row changes state until MANI-I.12 (final
 cross-host audit) lands.
 
+## PENROSE.12 — Penrose-Like Arc Capstone Audit (docs only)
+
+**Scope of this slice (per the operator's *PENROSE.12 —
+Penrose-Like Arc Capstone Audit* task brief): write
+`docs/PENROSE_LIKE_ARC_AUDIT.md`, the per-arc capstone
+verdict closing the PENROSE.1 → PENROSE.11 ladder
+under the MANI-I.11 integration slot. Synthesises the
+six prior per-slice audit verdicts (PENROSE.3 /
+PENROSE.5 / PENROSE.7 / PENROSE.9 / PENROSE.11 +
+MANIFOLD_CORE_FOUNDATION_AUDIT.md +
+SCHWARZSCHILD_LIKE_ARC_AUDIT.md) into a single
+arc-level verdict. Eleven audit items per the
+operator's brief; verdict
+**PASS_WITH_RUNTIME_DEFERRED**. **No PARTIAL findings**
+— unlike the SCHW.11 capstone, all five PenroseLike
+impl slices landed in ladder order without skipping.
+Documentation only; no source code, no test, no CMake,
+no behavioural change. Updates the plan §10 PENROSE.12
+entry to LANDED.**
+
+### What ships
+
+- **`docs/PENROSE_LIKE_ARC_AUDIT.md` (new).** The arc
+  capstone verdict document:
+    - **§1 VERDICT** — `PASS_WITH_RUNTIME_DEFERRED`.
+      All prior eleven slices' per-slice gates
+      returned PASS; no PARTIAL findings; runtime
+      fixture-render suite DEFERRED to a CUDA +
+      OptiX-SDK host. No REPAIR, no BLOCKED.
+    - **§2 ARC TIMELINE** — twelve-commit summary
+      table (PENROSE.1 → PENROSE.11 + this
+      capstone) mapping each PENROSE.x slot to its
+      commit hash + kind + per-slice verdict;
+      cumulative-diff inventory
+      (manifold_identity_tests grew from 198 to
+      312 RR_CHECKs across +17 test functions,
+      ctest count unchanged at 12).
+    - **§3 PER-CHECK RESULTS** — eleven-row evidence
+      table (one more row than SCHW.11's ten — adds
+      SchwarzschildLike arc compatibility status
+      as check #8). Each row cites the prior
+      per-slice audit + concrete file/line
+      references.
+    - **§4 ARCHITECTURAL SCOPE** — explicit "what
+      the arc IS" / "what the arc IS NOT" lists
+      consistent with architecture-doc §3 ontology
+      and §8 non-goals. Highlights the
+      analytical-inverse-via-atanh advantage over
+      SCHW.1's NR inverse (residual `<< 1e-6` vs
+      SCHW.1's `≤ 1e-4`).
+    - **§5 CROSS-CUTTING INVARIANT CHECK** —
+      four invariants verified: bit-identity on
+      default code paths; **SchwarzschildLike arc
+      preservation** (PenroseLike arm structurally
+      mutually exclusive via `else if` + enum-tag);
+      master rule #3 no fake stubs; §8 non-goals.
+    - **§6 BUILD + TEST STATUS** — audit-host
+      build clean; ctest 12/12;
+      manifold_identity_tests 312/312; cli_tests
+      123/123; renderer_tests 19/19;
+      relativity_tests unchanged; OptiX OFF stub
+      signatures preserved.
+    - **§7 WHAT THIS AUDIT DOES NOT VERIFY** —
+      explicit scope boundary (no end-to-end
+      runtime render, no cross-backend pixel-level
+      verification, no golden-PPM pinning, no
+      path-tracer integration, no C4D work, no
+      Kerr / Kruskal work).
+    - **§8 RECOMMENDATION TO OPERATOR** — three
+      tractable options on the audit host with
+      recommended priority order (CLI
+      consumption-gap closure highest — closes
+      BOTH SCHW.* and PENROSE.* fixture gaps
+      simultaneously; primary-ray direction warp
+      medium; MANI-I.12 final cross-host audit
+      lower); explicit deferral of Kerr /
+      Kruskal per the operator's brief.
+    - **§9 REFERENCES** — eighteen-entry reference
+      list spanning the master instructions, the
+      architecture doc, the integration plan, the
+      compactification plan, the five per-slice
+      audit docs, the foundation audit, the
+      SCHW.11 capstone, the fixture doc, and the
+      seven source files the arc touched.
+- **`docs/PENROSE_LIKE_COMPACTIFICATION_PLAN.md`
+  §10 PENROSE.12 entry rewrite.** The stale
+  "write `PENROSE_LIKE_COMPACTIFICATION_AUDIT.md`"
+  entry with the obsolete ten-item checklist is
+  replaced with the actually-landed scope
+  (eleven audit items, the
+  PASS_WITH_RUNTIME_DEFERRED verdict, no PARTIAL
+  findings, and the LANDED marker). The plan's
+  other sections (§1–§9, §11–§12) are
+  unchanged.
+
+### What does NOT ship
+
+- **No source code.** Nothing in any `src/` subtree
+  is touched (`git diff` outside `docs/` ⇒ 0 bytes).
+- **No new test binary.** ctest set unchanged at 12.
+- **No CMake change.** No new `rr_*` target; no
+  link-line change.
+- **No `BUILD_PLAN.md` historical-record rewrite.**
+  The MANI-I.* / SCHW.* / PENROSE.1–PENROSE.11
+  entries above stay as-is; this PENROSE.12 entry
+  is additive.
+- **No `MODULE_MAP.md` update.** The per-slice /
+  per-arc audits are doc-only; module-map
+  promotion still waits for MANI-I.12 (final
+  cross-host audit) per the integration plan
+  §11.
+- **No update to the prior audit docs.** The
+  MANI-I.* / SCHW.* / PENROSE.3 / PENROSE.5 /
+  PENROSE.7 / PENROSE.9 / PENROSE.11 audit docs
+  are preserved as point-in-time historical
+  snapshots; the arc capstone references them as
+  inputs without rewriting their verdicts.
+- **No integration plan §3 chain-diagram update.**
+  The arc capstone closes the MANI-I.11 slot's
+  internal PENROSE.* ladder; the integration
+  plan's chain diagram still references
+  MANI-I.11 as a single slot.
+- **No Kerr / Kruskal work.** Operator brief
+  explicitly forbids; the `*LikePlaceholder`
+  charts remain reserved-but-inert per
+  MANIFOLD.1.
+- **No Cinema 4D / server / UI / node-editor
+  touch.** Operator brief explicitly forbids;
+  architecture-doc §8 non-goals stand.
+
+### Acceptance
+
+- **Compiles.** Documentation-only slice; no build
+  configuration touched. The audit-host build
+  remains at the post-PENROSE.11 baseline (`100%
+  tests passed, 0 tests failed out of 12`;
+  `manifold_identity_tests: 312 / 312 checks
+  passed`; `cli_tests: 123/123 passed`;
+  `renderer_tests: 19 / 19 passed`).
+- **Internally consistent.** The eleven-row
+  evidence table cites concrete commit hashes
+  (`a84f8b2`, `7169547`, `1bf3f2a`, `bd2046e`,
+  `7327813`, `2859acd`, `c7d0acf`, `65250ea`,
+  `3ccee4c`, `756a4bd`, `eac0cef`) and file/line
+  positions in
+  `PenroseLikeCompactification.h`,
+  `ManifoldTransform.h`,
+  `CoordinateChart.h`,
+  `CudaTestKernel.cu`,
+  `OptixPrograms.cu`,
+  `OptixLaunchParams.h`,
+  `OptixRenderer.cpp`,
+  `Scene.h`,
+  `SceneLoader.cpp`, and
+  `main.cpp` that re-verify on the audit host.
+  Per-slice audit references match the actual
+  prior audit documents in `docs/`.
+- **Verdict honesty.** The verdict is
+  `PASS_WITH_RUNTIME_DEFERRED` because the
+  structural arc-level checks pass — not because
+  of an arbitrary judgement call. **No PARTIAL
+  finding** is documented (in contrast to the
+  SCHW.11 capstone's check #3 PARTIAL); the
+  PenroseLike arc landed every impl slice without
+  skipping. Check #9 is **DEFERRED** on documented
+  audit-host limitations; checks #10 / #11
+  catalogue remaining risks + recommendations
+  rather than rendering pass/fail. The §7 "WHAT
+  THIS AUDIT DOES NOT VERIFY" section explicitly
+  enumerates the six items the audit cannot
+  check.
+
+### Module status changes
+
+`docs/MODULE_MAP.md` is *not* updated by this slice.
+The PENROSE.12 capstone verdict
+(`PASS_WITH_RUNTIME_DEFERRED`) closes the
+MANI-I.11 slot for the audit-host portion;
+module-map promotion still waits for MANI-I.12
+(final cross-host audit) per the integration plan
+§11.
+
+The capstone authorises the operator to proceed to
+one of:
+- **CLI consumption-gap closure** (recommended) —
+  closes both SCHW.* and PENROSE.* fixture
+  consumption gaps simultaneously via a
+  single-line CLI extension;
+- **Primary-ray direction warp** — adds the
+  pseudo-lensing beauty-pass signature for both
+  chart families;
+- **MANI-I.12 final cross-host audit** — when an
+  SDK host has run both arcs' fixture suites;
+- **Manifold-orthogonal work** — Field
+  Interpretation Layer (Phase 1), other
+  path-tracer features.
+
+Explicitly NOT authorised by this capstone:
+**Kerr / Kruskal work** (operator brief forbids;
+`*LikePlaceholder` charts remain reserved-but-
+inert).
+
 ## Next stage
 
 When prompted, the natural follow-ups are:

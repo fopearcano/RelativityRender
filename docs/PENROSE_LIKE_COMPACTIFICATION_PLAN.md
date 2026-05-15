@@ -1129,10 +1129,23 @@ the SCHW.1 → SCHW.11 ladder cadence).
 
 ### PENROSE.12 — Audit (docs only)
 
-- **Scope:** per-arc capstone verdict. Writes
-  `docs/PENROSE_LIKE_COMPACTIFICATION_AUDIT.md`
-  mirroring the SCHW.11 capstone shape. Ten audit
-  items:
+### PENROSE.12 — Arc capstone audit (docs only) — LANDED
+
+- **Status:** **LANDED** (commit at PENROSE.12,
+  2026-05-15). Verdict:
+  **PASS_WITH_RUNTIME_DEFERRED** per
+  `docs/PENROSE_LIKE_ARC_AUDIT.md`. **No PARTIAL
+  findings** — all five impl slices (PENROSE.2 math
+  leaf; PENROSE.4 CPU; PENROSE.6 CUDA; PENROSE.8
+  OptiX; PENROSE.10 fixture) landed in ladder order
+  without skipping; the arc has eleven prior PASS
+  per-slice verdicts.
+- **Scope (as landed):** per-arc capstone verdict
+  synthesising the prior per-slice audits into a
+  single arc-level verdict. **Eleven** audit items
+  (one more than the SCHW.11 capstone's ten — the
+  PenroseLike arc additionally audits
+  Schwarzschild-like arc compatibility as check #8):
   1. Architecture scope stayed artistic / bounded,
      not full conformal compactification.
   2. CPU integration via `ManifoldTransform`
@@ -1143,21 +1156,28 @@ the SCHW.1 → SCHW.11 ladder cadence).
      math (PENROSE.8).
   5. Fixture scene exists and is isolated
      (PENROSE.10).
-  6. Default Euclidean / disabled / SchwarzschildLike
-     output remains byte-identical.
+  6. Default Euclidean / disabled output remains
+     byte-identical.
   7. Bounded / no-NaN safety status.
-  8. Runtime CUDA / OptiX validation status
-     (PASS / DEFERRED / BLOCKED).
-  9. Remaining risks (per-slice catalogue).
-  10. Recommended next safe stage.
-- **Verdict:** PASS / PASS_WITH_RUNTIME_DEFERRED /
-  REPAIR / BLOCKED.
+  8. **SchwarzschildLike arc compatibility status**
+     — verified untouched; SCHW.11 capstone
+     equivalence claim preserved verbatim.
+  9. Runtime CUDA / OptiX validation status (PASS /
+     DEFERRED / BLOCKED).
+  10. Remaining risks (per-slice catalogue).
+  11. Recommended next safe stage.
 - **Acceptance:** audit-host build green; ctest
-  12/12. The verdict authorises proceeding to
-  the next manifold-chart family (Kerr-like?
-  Kruskal-like?) per operator authorisation, OR
-  to MANI-I.12 (final cross-host audit) per the
-  integration plan §11.
+  12/12; `manifold_identity_tests: 312/312 checks
+  passed`. The verdict closes the MANI-I.11 slot
+  for the audit-host portion; deferred items
+  become PASS-able when CLI consumption-gap
+  extension lands + a CUDA + OptiX-SDK host runs
+  the plan §9 fixture renders. Operator may
+  proceed to CLI consumption-gap closure (closes
+  both SCHW.* and PENROSE.* fixture gaps
+  simultaneously) OR MANI-I.12 (final cross-host
+  audit) per the integration plan §11. Kerr /
+  Kruskal explicitly NOT authorised.
 
 ---
 
