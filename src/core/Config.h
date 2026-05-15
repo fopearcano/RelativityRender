@@ -1,6 +1,7 @@
 #pragma once
 
 #include "manifold/ManifoldMode.h"
+#include "manifold/ObserverFrame.h"
 
 #include <string>
 
@@ -129,6 +130,45 @@ struct Config {
     // are accepted and recorded on Config from this slice
     // forward.
     rr::manifold::ManifoldMode manifold;
+
+    // OBSERVER.4 - per-render observer-frame configuration the
+    // renderer will eventually read to decide *how* the
+    // ObserverFrame perception layer engages with the existing
+    // CUDA / OptiX kernels (see
+    // `docs/OBSERVER_FRAME_RENDERING_PLAN.md` §6 / §7
+    // OBSERVER.5+). Populated by the four `--observer-*`
+    // modifier flags:
+    //
+    //   - `--observer-beta <float>`             sets
+    //                                           `observer.beta_magnitude`.
+    //   - `--observer-direction <x,y,z>`        sets
+    //                                           `observer.direction`.
+    //   - `--observer-proper-time <float>`      sets
+    //                                           `observer.proper_time`.
+    //   - `--observer-perception-mode <name>`   sets
+    //                                           `observer.perception_mode`
+    //                                           to a `PerceptionMode`
+    //                                           enumerator. Legal names
+    //                                           (case-sensitive,
+    //                                           kebab-case):
+    //                                           `default`,
+    //                                           `relativistic`.
+    //
+    // The default value `ObserverConfig{}` (`beta_magnitude
+    // = 0`, `direction = (0, 0, 0)`, `proper_time = 0`,
+    // `perception_mode = Identity`) is the "no output change"
+    // anchor: every existing CLI action without any
+    // `--observer-*` flag produces pixel-bit-identical output
+    // to the pre-OBSERVER.4 renderer.
+    //
+    // OBSERVER.4 scope: parsed and stored on Config; no
+    // renderer / kernel / GPU consumption yet. OBSERVER.5
+    // (camera-to-observer adapter) is the first consumer;
+    // OBSERVER.6 / OBSERVER.7 (CUDA / OptiX payload bridges)
+    // thread the resulting `ObserverFrame` to the kernels.
+    // The four flags above are accepted and recorded on
+    // Config from this slice forward.
+    rr::manifold::ObserverConfig observer;
 
     // Returns an empty string when the configuration is internally
     // consistent. Otherwise returns a human-readable description of

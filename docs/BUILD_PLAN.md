@@ -79106,6 +79106,342 @@ proceed to OBSERVER.4 (Config / CLI bridge;
 renumbered from the original OBSERVER.3) as the
 next OBSERVER.* impl slice when ready.
 
+## OBSERVER.4 — ObserverFrame Config / CLI Bridge (impl, host-only)
+
+**Scope of this slice (per the operator's *OBSERVER.4
+— ObserverFrame Config / CLI Bridge* task brief and
+the renumbered `docs/OBSERVER_FRAME_RENDERING_PLAN.md`
+§7 OBSERVER.4 after the OBSERVER.3 audit-slot
+insertion): expose observer-frame parameters through
+the CLI + `Config` surface without changing render
+behaviour. Adds the
+`rr::manifold::ObserverConfig` POD, the matching
+`rr::core::Config::observer` field, four
+`--observer-*` parser arms in
+`src/core/CommandLine.cpp`, the corresponding help
+text, and 18 new `cli_tests` functions. Host-only
+plumb; no CUDA, no OptiX, no camera, no renderer,
+no scene-loader, no observer-space transform.**
+
+### What ships
+
+- **`src/manifold/ObserverFrame.h` (modified).**
+  Adds the `ObserverConfig` POD alongside the
+  existing `PerceptionMode` enum + `ObserverFrame`
+  struct + validator helpers. Four fields,
+  each with the documented "no behaviour change"
+  default:
+    - `float beta_magnitude = 0.0f` — observer
+      velocity magnitude in c-units; default
+      `0` is the scene-rest observer anchor.
+      Not clamped at parse time; the consumer
+      at OBSERVER.5 passes the value through
+      `rr::relativity::clampBeta` per the
+      existing `--render-demo` / `Config::beta`
+      precedent.
+    - `rr::math::Vec3 direction = {0, 0, 0}` —
+      observer velocity direction in
+      scene-natural coordinates; default
+      `(0, 0, 0)` is the sentinel "not
+      specified" direction. The OBSERVER.5
+      camera adapter falls back to the camera
+      forward axis when magnitude is non-zero
+      and direction is zero.
+    - `float proper_time = 0.0f` — pre-set
+      proper-time placeholder for the observer
+      worldline. Reserved-but-stored this
+      slice; no integrator advances the field
+      per the OBSERVER.1 plan §8 non-goals.
+    - `PerceptionMode perception_mode =
+      PerceptionMode::Identity` — perception
+      mode tag; default `Identity` is the
+      byte-identity no-op anchor.
+
+- **`src/core/Config.h` (modified).** Adds:
+    - `#include "manifold/ObserverFrame.h"` next
+      to the existing
+      `#include "manifold/ManifoldMode.h"`.
+    - `rr::manifold::ObserverConfig observer;`
+      field on `Config` next to the existing
+      `rr::manifold::ManifoldMode manifold;`
+      field. Documented with the same
+      "What ships / What does NOT ship /
+      consumer slice" doc-comment shape as the
+      `manifold` field used at MANI-I.1.
+
+- **`src/core/CommandLine.cpp` (modified).** Four
+  parser arms appended after the
+  `--manifold-debug` arm:
+    - `--observer-beta <float>` — uses the new
+      `parse_finite_float` helper; rejects
+      non-parseable / non-finite values.
+    - `--observer-direction <x,y,z>` — uses
+      the new `parse_vec3` helper; rejects
+      malformed triples (wrong comma count;
+      empty component; non-parseable scalar;
+      non-finite component).
+    - `--observer-proper-time <float>` — uses
+      the new `parse_finite_float` helper.
+    - `--observer-perception-mode <name>` —
+      uses the new `parse_perception_mode`
+      helper; accepts `default` →
+      `PerceptionMode::Identity` and
+      `relativistic` →
+      `PerceptionMode::ConstantVelocityMinkowski`;
+      rejects unknown values with a diagnostic
+      listing both legal names. The third
+      enumerator
+      (`CurvedChartGeodesicPlaceholder`) is
+      reserved-but-inert per the OBSERVER.1
+      plan §3.6 + §8 and not exposed on the
+      CLI yet (master rule #3 satisfied: no
+      fake stub for the CLI; the operator
+      cannot select the placeholder mode by
+      name until the curved-chart
+      implementation arc lands).
+  Plus three new helper functions in the
+  anonymous namespace:
+    - `bool parse_finite_float(string_view, float&)`
+      — finite-floats gate sibling of
+      `parse_int`.
+    - `bool parse_vec3(string_view, Vec3&)` —
+      comma-separated triple parser; rejects
+      malformed tokens.
+    - `bool parse_perception_mode(string_view,
+      PerceptionMode&)` — kebab-case →
+      enumerator dispatch table; mirrors the
+      `parse_chart_type` precedent.
+  Plus help-text extensions for all four flags
+  (multi-line block immediately after the
+  `--manifold-debug` help block, before the
+  `--width` / `--height` block).
+
+- **`tests/cli_tests.cpp` (extended).** 18 new
+  test functions covering all parse paths:
+    - `test_observer_default_off` — anchors the
+      C++ default-init contract (all four
+      fields default to the no-op anchor).
+    - `test_observer_beta_value` — basic
+      float parse.
+    - `test_observer_beta_out_of_range_passes`
+      — negative and `> 1` values pass through
+      (consumer-time clamping per the
+      `--manifold-strength` precedent).
+    - `test_observer_beta_invalid_rejected` —
+      non-parseable string rejected.
+    - `test_observer_beta_non_finite_rejected`
+      — NaN and `inf` rejected.
+    - `test_observer_direction_value` — basic
+      `x,y,z` parse.
+    - `test_observer_direction_zero_accepted`
+      — the `(0,0,0)` sentinel is a legal
+      value.
+    - `test_observer_direction_malformed_rejected`
+      — five subcases: too few commas; too
+      many commas; empty component;
+      non-parseable component; non-finite
+      component.
+    - `test_observer_proper_time_value` —
+      basic float parse.
+    - `test_observer_proper_time_non_finite_rejected`
+      — NaN and `-inf` rejected.
+    - `test_observer_perception_mode_each_value`
+      — both `default` and `relativistic`
+      parse to the matching enumerator.
+    - `test_observer_perception_mode_unknown_rejected`
+      — unknown value rejected with a
+      diagnostic that names BOTH legal
+      alternatives.
+    - `test_observer_perception_mode_case_mismatch_rejected`
+      — `Default` (capital D) rejected
+      (parser is case-sensitive).
+    - `test_observer_perception_mode_placeholder_not_exposed`
+      — `curved-chart-geodesic` rejected
+      (the placeholder enumerator is not on
+      the CLI surface).
+    - `test_observer_all_four_flags_combined`
+      — the four flags compose without
+      cross-flag interference.
+    - `test_observer_flags_order_independent`
+      — the four flags compose with action +
+      scene-path + manifold flags in any
+      order.
+    - `test_observer_flags_missing_value_rejected`
+      — each value-taking flag rejects an
+      immediately-following `--*` token per
+      the `take_value` contract.
+    - `test_observer_default_off_with_other_flags`
+      — across eight non-observer argv
+      vectors (including ones that combine
+      with `--manifold-*` flags) the four
+      observer fields stay at their
+      pre-OBSERVER.4 defaults.
+
+- **`main()` registers the 18 new test functions**
+  under a new `// OBSERVER.4: --observer-* parser
+  tests` section, immediately after the existing
+  `// MANI-I.1: --manifold-* parser tests` block.
+
+### What does NOT ship
+
+- **No CUDA changes.** Operator brief explicitly
+  forbids. Nothing in `src/cuda/` is touched.
+- **No OptiX changes.** Operator brief
+  explicitly forbids. Nothing in `src/optix/`
+  is touched.
+- **No camera behaviour changes.** Operator
+  brief explicitly forbids. The existing
+  `src/camera/Camera.h` / `Camera.cpp` are
+  unchanged.
+- **No render behaviour changes.** Operator
+  brief explicitly forbids. The new
+  `observer` field on `Config` is parsed and
+  stored; no consumer reads it. The existing
+  six scene-aware actions continue to feed on
+  the legacy `rr::relativity::Observer` +
+  `RelativityParams` types via the existing
+  call paths. Default-off byte-identity is
+  preserved.
+- **No observer-space transforms.** Operator
+  brief explicitly forbids. The OBSERVER.5
+  camera-to-observer adapter is the next
+  impl slice; this slice ships only the
+  CLI / config surface.
+- **No scene-loader extension.** The
+  `.rrscene` `perception` block parser is
+  deferred (the operator's brief scopes
+  OBSERVER.4 to CLI / config only). When the
+  scene-loader extension lands, it will be a
+  parallel slice that reads from
+  `Scene::observer` and merges with
+  `Config::observer` via a dispatcher-merge
+  mirroring the SCHW.9 / MANI-CONSUME.1
+  precedent.
+- **No `ObserverFrame` consumer.** The new
+  `ObserverConfig` POD is structurally
+  separate from the runtime `ObserverFrame`
+  POD; OBSERVER.5 will build an
+  `ObserverFrame` from the
+  `ObserverConfig` + active
+  `rr::camera::Camera` via the new adapter.
+  This slice's `ObserverConfig` is a thin
+  config bag (master rule #3 satisfied: the
+  POD is structurally consumed by the
+  parser + tests + the planned OBSERVER.5
+  slice — not a fake stub).
+- **No GPU launch-params field.** The
+  per-launch `ObserverFrame` payload on
+  `CudaSceneView` + `OptixLaunchParams` is
+  reserved for OBSERVER.6 / OBSERVER.7 (the
+  renumbered GPU bridges); not added this
+  slice.
+- **No full GR tetrad solver.** Operator
+  brief + OBSERVER.1 plan §8 non-goals
+  explicitly forbid. The
+  `CurvedChartGeodesicPlaceholder` enumerator
+  is reserved-but-inert and not exposed on
+  the CLI surface.
+- **No path-tracer migration.** The CUDA /
+  OptiX path-tracer kernels remain on the
+  legacy types; OBSERVER.* scope is the
+  `--render-aovs` / `--render-optix-aovs`
+  arc per the OBSERVER.1 plan §8.
+- **No C4D / server / UI / node-editor
+  touch.** Operator brief explicitly forbids.
+- **No CMake change.** No new target; no new
+  source file; no link-line change. The
+  `cli_tests` recompiles `Config.cpp` +
+  `CommandLine.cpp` directly per its
+  existing Option B linkage strategy
+  (header changes to `Config.h` /
+  `ObserverFrame.h` flow through the
+  existing include graph; the `rr_manifold`
+  / `rr_core` INTERFACE shapes are
+  unchanged).
+- **No `MODULE_MAP.md` update.** The
+  observer-frame arc's module-map promotion
+  to `**Wired**` is reserved for OBSERVER.6
+  / OBSERVER.7 (the GPU payload bridges,
+  where the field is first actually consumed
+  by a kernel).
+- **No alteration of the OBSERVER.1 plan.**
+  The plan stays as the canonical brief for
+  the arc; the OBSERVER.4 entry above does
+  NOT rewrite the plan. The OBSERVER.3 audit
+  recorded the audit-slot insertion + the
+  renumbering ladder.
+
+### Acceptance
+
+- **Compiles.** Audit-host build green; full
+  rebuild via `cmake --build /home/user/RelativityRender/build`
+  completes with no warnings on the core / manifold
+  modules.
+- **Tests.** `ctest` returns
+  `100% tests passed, 0 tests failed out of 12`.
+  `cli_tests` reports `254/254 passed` (up from
+  `123/123` at the post-OBSERVER.3 baseline:
+  **+131 new RR_CHECK assertions across 18 new
+  test functions**). `manifold_identity_tests:
+  349/349` (unchanged — no regression);
+  `renderer_tests: 19/19 passed` (unchanged). No
+  other test suite touched.
+- **Smoke tests.** `--help` includes the four
+  new `--observer-*` flag entries (verified at
+  audit-host); a combined invocation
+  (`--observer-beta 0.3 --observer-direction
+  1,0,0 --observer-perception-mode relativistic
+  --observer-proper-time 5.0 --device-info`)
+  parses without error; an invalid invocation
+  (`--observer-perception-mode bogus`) produces
+  a parse error naming both the offending token
+  AND every legal alternative.
+- **No behaviour change.** No CLI action's
+  output is altered. The new `observer` field
+  on `Config` is parsed and stored; no consumer
+  reads it. The existing six scene-aware actions
+  continue to feed on the legacy types via the
+  existing call paths.
+- **Internally consistent.** The four parser
+  arms mirror the `--manifold-*` precedent
+  verbatim in shape (`take_value` for
+  value-taking flags; per-flag diagnostic
+  with offending-token + legal-alternatives
+  in the error message). The
+  `ObserverConfig` POD's defaults are
+  byte-identical to the documented "no
+  behaviour change" anchor enumerated in
+  the OBSERVER.1 plan §3.6 + the
+  `ObserverConfig` doc comment.
+- **Honest scope.** The `ObserverConfig` POD
+  is structurally consumed by the parser +
+  tests + the planned OBSERVER.5 adapter
+  (master rule #3 "no fake stubs"
+  satisfied). The
+  `CurvedChartGeodesicPlaceholder`
+  enumerator is reserved-but-not-on-CLI per
+  the OBSERVER.1 plan §3.6; the test
+  `test_observer_perception_mode_placeholder_not_exposed`
+  pins this contract.
+
+### Module status changes
+
+`docs/MODULE_MAP.md` is *not* updated by this
+slice. The `src/manifold/ObserverFrame.h`
+header's module-map status remains
+**Skeleton-Plus**; the `**Wired**` promotion still
+waits for OBSERVER.6 / OBSERVER.7 (the GPU payload
+bridges, where the field is first actually
+consumed by a kernel). The OBSERVER.4 verdict
+authorises the operator to proceed to OBSERVER.5
+(camera-to-observer adapter; the host-side
+`build_observer_frame_from_camera(...)` helper
+that consumes the new `Config::observer` field +
+the active `rr::camera::Camera` + the existing
+`rr::relativity::Observer` and produces an
+`ObserverFrame`) as the next OBSERVER.* impl
+slice when ready.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:

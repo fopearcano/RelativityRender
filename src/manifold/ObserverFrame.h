@@ -383,4 +383,91 @@ RR_HD inline bool is_finite_observer_frame(const ObserverFrame& f) {
     return true;
 }
 
+// Per-render observer-frame configuration knob (OBSERVER.4).
+// Carries the CLI-exposed observer parameters
+// (`--observer-beta` / `--observer-direction` /
+// `--observer-proper-time` /
+// `--observer-perception-mode`) plus the matching
+// scene-loader fields. The struct is intentionally a thin
+// config bag: subsequent OBSERVER.* slices (the camera-to-
+// observer adapter, then the CUDA / OptiX payload bridges)
+// will build a full `ObserverFrame` from this config + the
+// active `rr::camera::Camera` + the existing
+// `rr::relativity::Observer`.
+//
+// Every field's default value is the "no behaviour change"
+// anchor:
+//   - `beta_magnitude = 0`  -> zero observer velocity, the
+//                              kernel's existing aberration /
+//                              Doppler / searchlight branches
+//                              all reduce to their identity
+//                              values;
+//   - `direction = (0,0,0)` -> sentinel "not specified"
+//                              direction. When combined with
+//                              `beta_magnitude = 0` the net
+//                              observer beta is zero regardless;
+//                              when combined with a non-zero
+//                              magnitude the camera adapter at
+//                              OBSERVER.5 falls back to the
+//                              camera's forward axis (-Z in
+//                              scene-natural orientation);
+//   - `proper_time = 0`      -> the camera-start epoch;
+//   - `perception_mode = Identity`
+//                            -> the byte-identity no-op
+//                              perception mode, every existing
+//                              CLI action produces byte-
+//                              identical output.
+//
+// OBSERVER.4 scope: parsed and stored on `Config`; no
+// renderer / kernel / GPU consumption yet. OBSERVER.5
+// (camera-to-observer adapter) is the first consumer; the
+// CUDA / OptiX payload bridges at OBSERVER.6 / OBSERVER.7
+// thread the resulting `ObserverFrame` to the kernels.
+struct ObserverConfig {
+    // Observer velocity magnitude in c-units. Default `0.0f`
+    // is "scene-rest observer". Not clamped at parse time;
+    // the consumer (camera adapter) passes the value through
+    // `rr::relativity::clampBeta` when it is consumed, which
+    // silently caps `|beta|` at `0.999999` per the existing
+    // SR-helper design (matching the
+    // `rr::core::Config::beta` precedent used by
+    // `--render-demo`).
+    float beta_magnitude = 0.0f;
+
+    // Observer velocity direction in scene-natural
+    // coordinates. Default `(0, 0, 0)` is the sentinel "not
+    // specified" direction: when combined with the default
+    // zero magnitude the net beta is zero (no behaviour
+    // change); when combined with a non-zero magnitude, the
+    // OBSERVER.5 camera adapter falls back to the camera's
+    // forward axis (the existing `--render-demo` precedent
+    // points the observer at the camera's `-Z` forward
+    // direction). Caller-supplied non-zero directions are
+    // normalised at consumer time, not at parse time.
+    rr::math::Vec3 direction = {0.0f, 0.0f, 0.0f};
+
+    // Pre-set proper-time placeholder for the observer
+    // worldline. Default `0.0f` is the camera-start epoch.
+    // Reserved-but-declared this slice; no integrator
+    // advances the field (the OBSERVER.* arc does not
+    // include a geodesic integrator per the OBSERVER.1 plan
+    // §8 non-goals). The subsequent OBSERVER.5 / OBSERVER.6
+    // / OBSERVER.7 slices thread the value into the resulting
+    // `ObserverFrame::proper_time` field so future arcs can
+    // populate it from CLI / scene-loader without an ABI
+    // bump.
+    float proper_time = 0.0f;
+
+    // Perception mode tag. Default `PerceptionMode::Identity`
+    // is the byte-identity no-op anchor. CLI surface accepts
+    // `default` (-> `Identity`) and `relativistic`
+    // (-> `ConstantVelocityMinkowski`) at this slice; the
+    // third enumerator
+    // (`CurvedChartGeodesicPlaceholder`) is reserved-but-
+    // inert and not exposed on the CLI surface until the
+    // future curved-chart implementation arc lands per the
+    // OBSERVER.1 plan §3.6 + §8 non-goals.
+    PerceptionMode perception_mode = PerceptionMode::Identity;
+};
+
 }

@@ -2,8 +2,10 @@
 
 #include "core/Version.h"
 #include "manifold/CoordinateChart.h"
+#include "manifold/ObserverFrame.h"
 
 #include <charconv>
+#include <cmath>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -46,6 +48,78 @@ bool parse_int(std::string_view s, int& out) {
     if (res.ec != std::errc{} || res.ptr != end) return false;
     out = value;
     return true;
+}
+
+// OBSERVER.4 - parse a finite-float `--observer-*` value into
+// `out`. Returns `false` on a non-parseable string OR a
+// non-finite float (NaN / +-inf); the parser arm produces an
+// error message naming the flag and the offending token.
+// Mirrors the `--manifold-strength` / `--firefly-clamp` float-
+// parser pattern but adds the finiteness gate that the
+// observer-frame consumer relies on (see
+// `is_finite_observer_frame` in `manifold/ObserverFrame.h`).
+bool parse_finite_float(std::string_view s, float& out) {
+    float value = 0.0f;
+    const auto* end = s.data() + s.size();
+    const auto  res = std::from_chars(s.data(), end, value);
+    if (res.ec != std::errc{} || res.ptr != end) return false;
+    if (!std::isfinite(value))                   return false;
+    out = value;
+    return true;
+}
+
+// OBSERVER.4 - parse a comma-separated `x,y,z` value into
+// `out`. Returns `false` on a malformed token (wrong comma
+// count; non-parseable scalar; non-finite component). The
+// parser arm produces an error message naming the offending
+// token. Whitespace inside the triple is rejected per the
+// CLI parser's strict-token contract.
+bool parse_vec3(std::string_view s, rr::math::Vec3& out) {
+    auto comma1 = s.find(',');
+    if (comma1 == std::string_view::npos) return false;
+    auto comma2 = s.find(',', comma1 + 1);
+    if (comma2 == std::string_view::npos) return false;
+    if (s.find(',', comma2 + 1) != std::string_view::npos) return false;
+
+    const std::string_view xs = s.substr(0, comma1);
+    const std::string_view ys = s.substr(comma1 + 1, comma2 - comma1 - 1);
+    const std::string_view zs = s.substr(comma2 + 1);
+    if (xs.empty() || ys.empty() || zs.empty()) return false;
+
+    float x = 0.0f, y = 0.0f, z = 0.0f;
+    if (!parse_finite_float(xs, x)) return false;
+    if (!parse_finite_float(ys, y)) return false;
+    if (!parse_finite_float(zs, z)) return false;
+    out = rr::math::Vec3{x, y, z};
+    return true;
+}
+
+// OBSERVER.4 - parse a kebab-case `--observer-perception-mode`
+// value into the matching `rr::manifold::PerceptionMode`
+// enumerator. Returns `false` on unknown input; the parser arm
+// produces an error message listing the legal names.
+// Case-sensitive matching mirrors the rest of the CLI parser's
+// strict-token contract.
+//
+// Only two enumerators are exposed on the CLI surface at this
+// slice (per the operator's OBSERVER.4 brief):
+//   - `default`      -> `PerceptionMode::Identity`
+//   - `relativistic` -> `PerceptionMode::ConstantVelocityMinkowski`
+// The third enumerator
+// (`PerceptionMode::CurvedChartGeodesicPlaceholder`) is
+// reserved-but-inert per the OBSERVER.1 plan §3.6 / §8 non-
+// goals and not exposed on the CLI until the future
+// curved-chart implementation arc lands.
+bool parse_perception_mode(std::string_view s,
+                           rr::manifold::PerceptionMode& out) {
+    using rr::manifold::PerceptionMode;
+    if (s == "default") {
+        out = PerceptionMode::Identity;                   return true;
+    }
+    if (s == "relativistic") {
+        out = PerceptionMode::ConstantVelocityMinkowski;  return true;
+    }
+    return false;
 }
 
 // Take the next argv slot as the value for `flag`. Treats anything
@@ -601,6 +675,95 @@ CommandLine::ParseResult CommandLine::parse(int argc, char** argv) {
             // Reserved for the MANI-I.4 debug coordinate-warp
             // AOV; no observable behaviour change this slice.
             r.config.manifold.debug_visualization = true;
+        } else if (a == "--observer-beta") {
+            // OBSERVER.4 modifier flag. Takes one float. Sets
+            // `r.config.observer.beta_magnitude`. Default 0
+            // matches the pre-OBSERVER.4 renderer byte-for-byte
+            // (scene-rest observer). Not clamped at parse time;
+            // the consumer at OBSERVER.5 (camera adapter) passes
+            // the value through `rr::relativity::clampBeta` per
+            // the existing `--render-demo` / `--beta`
+            // precedent. Non-finite (NaN / +-inf) values are
+            // rejected here so the consumer never sees a
+            // non-finite magnitude.
+            if (!take_value(argc, argv, i, a, value, r.error_message)) {
+                r.action = Action::Error;
+                return r;
+            }
+            float beta = 0.0f;
+            if (!parse_finite_float(value, beta)) {
+                r.action        = Action::Error;
+                r.error_message = "invalid float for --observer-beta: "
+                                + std::string(value);
+                return r;
+            }
+            r.config.observer.beta_magnitude = beta;
+        } else if (a == "--observer-direction") {
+            // OBSERVER.4 modifier flag. Takes one comma-
+            // separated triple `x,y,z`. Sets
+            // `r.config.observer.direction`. Default (0,0,0)
+            // is the sentinel "not specified" direction; when
+            // combined with a non-zero magnitude the camera
+            // adapter at OBSERVER.5 falls back to the camera's
+            // forward axis. Caller-supplied non-zero directions
+            // are normalised at consumer time, not at parse
+            // time. Malformed tokens (wrong comma count;
+            // non-parseable scalar; non-finite component) are
+            // rejected with a parse error.
+            if (!take_value(argc, argv, i, a, value, r.error_message)) {
+                r.action = Action::Error;
+                return r;
+            }
+            rr::math::Vec3 dir{0.0f, 0.0f, 0.0f};
+            if (!parse_vec3(value, dir)) {
+                r.action        = Action::Error;
+                r.error_message = "invalid value for --observer-direction: "
+                                + std::string(value)
+                                + " (expected x,y,z with finite floats)";
+                return r;
+            }
+            r.config.observer.direction = dir;
+        } else if (a == "--observer-proper-time") {
+            // OBSERVER.4 modifier flag. Takes one float. Sets
+            // `r.config.observer.proper_time`. Default 0 is
+            // the camera-start epoch. Reserved-but-stored this
+            // slice (no integrator advances the field; see the
+            // OBSERVER.1 plan §8 non-goals). Non-finite values
+            // are rejected here so the consumer never sees a
+            // non-finite proper-time scalar.
+            if (!take_value(argc, argv, i, a, value, r.error_message)) {
+                r.action = Action::Error;
+                return r;
+            }
+            float tau = 0.0f;
+            if (!parse_finite_float(value, tau)) {
+                r.action        = Action::Error;
+                r.error_message = "invalid float for --observer-proper-time: "
+                                + std::string(value);
+                return r;
+            }
+            r.config.observer.proper_time = tau;
+        } else if (a == "--observer-perception-mode") {
+            // OBSERVER.4 modifier flag. Takes one value naming
+            // the perception mode. Legal names (case-sensitive,
+            // kebab-case): `default`, `relativistic`. Maps to
+            // the `PerceptionMode` enumerator on the active
+            // `ObserverConfig`. The third enumerator
+            // (`CurvedChartGeodesicPlaceholder`) is reserved-
+            // but-inert per the OBSERVER.1 plan §3.6 / §8 non-
+            // goals and not exposed on the CLI yet. Unknown
+            // values are a parse error.
+            if (!take_value(argc, argv, i, a, value, r.error_message)) {
+                r.action = Action::Error;
+                return r;
+            }
+            if (!parse_perception_mode(value, r.config.observer.perception_mode)) {
+                r.action        = Action::Error;
+                r.error_message = "invalid --observer-perception-mode value: "
+                                + std::string(value)
+                                + " (expected one of: default, relativistic)";
+                return r;
+            }
         } else if (a == "--width") {
             if (!take_value(argc, argv, i, a, value, r.error_message)) {
                 r.action = Action::Error;
@@ -1148,6 +1311,59 @@ std::string CommandLine::usage(std::string_view argv0) {
        << "                        MANI-I.4 debug coordinate-warp AOV; "
                                   "no observable\n"
        << "                        behaviour yet.\n"
+       << "  --observer-beta <float>\n"
+       << "                        OBSERVER.4 modifier flag (not an action). "
+                                  "Sets the\n"
+       << "                        observer-velocity magnitude in c-units "
+                                  "on the active\n"
+       << "                        ObserverConfig. Default 0 means \"scene-"
+                                  "rest observer\"\n"
+       << "                        and matches the pre-OBSERVER.4 renderer "
+                                  "byte-for-byte.\n"
+       << "                        Not clamped at parse time; the consumer "
+                                  "at OBSERVER.5\n"
+       << "                        passes the value through clampBeta (caps "
+                                  "|beta| at\n"
+       << "                        0.999999). Non-finite values are "
+                                  "rejected.\n"
+       << "  --observer-direction <x,y,z>\n"
+       << "                        OBSERVER.4 modifier flag. Sets the "
+                                  "observer-velocity\n"
+       << "                        direction (comma-separated triple) on "
+                                  "the active\n"
+       << "                        ObserverConfig. Default (0,0,0) is the "
+                                  "sentinel \"not\n"
+       << "                        specified\" value; when combined with "
+                                  "a non-zero\n"
+       << "                        magnitude the OBSERVER.5 camera adapter "
+                                  "falls back to\n"
+       << "                        the camera forward axis. Non-finite "
+                                  "components are\n"
+       << "                        rejected.\n"
+       << "  --observer-proper-time <float>\n"
+       << "                        OBSERVER.4 modifier flag. Sets the "
+                                  "pre-set proper-time\n"
+       << "                        placeholder on the active "
+                                  "ObserverConfig. Default 0\n"
+       << "                        is the camera-start epoch. "
+                                  "Reserved-but-stored; no\n"
+       << "                        integrator advances the field per "
+                                  "OBSERVER.1 plan §8.\n"
+       << "  --observer-perception-mode <name>\n"
+       << "                        OBSERVER.4 modifier flag. Selects the "
+                                  "perception mode.\n"
+       << "                        Accepted values (case-sensitive):\n"
+       << "                          default       (Identity; the no-op "
+                                  "anchor)\n"
+       << "                          relativistic  (ConstantVelocityMinkowski; "
+                                  "today's SR\n"
+       << "                                         specialisation, "
+                                  "byte-identical to today)\n"
+       << "                        Default `default` matches the pre-"
+                                  "OBSERVER.4\n"
+       << "                        renderer byte-for-byte. Unknown values "
+                                  "are a parse\n"
+       << "                        error.\n"
        << "  --width  <int>        Render width in pixels "
                                   "(default 1280).\n"
        << "  --height <int>        Render height in pixels "
