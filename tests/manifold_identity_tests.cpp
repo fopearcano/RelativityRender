@@ -42,6 +42,7 @@
 #include <cmath>
 #include <cstdio>
 #include <initializer_list>
+#include <limits>
 
 namespace {
 
@@ -336,6 +337,12 @@ void test_observer_frame_defaults() {
     // At |beta| = 0.5 the four-velocity remains timelike-normalised
     // under Minkowski.
     RR_CHECK(is_normalised_timelike(f, minkowski_metric()));
+
+    // OBSERVER.2: default perception mode on rest_frame() is the
+    // no-op anchor (Identity); rest-frame round-trip through the
+    // bridge helpers preserves the Identity default.
+    RR_CHECK(rf.perception_mode       == PerceptionMode::Identity);
+    RR_CHECK(from_rest.perception_mode == PerceptionMode::Identity);
 }
 
 void test_geodesic_state_defaults() {
@@ -1470,6 +1477,173 @@ void test_penrose_4_params_from_chart() {
     RR_CHECK(penrose_like_validate_params(half));
 }
 
+// ---------- OBSERVER.2: ObserverFrame data model ----------
+
+void test_observer_2_perception_mode_default() {
+    using namespace rr::manifold;
+
+    // The default perception mode is Identity (the no-op anchor
+    // every existing CLI action's byte-identity rests on).
+    RR_CHECK(default_perception_mode() == PerceptionMode::Identity);
+
+    // A default-constructed ObserverFrame carries the same default
+    // (the POD's per-field initialiser, not the factory).
+    ObserverFrame f{};
+    RR_CHECK(f.perception_mode == PerceptionMode::Identity);
+
+    // The three perception-mode enumerators are pairwise distinct.
+    // (Defence-in-depth against an accidental enumerator collision
+    // in a future edit; mirrors the test_geodesic_state_defaults
+    // pattern that pins GeodesicStatus enumerators.)
+    RR_CHECK(PerceptionMode::Identity                       !=
+             PerceptionMode::ConstantVelocityMinkowski);
+    RR_CHECK(PerceptionMode::Identity                       !=
+             PerceptionMode::CurvedChartGeodesicPlaceholder);
+    RR_CHECK(PerceptionMode::ConstantVelocityMinkowski      !=
+             PerceptionMode::CurvedChartGeodesicPlaceholder);
+}
+
+void test_observer_2_orthonormal_tetrad_default() {
+    using namespace rr::manifold;
+    using rr::math::Vec3;
+
+    // The default rest_frame() tetrad is the right-handed world
+    // basis - pairwise dot products are exactly zero, leg lengths
+    // are exactly one.
+    ObserverFrame rf = rest_frame();
+    RR_CHECK(is_orthonormal_tetrad(rf));
+
+    // A frame from observer_frame_from(...) at moderate beta also
+    // carries the default world-basis tetrad (the helper does not
+    // re-orient the tetrad; OBSERVER.4 will do that).
+    rr::relativity::Observer obs_rt;
+    obs_rt.velocity = Vec3{0.3f, -0.4f, 0.0f};
+    ObserverFrame f = observer_frame_from(obs_rt);
+    RR_CHECK(is_orthonormal_tetrad(f));
+
+    // Defence-in-depth: a tetrad with a non-unit leg fails.
+    ObserverFrame degenerate_len = rest_frame();
+    degenerate_len.right = Vec3{2.0f, 0.0f, 0.0f};  // |right| = 2
+    RR_CHECK(!is_orthonormal_tetrad(degenerate_len));
+
+    // A tetrad with non-orthogonal legs fails.
+    ObserverFrame degenerate_orth = rest_frame();
+    degenerate_orth.up = Vec3{1.0f, 0.0f, 0.0f};    // up == right
+    RR_CHECK(!is_orthonormal_tetrad(degenerate_orth));
+
+    // A tetrad with collinear forward/right legs fails.
+    ObserverFrame degenerate_coll = rest_frame();
+    degenerate_coll.forward = Vec3{1.0f, 0.0f, 0.0f};  // forward == right
+    RR_CHECK(!is_orthonormal_tetrad(degenerate_coll));
+}
+
+void test_observer_2_finite_observer_frame() {
+    using namespace rr::manifold;
+    using rr::math::Vec3;
+    using rr::math::Vec4;
+
+    // Every default-built ObserverFrame is finite.
+    ObserverFrame rf = rest_frame();
+    RR_CHECK(is_finite_observer_frame(rf));
+
+    // Frames from observer_frame_from(...) at moderate beta remain
+    // finite (clampBeta keeps gamma bounded; the constructed
+    // velocity4 has no NaN/inf path).
+    rr::relativity::Observer obs_rt;
+    obs_rt.velocity = Vec3{0.3f, -0.4f, 0.0f};
+    ObserverFrame f = observer_frame_from(obs_rt);
+    RR_CHECK(is_finite_observer_frame(f));
+
+    // Defence-in-depth: NaN in any scalar field is detected. Use
+    // the NaN sentinel from the IEEE-754 0/0 form to avoid any
+    // platform-specific quiet-vs-signalling NaN distinction.
+    const float nan_f = std::nanf("");
+    const float inf_f = std::numeric_limits<float>::infinity();
+
+    ObserverFrame nan_pos = rest_frame();
+    nan_pos.position4 = Vec4{nan_f, 0.0f, 0.0f, 0.0f};
+    RR_CHECK(!is_finite_observer_frame(nan_pos));
+
+    ObserverFrame nan_vel = rest_frame();
+    nan_vel.velocity4 = Vec4{1.0f, nan_f, 0.0f, 0.0f};
+    RR_CHECK(!is_finite_observer_frame(nan_vel));
+
+    ObserverFrame nan_beta = rest_frame();
+    nan_beta.beta = Vec3{nan_f, 0.0f, 0.0f};
+    RR_CHECK(!is_finite_observer_frame(nan_beta));
+
+    ObserverFrame nan_right = rest_frame();
+    nan_right.right = Vec3{nan_f, 0.0f, 0.0f};
+    RR_CHECK(!is_finite_observer_frame(nan_right));
+
+    ObserverFrame nan_tau = rest_frame();
+    nan_tau.proper_time = nan_f;
+    RR_CHECK(!is_finite_observer_frame(nan_tau));
+
+    ObserverFrame nan_t = rest_frame();
+    nan_t.coordinate_time = nan_f;
+    RR_CHECK(!is_finite_observer_frame(nan_t));
+
+    // Defence-in-depth: positive / negative infinity in any scalar
+    // field is also detected.
+    ObserverFrame inf_pos = rest_frame();
+    inf_pos.position4 = Vec4{inf_f, 0.0f, 0.0f, 0.0f};
+    RR_CHECK(!is_finite_observer_frame(inf_pos));
+
+    ObserverFrame neg_inf_t = rest_frame();
+    neg_inf_t.coordinate_time = -inf_f;
+    RR_CHECK(!is_finite_observer_frame(neg_inf_t));
+}
+
+void test_observer_2_default_no_deformation() {
+    using namespace rr::manifold;
+    using rr::math::Vec3;
+    using rr::math::Vec4;
+
+    // OBSERVER.2 anchor: the default ObserverFrame represents the
+    // current camera-equivalent no-op observer. Specifically:
+    //   - beta is exactly zero (no velocity);
+    //   - position4 is the chart origin;
+    //   - velocity4 is the rest 4-velocity (1, 0, 0, 0);
+    //   - the tetrad is the right-handed world basis;
+    //   - both worldline-time placeholders are zero;
+    //   - the perception mode is Identity.
+    // Together these mean the default frame cannot imply ANY
+    // coordinate deformation - the bridge to the legacy
+    // rr::relativity::Observer round-trips with beta still zero,
+    // and a kernel reading the frame as a no-op gets bit-for-bit
+    // the pre-pivot scene-rest observer.
+    ObserverFrame f{};
+    RR_CHECK(approx(f.beta,      Vec3{0.0f, 0.0f, 0.0f}));
+    RR_CHECK(approx(f.position4, Vec4{0.0f, 0.0f, 0.0f, 0.0f}));
+    RR_CHECK(approx(f.velocity4, Vec4{1.0f, 0.0f, 0.0f, 0.0f}));
+    RR_CHECK(approx(f.right,     Vec3{1.0f, 0.0f, 0.0f}));
+    RR_CHECK(approx(f.up,        Vec3{0.0f, 1.0f, 0.0f}));
+    RR_CHECK(approx(f.forward,   Vec3{0.0f, 0.0f, 1.0f}));
+    RR_CHECK(f.proper_time      == 0.0f);
+    RR_CHECK(f.coordinate_time  == 0.0f);
+    RR_CHECK(f.perception_mode  == PerceptionMode::Identity);
+
+    // The default frame's bridge to the legacy SR observer also
+    // carries zero velocity - the no-op observer cannot induce
+    // any aberration / Doppler / searchlight effect at the kernel
+    // even if the existing helpers were called against it.
+    rr::relativity::Observer back = to_relativity_observer(f);
+    RR_CHECK(approx(back.velocity, Vec3{0.0f, 0.0f, 0.0f}));
+
+    // Round-trip via observer_frame_from(rest Observer) reproduces
+    // the default frame's beta and velocity4 exactly.
+    rr::relativity::Observer rest_obs;
+    ObserverFrame from_rest = observer_frame_from(rest_obs);
+    RR_CHECK(approx(from_rest.beta,      f.beta));
+    RR_CHECK(approx(from_rest.velocity4, f.velocity4));
+
+    // OBSERVER.2 validator gates all hold on the default frame.
+    RR_CHECK(is_finite_observer_frame(f));
+    RR_CHECK(is_orthonormal_tetrad(f));
+    RR_CHECK(is_normalised_timelike(f, minkowski_metric()));
+}
+
 void test_penrose_4_other_non_euclidean_passthrough() {
     using namespace rr::manifold;
     using rr::math::Vec3;
@@ -1553,6 +1727,12 @@ int main() {
     test_penrose_4_no_nan_inf_for_large_coordinates();
     test_penrose_4_params_from_chart();
     test_penrose_4_other_non_euclidean_passthrough();
+
+    // OBSERVER.2: ObserverFrame data model.
+    test_observer_2_perception_mode_default();
+    test_observer_2_orthonormal_tetrad_default();
+    test_observer_2_finite_observer_frame();
+    test_observer_2_default_no_deformation();
 
     std::printf("manifold_identity_tests: %d / %d checks passed\n",
                 g_total - g_failed, g_total);

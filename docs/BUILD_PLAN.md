@@ -78637,6 +78637,307 @@ module-map status (currently logged as
 **Wired** at OBSERVER.5 / OBSERVER.6 when the
 GPU launch-params consumption first lands.
 
+## OBSERVER.2 — ObserverFrame Data Model (impl, POD-leaf)
+
+**Scope of this slice (per the operator's *OBSERVER.2
+— ObserverFrame Data Model* task brief and
+`docs/OBSERVER_FRAME_RENDERING_PLAN.md` §7 OBSERVER.2):
+verify the existing `ObserverFrame` POD at
+`src/manifold/ObserverFrame.h` (MANIFOLD.3) is
+sufficient for the observer-frame arc's needs, then
+minimally extend it so it can represent observer-
+dependent perception without changing render
+behaviour. Adds the `PerceptionMode` enum, the
+`perception_mode` field, and three new validator
+helpers. Header-only POD-leaf change; no CUDA, no
+OptiX, no camera, no render-output change.**
+
+### What ships
+
+- **`src/manifold/ObserverFrame.h` (modified).**
+  Three additions to the MANIFOLD.3 surface:
+    - **`PerceptionMode` enum** (new, before the
+      `ObserverFrame` struct in
+      `namespace rr::manifold`). Three
+      enumerators per the OBSERVER.1 plan §3.6:
+        - `Identity = 0` — scene-rest observer
+          no-op; the renderer default. Every
+          existing CLI action produces byte-
+          identical output against an
+          `ObserverFrame` whose perception mode
+          is `Identity`.
+        - `ConstantVelocityMinkowski` — the
+          existing `rr::relativity::Observer` +
+          `RelativityParams` specialisation
+          (keyed on `ObserverFrame::beta`
+          instead of
+          `rr::relativity::Observer::velocity`).
+          Math helper bodies are preserved
+          verbatim by subsequent OBSERVER.*
+          slices.
+        - `CurvedChartGeodesicPlaceholder` —
+          reserved-but-inert slot for the
+          future curved-chart parallel-transport
+          slice. Selecting it is structurally a
+          passthrough; the future kernel
+          treats it as `Identity` for byte-
+          identity preservation.
+    - **`ObserverFrame::perception_mode` field**
+      (new; default `PerceptionMode::Identity`).
+      Appended to the POD after the
+      `coordinate_time` time-placeholder field
+      so existing aggregate-initialisations
+      that name fields by initialiser-order are
+      unaffected. The field is reserved-but-
+      declared this slice; no kernel call site
+      reads it yet.
+    - **Three new validator helpers**
+      (`RR_HD inline`):
+        - `default_perception_mode()` →
+          `PerceptionMode::Identity`. Factory
+          mirroring the architecture-doc §3
+          ontology's "no behaviour change by
+          default" anchor.
+        - `is_orthonormal_tetrad(frame,
+          tolerance = 1.0e-4f)` → verifies
+          pairwise dot products of
+          `right` / `up` / `forward` are
+          within `tolerance` of zero AND all
+          three leg lengths are within
+          `tolerance` of unity. Analogous to
+          the existing `is_normalised_timelike`
+          helper.
+        - `is_finite_observer_frame(frame)` →
+          verifies every scalar field
+          (`position4`, `velocity4`, `beta`,
+          three tetrad legs, `proper_time`,
+          `coordinate_time` — 21 scalars total)
+          is finite. The `perception_mode`
+          enum-class field is not checked
+          (an `enum class` value built from a
+          concrete enumerator is by definition
+          valid).
+    - **Doc comment updates.** The header
+      preamble's "What lives here this slice"
+      section now distinguishes the MANIFOLD.3
+      surface from the OBSERVER.2 additions
+      (one sub-bullet per new symbol). The
+      `observer_frame_from(...)` doc comment
+      and the `to_relativity_observer(...)`
+      doc comment both flag the new
+      `perception_mode` field's behaviour
+      under round-trip (the bridge to the
+      legacy `Observer` discards the mode, as
+      the legacy type has no slot for it).
+
+- **`<cmath>` include** added to
+  `src/manifold/ObserverFrame.h` (transitively
+  available via `MathUtils.h` but made
+  explicit, mirroring the
+  `SchwarzschildLikeWarp.h` precedent that
+  already calls `std::isfinite`).
+
+- **`tests/manifold_identity_tests.cpp`
+  (extended).** Four new test functions plus an
+  extension to the existing
+  `test_observer_frame_defaults` function:
+    - `test_observer_frame_defaults` (existing)
+      gains two new assertions: the
+      `rest_frame()` and
+      `observer_frame_from(rest Observer)`
+      results both carry
+      `perception_mode == PerceptionMode::Identity`.
+    - `test_observer_2_perception_mode_default`
+      (new) verifies `default_perception_mode()`
+      returns `Identity`, a default-constructed
+      `ObserverFrame` carries `Identity`, and
+      the three enumerators are pairwise
+      distinct.
+    - `test_observer_2_orthonormal_tetrad_default`
+      (new) verifies `is_orthonormal_tetrad(...)`
+      returns `true` on `rest_frame()` and on
+      `observer_frame_from(non-trivial beta)`
+      (the helper preserves the world-basis
+      tetrad), AND fails on three degenerate
+      cases: non-unit leg length, non-orthogonal
+      legs (`up == right`), and collinear
+      legs (`forward == right`).
+    - `test_observer_2_finite_observer_frame`
+      (new) verifies `is_finite_observer_frame(...)`
+      returns `true` on `rest_frame()` and on
+      `observer_frame_from(...)` at moderate
+      beta, AND fails on a NaN in each of six
+      independent scalar slots
+      (`position4` / `velocity4` / `beta` /
+      `right` tetrad leg / `proper_time` /
+      `coordinate_time`), AND fails on positive
+      and negative infinity in the same slots.
+    - `test_observer_2_default_no_deformation`
+      (new) is the operator's "no-op observer
+      does not imply coordinate deformation"
+      gate: it pins every field of a default-
+      constructed `ObserverFrame` to its
+      expected anchor value, verifies the
+      bridge to the legacy `Observer` carries
+      zero velocity, verifies the round-trip
+      via `observer_frame_from(rest Observer)`
+      preserves the default-frame's beta and
+      velocity4 exactly, and verifies all
+      three validator gates
+      (`is_finite_observer_frame`,
+      `is_orthonormal_tetrad`,
+      `is_normalised_timelike`) hold on the
+      default.
+
+- **`<limits>` include** added to
+  `tests/manifold_identity_tests.cpp` for the
+  `std::numeric_limits<float>::infinity()`
+  sentinel the finite-values test uses.
+
+- **`main()` registers the four new test
+  functions** under a new
+  `// OBSERVER.2: ObserverFrame data model`
+  section, immediately after the
+  `PENROSE.4: ManifoldTransform integration`
+  block.
+
+### What does NOT ship
+
+- **No CUDA changes.** Operator brief
+  explicitly forbids. Nothing in `src/cuda/`
+  is touched.
+- **No OptiX changes.** Operator brief
+  explicitly forbids. Nothing in `src/optix/`
+  is touched.
+- **No camera behaviour changes.** Operator
+  brief explicitly forbids. The existing
+  `src/camera/Camera.h` / `Camera.cpp` are
+  unchanged.
+- **No render output changes.** Operator
+  brief explicitly forbids. The new
+  `perception_mode` field is reserved-but-
+  declared; no kernel call site reads it. The
+  existing `--render-aovs` /
+  `--render-optix-aovs` / `--render-pathtrace`
+  / `--render-mesh-scene` /
+  `--render-material-scene` /
+  `--render-direct-lighting` all continue to
+  feed on the legacy `rr::relativity::Observer`
+  + `RelativityParams` types via the existing
+  call paths.
+- **No CLI flag.** The `--perception-mode`
+  flag is reserved for OBSERVER.3; not added
+  this slice.
+- **No scene-loader extension.** The
+  `perception` block is reserved for
+  OBSERVER.3; not added this slice.
+- **No GPU launch-params field.** The
+  per-launch `ObserverFrame` payload on
+  `CudaSceneView` + `OptixLaunchParams` is
+  reserved for OBSERVER.5 / OBSERVER.6; not
+  added this slice.
+- **No camera-to-observer adapter.** The
+  `build_observer_frame_from_camera(...)`
+  helper is reserved for OBSERVER.4; not
+  added this slice.
+- **No full GR tetrad solver.** Operator brief
+  + OBSERVER.1 plan §8 non-goals explicitly
+  forbid. The
+  `CurvedChartGeodesicPlaceholder`
+  enumerator is reserved-but-inert; no
+  Christoffel symbols, no parallel transport,
+  no geodesic ODE. The MANIFOLD.3 tetrad
+  legs remain `Vec3` (Euclidean spatial part
+  only).
+- **No path-tracer migration.** The CUDA /
+  OptiX path-tracer kernels remain on the
+  legacy types; OBSERVER.* scope is the
+  `--render-aovs` / `--render-optix-aovs`
+  arc per the OBSERVER.1 plan §8.
+- **No C4D / server / UI / node-editor
+  touch.** Operator brief explicitly forbids.
+- **No CMake change.** No new target, no new
+  source file, no link-line change.
+- **No `MODULE_MAP.md` update.** The
+  observer-frame arc's module-map promotion
+  to **Wired** is reserved for OBSERVER.5 /
+  OBSERVER.6 (the GPU payload bridges, where
+  the field is first actually consumed by a
+  kernel).
+- **No alteration of the OBSERVER.1 plan.**
+  The plan stays as the canonical brief for
+  the arc; the OBSERVER.2 entry above does
+  NOT rewrite the plan.
+
+### Acceptance
+
+- **Compiles.** Audit-host build green; full
+  rebuild via `cmake --build build` completes
+  with no warnings on the manifold module.
+- **Tests.** `ctest` returns
+  `100% tests passed, 0 tests failed out of 12`.
+  `manifold_identity_tests` reports
+  `349 / 349 checks passed` (up from 312 at
+  the post-MANI-CONSUME.2 baseline: 37 new
+  RR_CHECK assertions across the four new
+  test functions plus the two assertions
+  added to the existing
+  `test_observer_frame_defaults`).
+  `cli_tests: 123/123 passed`;
+  `renderer_tests: 19/19 passed`. No other
+  test suite touched.
+- **No behaviour change.** No CLI action's
+  output is altered. The default-constructed
+  `ObserverFrame` is the no-op observer; the
+  `perception_mode` field is reserved-but-
+  declared with default `Identity`; no
+  kernel call site reads any new field. The
+  existing six scene-aware actions continue
+  to feed on the legacy types via the
+  existing call paths.
+- **Internally consistent.** The
+  `PerceptionMode` enum mirrors the
+  `CoordinateChartType` style precedent
+  (`enum class` + explicit `= 0` on the
+  default + comma-separated enumerators). The
+  three new validator helpers mirror the
+  `is_normalised_timelike` /
+  `is_finite(MetricTensor)` precedents
+  verbatim (signature shape, tolerance
+  default, return semantics). The new tests
+  mirror the existing
+  `test_observer_frame_defaults` /
+  `test_geodesic_state_defaults` style
+  (assert-on-defaults + assert-on-degenerate-
+  cases for the validators).
+- **Honest scope.** The
+  `perception_mode` field is reserved-but-
+  declared per master rule #3 ("no fake
+  stubs"). The `CurvedChartGeodesicPlaceholder`
+  enumerator is named with the
+  `*Placeholder` suffix per the precedent set
+  by `PenroseLikePlaceholder` at MANIFOLD.1
+  (before its PENROSE.4 promotion to
+  `PenroseLike`). No code path advances
+  `proper_time` / `coordinate_time`; no code
+  path reads `perception_mode` at the
+  kernel-seam. The OBSERVER.2 entry above
+  documents both surfaces as deferred to
+  later OBSERVER.* slices.
+
+### Module status changes
+
+`docs/MODULE_MAP.md` is *not* updated by this
+slice. The `src/manifold/ObserverFrame.h` POD's
+module-map status remains **Skeleton-Plus** (the
+status MANIFOLD.3 landed it at); promotion to
+**Wired** waits for OBSERVER.5 / OBSERVER.6 (the
+GPU payload bridges, where the field is first
+actually consumed by a kernel). The OBSERVER.2
+verdict authorises the operator to proceed to
+OBSERVER.3 (CLI bridge) as the next OBSERVER.*
+impl slice when ready.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:

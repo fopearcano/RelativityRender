@@ -5,29 +5,47 @@
 // observer's spacetime position, its four-velocity, a 3-velocity
 // `beta` sibling that mirrors the existing
 // `rr::relativity::Observer` so the legacy SR helpers can be fed
-// without re-derivation, the spatial tetrad legs, and two scalar
+// without re-derivation, the spatial tetrad legs, two scalar
 // worldline-time placeholders (`proper_time`, `coordinate_time`)
-// the future geodesic integrator will advance.
+// the future geodesic integrator will advance, and a perception-
+// mode tag (added at OBSERVER.2) that identifies which
+// observer-frame transforms the renderer applies.
 //
-// What lives here this slice (MANIFOLD.3)
-// ---------------------------------------
-// - The `ObserverFrame` POD itself, with the seven fields above
-//   plus a default value that describes the scene-rest observer
-//   on the Euclidean chart (matching the Manifold Core Skeleton
-//   slice's "no behaviour change" baseline).
-// - `rest_frame()` factory.
+// What lives here this slice (MANIFOLD.3 + OBSERVER.2)
+// ----------------------------------------------------
+// - The `PerceptionMode` enum (OBSERVER.2): identifies how an
+//   `ObserverFrame` is to be consumed by the renderer
+//   (`Identity` = no-op default; `ConstantVelocityMinkowski` =
+//   today's SR specialisation; `CurvedChartGeodesicPlaceholder` =
+//   reserved-but-inert slot for the future GR-aware arc).
+// - The `ObserverFrame` POD itself, with the seven MANIFOLD.3
+//   fields plus the new `perception_mode` field, defaults that
+//   describe the scene-rest observer on the Euclidean chart
+//   under `PerceptionMode::Identity` (matching the Manifold Core
+//   Skeleton slice's "no behaviour change" baseline).
+// - `rest_frame()` factory (MANIFOLD.3).
+// - `default_perception_mode()` factory (OBSERVER.2) returning
+//   `PerceptionMode::Identity`.
 // - `observer_frame_from(rr::relativity::Observer)` -
 //   constructs an `ObserverFrame` from the existing
 //   3-velocity-only `Observer`, deriving `velocity4` as
 //   `gamma * (1, beta_x, beta_y, beta_z)` via the existing
-//   `rr::relativity::gamma` / `clampBeta` helpers.
+//   `rr::relativity::gamma` / `clampBeta` helpers. The
+//   perception-mode field defaults to `Identity`; the caller
+//   (OBSERVER.4 camera adapter) decides which perception mode
+//   to apply when threading the frame to the kernel.
 // - `to_relativity_observer(ObserverFrame)` - inverse bridge
 //   for the round-trip; preserves `beta` exactly and discards
-//   the rest of the frame state.
+//   the rest of the frame state (including `perception_mode`).
 // - `is_normalised_timelike(frame, metric, tolerance)` - cheap
 //   sanity gate that the four-velocity satisfies
 //   `g_{mu nu} u^mu u^nu = -1` under the supplied metric (per
 //   architecture-doc §3.2 signature convention, mostly-plus).
+// - `is_orthonormal_tetrad(frame, tolerance)` (OBSERVER.2) -
+//   cheap sanity gate that the spatial tetrad legs are pairwise
+//   orthogonal AND unit-length.
+// - `is_finite_observer_frame(frame)` (OBSERVER.2) - sanity
+//   gate that every scalar field is finite (no NaN, no inf).
 //
 // What does NOT live here this slice
 // ----------------------------------
@@ -71,7 +89,51 @@
 #include "relativity/RelativityMath.h"    // gamma / clampBeta
 #include "relativity/RelativityParams.h"  // Observer
 
+#include <cmath>                          // std::isfinite
+
 namespace rr::manifold {
+
+// Identifies which observer-frame transforms the renderer is to
+// apply to a given `ObserverFrame`. Parallel to
+// `CoordinateChartType` (the two enums together identify
+// "where space maps" + "how the observer perceives it" per the
+// architecture-doc §3 ontology).
+//
+// The renderer this slice (OBSERVER.2) does not yet read this
+// field at any kernel call site - the field is reserved-but-
+// declared so subsequent OBSERVER.* slices (CLI bridge at
+// OBSERVER.3, camera adapter at OBSERVER.4, GPU payloads at
+// OBSERVER.5 / OBSERVER.6) can populate it without an ABI
+// bump on `ObserverFrame`.
+//
+// Default value (`Identity`) is the bit-for-bit no-op anchor:
+// every existing CLI action produces byte-identical output
+// against an `ObserverFrame` whose perception mode is
+// `Identity`.
+enum class PerceptionMode {
+    // Scene-rest observer; no aberration, no Doppler, no
+    // searchlight. Matches the pre-pivot Euclidean camera
+    // bit-for-bit. The renderer's default.
+    Identity = 0,
+
+    // Constant-velocity Minkowski observer - the existing
+    // `rr::relativity::Observer` + `RelativityParams`
+    // specialisation. Applies the existing
+    // `aberrateDirection` / `dopplerFactor` /
+    // `searchlightFactor` helpers, keyed on
+    // `ObserverFrame::beta` instead of
+    // `rr::relativity::Observer::velocity`. The math helper
+    // bodies are preserved verbatim; output is byte-identical
+    // to today's renderer for the same input observer / params.
+    ConstantVelocityMinkowski,
+
+    // Reserved for the future curved-chart observer-frame slice
+    // (parallel-transport tetrad along a geodesic worldline).
+    // Selecting this mode is a structural passthrough until the
+    // corresponding implementation slice lands - the kernel
+    // treats it as `Identity` for byte-identity preservation.
+    CurvedChartGeodesicPlaceholder,
+};
 
 struct ObserverFrame {
     // 4D position in chart coordinates. Components are
@@ -128,6 +190,16 @@ struct ObserverFrame {
     // chart-dependent. Placeholder this slice; no integrator
     // advances it yet.
     float coordinate_time = 0.0f;
+
+    // Perception-mode tag (OBSERVER.2). Identifies how the
+    // renderer is to consume this frame; see `PerceptionMode`
+    // above. Default `Identity` is the bit-for-bit no-op
+    // anchor. Reserved-but-declared this slice - no kernel call
+    // site reads it yet; subsequent OBSERVER.* slices (the CLI
+    // bridge at OBSERVER.3, the camera-to-observer adapter at
+    // OBSERVER.4, the CUDA / OptiX payload bridges at
+    // OBSERVER.5 / OBSERVER.6) will populate + consume it.
+    PerceptionMode perception_mode = PerceptionMode::Identity;
 };
 
 // Returns the scene-rest observer frame on the Euclidean chart:
@@ -224,6 +296,91 @@ RR_HD inline bool is_normalised_timelike(
     const float diff     = s + 1.0f;   // `s` should be exactly -1.
     const float abs_diff = diff < 0.0f ? -diff : diff;
     return abs_diff <= tolerance;
+}
+
+// Returns the default perception mode (`PerceptionMode::Identity`).
+// OBSERVER.2 factory mirroring the architecture-doc §3 ontology's
+// "no behaviour change by default" anchor: every existing CLI
+// action produces byte-identical output against an `ObserverFrame`
+// whose perception mode is `Identity`. Subsequent OBSERVER.*
+// slices (CLI bridge / camera adapter) use this factory rather
+// than hard-coding the enum value at every call site.
+RR_HD inline PerceptionMode default_perception_mode() {
+    return PerceptionMode::Identity;
+}
+
+// Returns `true` if the spatial tetrad legs `right` / `up` /
+// `forward` form an orthonormal triad in chart coordinates,
+// i.e. all three pairwise dot products are within `tolerance`
+// of zero AND all three leg lengths are within `tolerance` of
+// unity. Default tolerance `1.0e-4f` matches the
+// `is_normalised_timelike` precedent (floats accumulate ~6
+// decimal digits of error through `sqrt` + `dot`).
+//
+// For the default `rest_frame()` (world-basis tetrad) the
+// helper returns `true` analytically: pairwise dot products are
+// exactly zero, leg lengths are exactly one. Future curved-
+// chart slices that parallel-transport the tetrad along a
+// worldline can use this helper to gate the integrator's per-
+// step normalisation.
+RR_HD inline bool is_orthonormal_tetrad(
+        const ObserverFrame& f,
+        float                tolerance = 1.0e-4f) {
+    using rr::math::dot;
+    using rr::math::length;
+
+    const float d_ru = dot(f.right,   f.up);
+    const float d_uf = dot(f.up,      f.forward);
+    const float d_fr = dot(f.forward, f.right);
+
+    const float abs_ru = d_ru < 0.0f ? -d_ru : d_ru;
+    const float abs_uf = d_uf < 0.0f ? -d_uf : d_uf;
+    const float abs_fr = d_fr < 0.0f ? -d_fr : d_fr;
+    if (abs_ru > tolerance) return false;
+    if (abs_uf > tolerance) return false;
+    if (abs_fr > tolerance) return false;
+
+    const float len_r = length(f.right);
+    const float len_u = length(f.up);
+    const float len_f = length(f.forward);
+
+    const float dr = len_r - 1.0f;
+    const float du = len_u - 1.0f;
+    const float df = len_f - 1.0f;
+    const float abs_dr = dr < 0.0f ? -dr : dr;
+    const float abs_du = du < 0.0f ? -du : du;
+    const float abs_df = df < 0.0f ? -df : df;
+    if (abs_dr > tolerance) return false;
+    if (abs_du > tolerance) return false;
+    if (abs_df > tolerance) return false;
+
+    return true;
+}
+
+// Returns `true` if every scalar field on `f` is finite (no
+// NaN, no inf). Cheap defence-in-depth gate the OBSERVER.4
+// camera adapter and OBSERVER.5 / OBSERVER.6 GPU payload
+// bridges will run before threading a frame to the kernel,
+// mirroring the `is_finite(MetricTensor)` precedent in
+// `MetricTensor.h`. The `perception_mode` enum field is not
+// checked - by C++ rules an enum-class value built from any
+// concrete enumerator is by definition valid.
+RR_HD inline bool is_finite_observer_frame(const ObserverFrame& f) {
+    const float scalars[] = {
+        f.position4.x, f.position4.y, f.position4.z, f.position4.w,
+        f.velocity4.x, f.velocity4.y, f.velocity4.z, f.velocity4.w,
+        f.beta.x,      f.beta.y,      f.beta.z,
+        f.right.x,     f.right.y,     f.right.z,
+        f.up.x,        f.up.y,        f.up.z,
+        f.forward.x,   f.forward.y,   f.forward.z,
+        f.proper_time,
+        f.coordinate_time,
+    };
+    constexpr int N = sizeof(scalars) / sizeof(scalars[0]);
+    for (int i = 0; i < N; ++i) {
+        if (!std::isfinite(scalars[i])) return false;
+    }
+    return true;
 }
 
 }
