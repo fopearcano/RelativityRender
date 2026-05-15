@@ -77048,6 +77048,241 @@ renumbered from the original PENROSE.7 in
 module-map row changes state until MANI-I.12 (final
 cross-host audit) lands.
 
+## PENROSE.8 — Penrose-Like OptiX Integration (impl, OptiX-side)
+
+**Scope of this slice (per the operator's *PENROSE.8 —
+Penrose-Like OptiX Integration* task brief and
+`docs/PENROSE_LIKE_COMPACTIFICATION_PLAN.md` §10
+PENROSE.8): wire the bounded PENROSE.2 compactification
+math leaf into the OptiX closest-hit kernel's
+`ManifoldCoordinates` AOV write path, mirroring SCHW.7's
+SchwarzschildLike arm. Activation is triple-gated:
+`enabled` AND `chart == PenroseLike` AND `strength > 0`.
+The default / Euclidean / SchwarzschildLike / disabled
+paths produce byte-identical output to the pre-PENROSE.8
+baseline (SchwarzschildLike continues to engage on its
+own triple-gate; the two arms are mutually exclusive at
+this slice). OptiX-only; CUDA path is unchanged. The
+OptiX launch params already carry the manifold payload
+(SCHW.7 plumbing — `coordinate_chart` + `manifold_mode`
+fields; both designed chart-family-agnostic). No new
+launch-payload field required.**
+
+### What ships
+
+- **`src/optix/OptixPrograms.cu` (extended).** Two
+  surface additions:
+    - **Header include.** `#include
+      "manifold/PenroseLikeCompactification.h"` pulls
+      in the PENROSE.2 math leaf at the same include
+      level as `SchwarzschildLikeWarp.h`.
+    - **Closest-hit `ManifoldCoordinates` AOV write
+      arm extended** (~line 770+). The existing
+      SCHW.7 SchwarzschildLike arm is preserved
+      verbatim; a parallel `else if (penrose_active)`
+      branch is added with the PENROSE.8 PenroseLike
+      triple-gate + math-leaf invocation. The two
+      arms are structurally mutually exclusive via
+      (a) the `else if` separator and (b) the enum-
+      tag distinction (SchwarzschildLike ≠
+      PenroseLike). The PenroseLike branch builds a
+      `PenroseLikeCompactificationParams` from
+      `optixLaunchParams.coordinate_chart.params` +
+      the `optixLaunchParams.manifold_mode.strength`
+      runtime dial per the plan §3 reinterpretation
+      table (mass→r_max, spin→falloff,
+      compactification_scale→scale CANONICAL), and
+      invokes
+      `penrose_like_world_to_chart(hit_pos,
+      optixLaunchParams.coordinate_chart.origin,
+      pp)`. On the inactive paths (Euclidean /
+      SchwarzschildLike / disabled / strength=0),
+      the kernel writes the raw `ro + t * rd` world-
+      space hit position (MANI-I.8 baseline). Same
+      shape + parameter encoding as the CUDA
+      PENROSE.6 arm at `CudaTestKernel.cu:639-680`;
+      both backends invoke the identical
+      `RR_HD inline` math leaf so the AOV output
+      is byte-equivalent across backends by
+      construction.
+- **`src/main.cpp` (extended).** The
+  `run_render_optix_aovs` dispatcher's
+  `manifold_chart` builder helper gains a
+  PenroseLike branch with artistic defaults
+  consistent with the PENROSE.4 / PENROSE.6 test
+  fixture `make_penrose_like_chart` AND the
+  PENROSE.6 CUDA-side dispatcher branch:
+    - `chart.params.mass             = 5.0f` (r_max)
+    - `chart.params.spin             = 1.0f` (falloff)
+    - `chart.params.compactification_scale = 1.0f` (scale)
+    - `chart.name = "penrose-like"`
+  These produce the documented "asymptotic
+  compactification onto r_max = 5.0" visual
+  signature when the operator engages the PenroseLike
+  chart via `--render-optix-aovs --manifold-enable
+  --manifold-chart penrose-like --manifold-strength
+  <s> --manifold-debug`. The triple-gate at the
+  kernel arm reads these via the same
+  `OptixLaunchParams::coordinate_chart` payload the
+  SCHW.7 SchwarzschildLike arm uses. CUDA + OptiX
+  use **byte-identical chart payloads** — the
+  cross-backend AOV equivalence claim from the
+  SCHW.11 capstone audit extends to PenroseLike by
+  construction.
+
+### What does NOT ship
+
+- **No CUDA touch.** `src/cuda/` is byte-identical
+  (`git diff -- src/cuda/` returns 0 bytes). The
+  CUDA-side PenroseLike arm was already wired at
+  PENROSE.6 / verified at PENROSE.7. The two
+  arms (CUDA + OptiX) now coexist and invoke the
+  same shared math leaf.
+- **No `rr_manifold` touch.** `src/manifold/` is
+  byte-identical (`git diff -- src/manifold/`
+  returns 0 bytes). The math leaf and the seam are
+  preserved verbatim; PENROSE.8 only adds the
+  OptiX-side consumer.
+- **No new warp math.** PENROSE.8 reuses the
+  PENROSE.2 math leaf verbatim. The triple-gate +
+  parameter-encoding shape matches the CUDA-side
+  PENROSE.6 arm exactly so the cross-backend AOV
+  equivalence is structurally guaranteed by
+  single-source-of-truth math.
+- **No SchwarzschildLike behavior changes.** The
+  SCHW.7 arm is preserved verbatim — same triple-
+  gate, same parameter building, same math call.
+  The PenroseLike branch is added via `else if` so
+  the two arms are structurally separated. The
+  SCHW.* arc's cross-backend byte-equivalence
+  claim is preserved.
+- **No Penrose-time-axis compactification.** The
+  PenroseLike chart compactifies only the spatial
+  radial coordinate; time is invariant
+  (architecture-doc §8 non-goal preserved).
+- **No primary-ray direction warp at raygen.** The
+  PENROSE.2 math leaf deliberately ships only a
+  forward / inverse pair; the beauty pass is
+  unaffected by the PenroseLike chart.
+- **No new ctest binary.** Tests are exercised at
+  runtime via the existing `--render-optix-aovs
+  --manifold-enable --manifold-chart penrose-like`
+  CLI on a CUDA + OptiX-SDK host; the audit-host
+  build cannot link / launch device code (DEFERRED
+  per the standard per-slice posture).
+- **No `OptixLaunchParams` ABI change.** The
+  `manifold_mode` and `coordinate_chart` fields
+  added at MANI-I.5 / SCHW.7 already carry the
+  PenroseLike chart payload unchanged.
+- **No `OptixRenderer::render_aovs` signature
+  change.** The trailing defaulted parameters
+  (`ManifoldMode`, `CoordinateChart`) from SCHW.7
+  cover the PenroseLike chart unchanged.
+- **No CMake change.** No new `rr_*` target; no
+  link-line change. The `rr_optix → rr_manifold`
+  PUBLIC link from SCHW.7 already covers the
+  PenroseLike helpers (`rr_manifold` is
+  INTERFACE-only and includes both
+  `SchwarzschildLikeWarp.h` and
+  `PenroseLikeCompactification.h`).
+- **No CLI surface change.** The kebab-case
+  `penrose-like` parser surface already exists.
+- **No `.rrscene` schema bump.**
+- **No C4D / server / UI / node-editor touch.**
+- **No Kerr / Kruskal work.**
+
+### Acceptance
+
+- **Compiles with OptiX OFF and ON.** Audit-host
+  rebuild succeeds cleanly with no new warnings
+  under the project's `rr_apply_warnings` settings.
+  The OptiX-OFF audit-host path is preserved
+  (`run_render_optix_aovs` still returns the
+  documented "requires OptiX" error on the audit
+  host; verified by smoke-testing
+  `--render-optix-aovs --manifold-enable
+  --manifold-chart penrose-like --manifold-strength
+  0.5 --manifold-debug`).
+- **Tests.** Full ctest: `100% tests passed, 0
+  tests failed out of 12`. No regression vs the
+  post-PENROSE.7 baseline
+  (`manifold_identity_tests: 312/312`;
+  `cli_tests: 123/123`; `renderer_tests: 19/19`;
+  `relativity_tests` unchanged).
+- **SchwarzschildLike non-regression (OptiX-side).**
+  The SCHW.7 OptiX arm is preserved verbatim —
+  same triple-gate `is_active(manifold_mode) &&
+  chart == SchwarzschildLike && strength > 0.0f`;
+  same parameter encoding; same math-leaf
+  invocation. The `else if` separator ensures the
+  two arms cannot both fire on the same pixel;
+  the enum-tag distinction (SchwarzschildLike vs
+  PenroseLike) makes them structurally mutually
+  exclusive. The SCHW.11 capstone's cross-backend
+  byte-equivalence claim (CUDA ↔ OptiX
+  SchwarzschildLike) is preserved.
+- **Default / disabled / Euclidean modes remain
+  byte-identical.** With `manifold_mode.enabled =
+  false` OR `chart = Euclidean` OR `strength <= 0`,
+  neither triple-gate's `active` boolean is true;
+  the kernel writes the raw `ro + t * rd` world-
+  space hit position (MANI-I.8 baseline). The
+  host-side `aov_manifold_coordinates` allocation
+  gate (`manifold_mode.debug_visualization`) is
+  unchanged from SCHW.7; the kernel arm null-gate
+  is preserved.
+- **CUDA + OptiX use equivalent PenroseLike math at
+  the kernel level.** Both backends invoke the same
+  `RR_HD inline` `penrose_like_world_to_chart(...)`
+  from `src/manifold/PenroseLikeCompactification.h`
+  with the same parameter encoding
+  (`mass→r_max / spin→falloff /
+  compactification_scale→scale`, plus
+  `manifold_mode.strength → strength`). The
+  cross-backend AOV byte-equivalence is
+  **structurally guaranteed** by single-source-of-
+  truth math (mirrors the SCHW.* arc's cross-backend
+  equivalence claim from the SCHW.11 capstone).
+- **Warp remains bounded and NaN/Inf safe.**
+  Inherited from PENROSE.2 / PENROSE.3 audit. The
+  `tanh` saturation property carries through the
+  OptiX kernel arm identically to the CPU seam
+  and the CUDA kernel arm. The triple-gate adds a
+  fourth defensive layer (math leaf's `strength ==
+  0` and `r_max == 0` short-circuits are the
+  second and third).
+- **Runtime CUDA + OptiX-SDK checks.** DEFERRED to a
+  CUDA + OptiX-SDK host. The plan §9 fixture
+  renders apply:
+    - `--render-optix-aovs --manifold-enable
+      --manifold-chart penrose-like
+      --manifold-strength 1.0 --manifold-debug` →
+      `output/optix_aov_manifold_coordinates.ppm`
+      shows the documented asymptotic-compactification
+      signature (far-field saturates at
+      `r_max = 5.0`; near-field is near-identity).
+    - SchwarzschildLike non-regression: the SCHW.7
+      OptiX rendering produces byte-identical
+      output to the pre-PENROSE.8 reference.
+    - CUDA ↔ OptiX byte-equivalence: the CUDA
+      `output/aov_manifold_coordinates.ppm` and the
+      OptiX `output/optix_aov_manifold_coordinates.ppm`
+      are byte-identical for the same fixture and
+      same `--manifold-*` parameters (single-source-
+      of-truth math).
+
+### Module status changes
+
+`docs/MODULE_MAP.md` is *not* updated by this slice.
+With PENROSE.8 landed, both backends (CUDA at
+PENROSE.6 + OptiX at PENROSE.8) now have wired
+PenroseLike kernel arms. PENROSE.9 (fixture / debug
+viz) is the next concrete impl slice; PENROSE.10
+(arc capstone audit) closes the MANI-I.11 slot.
+Module-map promotion still waits for MANI-I.12
+(final cross-host audit) per the integration plan
+§11.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:

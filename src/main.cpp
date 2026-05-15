@@ -2106,6 +2106,29 @@ int run_render_optix_aovs(const rr::core::Config& cfg) {
         manifold_chart.params.mass             = 1.0f;
         manifold_chart.params.spin             = 1.0f;
         manifold_chart.params.compactification_scale = 0.1f;
+    } else if (effective_manifold.chart
+            == rr::manifold::CoordinateChartType::PenroseLike) {
+        // PENROSE.8 — artistic defaults for the PenroseLike
+        // chart on the OptiX path. Mirrors the CUDA-side
+        // PENROSE.6 dispatcher branch in `run_render_aovs`
+        // (also `main.cpp`) so the CUDA + OptiX renders
+        // produce byte-identical PenroseLike AOV output
+        // for the same fixture parameters (single-source-
+        // of-truth math + identical parameter encoding).
+        // Values consistent with the PENROSE.4 test fixture
+        // `make_penrose_like_chart` in
+        // `manifold_identity_tests.cpp` (mass→r_max=5.0,
+        // spin→falloff=1.0, compactification_scale→scale=1.0).
+        // Produces the documented "asymptotic
+        // compactification onto r_max = 5.0" visual
+        // signature when `--render-optix-aovs
+        // --manifold-enable --manifold-chart penrose-like
+        // --manifold-strength <s> --manifold-debug` is in
+        // effect.
+        manifold_chart.name                    = "penrose-like";
+        manifold_chart.params.mass             = 5.0f;
+        manifold_chart.params.spin             = 1.0f;
+        manifold_chart.params.compactification_scale = 1.0f;
     }
     auto r = rr::optix::OptixRenderer::render_aovs(
         scene, lights, cfg.width, cfg.height,
