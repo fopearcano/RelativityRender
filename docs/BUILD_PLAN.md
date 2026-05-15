@@ -77657,6 +77657,162 @@ module-map promotion still waits for MANI-I.12
 PENROSE.11 (arc capstone audit) which closes the
 MANI-I.11 PenroseLike slot.
 
+## PENROSE.11 — Penrose-Like Fixture Audit (docs only)
+
+**Scope of this slice (per the operator's *PENROSE.11
+— Penrose-Like Fixture Audit* task brief): write
+`docs/PENROSE_LIKE_FIXTURE_AUDIT.md`, the per-slice
+verdict document for PENROSE.10 (`756a4bd`). Verifies
+the eight structural items the task brief enumerates
+— fixture scene exists; fixture uses PenroseLike
+manifold mode; values are bounded/safe; default scenes
+remain unchanged; parser changes are minimal;
+Schwarzschild behavior unchanged; CUDA/OptiX runtime
+status; verdict — and produces a PASS / REPAIR /
+BLOCKED verdict that gates progression to the arc
+capstone audit (renumbered PENROSE.12). Documentation
+only; no source code, no test, no CMake, no
+behavioural change. Inserts PENROSE.11 as a per-slice
+audit slot AND renames the original
+PENROSE.11-arc-capstone-audit → PENROSE.12 in the
+`PENROSE_LIKE_COMPACTIFICATION_PLAN.md` §10 sub-slice
+ladder.**
+
+### What ships
+
+- **`docs/PENROSE_LIKE_FIXTURE_AUDIT.md` (new).**
+  Per-slice verdict document mirroring the prior
+  audit doc shape (SCHW.10 / PENROSE.3 / PENROSE.5
+  / PENROSE.7 / PENROSE.9):
+    - **§1 VERDICT** — `PASS`. All seven structural
+      checks return PASS; check #7 (CUDA/OptiX
+      runtime status) DEFERRED on documented
+      audit-host limitations.
+    - **§2 PER-CHECK RESULTS** — eight-row evidence
+      table. Each row cites concrete observations:
+      the fixture file's presence at
+      `scenes/test_penrose_like_manifold.rrscene`
+      (exclusive new entry per `git diff
+      --name-only -- scenes/`); the fixture's
+      `manifold` block content at lines 19-24
+      (`enabled=true, chart="penrose-like",
+      strength=0.5, debug_visualization=true`);
+      the three-layer bounded/safe-values analysis
+      (ManifoldMode-side; dispatcher artistic
+      defaults; math-leaf tanh saturation +
+      validator-enforced ranges from PENROSE.3
+      audit); the nine pre-existing fixtures'
+      byte-identical mtimes (`May 14 04:15` /
+      `May 14 20:27`); the **zero-byte source
+      diff** at `git diff -- 'src/*'` (PENROSE.10
+      is scene + doc only; reuses SCHW.9 parser
+      + PENROSE.4 enum rename verbatim); the
+      Schwarzschild-unchanged invariant
+      (structurally guaranteed by the scene-only
+      diff); ctest 12/12 + `manifold_identity_tests
+      312/312`.
+    - **§3 WHAT THIS AUDIT DOES NOT VERIFY** —
+      explicit scope-boundary section listing five
+      items: no end-to-end runtime render; no
+      consumption-gap closure (mirrors SCHW.10);
+      no cross-backend pixel-level verification
+      (structurally guaranteed by single-source-of-
+      truth math at PENROSE.7 + PENROSE.9; pixel-
+      level deferred to SDK host); no chart-
+      parameter authoring; no MODULE_MAP.md
+      cross-host promotion.
+    - **§4 REASONING SUMMARY** — three files the
+      PENROSE.10 commit ships (fixture scene +
+      companion doc + BUILD_PLAN entry); seven
+      audit invariants verified.
+    - **§5 NEXT** — names the PENROSE.* sub-slice
+      renumbering (PENROSE.11 audit inserted;
+      PENROSE.11 → PENROSE.12) and points at
+      PENROSE.12 (arc capstone audit) as the next
+      concrete slice.
+- **`docs/PENROSE_LIKE_COMPACTIFICATION_PLAN.md`
+  §10 (renumbered).** One replace-all
+  substitution shifts the original PENROSE.11
+  (arc capstone audit) → PENROSE.12. A new
+  "PENROSE.11 — Audit (docs only)" subsection
+  is inserted between PENROSE.10 (LANDED) and
+  the renumbered PENROSE.12 (arc capstone audit).
+  The plan's other sections (§1–§9, §11–§12) are
+  unchanged.
+
+### What does NOT ship
+
+- **No source code.** Nothing in any `src/` subtree
+  is touched (`git diff` outside `docs/` ⇒ 0 bytes).
+- **No new test binary.** ctest set unchanged at 12.
+- **No CMake change.** No new `rr_*` target; no
+  link-line change.
+- **No `BUILD_PLAN.md` historical-record rewrite.**
+  The MANI-I.* / SCHW.* / PENROSE.1–PENROSE.10
+  entries above stay as-is; this PENROSE.11 entry
+  is additive.
+- **No `MODULE_MAP.md` update.** The per-slice
+  audit is doc-only; module-map promotion still
+  waits for MANI-I.12 (final cross-host audit)
+  per the integration plan §11.
+- **No update to the prior audit docs.** The
+  MANI-I.* / SCHW.* / PENROSE.3 / PENROSE.5 /
+  PENROSE.7 / PENROSE.9 audit docs are preserved
+  as point-in-time historical snapshots.
+- **No integration plan §3 chain-diagram update.**
+- **No Kerr / Kruskal work.**
+- **No C4D / server / UI / node-editor touch.**
+
+### Acceptance
+
+- **Compiles.** Documentation-only slice; no build
+  configuration touched. The audit-host build
+  remains at the post-PENROSE.10 baseline
+  (`100% tests passed, 0 tests failed out of 12`;
+  `manifold_identity_tests: 312 / 312 checks
+  passed`; `cli_tests: 123/123 passed`;
+  `renderer_tests: 19 / 19 passed`).
+- **Internally consistent.** The eight-row
+  evidence table cites concrete file/line
+  positions in
+  `scenes/test_penrose_like_manifold.rrscene`
+  (manifold block lines 19-24),
+  `PenroseLikeCompactification.h:160-168`
+  (validator + r_max/strength/scale/falloff
+  ranges), and named references to the SCHW.9
+  parser surface that re-verify on the audit
+  host; the renumbering in
+  `PENROSE_LIKE_COMPACTIFICATION_PLAN.md` §10 is
+  verified by reading the renumbered section
+  headings.
+- **Verdict honesty.** The verdict is `PASS`
+  because the structural checks pass — not
+  because of an arbitrary judgement call. Every
+  claim in the evidence table is backed by a
+  file + line citation or by a diff observation.
+  The bounded/safe-values invariant (check #3) is
+  **three-layer-redundantly verified**
+  (ManifoldMode + CoordinateChart + math leaf);
+  the default-scenes-unchanged invariant (check
+  #4) is **directly verified** by `git diff
+  --name-only -- scenes/` returning exactly one
+  new file; the minimal-parser-changes invariant
+  (check #5) is **diff-zero verified** (`git diff
+  -- 'src/*'` returns 0 bytes); the
+  Schwarzschild-unchanged invariant (check #6)
+  is **structurally guaranteed** by the
+  scene-+-doc-only diff.
+
+### Module status changes
+
+`docs/MODULE_MAP.md` is *not* updated by this slice.
+The PENROSE.11 audit verdict (`PASS`) authorises
+the operator to proceed to PENROSE.12 (arc capstone
+audit; renumbered from the original PENROSE.11 in
+`PENROSE_LIKE_COMPACTIFICATION_PLAN.md` §10); no
+module-map row changes state until MANI-I.12 (final
+cross-host audit) lands.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:

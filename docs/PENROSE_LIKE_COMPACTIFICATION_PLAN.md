@@ -759,7 +759,7 @@ SCHW.2 / SCHW.4 / SCHW.6 / SCHW.8 / SCHW.10 / SCHW.11
 per-slice audit posture.
 
 Each deferred check must be exercised on a CUDA +
-OptiX-SDK host before PENROSE.11 (audit) closes the
+OptiX-SDK host before PENROSE.12 (audit) closes the
 chart's per-slice gate:
 
 ### 9.1 Euclidean fallback bit-identity (CUDA + OptiX)
@@ -822,7 +822,7 @@ a documented signature:
 - Documented boundary at `r_chart = R_max`.
 
 The reference AOV PPM is pinned by PENROSE.10 +
-PENROSE.11 on a CUDA + OptiX-SDK host.
+PENROSE.12 on a CUDA + OptiX-SDK host.
 
 ### 9.5 CUDA / OptiX byte-equivalence
 
@@ -921,7 +921,7 @@ the SCHW.1 → SCHW.11 ladder cadence).
   moves PENROSE.4 → PENROSE.6; OptiX integration
   moves PENROSE.6 → PENROSE.8; fixture / debug
   viz moves PENROSE.8 → PENROSE.10; the arc
-  capstone audit moves PENROSE.10 → PENROSE.11).
+  capstone audit moves PENROSE.10 → PENROSE.12).
 
 ### PENROSE.4 — CPU integration (impl, host-only)
 
@@ -965,7 +965,7 @@ the SCHW.1 → SCHW.11 ladder cadence).
   PENROSE.5 → PENROSE.6; OptiX integration moves
   PENROSE.6 → PENROSE.8; fixture / debug viz moves
   PENROSE.8 → PENROSE.10; the arc capstone audit
-  moves PENROSE.10 → PENROSE.11).
+  moves PENROSE.10 → PENROSE.12).
 
 ### PENROSE.6 — CUDA integration (impl, GPU-side)
 
@@ -1018,7 +1018,7 @@ the SCHW.1 → SCHW.11 ladder cadence).
   from the post-PENROSE.6 plan (OptiX integration
   moves PENROSE.7 → PENROSE.8; fixture / debug viz
   moves PENROSE.8 → PENROSE.10; the arc capstone
-  audit moves PENROSE.10 → PENROSE.11).
+  audit moves PENROSE.10 → PENROSE.12).
 
 ### PENROSE.8 — OptiX integration (impl, GPU-side)
 
@@ -1074,7 +1074,7 @@ the SCHW.1 → SCHW.11 ladder cadence).
   shifts the PENROSE.* sub-slice numbering by `+1`
   from the post-PENROSE.8 plan (fixture / debug
   viz moves PENROSE.9 → PENROSE.10; the arc
-  capstone audit moves PENROSE.10 → PENROSE.11).
+  capstone audit moves PENROSE.10 → PENROSE.12).
 
 ### PENROSE.10 — Fixture / debug visualization (impl, scene + dispatcher)
 
@@ -1103,6 +1103,31 @@ the SCHW.1 → SCHW.11 ladder cadence).
   pinning (deferred to CUDA + OptiX-SDK host).
 
 ### PENROSE.11 — Audit (docs only)
+
+- **Scope:** per-slice gate for PENROSE.10. Writes
+  `docs/PENROSE_LIKE_FIXTURE_AUDIT.md` verifying
+  the eight structural items the operator's
+  PENROSE.11 task brief enumerates: fixture scene
+  exists; fixture uses PenroseLike manifold mode;
+  values are bounded/safe; default scenes remain
+  unchanged; parser changes are minimal;
+  Schwarzschild behavior unchanged; CUDA/OptiX
+  runtime status (PASS / DEFERRED / BLOCKED);
+  verdict.
+- **Acceptance:** all seven structural checks PASS;
+  check #7 (runtime CUDA/OptiX status) DEFERRED on
+  documented audit-host limitations; the
+  audit-host build remains at the post-PENROSE.10
+  baseline (`100% tests passed, 0 tests failed out
+  of 12`; `manifold_identity_tests: 312 / 312
+  checks passed`).
+- **What does NOT ship:** no source code; no test
+  binary changes; no CMake change. The audit
+  shifts the PENROSE.* sub-slice numbering by `+1`
+  from the post-PENROSE.10 plan (the arc capstone
+  audit moves PENROSE.11 → PENROSE.12).
+
+### PENROSE.12 — Audit (docs only)
 
 - **Scope:** per-arc capstone verdict. Writes
   `docs/PENROSE_LIKE_COMPACTIFICATION_AUDIT.md`
