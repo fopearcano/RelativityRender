@@ -77443,6 +77443,220 @@ PENROSE.9 in `PENROSE_LIKE_COMPACTIFICATION_PLAN.md`
 §10); no module-map row changes state until
 MANI-I.12 (final cross-host audit) lands.
 
+## PENROSE.10 — Penrose-Like Fixture / Debug Visualization (impl, scene + companion doc)
+
+**Scope of this slice (per the operator's *PENROSE.10
+— Penrose-Like Fixture / Debug Visualization* task
+brief): add a controlled diagnostic scene/output for
+the Penrose-like compactification by (a) creating a
+fixture scene with simple visible geometry spanning a
+wide radial range so the asymptotic-compactification
+visual signature is observable; (b) reusing the SCHW.9
+scene-parser surface (`apply_manifold` already supports
+the `manifold` block; the kebab-case `penrose-like`
+chart name is already parseable since the PENROSE.4
+enum rename `PenroseLikePlaceholder` → `PenroseLike`);
+(c) creating the fixture-companion doc with the
+operator-required sections; (d) verifying the fixture
+loads cleanly via `--scene-info` on the audit host.
+Mirrors the SCHW.9 fixture pattern. No new
+compactification math; no full Penrose/conformal
+solver; no Schwarzschild behavior changes; default
+scenes unchanged. The scene parser + dispatcher merge
+plumbing was fully landed at SCHW.9 — PENROSE.10 does
+not modify it.**
+
+### What ships
+
+- **`scenes/test_penrose_like_manifold.rrscene`
+  (new).** The canonical PenroseLike fixture scene:
+    - Render settings: `1280 × 720`,
+      `samples_per_pixel = 1`, `max_depth = 1`
+      (mirrors SCHW.9; fast audit-host validation;
+      the chart affects the `ManifoldCoordinates`
+      AOV, not the bounce loop).
+    - Camera at `(0, 1.5, 9.0)` looking toward the
+      origin, FoV `50°` (pulled back further than
+      SCHW.9's `(0, 1.2, 6.0)` + `45°` so the
+      wider radial spread of marker spheres fits
+      in the framebuffer).
+    - **`manifold` block** (the SCHW.9 surface):
+      `enabled: true`, `chart: "penrose-like"`,
+      `strength: 0.5` (moderate, well below the
+      tanh saturation threshold for the dispatcher's
+      `r_max=5.0, scale=1.0, falloff=1.0` artistic
+      defaults), `debug_visualization: true`.
+    - Eight visible spheres at known radial
+      distances spanning `r ∈ {0.5, 0.94, 2.55,
+      4.0, 6.02}` — the chart's three visual
+      regimes (near-identity, transition / knee,
+      saturation):
+      * `centre` at origin (near-identity);
+      * `near-right` + `near-left` at `r ≈ 0.94`
+        (just inside the saturation knee);
+      * `knee-right` + `knee-left` at `r ≈ 2.55`
+        (saturation transition);
+      * `far-right` + `far-left` at `r ≈ 6.02`
+        (saturated near `r_max`);
+      * `very-far-up` at `r = 4.0` (saturated on
+        +Y).
+    - One ground-plane mesh (`y = 0`, extent
+      `24 × 24` — wider than SCHW.9's `12 × 12`
+      so the plane visibly extends past the
+      saturation knee) so the OptiX `render_aovs`
+      "first non-empty mesh" picker has a target.
+    - Two lights (directional key + environment
+      sky); no point lights.
+    - No `relativity` block (mirrors SCHW.9 — the
+      AOV signature is not conflated with
+      relativistic frame transformation).
+    - No chart-parameter authoring; dispatcher
+      uses PENROSE.6 / PENROSE.8 artistic
+      defaults (`mass=5.0, spin=1.0,
+      compactification_scale=1.0,
+      origin=(0,0,0)`). Safe by construction (no
+      extreme/singular values; the bounded-by-
+      `r_max` invariant means the chart-space
+      output is always within `[0, 5.0]`).
+- **`docs/PENROSE_LIKE_FIXTURE.md` (new).**
+  Authoritative fixture-companion doc with §1
+  Purpose, §2 Fixture composition (render
+  settings / camera / manifold block / geometry
+  table with per-sphere `r_chart` predictions /
+  lighting / what is deliberately omitted), §3
+  Expected visual behavior (per-sphere
+  asymptotic-compactification signature
+  predictions across the chart's three visual
+  regimes), §4 Expected default / no-op
+  comparison (three override mechanisms producing
+  byte-identical pre-PENROSE.8 baseline; SCHW.*
+  non-regression; no-fixture baseline), §5
+  Current consumption status (parser-loadable
+  today; renderer end-to-end consumption gated on
+  the same future single-line CLI extension SCHW.9
+  documented), §6 Runtime CUDA/OptiX status
+  (DEFERRED on audit host; deferred runtime
+  checks enumerated including CUDA ↔ OptiX
+  byte-equivalence — the key PENROSE.* arc
+  cross-backend equivalence claim), §7
+  References.
+
+### What does NOT ship
+
+- **No new compactification math.** PENROSE.2 math
+  leaf reused verbatim through the existing
+  PENROSE.4 / PENROSE.6 / PENROSE.8 call sites.
+- **No full Penrose / conformal-geometry solver.**
+  Architecture-doc §8 non-goals stand.
+- **No Schwarzschild behavior changes.** The
+  SCHW.* arc is untouched; the PENROSE.10 fixture
+  exercises the PenroseLike chart only.
+- **No alteration of default scenes.** The nine
+  pre-existing `.rrscene` files
+  (`test_camera`, `test_full_scene`,
+  `test_lights`, `test_materials`, `test_mesh`,
+  `test_relativity`, `test_render_settings`,
+  `test_schwarzschild_like_manifold`,
+  `test_spheres`, `test_textured_material`) are
+  byte-identical to the pre-PENROSE.10 state
+  (`git diff --name-only -- scenes/` returns
+  exactly the new fixture).
+- **No new parser surface.** The SCHW.9
+  `apply_manifold` parser handles all four
+  ManifoldMode fields the fixture authors
+  (`enabled`, `chart`, `strength`,
+  `debug_visualization`); the kebab-case
+  `penrose-like` chart name was already supported
+  by `parse_chart_type` (mapped onto
+  `CoordinateChartType::PenroseLike` after the
+  PENROSE.4 enum rename). Zero changes to
+  `src/io/SceneLoader.cpp` or
+  `src/scene/Scene.h`/`.cpp`.
+- **No CMake change.** No new `rr_*` target; no
+  link-line change.
+- **No new ctest binary.** The fixture is
+  exercised at runtime (deferred to a CUDA +
+  OptiX-SDK host) and via `--scene-info` on the
+  audit host.
+- **No CLI surface change.** The kebab-case
+  `penrose-like` parser surface already exists.
+- **No `.rrscene` schema bump.** The fixture
+  uses schema v1.0.0; the `manifold` block is
+  the same optional top-level key SCHW.9
+  defined.
+- **No new CLI action.** `--render-optix-aovs` /
+  `--render-aovs` continue building scenes
+  inline; the same consumption-gap CLI extension
+  SCHW.9 documented as a future addition would
+  tie this fixture end-to-end too. The
+  dispatcher merge logic added at SCHW.9 is
+  already correct; the fixture is consumable as
+  soon as a future CLI action loads it.
+- **No C4D / server / UI / node-editor touch.**
+- **No Kerr / Kruskal work.**
+
+### Acceptance
+
+- **Compiles.** No source code touched. The
+  audit-host build remains at the post-PENROSE.9
+  baseline (`100% tests passed, 0 tests failed
+  out of 12`; `manifold_identity_tests:
+  312/312`; `cli_tests: 123/123`;
+  `renderer_tests: 19/19`).
+- **Fixture loads cleanly.**
+  `RelativityRender --scene-info
+  scenes/test_penrose_like_manifold.rrscene`
+  succeeds on the audit host with no parse
+  errors (the scene-info printer reads through
+  the parser's successful exit path; the
+  `manifold` block is consumed silently by the
+  parser even though the printer does not list
+  it). Verified at the PENROSE.10 commit.
+- **Default scenes unchanged.** `git diff
+  --name-only -- scenes/` returns exactly one
+  new file (`test_penrose_like_manifold.rrscene`);
+  the nine pre-existing fixtures are
+  byte-identical.
+- **Default no-op preserved.** The SCHW.9 parser's
+  optional-field handling leaves `scene.manifold
+  = ManifoldMode{}` for scenes that do not
+  author a `manifold` block; the dispatcher
+  merge resolves to the existing CLI default.
+  Every existing render action produces
+  byte-identical output to the pre-PENROSE.10
+  baseline.
+- **Documentation honest about consumption gap.**
+  The fixture doc explicitly notes that no
+  existing CLI action loads the fixture's
+  `manifold` block into a manifold-aware render
+  (both `--render-optix-aovs` and `--render-aovs`
+  build inline scenes); the dispatcher merge
+  logic from SCHW.9 is in place for the future
+  CLI extension that would tie the fixture
+  together end-to-end.
+- **Runtime CUDA/OptiX status:** DEFERRED on the
+  audit host per the standard per-slice posture
+  (MANI-I.6 / MANI-I.9 / SCHW.* / PENROSE.3 /
+  PENROSE.5 / PENROSE.7 / PENROSE.9). The
+  fixture doc §6 enumerates the runtime checks
+  the operator should exercise on a CUDA +
+  OptiX-SDK host once the future CLI extension
+  lands — including the **key cross-backend
+  equivalence claim** (CUDA AOV ↔ OptiX AOV
+  byte-identical) which is structurally
+  guaranteed by single-source-of-truth math.
+
+### Module status changes
+
+`docs/MODULE_MAP.md` is *not* updated by this slice.
+The PENROSE.10 fixture is parser-loadable and the
+dispatcher merge logic from SCHW.9 is in place;
+module-map promotion still waits for MANI-I.12
+(final cross-host audit) per the integration plan
+§11. With PENROSE.10 landed, the next slice is
+PENROSE.11 (arc capstone audit) which closes the
+MANI-I.11 PenroseLike slot.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
