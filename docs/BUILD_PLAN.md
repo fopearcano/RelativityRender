@@ -78938,6 +78938,174 @@ verdict authorises the operator to proceed to
 OBSERVER.3 (CLI bridge) as the next OBSERVER.*
 impl slice when ready.
 
+## OBSERVER.3 — ObserverFrame Data Model Audit (docs only)
+
+**Scope of this slice (per the operator's *OBSERVER.3
+— ObserverFrame Data Model Audit* task brief): write
+`docs/OBSERVER_FRAME_DATA_MODEL_AUDIT.md`, the
+per-slice verdict document for OBSERVER.2
+(`85496a5`). Verifies the nine items the task brief
+enumerates — `ObserverFrame` exists; `position4`
+exists; beta/velocity representation exists;
+local-basis / tetrad placeholder exists; time
+placeholders exist; perception-mode placeholder
+exists; defaults are camera-equivalent / no-op;
+build/test status; verdict — and produces a
+`PASS` / `REPAIR` / `BLOCKED` verdict. Documentation
+only; no source code, no test, no CMake, no
+behavioural change.**
+
+### What ships
+
+- **`docs/OBSERVER_FRAME_DATA_MODEL_AUDIT.md`
+  (new).** Per-slice verdict document mirroring the
+  PENROSE.3 / PENROSE.5 / PENROSE.7 / PENROSE.9 /
+  PENROSE.11 audit-doc shape:
+    - **§1 VERDICT** — `PASS`. All eight structural
+      checks return `PASS`; no `REPAIR` or
+      `BLOCKED` item is outstanding.
+    - **§2 PER-CHECK RESULTS** — nine-row evidence
+      table. Each row cites concrete file/line
+      observations on `src/manifold/ObserverFrame.h`,
+      `git diff eee9d6b..85496a5 --name-only` output
+      restricted to the rendering subtree, the
+      `manifold_identity_tests` runtime output
+      (`349 / 349 checks passed`), and concrete
+      named test functions in
+      `tests/manifold_identity_tests.cpp`
+      (`test_observer_2_perception_mode_default`,
+      `test_observer_2_orthonormal_tetrad_default`,
+      `test_observer_2_finite_observer_frame`,
+      `test_observer_2_default_no_deformation`,
+      plus the extended
+      `test_observer_frame_defaults`).
+    - **§3 REASONING SUMMARY** — recap of the
+      OBSERVER.2 commit's three additions
+      (`PerceptionMode` enum;
+      `ObserverFrame::perception_mode` field;
+      three new `RR_HD inline` validator helpers
+      `default_perception_mode` /
+      `is_orthonormal_tetrad` /
+      `is_finite_observer_frame`), plus a per-check
+      reasoning paragraph that ties each verdict
+      back to its evidence.
+    - **§4 NEXT** — renumbered OBSERVER.* sub-slice
+      ladder absorbing this audit slot: OBSERVER.1
+      planning (LANDED `eee9d6b`); OBSERVER.2 data
+      model (LANDED `85496a5`); OBSERVER.3 THIS
+      AUDIT; OBSERVER.4 Config / CLI bridge (was
+      OBSERVER.3); OBSERVER.5 camera adapter
+      (was OBSERVER.4); OBSERVER.6 CUDA bridge
+      (was OBSERVER.5); OBSERVER.7 OptiX bridge
+      (was OBSERVER.6); OBSERVER.8 debug AOV
+      (was OBSERVER.7); OBSERVER.9 arc capstone
+      (was OBSERVER.8).
+    - **§5 REFERENCES** — 14-entry reference list
+      spanning master instructions,
+      architecture-doc §3.3, the OBSERVER.1 plan,
+      MANIFOLD.3 audit, the PENROSE.3 precedent
+      audit, MANI-CONSUME.2 audit, the audited
+      source + test files, the sibling manifold
+      headers the new validators mirror
+      (`CoordinateChart.h`, `MetricTensor.h`), the
+      legacy SR types the bridge helpers connect
+      to, the post-OBSERVER.2 `BUILD_PLAN.md`
+      entry, and both surrounding commit SHAs
+      (`85496a5` audited / `eee9d6b` baseline).
+
+### What does NOT ship
+
+- **No source code.** Nothing in any `src/`
+  subtree is touched (`git diff` outside `docs/`
+  ⇒ 0 bytes). The OBSERVER.2 surface stays
+  exactly as `85496a5` landed it.
+- **No new test binary.** ctest set unchanged at
+  12. `manifold_identity_tests` count unchanged
+  at 349 RR_CHECK assertions.
+- **No CMake change.**
+- **No `OBSERVER_FRAME_RENDERING_PLAN.md`
+  rewrite.** The plan's §7 sub-slice ladder
+  stays as written (OBSERVER.2 = data-model;
+  OBSERVER.3 = CLI bridge in the original
+  ladder). The audit-slot insertion is recorded
+  in this audit's §4 as a renumbering ladder, not
+  by editing the plan doc. The plan's other
+  sections (§1-§6, §8-§9) are not touched.
+- **No `MODULE_MAP.md` update.** The per-slice
+  audit is doc-only; module-map promotion still
+  waits for OBSERVER.6 / OBSERVER.7 (the GPU
+  payload bridges) where the new field is first
+  actually consumed by a kernel.
+- **No `MANIFOLD_INTEGRATION_PLAN.md` update.**
+  The integration plan's §11 MANI-I.12 slot
+  remains the documented next step for the
+  final cross-host audit; the OBSERVER.* arc
+  is orthogonal to MANI-I.12.
+- **No `BUILD_PLAN.md` historical-record
+  rewrite.** The MANI-I.* / SCHW.* / PENROSE.* /
+  MANI-CONSUME.* / OBSERVER.1 / OBSERVER.2
+  entries above stay as-is; this OBSERVER.3
+  entry is additive.
+- **No Kerr / Kruskal work.** The audit is
+  scoped to the OBSERVER.2 data-model surface
+  on the existing chart families.
+- **No C4D / server / UI / node-editor touch.**
+
+### Acceptance
+
+- **Compiles.** Documentation-only slice; no
+  build configuration touched. The audit-host
+  build remains at the post-OBSERVER.2 baseline
+  (`100% tests passed, 0 tests failed out of
+  12`; `manifold_identity_tests: 349/349`;
+  `cli_tests: 123/123 passed`; `renderer_tests:
+  19/19 passed`).
+- **Internally consistent.** The nine-row
+  evidence table cites concrete file/line
+  positions on `src/manifold/ObserverFrame.h`
+  (the audited surface), concrete diff
+  observations (`git diff eee9d6b..85496a5
+  --name-only` filtered against the rendering
+  subtree returns zero hits), and concrete named
+  test functions in
+  `tests/manifold_identity_tests.cpp`. The
+  renumbered OBSERVER.* sub-slice ladder in §4
+  mirrors the SCHW.4 / SCHW.6 / SCHW.8 /
+  SCHW.10 + PENROSE.3 / PENROSE.5 / PENROSE.7
+  / PENROSE.9 / PENROSE.11 audit-slot
+  insertion precedent verbatim.
+- **Verdict honesty.** The verdict is `PASS`
+  because the structural checks pass — not
+  because of an arbitrary judgement call.
+  Every claim in the evidence table is backed
+  by a file/line reference, a diff observation,
+  a runtime test count, or a named test
+  function. The audit's "WHAT THIS SLICE DOES
+  NOT SHIP" block at the §4 NEXT paragraph
+  is explicit about which OBSERVER.* slices
+  are deferred (Config / CLI bridge → CUDA /
+  OptiX payload bridges → debug AOV → arc
+  capstone). Master rule #3 ("no fake stubs")
+  is satisfied: the `perception_mode` field is
+  structurally consumed by the validator
+  helpers + the planned OBSERVER.4-OBSERVER.6
+  slices.
+
+### Module status changes
+
+`docs/MODULE_MAP.md` is *not* updated by this
+slice. With OBSERVER.3 verifying OBSERVER.2's
+data-model surface, the `src/manifold/ObserverFrame.h`
+POD's module-map status remains **Skeleton-Plus**;
+the `**Wired**` promotion still waits for
+OBSERVER.6 / OBSERVER.7 (the renumbered GPU
+payload bridges, where the new `perception_mode`
+field is first actually consumed by a kernel).
+The OBSERVER.3 verdict authorises the operator to
+proceed to OBSERVER.4 (Config / CLI bridge;
+renumbered from the original OBSERVER.3) as the
+next OBSERVER.* impl slice when ready.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
