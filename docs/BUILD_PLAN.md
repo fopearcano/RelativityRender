@@ -78210,6 +78210,151 @@ the **host-side** blocker preventing operators
 from exercising the fixtures; that blocker is now
 closed.
 
+## MANI-CONSUME.2 — Manifold Consumption-Gap Audit (docs only)
+
+**Scope of this slice (per the operator's *MANI-CONSUME.2
+— Consumption-Gap Closure Audit* task brief): write
+`docs/MANIFOLD_CONSUMPTION_GAP_AUDIT.md`, the per-slice
+verdict document for MANI-CONSUME.1 (`1890142`).
+Verifies the nine structural items the task brief
+enumerates — SchwarzschildLike fixture auto-consumes;
+PenroseLike fixture auto-consumes; default scenes
+unchanged; CLI overrides function; CPU/CUDA/OptiX
+consume same manifold settings; no new manifold math;
+build/test status; runtime CUDA/OptiX status; verdict —
+and produces a PASS / REPAIR / BLOCKED verdict.
+Documentation only; no source code, no test, no CMake,
+no behavioural change.**
+
+### What ships
+
+- **`docs/MANIFOLD_CONSUMPTION_GAP_AUDIT.md`
+  (new).** Per-slice verdict document mirroring
+  the prior audit doc shape:
+    - **§1 VERDICT** — `PASS`. All eight
+      structural checks return PASS; check #8
+      (runtime CUDA/OptiX status) DEFERRED on
+      documented audit-host limitations.
+    - **§2 PER-CHECK RESULTS** — nine-row
+      evidence table. Each row cites concrete
+      observations: audit-host CLI transcripts
+      showing the fixture-load + manifold-mode
+      log for both SchwarzschildLike and
+      PenroseLike fixtures; `git diff -- scenes/`
+      returning 0 bytes (default-scene byte-
+      identity); the CLI-override transcript
+      (`--manifold-chart euclidean` winning the
+      merge over scene-side `schwarzschild-like`);
+      single-source-of-truth dispatcher-merge +
+      math leaves guaranteeing CPU/CUDA/OptiX
+      equivalence; `git diff -- src/manifold/`
+      returning 0 bytes (no new math); ctest
+      12/12 + `manifold_identity_tests 312/312`.
+    - **§3 WHAT THIS AUDIT DOES NOT VERIFY** —
+      explicit scope-boundary section listing five
+      items: no runtime device-side verification;
+      no PPM-level byte-identity comparison; no
+      golden-PPM pinning; no path-tracer / mesh-
+      scene / direct-lighting scene-aware action
+      verification (only `--render-aovs` and
+      `--render-optix-aovs` consume the
+      `ManifoldCoordinates` AOV); no broader
+      cli_tests surface validation beyond the
+      existing 123/123.
+    - **§4 REASONING SUMMARY** — recap of the
+      MANI-CONSUME.1 commit's three host-side
+      surface changes (CLI parser extension +
+      OptiX dispatcher scene-load + CUDA
+      dispatcher scene-load + cross-guard
+      manifold-mode log).
+    - **§5 CAPSTONE STATUS UPDATE — DEFERRED ITEMS
+      REVIEW** — explicit table showing the
+      SCHW.11 + PENROSE.12 capstones' remaining
+      risks AFTER MANI-CONSUME.1. **Both arcs'
+      highest-priority deferred item (CLI
+      consumption-gap) is now CLOSED**; the
+      remaining items are cosmetic / artistic
+      (primary-ray warp) or SDK-host-blocked (PPM
+      golden pinning).
+    - **§6 NEXT** — names MANI-I.12 final
+      cross-host audit as the highest-priority
+      next step (now that an SDK host can
+      directly exercise the fixtures via the
+      MANI-CONSUME.1 CLI surface); primary-ray
+      direction warp + chart-parameter
+      scene-authoring as medium-priority follow-ups.
+    - **§7 REFERENCES** — 17-entry reference list
+      spanning master instructions, architecture
+      doc, both prior arc capstones, MANI-I.4
+      audit, both fixture docs, integration plan,
+      and all source/scene files the
+      MANI-CONSUME.* meta-slice touched.
+
+### What does NOT ship
+
+- **No source code.** Nothing in any `src/`
+  subtree is touched (`git diff` outside `docs/`
+  ⇒ 0 bytes).
+- **No new test binary.** ctest set unchanged at
+  12.
+- **No CMake change.**
+- **No `BUILD_PLAN.md` historical-record
+  rewrite.** The MANI-I.* / SCHW.* / PENROSE.* /
+  MANI-CONSUME.1 entries above stay as-is; this
+  MANI-CONSUME.2 entry is additive.
+- **No `MODULE_MAP.md` update.** The per-slice
+  audit is doc-only; module-map promotion still
+  waits for MANI-I.12 (final cross-host audit).
+- **No update to the prior audit / capstone
+  docs.** The SCHW.11 + PENROSE.12 capstones are
+  preserved as point-in-time historical snapshots;
+  the MANI-CONSUME.2 audit's §5 table captures
+  their risks' post-MANI-CONSUME.1 state by
+  reference rather than rewriting them.
+- **No update to the integration plan.** The
+  plan's MANI-I.12 slot remains the documented
+  next step.
+- **No Kerr / Kruskal work.**
+- **No C4D / server / UI / node-editor touch.**
+
+### Acceptance
+
+- **Compiles.** Documentation-only slice; no
+  build configuration touched. The audit-host
+  build remains at the post-MANI-CONSUME.1
+  baseline (`100% tests passed, 0 tests failed
+  out of 12`; `manifold_identity_tests:
+  312/312`; `cli_tests: 123/123 passed`;
+  `renderer_tests: 19/19 passed`).
+- **Internally consistent.** The nine-row
+  evidence table cites concrete CLI transcripts
+  (captured on the audit host) AND concrete
+  file-level diffs (`git diff -- scenes/`,
+  `git diff -- src/manifold/`) AND named
+  references to the prior per-slice audits and
+  capstones.
+- **Verdict honesty.** The verdict is `PASS`
+  because the structural checks pass — not
+  because of an arbitrary judgement call. Every
+  claim in the evidence table is backed by a
+  CLI transcript, a diff observation, or a named
+  prior-audit reference. Check #8 (runtime
+  CUDA/OptiX status) is DEFERRED on **documented**
+  audit-host limitations (no CUDA SDK; no OptiX
+  SDK). The §3 "WHAT THIS AUDIT DOES NOT VERIFY"
+  section explicitly enumerates the five items
+  the audit cannot check.
+
+### Module status changes
+
+`docs/MODULE_MAP.md` is *not* updated by this slice.
+With MANI-CONSUME.2 verifying MANI-CONSUME.1's
+consumption-gap closure, **both SCHW.11 and
+PENROSE.12 capstones' highest-priority deferred
+items are confirmed CLOSED**. Module-map promotion
+still waits for MANI-I.12 (final cross-host audit)
+per the integration plan §11.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
