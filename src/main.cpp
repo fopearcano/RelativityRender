@@ -1997,67 +1997,97 @@ int run_render_optix_aovs(const rr::core::Config& cfg) {
     using rr::core::Logger;
 
     rr::scene::Scene scene;
-    scene.render_settings.width  = cfg.width;
-    scene.render_settings.height = cfg.height;
-    scene.camera.set_aspect(static_cast<float>(cfg.width)
-                          / static_cast<float>(cfg.height));
-
-    // Single neutral diffuse material for the quad. The OptiX
-    // direct-lighting branch evaluates albedo * (direct +
-    // ambient) + emission; a mid-grey baseColor lets every
-    // light's contribution show through clearly across the
-    // Beauty + Albedo AOVs.
-    rr::material::MaterialParams neutral_params{};
-    neutral_params.baseColor = rr::math::Vec3{0.65f, 0.65f, 0.65f};
-    scene.materials.push_back({0, "neutral", neutral_params});
-
-    // Single front-facing quad mesh (positions / normals / UVs).
-    // Same shape as the CUDA --render-aovs dispatcher's quad.
-    rr::geometry::Mesh quad;
-    quad.vertices.push_back({rr::math::Vec3{-3.0f, -3.0f, -6.0f},
-                             rr::math::Vec3{0.0f, 0.0f, 1.0f},
-                             rr::math::Vec2{0.0f, 0.0f}});
-    quad.vertices.push_back({rr::math::Vec3{ 3.0f, -3.0f, -6.0f},
-                             rr::math::Vec3{0.0f, 0.0f, 1.0f},
-                             rr::math::Vec2{1.0f, 0.0f}});
-    quad.vertices.push_back({rr::math::Vec3{ 3.0f,  3.0f, -6.0f},
-                             rr::math::Vec3{0.0f, 0.0f, 1.0f},
-                             rr::math::Vec2{1.0f, 1.0f}});
-    quad.vertices.push_back({rr::math::Vec3{-3.0f,  3.0f, -6.0f},
-                             rr::math::Vec3{0.0f, 0.0f, 1.0f},
-                             rr::math::Vec2{0.0f, 1.0f}});
-    quad.triangles.push_back({0, 1, 2});
-    quad.triangles.push_back({0, 2, 3});
-    quad.material_id = 0;
-
-    rr::scene::SceneMesh smesh;
-    smesh.object.name = "aov-quad";
-    smesh.geometry    = std::move(quad);
-    scene.meshes.push_back(std::move(smesh));
-
-    // Three lights matching the CUDA --render-aovs dispatcher:
-    // directional key, warm point fill, cool environment ambient.
     std::vector<rr::lighting::Light> lights;
-    lights.push_back(rr::lighting::make_directional_light(
-        rr::math::Vec3{-0.4f, -0.7f, -0.6f},
-        rr::math::Vec3{1.0f, 0.95f, 0.85f},
-        /*intensity=*/0.9f));
-    lights.push_back(rr::lighting::make_point_light(
-        rr::math::Vec3{2.0f, 1.5f, -2.5f},
-        rr::math::Vec3{1.0f, 0.85f, 0.6f},
-        /*intensity=*/30.0f));
-    lights.push_back(rr::lighting::make_environment_light(
-        rr::math::Vec3{0.55f, 0.65f, 0.85f},
-        /*intensity=*/0.25f));
 
-#ifndef RELATIVITYRENDER_ENABLE_OPTIX
-    Logger::error("--render-optix-aovs requires OptiX. Rebuild "
-                  "with -DRR_ENABLE_OPTIX=ON on a "
-                  "host with the CUDA Toolkit + OptiX SDK "
-                  "installed (also pass -DOPTIX_ROOT=/path/to/"
-                  "optix-sdk).");
-    return 1;
-#else
+    // MANI-CONSUME.1 — when `cfg.scene_path` is provided, load
+    // the scene from disk and use its contents (including the
+    // SCHW.9-era `manifold` block) for the render. When the
+    // operator passes no scene path, fall back to the
+    // pre-MANI-CONSUME.1 inline procedural scene (preserves
+    // byte-identity for every existing `--render-optix-aovs`
+    // invocation that doesn't pass a `<scene-path>`). This
+    // closes the consumption gap the SCHW.10 / PENROSE.10
+    // fixture audits catalogued.
+    if (!cfg.scene_path.empty()) {
+        if (!rr::io::sceneFileExists(cfg.scene_path)) {
+            Logger::error("scene file not found: " + cfg.scene_path);
+            return 1;
+        }
+        auto load = rr::io::load(cfg.scene_path);
+        if (!load.ok) {
+            Logger::error("failed to load scene '" + cfg.scene_path
+                        + "': " + load.error_message);
+            return 1;
+        }
+        scene = std::move(load.scene);
+        scene.render_settings.width  = cfg.width;
+        scene.render_settings.height = cfg.height;
+        scene.camera.set_aspect(static_cast<float>(cfg.width)
+                              / static_cast<float>(cfg.height));
+        // Extract visible lights into the flat `lights` vector
+        // the OptiX dispatcher consumes (mirrors the existing
+        // SceneLight → Light extraction pattern at
+        // `--render-optix-mesh-scene` / `--render-direct-lighting`
+        // sites).
+        lights.reserve(scene.lights.size());
+        for (const auto& l : scene.lights) {
+            if (l.object.visible) lights.push_back(l.data);
+        }
+        Logger::info("scene file: " + cfg.scene_path);
+    } else {
+        scene.render_settings.width  = cfg.width;
+        scene.render_settings.height = cfg.height;
+        scene.camera.set_aspect(static_cast<float>(cfg.width)
+                              / static_cast<float>(cfg.height));
+
+        // Single neutral diffuse material for the quad. The OptiX
+        // direct-lighting branch evaluates albedo * (direct +
+        // ambient) + emission; a mid-grey baseColor lets every
+        // light's contribution show through clearly across the
+        // Beauty + Albedo AOVs.
+        rr::material::MaterialParams neutral_params{};
+        neutral_params.baseColor = rr::math::Vec3{0.65f, 0.65f, 0.65f};
+        scene.materials.push_back({0, "neutral", neutral_params});
+
+        // Single front-facing quad mesh (positions / normals / UVs).
+        // Same shape as the CUDA --render-aovs dispatcher's quad.
+        rr::geometry::Mesh quad;
+        quad.vertices.push_back({rr::math::Vec3{-3.0f, -3.0f, -6.0f},
+                                 rr::math::Vec3{0.0f, 0.0f, 1.0f},
+                                 rr::math::Vec2{0.0f, 0.0f}});
+        quad.vertices.push_back({rr::math::Vec3{ 3.0f, -3.0f, -6.0f},
+                                 rr::math::Vec3{0.0f, 0.0f, 1.0f},
+                                 rr::math::Vec2{1.0f, 0.0f}});
+        quad.vertices.push_back({rr::math::Vec3{ 3.0f,  3.0f, -6.0f},
+                                 rr::math::Vec3{0.0f, 0.0f, 1.0f},
+                                 rr::math::Vec2{1.0f, 1.0f}});
+        quad.vertices.push_back({rr::math::Vec3{-3.0f,  3.0f, -6.0f},
+                                 rr::math::Vec3{0.0f, 0.0f, 1.0f},
+                                 rr::math::Vec2{0.0f, 1.0f}});
+        quad.triangles.push_back({0, 1, 2});
+        quad.triangles.push_back({0, 2, 3});
+        quad.material_id = 0;
+
+        rr::scene::SceneMesh smesh;
+        smesh.object.name = "aov-quad";
+        smesh.geometry    = std::move(quad);
+        scene.meshes.push_back(std::move(smesh));
+
+        // Three lights matching the CUDA --render-aovs dispatcher:
+        // directional key, warm point fill, cool environment ambient.
+        lights.push_back(rr::lighting::make_directional_light(
+            rr::math::Vec3{-0.4f, -0.7f, -0.6f},
+            rr::math::Vec3{1.0f, 0.95f, 0.85f},
+            /*intensity=*/0.9f));
+        lights.push_back(rr::lighting::make_point_light(
+            rr::math::Vec3{2.0f, 1.5f, -2.5f},
+            rr::math::Vec3{1.0f, 0.85f, 0.6f},
+            /*intensity=*/30.0f));
+        lights.push_back(rr::lighting::make_environment_light(
+            rr::math::Vec3{0.55f, 0.65f, 0.85f},
+            /*intensity=*/0.25f));
+    }
+
     // SCHW.7 / SCHW.9 — resolve the per-launch
     // `ManifoldMode` from the CLI (`cfg.manifold`) and the
     // scene file (`scene.manifold`, populated by the SCHW.9
@@ -2068,8 +2098,25 @@ int run_render_optix_aovs(const rr::core::Config& cfg) {
     // flags (the SCHW.9 fixture
     // `scenes/test_schwarzschild_like_manifold.rrscene`
     // relies on this).
+    //
+    // MANI-CONSUME.1 — the resolution + log fire BEFORE the
+    // OptiX-availability guard so the operator sees the
+    // active manifold mode on every host (audit-host + SDK
+    // host alike). The kernel-side consumption still
+    // requires the SDK; the host-side resolution does not.
     const rr::manifold::ManifoldMode effective_manifold =
         cfg.manifold.enabled ? cfg.manifold : scene.manifold;
+    Logger::info("optix-aovs manifold mode: "
+               + format_manifold_mode(effective_manifold));
+
+#ifndef RELATIVITYRENDER_ENABLE_OPTIX
+    Logger::error("--render-optix-aovs requires OptiX. Rebuild "
+                  "with -DRR_ENABLE_OPTIX=ON on a "
+                  "host with the CUDA Toolkit + OptiX SDK "
+                  "installed (also pass -DOPTIX_ROOT=/path/to/"
+                  "optix-sdk).");
+    return 1;
+#else
 
     // SCHW.7 — build a per-launch `CoordinateChart` from the
     // resolved manifold mode. The
@@ -3743,93 +3790,142 @@ int run_render_direct_lighting(const rr::core::Config& cfg) {
 // independently. The CPU only owns buffer lifetime + the final
 // download / save; every per-pixel value comes from the kernel.
 int run_render_aovs(const rr::core::Config& cfg) {
+    rr::scene::Scene scene;
+
+    // MANI-CONSUME.1 — when `cfg.scene_path` is provided, load
+    // the scene from disk and use its contents (including the
+    // SCHW.9-era `manifold` block) for the render. When the
+    // operator passes no scene path, fall back to the
+    // pre-MANI-CONSUME.1 inline procedural scene (preserves
+    // byte-identity for every existing `--render-aovs`
+    // invocation that doesn't pass a `<scene-path>`). Closes the
+    // CUDA-side leg of the consumption gap the SCHW.10 /
+    // PENROSE.10 / PENROSE.12 audits catalogued.
+    //
+    // Scene-load + manifold-mode log fire BEFORE the
+    // RR_HAS_CUDA guard so the operator sees the active
+    // manifold mode on every host (audit-host + CUDA host
+    // alike). The kernel-side consumption still requires
+    // CUDA; the host-side resolution does not.
+    if (!cfg.scene_path.empty()) {
+        if (!rr::io::sceneFileExists(cfg.scene_path)) {
+            rr::core::Logger::error("scene file not found: " + cfg.scene_path);
+            return 1;
+        }
+        auto load = rr::io::load(cfg.scene_path);
+        if (!load.ok) {
+            rr::core::Logger::error("failed to load scene '" + cfg.scene_path
+                                  + "': " + load.error_message);
+            return 1;
+        }
+        scene = std::move(load.scene);
+        scene.render_settings.width  = cfg.width;
+        scene.render_settings.height = cfg.height;
+        scene.camera.set_aspect(static_cast<float>(cfg.width)
+                              / static_cast<float>(cfg.height));
+        rr::core::Logger::info("scene file: " + cfg.scene_path);
+    }
+
+    // Resolve manifold mode + log on every host (the merge
+    // logic doesn't require CUDA; only the kernel-side
+    // consumption does).
+    const rr::manifold::ManifoldMode pre_effective_manifold =
+        cfg.manifold.enabled ? cfg.manifold : scene.manifold;
+    rr::core::Logger::info("aovs manifold mode: "
+                         + format_manifold_mode(pre_effective_manifold));
+
 #ifndef RR_HAS_CUDA
-    (void)cfg;
     rr::core::Logger::error("--render-aovs requires CUDA. Rebuild with "
                             "-DRR_ENABLE_CUDA=ON on a host with the CUDA "
                             "Toolkit and a CUDA-capable GPU.");
     return 1;
 #else
-    rr::scene::Scene scene;
-    scene.render_settings.width  = cfg.width;
-    scene.render_settings.height = cfg.height;
-    scene.camera.set_aspect(static_cast<float>(cfg.width)
-                          / static_cast<float>(cfg.height));
+    if (cfg.scene_path.empty()) {
+        scene.render_settings.width  = cfg.width;
+        scene.render_settings.height = cfg.height;
+        scene.camera.set_aspect(static_cast<float>(cfg.width)
+                              / static_cast<float>(cfg.height));
 
-    // Materials: same five-material palette as
-    // --render-material-scene / --render-direct-lighting.
-    auto red       = rr::material::Material::make_diffuse(
-        rr::math::Vec3{0.85f, 0.20f, 0.20f});
-    auto green     = rr::material::Material::make_diffuse(
-        rr::math::Vec3{0.20f, 0.80f, 0.30f});
-    auto blue      = rr::material::Material::make_diffuse(
-        rr::math::Vec3{0.20f, 0.30f, 0.90f});
-    auto emissive  = rr::material::Material::make_emissive(
-        rr::math::Vec3{1.0f, 0.85f, 0.35f}, /*strength=*/2.0f);
-    auto neutral   = rr::material::Material::make_diffuse(
-        rr::math::Vec3{0.65f, 0.65f, 0.65f});
-    scene.materials.push_back({0, "red",      red.params()});
-    scene.materials.push_back({1, "green",    green.params()});
-    scene.materials.push_back({2, "blue",     blue.params()});
-    scene.materials.push_back({3, "emissive", emissive.params()});
-    scene.materials.push_back({4, "neutral",  neutral.params()});
+        // Materials: same five-material palette as
+        // --render-material-scene / --render-direct-lighting.
+        auto red       = rr::material::Material::make_diffuse(
+            rr::math::Vec3{0.85f, 0.20f, 0.20f});
+        auto green     = rr::material::Material::make_diffuse(
+            rr::math::Vec3{0.20f, 0.80f, 0.30f});
+        auto blue      = rr::material::Material::make_diffuse(
+            rr::math::Vec3{0.20f, 0.30f, 0.90f});
+        auto emissive  = rr::material::Material::make_emissive(
+            rr::math::Vec3{1.0f, 0.85f, 0.35f}, /*strength=*/2.0f);
+        auto neutral   = rr::material::Material::make_diffuse(
+            rr::math::Vec3{0.65f, 0.65f, 0.65f});
+        scene.materials.push_back({0, "red",      red.params()});
+        scene.materials.push_back({1, "green",    green.params()});
+        scene.materials.push_back({2, "blue",     blue.params()});
+        scene.materials.push_back({3, "emissive", emissive.params()});
+        scene.materials.push_back({4, "neutral",  neutral.params()});
 
-    const auto add_sphere = [&](float cx, float cy, float cz, float r,
-                                int mat, const char* name) {
-        rr::scene::SceneSphere s;
-        s.object.name = name;
-        s.geometry    = rr::geometry::Sphere{
-            rr::math::Vec3{cx, cy, cz}, r, mat};
-        scene.spheres.push_back(s);
-    };
-    add_sphere(-1.5f,  0.2f, -4.0f, 0.7f, 0, "left");
-    add_sphere( 0.0f, -0.1f, -3.5f, 0.8f, 1, "centre");
-    add_sphere( 1.5f,  0.2f, -4.0f, 0.7f, 2, "right");
-    add_sphere( 0.0f, -1.4f, -5.0f, 1.0f, 3, "ground-bulb");
+        const auto add_sphere = [&](float cx, float cy, float cz, float r,
+                                    int mat, const char* name) {
+            rr::scene::SceneSphere s;
+            s.object.name = name;
+            s.geometry    = rr::geometry::Sphere{
+                rr::math::Vec3{cx, cy, cz}, r, mat};
+            scene.spheres.push_back(s);
+        };
+        add_sphere(-1.5f,  0.2f, -4.0f, 0.7f, 0, "left");
+        add_sphere( 0.0f, -0.1f, -3.5f, 0.8f, 1, "centre");
+        add_sphere( 1.5f,  0.2f, -4.0f, 0.7f, 2, "right");
+        add_sphere( 0.0f, -1.4f, -5.0f, 1.0f, 3, "ground-bulb");
 
-    rr::geometry::Mesh quad;
-    quad.vertices.push_back({rr::math::Vec3{-3.0f, -3.0f, -6.0f},
-                             rr::math::Vec3{0.0f, 0.0f, 1.0f},
-                             rr::math::Vec2{0.0f, 0.0f}});
-    quad.vertices.push_back({rr::math::Vec3{ 3.0f, -3.0f, -6.0f},
-                             rr::math::Vec3{0.0f, 0.0f, 1.0f},
-                             rr::math::Vec2{1.0f, 0.0f}});
-    quad.vertices.push_back({rr::math::Vec3{ 3.0f,  3.0f, -6.0f},
-                             rr::math::Vec3{0.0f, 0.0f, 1.0f},
-                             rr::math::Vec2{1.0f, 1.0f}});
-    quad.vertices.push_back({rr::math::Vec3{-3.0f,  3.0f, -6.0f},
-                             rr::math::Vec3{0.0f, 0.0f, 1.0f},
-                             rr::math::Vec2{0.0f, 1.0f}});
-    quad.triangles.push_back({0, 1, 2});
-    quad.triangles.push_back({0, 2, 3});
-    quad.material_id = 4;
+        rr::geometry::Mesh quad;
+        quad.vertices.push_back({rr::math::Vec3{-3.0f, -3.0f, -6.0f},
+                                 rr::math::Vec3{0.0f, 0.0f, 1.0f},
+                                 rr::math::Vec2{0.0f, 0.0f}});
+        quad.vertices.push_back({rr::math::Vec3{ 3.0f, -3.0f, -6.0f},
+                                 rr::math::Vec3{0.0f, 0.0f, 1.0f},
+                                 rr::math::Vec2{1.0f, 0.0f}});
+        quad.vertices.push_back({rr::math::Vec3{ 3.0f,  3.0f, -6.0f},
+                                 rr::math::Vec3{0.0f, 0.0f, 1.0f},
+                                 rr::math::Vec2{1.0f, 1.0f}});
+        quad.vertices.push_back({rr::math::Vec3{-3.0f,  3.0f, -6.0f},
+                                 rr::math::Vec3{0.0f, 0.0f, 1.0f},
+                                 rr::math::Vec2{0.0f, 1.0f}});
+        quad.triangles.push_back({0, 1, 2});
+        quad.triangles.push_back({0, 2, 3});
+        quad.material_id = 4;
 
-    // Three lights: one directional (key), one warm point light
-    // near the spheres (fill), one cool environment ambient.
-    // Same shape as --render-direct-lighting; the brace-init
-    // matches `SceneLight { SceneObject object; Light data; }`.
-    scene.lights.push_back({{}, rr::lighting::make_directional_light(
-        rr::math::Vec3{-0.4f, -0.7f, -0.6f},
-        rr::math::Vec3{1.0f, 0.95f, 0.85f},
-        /*intensity=*/0.9f)});
-    scene.lights.push_back({{}, rr::lighting::make_point_light(
-        rr::math::Vec3{2.0f, 1.5f, -2.5f},
-        rr::math::Vec3{1.0f, 0.85f, 0.6f},
-        /*intensity=*/30.0f)});
-    scene.lights.push_back({{}, rr::lighting::make_environment_light(
-        rr::math::Vec3{0.55f, 0.65f, 0.85f},
-        /*intensity=*/0.25f)});
+        rr::scene::SceneMesh quad_mesh;
+        quad_mesh.object.name = "aov-quad";
+        quad_mesh.geometry    = std::move(quad);
+        scene.meshes.push_back(std::move(quad_mesh));
 
-    // Stage 14A.3: pick a non-zero observer velocity so the
-    // DopplerFactor / SearchlightFactor AOVs show visible
-    // variation across the framebuffer. β = 0.5 along -Z (forward
-    // motion into the scene) gives a clear forward-cone brightening
-    // and a backward-cone dimming under the searchlight pass.
-    scene.observer.velocity = rr::math::Vec3{0.0f, 0.0f, -0.5f};
-    // Defaults already enable doppler / searchlight in
-    // RelativityParams; the AOV writes happen regardless of those
-    // flags, so the beauty pass shows the colour-shifted output
-    // and the AOV passes show the underlying physical factors.
+        // Three lights: one directional (key), one warm point light
+        // near the spheres (fill), one cool environment ambient.
+        // Same shape as --render-direct-lighting; the brace-init
+        // matches `SceneLight { SceneObject object; Light data; }`.
+        scene.lights.push_back({{}, rr::lighting::make_directional_light(
+            rr::math::Vec3{-0.4f, -0.7f, -0.6f},
+            rr::math::Vec3{1.0f, 0.95f, 0.85f},
+            /*intensity=*/0.9f)});
+        scene.lights.push_back({{}, rr::lighting::make_point_light(
+            rr::math::Vec3{2.0f, 1.5f, -2.5f},
+            rr::math::Vec3{1.0f, 0.85f, 0.6f},
+            /*intensity=*/30.0f)});
+        scene.lights.push_back({{}, rr::lighting::make_environment_light(
+            rr::math::Vec3{0.55f, 0.65f, 0.85f},
+            /*intensity=*/0.25f)});
+
+        // Stage 14A.3: pick a non-zero observer velocity so the
+        // DopplerFactor / SearchlightFactor AOVs show visible
+        // variation across the framebuffer. β = 0.5 along -Z (forward
+        // motion into the scene) gives a clear forward-cone brightening
+        // and a backward-cone dimming under the searchlight pass.
+        scene.observer.velocity = rr::math::Vec3{0.0f, 0.0f, -0.5f};
+        // Defaults already enable doppler / searchlight in
+        // RelativityParams; the AOV writes happen regardless of those
+        // flags, so the beauty pass shows the colour-shifted output
+        // and the AOV passes show the underlying physical factors.
+    }
 
     std::vector<rr::geometry::Sphere> sphere_pods;
     sphere_pods.reserve(scene.spheres.size());
@@ -3847,6 +3943,27 @@ int run_render_aovs(const rr::core::Config& cfg) {
     light_pods.reserve(scene.lights.size());
     for (const auto& L : scene.lights) light_pods.push_back(L.data);
 
+    // MANI-CONSUME.1 — both the inline-scene path and the
+    // scene-file-loaded path now build their mesh through
+    // `scene.meshes[0].geometry` (the inline path now pushes
+    // the quad into `scene.meshes` rather than holding it as
+    // a local). Pick the first visible non-empty mesh,
+    // matching the mesh-selection pattern other scene-aware
+    // actions (`--render-mesh-scene`, `--render-direct-lighting`)
+    // already use.
+    const rr::geometry::Mesh* mesh_to_upload = nullptr;
+    for (const auto& sm : scene.meshes) {
+        if (!sm.object.visible) continue;
+        if (sm.geometry.empty()) continue;
+        mesh_to_upload = &sm.geometry;
+        break;
+    }
+    if (mesh_to_upload == nullptr) {
+        rr::core::Logger::error("aovs: scene contains no visible "
+                                "non-empty mesh.");
+        return 1;
+    }
+
     rr::gpu::GpuScene gpu_scene;
     if (!gpu_scene.upload_camera(scene.camera))
         { rr::core::Logger::error("aovs: upload_camera failed"); return 1; }
@@ -3854,7 +3971,7 @@ int run_render_aovs(const rr::core::Config& cfg) {
         { rr::core::Logger::error("aovs: upload_relativity failed"); return 1; }
     if (!gpu_scene.upload_spheres(sphere_pods.data(), sphere_pods.size()))
         { rr::core::Logger::error("aovs: upload_spheres failed"); return 1; }
-    if (!gpu_scene.upload_mesh(quad))
+    if (!gpu_scene.upload_mesh(*mesh_to_upload))
         { rr::core::Logger::error("aovs: upload_mesh failed"); return 1; }
     if (!gpu_scene.upload_materials(material_pods.data(), material_pods.size()))
         { rr::core::Logger::error("aovs: upload_materials failed"); return 1; }
@@ -3895,8 +4012,14 @@ int run_render_aovs(const rr::core::Config& cfg) {
     // in. This lets `scenes/test_schwarzschild_like_manifold
     // .rrscene` engage the AOV without requiring CLI
     // flags.
-    const rr::manifold::ManifoldMode effective_cuda_manifold =
-        cfg.manifold.enabled ? cfg.manifold : scene.manifold;
+    // MANI-CONSUME.1 — the resolved manifold mode +
+    // operator-visible log fire BEFORE the RR_HAS_CUDA guard
+    // (see `pre_effective_manifold` near line 3832); the alias
+    // here keeps the existing variable name in the kernel-
+    // path code below working without renaming every call
+    // site.
+    const rr::manifold::ManifoldMode& effective_cuda_manifold =
+        pre_effective_manifold;
     rr::renderer::GpuAOVBuffer manifold_coords_buffer{
         rr::renderer::AOV::make_manifold_coordinates()};
     if (effective_cuda_manifold.debug_visualization) {

@@ -78015,6 +78015,201 @@ Explicitly NOT authorised by this capstone:
 `*LikePlaceholder` charts remain reserved-but-
 inert).
 
+## MANI-CONSUME.1 — CLI Consumption-Gap Closure (impl, host-only)
+
+**Scope of this slice (per the operator's *MANI-CONSUME.1
+— CLI Consumption-Gap Closure* task brief): close the
+manifold fixture consumption gap the SCHW.10 / SCHW.11
+/ PENROSE.10 / PENROSE.11 / PENROSE.12 audits all
+catalogued. Loading
+`scenes/test_schwarzschild_like_manifold.rrscene` via
+`--render-aovs <path>` or `--render-optix-aovs <path>`
+now automatically activates the SchwarzschildLike
+chart through the existing SCHW.9 dispatcher-merge
+logic; loading
+`scenes/test_penrose_like_manifold.rrscene` similarly
+activates PenroseLike. Default scenes remain
+byte-identical (invocations without a scene-path
+argument continue to build the pre-MANI-CONSUME.1
+inline procedural scene verbatim). CLI overrides
+(`--manifold-enable`, `--manifold-chart`,
+`--manifold-strength`, `--manifold-debug`) still
+win the merge when explicitly set. Host-only;
+CUDA / OptiX / pathtracer kernel code byte-identical.
+Closes the highest-priority deferred item the SCHW.11
++ PENROSE.12 capstones both recommended.**
+
+### What ships
+
+- **`src/core/CommandLine.cpp` (extended).** Two
+  CLI-parser arms gain optional positional
+  scene-path acceptance:
+    - **`--render-aovs` arm** at line ~280: after
+      `set_action(...)`, peek at the next argv;
+      if it doesn't start with `-`, take it as
+      `cfg.scene_path`. Preserves the original
+      no-argument behavior verbatim when no
+      scene path is supplied.
+    - **`--render-optix-aovs` arm** at line ~420:
+      mirror of the CUDA arm. Same peek-then-take
+      pattern.
+  Both arms document the MANI-CONSUME.1 extension
+  inline. No new flag, no breaking change — the
+  scene path is positional + optional, so every
+  existing CLI invocation still parses correctly.
+- **`src/main.cpp::run_render_optix_aovs`
+  (extended).** Three surface additions:
+    - **Scene-file loading branch** at the top of
+      the function: if `cfg.scene_path` is
+      non-empty, call `rr::io::sceneFileExists` +
+      `rr::io::load(cfg.scene_path)`, extract
+      visible lights from `scene.lights` into the
+      flat `lights` vector the OptiX dispatcher
+      consumes, and log `"scene file: <path>"`.
+      Otherwise build the existing pre-MANI-CONSUME.1
+      inline procedural scene + lights verbatim
+      (now wrapped in an `else { ... }` block).
+    - **Manifold-mode resolution + log** moved
+      BEFORE the `#ifndef RELATIVITYRENDER_ENABLE_OPTIX`
+      guard so the operator sees the resolved
+      mode on every host (audit-host + SDK host
+      alike). The kernel-side consumption still
+      requires the SDK; the host-side
+      resolution does not. Logs e.g.
+      `"optix-aovs manifold mode: enabled
+      (chart=penrose-like, strength=0.500000,
+      debug=on)"`.
+    - **Dispatcher merge unchanged** —
+      `effective_manifold = cfg.manifold.enabled
+      ? cfg.manifold : scene.manifold` (the SCHW.9
+      merge policy) and the SCHW.7 / PENROSE.8
+      `manifold_chart` builder are reused
+      verbatim.
+- **`src/main.cpp::run_render_aovs` (extended).**
+  Four surface additions parallel to the OptiX
+  path:
+    - **Scene-file loading branch** at the top of
+      the function (BEFORE the `#ifndef
+      RR_HAS_CUDA` guard): same shape as the
+      OptiX path.
+    - **Manifold-mode resolution + log** moved
+      BEFORE the `#ifndef RR_HAS_CUDA` guard:
+      same `format_manifold_mode` helper output.
+    - **Inline-scene mesh promotion** — the
+      inline procedural path now pushes the quad
+      into `scene.meshes` (previously the quad
+      was held as a local + uploaded directly).
+      Both the inline-scene path and the
+      scene-file-loaded path now feed
+      `gpu_scene.upload_mesh(...)` through a
+      shared "first visible non-empty mesh"
+      picker (matches the pattern
+      `--render-mesh-scene` and
+      `--render-direct-lighting` use). No-op for
+      the inline path's runtime behavior (the
+      quad's vertex / triangle / material data
+      is unchanged); the picker selects exactly
+      the same mesh on the audit host.
+    - **Downstream `effective_cuda_manifold`
+      reference** aliased to
+      `pre_effective_manifold` (resolved before
+      the guard) so the existing kernel-path
+      code below works without renaming every
+      call site.
+
+### What does NOT ship
+
+- **No CUDA touch.** `src/cuda/` is byte-identical
+  (`git diff -- src/cuda/` returns 0 bytes). The
+  kernel-side PenroseLike / SchwarzschildLike
+  arms (SCHW.5 / PENROSE.6) are preserved verbatim.
+- **No OptiX touch.** `src/optix/` is byte-identical
+  (`git diff -- src/optix/` returns 0 bytes). The
+  kernel-side PenroseLike / SchwarzschildLike arms
+  (SCHW.7 / PENROSE.8) are preserved verbatim.
+- **No `rr_manifold` touch.** `src/manifold/` is
+  byte-identical. The math leaves and the seam are
+  preserved.
+- **No new manifold math.** PENROSE.2 / SCHW.1
+  math leaves reused verbatim through the existing
+  call sites.
+- **No new CLI surface.** The `--manifold-*` flags
+  from MANI-I.1 continue to work unchanged; the
+  CLI overrides still win the merge when
+  explicitly set.
+- **No `.rrscene` schema bump.** The SCHW.9-era
+  `manifold` block parser surface is consumed
+  verbatim.
+- **No Kerr / Kruskal work.** Operator brief
+  explicitly forbids.
+- **No observer-frame work.** Operator brief
+  explicitly forbids.
+- **No C4D / server / UI / node-editor touch.**
+- **No new ctest binary.** ctest set unchanged at
+  12.
+- **No CMake change.**
+
+### Acceptance
+
+- **Compiles.** Audit-host rebuild succeeds cleanly
+  with no new warnings under `rr_apply_warnings`.
+- **Tests.** Full ctest: `100% tests passed, 0
+  tests failed out of 12`. No regression vs the
+  post-PENROSE.12 baseline
+  (`manifold_identity_tests: 312/312`;
+  `cli_tests: 123/123`; `renderer_tests: 19/19`;
+  `relativity_tests` unchanged).
+- **Audit-host smoke tests verified:**
+    - `--render-optix-aovs scenes/test_penrose_like_manifold.rrscene`
+      → logs `"scene file: ..."` AND `"optix-aovs
+      manifold mode: enabled (chart=penrose-like,
+      strength=0.500000, debug=on)"`, then refuses
+      with the documented "requires OptiX" error
+      (audit host has no OptiX SDK).
+    - `--render-aovs scenes/test_schwarzschild_like_manifold.rrscene`
+      → logs `"scene file: ..."` AND `"aovs
+      manifold mode: enabled (chart=schwarzschild-
+      like, strength=0.500000, debug=on)"`, then
+      refuses with "requires CUDA".
+    - `--render-aovs` (no scene path) → logs
+      `"aovs manifold mode: disabled
+      (chart=euclidean, strength=0.000000,
+      debug=off)"` then refuses with "requires
+      CUDA". The default code path is preserved.
+- **CLI overrides preserved.** The SCHW.9
+  dispatcher merge logic (`effective_manifold =
+  cfg.manifold.enabled ? cfg.manifold :
+  scene.manifold`) is unchanged. When the
+  operator passes `--manifold-enable` AND a
+  scene path simultaneously, the CLI override
+  wins (matches the SCHW.9 documented policy).
+- **Default scenes unchanged.** `git diff --
+  scenes/` returns 0 bytes. The ten existing
+  `.rrscene` fixtures (eight default + the SCHW.9
+  + PENROSE.10 manifold fixtures) are byte-
+  identical to the pre-MANI-CONSUME.1 state.
+
+### Module status changes
+
+`docs/MODULE_MAP.md` is *not* updated by this slice.
+With MANI-CONSUME.1 landed, the largest deferred
+gap from both SCHW.11 and PENROSE.12 capstones is
+closed: the SCHW.9 and PENROSE.10 fixtures can now
+be loaded directly via `--render-aovs <path>` /
+`--render-optix-aovs <path>` and the dispatcher
+merge logic activates the scene-side `manifold`
+block automatically. Module-map promotion still
+waits for MANI-I.12 (final cross-host audit) per
+the integration plan §11.
+
+The capstones' check-#9 "runtime CUDA/OptiX
+validation status: DEFERRED" remains DEFERRED on
+the audit host (the SDK is still required for
+kernel-side execution). The consumption gap was
+the **host-side** blocker preventing operators
+from exercising the fixtures; that blocker is now
+closed.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:

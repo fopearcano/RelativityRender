@@ -283,6 +283,19 @@ CommandLine::ParseResult CommandLine::parse(int argc, char** argv) {
                 r.action = Action::Error;
                 return r;
             }
+            // MANI-CONSUME.1 — optionally accept a
+            // `<scene-path>` positional argument. When the
+            // next argument exists AND does not begin with
+            // `-` (so it is not another flag), treat it as
+            // the scene file path; otherwise preserve the
+            // pre-MANI-CONSUME.1 inline-scene path. This
+            // lets the SCHW.9 / PENROSE.10 fixture files
+            // activate their manifold blocks automatically
+            // without requiring CLI `--manifold-*` flags.
+            if (i + 1 < argc && argv[i + 1][0] != '-') {
+                r.config.scene_path.assign(argv[i + 1]);
+                ++i;
+            }
         } else if (a == "--server") {
             if (!set_action(r.action, Action::Server,
                             r.error_message)) {
@@ -406,14 +419,25 @@ CommandLine::ParseResult CommandLine::parse(int argc, char** argv) {
             }
         } else if (a == "--render-optix-aovs") {
             // Stage 20N: OptiX AOV render. Mirrors the CUDA
-            // --render-aovs shape: takes NO scene argument
-            // (the dispatcher builds a procedural multi-light
-            // scene inline) and writes the six AOVs to
-            // output/optix_aov_*.ppm.
+            // --render-aovs shape. Originally took NO scene
+            // argument (the dispatcher built a procedural
+            // multi-light scene inline) and wrote the six
+            // AOVs to output/optix_aov_*.ppm. MANI-CONSUME.1
+            // extends the shape with an OPTIONAL positional
+            // scene-path argument so the SCHW.9 / PENROSE.10
+            // fixture files automatically engage their
+            // manifold blocks.
             if (!set_action(r.action, Action::RenderOptixAovs,
                             r.error_message)) {
                 r.action = Action::Error;
                 return r;
+            }
+            // MANI-CONSUME.1 — optionally accept a
+            // `<scene-path>` positional argument (same shape
+            // as the CUDA --render-aovs arm above).
+            if (i + 1 < argc && argv[i + 1][0] != '-') {
+                r.config.scene_path.assign(argv[i + 1]);
+                ++i;
             }
         } else if (a == "--render-optix-denoise") {
             // Stage 21D.6: end-to-end run of the new
