@@ -118,7 +118,7 @@ What this slice deliberately is NOT:
   Curvature scalars (Ricci, Kretschmann) belong to
   the Field Interpretation Layer
   (`docs/FIELD_INTERPRETATION_LAYER.md` §6);
-  PENROSE.9 (fixture / debug viz) reuses the existing
+  PENROSE.10 (fixture / debug viz) reuses the existing
   `ManifoldCoordinates` AOV slot, not a new
   curvature slot.
 - **Not a `.rrscene` schema bump.** The mass-origin /
@@ -733,7 +733,7 @@ The SCHW.9 dispatcher merge logic (`effective_manifold
 applies verbatim to PenroseLike. No new merge
 behaviour required.
 
-The fixture scene PENROSE.9 ships authors `chart:
+The fixture scene PENROSE.10 ships authors `chart:
 "penrose-like"` in its `manifold` block; the
 existing SCHW.9 scene parser (`apply_manifold` +
 `parse_chart_type`) already accepts this kebab-case
@@ -759,7 +759,7 @@ SCHW.2 / SCHW.4 / SCHW.6 / SCHW.8 / SCHW.10 / SCHW.11
 per-slice audit posture.
 
 Each deferred check must be exercised on a CUDA +
-OptiX-SDK host before PENROSE.10 (audit) closes the
+OptiX-SDK host before PENROSE.11 (audit) closes the
 chart's per-slice gate:
 
 ### 9.1 Euclidean fallback bit-identity (CUDA + OptiX)
@@ -821,8 +821,8 @@ a documented signature:
   their world-space values.
 - Documented boundary at `r_chart = R_max`.
 
-The reference AOV PPM is pinned by PENROSE.9 +
-PENROSE.10 on a CUDA + OptiX-SDK host.
+The reference AOV PPM is pinned by PENROSE.10 +
+PENROSE.11 on a CUDA + OptiX-SDK host.
 
 ### 9.5 CUDA / OptiX byte-equivalence
 
@@ -920,8 +920,8 @@ the SCHW.1 → SCHW.11 ladder cadence).
   moves PENROSE.3 → PENROSE.4; CUDA integration
   moves PENROSE.4 → PENROSE.6; OptiX integration
   moves PENROSE.6 → PENROSE.8; fixture / debug
-  viz moves PENROSE.8 → PENROSE.9; the arc
-  capstone audit moves PENROSE.9 → PENROSE.10).
+  viz moves PENROSE.8 → PENROSE.10; the arc
+  capstone audit moves PENROSE.10 → PENROSE.11).
 
 ### PENROSE.4 — CPU integration (impl, host-only)
 
@@ -964,8 +964,8 @@ the SCHW.1 → SCHW.11 ladder cadence).
   post-PENROSE.4 plan (CUDA integration moves
   PENROSE.5 → PENROSE.6; OptiX integration moves
   PENROSE.6 → PENROSE.8; fixture / debug viz moves
-  PENROSE.8 → PENROSE.9; the arc capstone audit
-  moves PENROSE.9 → PENROSE.10).
+  PENROSE.8 → PENROSE.10; the arc capstone audit
+  moves PENROSE.10 → PENROSE.11).
 
 ### PENROSE.6 — CUDA integration (impl, GPU-side)
 
@@ -1017,8 +1017,8 @@ the SCHW.1 → SCHW.11 ladder cadence).
   shifts the PENROSE.* sub-slice numbering by `+1`
   from the post-PENROSE.6 plan (OptiX integration
   moves PENROSE.7 → PENROSE.8; fixture / debug viz
-  moves PENROSE.8 → PENROSE.9; the arc capstone
-  audit moves PENROSE.9 → PENROSE.10).
+  moves PENROSE.8 → PENROSE.10; the arc capstone
+  audit moves PENROSE.10 → PENROSE.11).
 
 ### PENROSE.8 — OptiX integration (impl, GPU-side)
 
@@ -1047,7 +1047,36 @@ the SCHW.1 → SCHW.11 ladder cadence).
   the new AOV (the denoiser still consumes Beauty /
   Albedo / Normal only).
 
-### PENROSE.9 — Fixture / debug visualization (impl, scene + dispatcher)
+### PENROSE.9 — Audit (docs only)
+
+- **Scope:** per-slice gate for PENROSE.8. Writes
+  `docs/PENROSE_LIKE_OPTIX_INTEGRATION_AUDIT.md`
+  verifying the ten structural items the operator's
+  PENROSE.9 task brief enumerates: OptiX launch
+  params receive the PenroseLike manifold payload;
+  OptiX uses shared or equivalent Penrose-like
+  helper; activation conditions are correct;
+  disabled/default mode remains no-op; Euclidean
+  mode remains identity; Schwarzschild behavior
+  unchanged; CUDA/OptiX Penrose math equivalence;
+  OptiX OFF build remains valid; runtime
+  CUDA/OptiX-host status (PASS / DEFERRED /
+  BLOCKED); verdict.
+- **Acceptance:** all nine structural checks PASS;
+  check #9 (runtime CUDA/OptiX-host status)
+  DEFERRED on documented audit-host limitations;
+  the audit-host build remains at the post-PENROSE.8
+  baseline (`100% tests passed, 0 tests failed out
+  of 12`; `manifold_identity_tests: 312 / 312
+  checks passed`).
+- **What does NOT ship:** no source code; no test
+  binary changes; no CMake change. The audit
+  shifts the PENROSE.* sub-slice numbering by `+1`
+  from the post-PENROSE.8 plan (fixture / debug
+  viz moves PENROSE.9 → PENROSE.10; the arc
+  capstone audit moves PENROSE.10 → PENROSE.11).
+
+### PENROSE.10 — Fixture / debug visualization (impl, scene + dispatcher)
 
 - **Scope:** parallel to SCHW.9's fixture work. Add
   a controlled diagnostic scene:
@@ -1065,7 +1094,7 @@ the SCHW.1 → SCHW.11 ladder cadence).
   - Fixture loads cleanly via `--scene-info` on
     the audit host.
   - Default scenes (the existing nine `.rrscene`
-    files) are byte-identical to the pre-PENROSE.9
+    files) are byte-identical to the pre-PENROSE.10
     state.
 - **What does NOT ship:** new CLI action; chart-
   parameter scene authoring (artistic defaults
@@ -1073,7 +1102,7 @@ the SCHW.1 → SCHW.11 ladder cadence).
   helper, mirroring SCHW.7's pattern); golden-PPM
   pinning (deferred to CUDA + OptiX-SDK host).
 
-### PENROSE.10 — Audit (docs only)
+### PENROSE.11 — Audit (docs only)
 
 - **Scope:** per-arc capstone verdict. Writes
   `docs/PENROSE_LIKE_COMPACTIFICATION_AUDIT.md`
@@ -1088,7 +1117,7 @@ the SCHW.1 → SCHW.11 ladder cadence).
      byte-equivalence by single-source-of-truth
      math (PENROSE.8).
   5. Fixture scene exists and is isolated
-     (PENROSE.9).
+     (PENROSE.10).
   6. Default Euclidean / disabled / SchwarzschildLike
      output remains byte-identical.
   7. Bounded / no-NaN safety status.
@@ -1141,7 +1170,7 @@ or plan:
   helper if the operator wants a "compactified
   primary-ray" mode.
 - **Multi-chart scene authoring.** The fixture
-  scene PENROSE.9 ships authors a single
+  scene PENROSE.10 ships authors a single
   `manifold` block; multi-chart scenes are a
   future-arc concern.
 - **A Cinema 4D bridge / preview-UI integration.**
@@ -1193,15 +1222,15 @@ or plan:
 - `src/optix/OptixPrograms.cu:773-795` — the
   SCHW.7 OptiX kernel arm PENROSE.8 mirrors.
 - `src/io/SceneLoader.cpp::apply_manifold` — the
-  SCHW.9 scene-parser surface PENROSE.9 reuses
+  SCHW.9 scene-parser surface PENROSE.10 reuses
   verbatim (kebab-case `penrose-like` already
   parseable; only the C++ enumerator identifier
   changes at PENROSE.2).
 - `scenes/test_schwarzschild_like_manifold.rrscene`
-  — the SCHW.9 fixture PENROSE.9 mirrors in
+  — the SCHW.9 fixture PENROSE.10 mirrors in
   shape.
 - `docs/SCHWARZSCHILD_LIKE_FIXTURE.md` — the
-  SCHW.9 fixture companion doc PENROSE.9 will
+  SCHW.9 fixture companion doc PENROSE.10 will
   parallel.
 - `tests/manifold_identity_tests.cpp` — the 198
   RR_CHECK test suite PENROSE.* extends; PENROSE.2
