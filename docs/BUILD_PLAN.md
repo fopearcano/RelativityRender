@@ -78355,6 +78355,288 @@ items are confirmed CLOSED**. Module-map promotion
 still waits for MANI-I.12 (final cross-host audit)
 per the integration plan §11.
 
+## OBSERVER.1 — Observer-Frame Rendering Plan (docs only)
+
+**Scope of this slice (per the operator's *OBSERVER.1
+— Observer-Frame Rendering Plan* task brief): write
+`docs/OBSERVER_FRAME_RENDERING_PLAN.md`, the design
+document for the **second axis of the manifold-
+rendering ontology** — the observer-frame layer
+that sits above the manifold coordinate-chart layer
+the SCHW.* + PENROSE.* arcs implemented. The arc
+this plan covers migrates the kernel-side reads
+from the legacy `rr::relativity::Observer` +
+`RelativityParams` types onto the `ObserverFrame`
+POD that landed at MANIFOLD.3 but has been
+unconsumed since. Documentation only — no source
+code, no implementation, no test binary changes,
+no CMake. Authorised by the MANI-CONSUME.2 audit's
+verdict (both chart arcs' highest-priority deferred
+items confirmed CLOSED).**
+
+### What ships
+
+- **`docs/OBSERVER_FRAME_RENDERING_PLAN.md`
+  (new).** Nine-section design doc covering the
+  eight operator-specified sections plus a
+  references list:
+    - **§1 Purpose** — separates "where space
+      maps" (coordinate-chart layer; landed at
+      SCHW.* + PENROSE.*) from "how an observer
+      perceives it" (this arc). The
+      `ObserverFrame` POD already exists at
+      MANIFOLD.3 but no kernel reads it; the
+      arc wires it into the dispatch path so
+      the legacy `Observer` becomes a thin
+      compatibility shim atop the Manifold
+      Core's observer-frame contract.
+    - **§2 Current state (post-MANI-CONSUME.2)**
+      — recap: SchwarzschildLike + PenroseLike
+      chart arcs both PASS_WITH_RUNTIME_DEFERRED;
+      MANI-CONSUME.1 + MANI-CONSUME.2 closed
+      both arcs' largest deferred items; the
+      `ObserverFrame` POD + the bridge helpers
+      (`observer_frame_from(...)` +
+      `to_relativity_observer(...)` +
+      `is_normalised_timelike(...)`) all exist
+      at MANIFOLD.3; six scene-aware actions
+      (`--render-pathtrace`,
+      `--render-mesh-scene`,
+      `--render-material-scene`,
+      `--render-direct-lighting`,
+      `--render-aovs`, `--render-optix-aovs`)
+      currently feed on the legacy Observer +
+      RelativityParams types.
+    - **§3 Observer-frame concepts** — maps
+      each of the seven `ObserverFrame` POD
+      fields from MANIFOLD.3 onto a perceptual
+      concept (position4 → observer position;
+      tetrad right/up/forward → local basis;
+      velocity4 + beta → 4-velocity +
+      3-velocity siblings; proper_time +
+      coordinate_time → reserved-but-inert
+      worldline parameters) **plus** introduces
+      a new `PerceptionMode` enum
+      (`Identity` / `ConstantVelocityMinkowski`
+      / `CurvedChartGeodesicPlaceholder`)
+      parallel to `CoordinateChartType`.
+    - **§4 Relationship to existing camera** —
+      preserves `rr::camera::Camera` as the
+      image-plane generator; `ObserverFrame`
+      becomes the physical / perceptual
+      context. The two compose at the kernel
+      seam:
+      `chart_direction = aberrate(rotate_to_tetrad(camera_direction, frame), frame.beta)`.
+      No `Camera` ABI change in the OBSERVER.*
+      arc; future consolidation is a separate
+      arc.
+    - **§5 Relationship to existing relativity
+      params** — reframes
+      `RelativityParams`'s six flags
+      (`enable_aberration` /
+      `enable_doppler` / `enable_searchlight`
+      / `doppler_color_strength` /
+      `searchlight_strength` / `max_beta`) as
+      **observer-frame effect flags**, not
+      coordinate-chart flags. The existing SR
+      helpers (`aberrateDirection` /
+      `dopplerFactor` /
+      `searchlightFactor` /
+      `applyDopplerColor`) are reinterpreted as
+      the Minkowski + constant-velocity-frame
+      specialisation of the observer-frame
+      tetrad boost; helper bodies are
+      **preserved verbatim** so the arc's MVP
+      preserves byte-identity to today's
+      renderer for the same input observer /
+      params.
+    - **§6 GPU integration strategy** —
+      per-launch `ObserverFrame` payload added
+      to `CudaSceneView` + `OptixLaunchParams`
+      (sibling of the existing
+      `manifold_mode` + `coordinate_chart`
+      fields landed at SCHW.7); dispatcher-side
+      construction via the OBSERVER.4
+      camera-to-observer adapter; kernel-side
+      reads via the existing helpers but
+      keyed on `frame.beta` instead of
+      `observer.velocity`. Single-source-of-
+      truth math reuse mirrors the SCHW.* /
+      PENROSE.* arc pattern.
+    - **§7 Proposed implementation slices** —
+      seven-slice OBSERVER.* sub-slice ladder:
+      OBSERVER.2 (data-model audit / update +
+      `PerceptionMode` enum); OBSERVER.3
+      (config / CLI bridge + `--perception-mode`
+      flag + scene-loader `perception` block);
+      OBSERVER.4 (host-side camera-to-observer
+      adapter); OBSERVER.5 (CUDA payload
+      bridge); OBSERVER.6 (OptiX payload
+      bridge); OBSERVER.7 (observer debug
+      AOV + fixture scene); OBSERVER.8 (arc
+      capstone audit; verdict options PASS /
+      PASS_WITH_RUNTIME_DEFERRED / REPAIR /
+      BLOCKED). Per-slice audit gate slots may
+      be inserted in-band as operator cadence
+      permits (mirroring the SCHW.* / PENROSE.*
+      arc pattern).
+    - **§8 Non-goals** — explicit nine-item
+      catalogue: no full GR tetrad solver
+      (no parallel transport, no Christoffel
+      symbols on tetrad legs, no geodesic
+      ODE advancing proper_time /
+      coordinate_time); no Kerr / Kruskal
+      charts; no C4D / preview-UI / server /
+      node-editor integration; no path-tracer
+      bounce-loop migration (scope is the
+      `--render-aovs` / `--render-optix-aovs`
+      AOV writers); no behaviour change by
+      default (every default-mode CLI action
+      stays byte-identical); no Camera ABI
+      change; no new `RelativityParams` flags;
+      no denoiser integration for any future
+      observer-frame AOV; no `.rrscene` schema
+      bump (the new `perception` block is an
+      optional top-level key).
+    - **§9 References** — 17-entry list
+      spanning master instructions,
+      architecture doc (§3.3 + §7.2 + §8 +
+      §10 step 1), MANIFOLD.3 audit, both
+      arc capstones (SCHW.11 + PENROSE.12),
+      MANI-CONSUME.2 audit, integration plan
+      §11, and all relevant source files
+      (`ObserverFrame.h`, `CoordinateChart.h`,
+      `ManifoldMode.h`, `RelativityMath.h`,
+      `RelativityParams.h`, `Camera.h`,
+      `CudaScene.cuh`, `CudaRenderer.h`,
+      `CudaTestKernel.cu`,
+      `OptixLaunchParams.h`,
+      `OptixRenderer.h/.cpp`,
+      `OptixPrograms.cu`, `main.cpp`'s two
+      dispatchers, `tests/manifold_identity_tests.cpp`).
+
+### What does NOT ship
+
+- **No source code.** Nothing in any `src/`
+  subtree is touched (`git diff` outside `docs/`
+  ⇒ 0 bytes). The `ObserverFrame` POD at
+  `src/manifold/ObserverFrame.h` remains
+  exactly as MANIFOLD.3 landed it; no field
+  added, no helper added, no validator added,
+  no `PerceptionMode` enum yet (that lands at
+  OBSERVER.2).
+- **No new test binary.** ctest set unchanged
+  at 12. `manifold_identity_tests` count
+  unchanged at 312 RR_CHECK assertions.
+- **No CMake change.** No new `rr_*` target;
+  no link-line change; no new header in any
+  target's source list.
+- **No OBSERVER.2-OBSERVER.8 implementation.**
+  This is the planning slice ONLY. OBSERVER.2
+  (data-model audit / update + `PerceptionMode`
+  enum) is the first impl slice and ships
+  separately when the operator prompts for it.
+- **No `PerceptionMode` enum yet.** The enum
+  is defined in the plan (§3.6) but not
+  written to any header; the enum lands at
+  OBSERVER.2.
+- **No `--perception-mode` CLI flag yet.** The
+  flag is specified in the plan (§7
+  OBSERVER.3) but not wired in
+  `src/core/CommandLine.cpp`.
+- **No `perception` scene-block parser yet.**
+  The block is specified in the plan (§7
+  OBSERVER.3) but no `apply_observer_frame`
+  helper exists in `src/io/SceneLoader.cpp`.
+- **No GPU launch-params field yet.** The
+  per-launch `ObserverFrame` payload is
+  specified in the plan (§6 + §7 OBSERVER.5 /
+  OBSERVER.6) but no field exists on
+  `CudaSceneView` / `OptixLaunchParams`.
+- **No new AOV slot.** The
+  `AOVType::ObserverFrameDirection` debug AOV
+  is specified in the plan (§7 OBSERVER.7) but
+  not added to any enum yet.
+- **No GR solver work.** Operator brief +
+  architecture-doc §8 non-goals explicitly
+  forbid; the plan's §8 reaffirms verbatim.
+- **No Kerr / Kruskal work.** OBSERVER.* covers
+  the observer-frame axis; new chart families
+  are a separate arc family.
+- **No C4D / server / UI / node-editor touch.**
+  Operator brief + architecture-doc §8
+  non-goals explicitly forbid.
+- **No `MODULE_MAP.md` update.** The planning
+  slice is doc-only; module-map promotion
+  still waits for MANI-I.12 (final cross-host
+  audit) per the integration plan §11.
+- **No update to the integration plan.** The
+  integration plan's §11 MANI-I.12 slot
+  remains the documented next step for the
+  final cross-host audit; the OBSERVER.* arc
+  complements MANI-I.12 by providing the
+  observer-frame migration that MANI-I.12
+  will gate as part of the final verdict.
+
+### Acceptance
+
+- **Compiles.** Documentation-only slice; no
+  build configuration touched. The audit-host
+  build remains at the post-MANI-CONSUME.2
+  baseline (`100% tests passed, 0 tests failed
+  out of 12`; `manifold_identity_tests:
+  312/312`; `cli_tests: 123/123 passed`;
+  `renderer_tests: 19/19 passed`).
+- **Internally consistent.** The plan's
+  observer-frame concept mapping (§3) is
+  consistent with the existing `ObserverFrame`
+  POD at MANIFOLD.3 (`src/manifold/ObserverFrame.h`);
+  the camera relationship (§4) preserves the
+  existing `rr::camera::Camera` ABI verbatim;
+  the relativity-params relationship (§5)
+  preserves the existing `RelativityParams`
+  shape verbatim and reuses the existing SR
+  helper bodies; the GPU integration strategy
+  (§6) mirrors the SCHW.7 / SCHW.5 / PENROSE.6
+  / PENROSE.8 dispatcher-merge + single-
+  source-of-truth math pattern verbatim. The
+  OBSERVER.2-OBSERVER.8 sub-slice ladder (§7)
+  mirrors the SCHW.* / PENROSE.* cadence so
+  the operator can apply the same per-slice
+  audit discipline if desired.
+- **Verdict honesty.** The design doc
+  explicitly flags every reserved-but-inert
+  surface (`PerceptionMode::CurvedChartGeodesicPlaceholder`
+  is a no-op until the future GR-aware arc;
+  `proper_time` / `coordinate_time` are
+  zero-initialised + preserved across the
+  launch params for forward compatibility but
+  no integrator advances them; the OBSERVER.5
+  / OBSERVER.6 kernel arms reuse helper bodies
+  verbatim). The `*Placeholder` naming
+  convention is preserved (the
+  `CurvedChartGeodesicPlaceholder` enumerator
+  follows the precedent set by
+  `PenroseLikePlaceholder` at MANIFOLD.1
+  before its PENROSE.4 promotion). No fake
+  stubs; no over-claiming of physical
+  accuracy. Master rule #3 satisfied verbatim.
+
+### Module status changes
+
+`docs/MODULE_MAP.md` is *not* updated by this
+slice. The OBSERVER.1 planning verdict authorises
+the operator to proceed to OBSERVER.2 (data-model
+audit / update + `PerceptionMode` enum) as the
+first impl slice when ready; no module-map row
+changes state until MANI-I.12 (final cross-host
+audit) lands per the integration plan §11. The
+existing `src/manifold/ObserverFrame.h` POD's
+module-map status (currently logged as
+**Skeleton-Plus** at MANIFOLD.3) graduates to
+**Wired** at OBSERVER.5 / OBSERVER.6 when the
+GPU launch-params consumption first lands.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
