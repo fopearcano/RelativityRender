@@ -82394,6 +82394,331 @@ deferred items become PASS-able when a CUDA +
 OptiX-SDK host runs the seven enumerated
 runtime checks.
 
+## OBS-P.1 — Kernel-Side Perception Transform Migration Task (docs only)
+
+**Scope of this slice (per the operator's *OBS-P.1
+— Kernel-Side Perception Transform Migration Task*
+brief): write
+`docs/OBSERVER_PERCEPTION_KERNEL_MIGRATION_TASK.md`,
+the operator-facing brief the subsequent impl
+slice will consume to define the migration from
+legacy relativity params to ObserverFrame-driven
+perception transforms. First slice of the new
+**Observer Perception (OBS-P) arc** that follows
+the closed OBSERVER.* foundation arc per the
+OBSERVER.15 capstone's §9.1 recommendation.
+Mirrors the OBSERVER.12 + MANI-I.7 task-
+definition precedents. Documentation only; no
+source code, no test, no CMake, no behavioural
+change.**
+
+### What ships
+
+- **`docs/OBSERVER_PERCEPTION_KERNEL_MIGRATION_TASK.md`
+  (new).** Eight-section task brief covering
+  the seven operator-specified sections plus a
+  cross-references appendix:
+    - **§1 Exact goal** — gate the existing
+      CUDA + OptiX aberration / Doppler /
+      searchlight call sites on
+      `observer_frame.perception_mode ==
+      ConstantVelocityMinkowski`; read
+      `observer_frame.beta` on the gated path
+      AND `scene.observer.velocity` (legacy)
+      on the fallback path. Per-call-site
+      guarded read swap; no new math, no new
+      ABI, no new helper. Default Identity
+      mode preserves byte-identity. The
+      migration **resolves the OBSERVER.15
+      capstone's #1 remaining risk** (kernel-
+      side perception-transform migration
+      deferred).
+    - **§2 Required migration** — six
+      identified kernel call sites enumerated
+      with file + line + function +
+      current-read + migrated-read mappings.
+      Three CUDA (C-1: `k_relativistic_sphere`
+      at `CudaTestKernel.cu:212`; C-2:
+      `k_render_scene` at line 309; C-3:
+      `k_pathtrace_sample` at
+      `CudaPathTracer.cu:443`). Three OptiX
+      (O-1: `__miss__radiance` at
+      `OptixPrograms.cu:139`; O-2:
+      `__raygen__pinhole` at line 190; O-3:
+      `__raygen__pathtrace` at line 1034).
+      Guard shape documented with explicit
+      pseudo-code: `const bool
+      perception_active = (perception_mode ==
+      ConstantVelocityMinkowski); const Vec3
+      beta_source = perception_active ?
+      observer_frame.beta :
+      observer.velocity;`. Legacy fallback
+      branch is the documented byte-identity
+      anchor. Identity mode + zero beta
+      collapses SR helpers to identity values
+      (bit-identical to today's renderer).
+    - **§3 Default invariant** — two
+      load-bearing invariants: default
+      Identity perception mode is no-op (the
+      OBSERVER.6 adapter returns
+      `rest_frame()` byte-for-byte; the
+      kernel falls into the legacy fallback
+      branch; bit-identical to pre-OBS-P.1);
+      existing default scenes remain
+      byte-identical (every existing
+      `--render-*` action without
+      `--observer-perception-mode
+      relativistic` preserves the
+      pre-OBS-P.1 PPM output).
+    - **§4 Compatibility** — four sub-
+      sections: legacy `RelativityParams`
+      stays valid (the
+      `rr::relativity::Observer` +
+      `RelativityParams` types remain inputs;
+      the scene-loader path still populates
+      `scene.observer.velocity`); the
+      `ObserverFrame` becomes the runtime
+      source of truth ONLY on the gated
+      path; `RelativityParams` flags remain
+      orthogonal (the existing six flags
+      gate the SR helpers; OBS-P.1 just
+      selects WHICH beta they receive);
+      cross-backend semantic alignment
+      structurally guaranteed by single-
+      source-of-truth math (both backends
+      consume the same `ObserverFrame::beta`
+      from the same OBSERVER.6 adapter).
+    - **§5 Files likely involved** — 10-row
+      file-by-file table with rough net-
+      line estimates. Covers the two CUDA
+      kernel files
+      (`CudaTestKernel.cu` +
+      `CudaPathTracer.cu`), the CUDA
+      launcher (`CudaPathTracer.cuh`
+      trailing-arg extension mirroring
+      MANI-I.5's precedent), the
+      pathtracer host bridge
+      (`PathTracer.cpp`), the OptiX
+      kernel source (`OptixPrograms.cu`),
+      two test surfaces
+      (`relativity_tests.cpp` +
+      `manifold_identity_tests.cpp`),
+      and the `BUILD_PLAN.md` entry. No
+      CMake change. No new file. ~155
+      net-line delta estimate.
+    - **§6 What must not be touched** —
+      14 explicit non-goals: no new
+      manifold math; no Kerr/Kruskal;
+      no `CurvedChartGeodesicPlaceholder`
+      activation; no broad renderer
+      refactor; no new CLI flag (the
+      OBSERVER.4 `--observer-*` surface
+      is complete); no new launch-params
+      field; no new AOV; no
+      `RelativityParams` change; no
+      `.rrscene` schema change; no
+      denoiser change; no fixture /
+      convergence test (deferred to SDK
+      host); no
+      `BUILD_PLAN.md` historical
+      rewrite; no `MODULE_MAP.md` update
+      (lands at the OBS-P arc capstone);
+      no C4D/server/UI/node-editor.
+    - **§7 PASS criteria** — four
+      sub-sections: structural (7
+      checkboxes covering the guard at
+      every site + launcher extension +
+      no-new-ABI invariant);
+      behavioural (5 checkboxes
+      covering default-off byte-
+      identity + opt-in convergence-
+      equivalence + cross-backend
+      alignment + RelativityParams
+      orthogonality + no new render
+      output); test surface (4
+      checkboxes covering ctest, the
+      two test files' deltas,
+      standalone-build compile gate);
+      runtime SDK-host DEFERRED (9
+      checkboxes enumerating the
+      future SDK-host verifications
+      including OBSERVER.13 AOV
+      unchanged verification +
+      RelativityParams orthogonality
+      live test + path-tracer
+      convergence test).
+    - **§8 Cross-references** — 20-entry
+      reference list spanning master
+      instructions, architecture-doc,
+      OBSERVER.1 plan, OBSERVER.15
+      capstone, all relevant
+      OBSERVER.* + MANI-I.* + SCHW.*
+      audit precedents, the SR-helper
+      math leaf, all source files the
+      impl slice will touch, the
+      test files, and the
+      `BUILD_PLAN.md` anchor.
+
+### What does NOT ship
+
+- **No source code.** Nothing in any
+  `src/` subtree is touched (`git diff`
+  outside `docs/` ⇒ 0 bytes). The
+  OBSERVER.15 baseline at HEAD =
+  `2e3a9e3` is preserved exactly.
+- **No new test binary.** ctest set
+  unchanged at 12. Test counts unchanged
+  (`manifold_identity_tests: 408/408`;
+  `cli_tests: 274/274`;
+  `renderer_tests: 27/27`).
+- **No CMake change.**
+- **No OBS-P.1 implementation.** This
+  is the task-definition slice ONLY.
+  The implementation slice consumes
+  this doc as its canonical brief and
+  lands separately when the operator
+  prompts for it.
+- **No kernel-source change.** The six
+  identified call sites (3 CUDA + 3
+  OptiX) are documented as targets,
+  not modified.
+- **No `launch_pathtrace_sample(...)`
+  signature change.** The trailing
+  `observer_frame` parameter is
+  proposed in §5 but not added.
+- **No new tests.** The 6 host-side
+  assertion candidates listed in
+  §7.3 are scoped to the impl slice;
+  this task brief does NOT modify
+  `tests/`.
+- **No `OBSERVER_FRAME_RENDERING_PLAN.md`
+  rewrite.** The plan stays as the
+  canonical observer-frame brief;
+  OBS-P.1 is part of a new arc that
+  follows.
+- **No `OBSERVER_FRAME_ARC_AUDIT.md`
+  modification.** The OBSERVER.15
+  capstone verdict (PASS_WITH_RUNTIME_DEFERRED)
+  is preserved as a point-in-time
+  historical snapshot; OBS-P.1
+  consumes its §9.1 recommendation
+  by reference.
+- **No `MANIFOLD_INTEGRATION_PLAN.md`
+  update.** The integration plan's
+  §11 MANI-I.12 slot remains the
+  documented next step for cross-host
+  manifold audit; OBS-P.1 is
+  orthogonal.
+- **No `MODULE_MAP.md` update.** The
+  `**Wired**` promotion lands at
+  the OBS-P arc's capstone audit,
+  not at this task-definition
+  slice.
+- **No `BUILD_PLAN.md` historical
+  rewrite.** Every prior
+  OBSERVER.1-OBSERVER.15 entry
+  stays as-is; this OBS-P.1 entry
+  is additive.
+- **No Kerr / Kruskal work.**
+- **No new chart family.** The arc
+  is scoped to the perception
+  pipeline.
+- **No `RelativityParams` field
+  change.**
+- **No `.rrscene` schema bump.**
+- **No C4D / server / UI /
+  node-editor touch.**
+
+### Acceptance
+
+- **Compiles.** Documentation-only
+  slice; no build configuration
+  touched. The audit-host build
+  remains at the post-OBSERVER.15
+  baseline (`100% tests passed, 0
+  tests failed out of 12`;
+  `manifold_identity_tests:
+  408/408`; `cli_tests: 274/274
+  passed`; `renderer_tests:
+  27/27 passed`).
+- **Internally consistent.** The
+  six identified kernel call
+  sites (§2) cite concrete
+  file/line positions
+  (`CudaTestKernel.cu:212`,
+  `:309`; `CudaPathTracer.cu:443`;
+  `OptixPrograms.cu:139`, `:190`,
+  `:1034`); the guard shape (§2.3)
+  matches the SCHW.5 / PENROSE.6
+  triple-gate precedent in
+  structure (per-arm guard + per-
+  arm ternary, NOT a top-level
+  function refactor); the file-by-
+  file table (§5) enumerates 10
+  files matching the §2 call-site
+  list + the two test files +
+  `BUILD_PLAN.md`. The non-goals
+  list (§6) explicitly enumerates
+  14 items including all the
+  operator's hard constraints (no
+  new manifold math; no
+  Kerr/Kruskal; no broad refactor;
+  no `CurvedChartGeodesicPlaceholder`
+  activation).
+- **Verdict honesty.** Every
+  claim in the task doc is
+  backed by a cross-reference to
+  a prior landed slice (the
+  OBSERVER.* foundation arc) or
+  a precedent task brief
+  (OBSERVER.12 + MANI-I.7). The
+  PASS criteria split structural
+  (audit-host verifiable) from
+  runtime SDK-host (DEFERRED) so
+  the impl slice's audit gate
+  inherits the OBSERVER.9 /
+  OBSERVER.11 / OBSERVER.14
+  pattern verbatim. Master rule
+  #3 ("no fake stubs") is
+  satisfied: the migration
+  consumes existing
+  infrastructure (OBSERVER.6
+  adapter, OBSERVER.8 +
+  OBSERVER.10 payload bridges)
+  and replaces existing reads
+  with guarded reads on
+  pre-existing fields — no fake
+  stub anywhere.
+
+### Module status changes
+
+`docs/MODULE_MAP.md` is *not* updated
+by this slice. With OBS-P.1 the
+operator-facing brief lands, but
+the `src/manifold/CameraObserverAdapter.h`
+/ `src/manifold/ObserverFrame.h`
+module-map status remains
+**Skeleton-Plus** — the OBS-P.1
+implementation slice (which
+consumes this task doc as its
+canonical brief) will exercise
+the kernel-side reads of
+`observer_frame.beta` / `.perception_mode`
+on both backends, and the
+post-implementation per-slice
+audit will gate the
+`**Wired**` promotion. The
+OBS-P.1 task-definition verdict
+authorises the operator to
+proceed to the OBS-P.1 impl
+slice (recommended impl-slice
+number `OBS-P.2` to keep the
+task brief at `OBS-P.1` per the
+MANI-I.7 → MANI-I.8 +
+OBSERVER.12 → OBSERVER.13
+precedents) as the next slot
+when ready.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
