@@ -79442,6 +79442,205 @@ the active `rr::camera::Camera` + the existing
 `ObserverFrame`) as the next OBSERVER.* impl
 slice when ready.
 
+## OBSERVER.5 — ObserverFrame Config / CLI Bridge Audit (docs only)
+
+**Scope of this slice (per the operator's *OBSERVER.5
+— ObserverFrame Config Audit* task brief): write
+`docs/OBSERVER_FRAME_CONFIG_AUDIT.md`, the per-slice
+verdict document for OBSERVER.4 (`16600dc`). Verifies
+the eight items the task brief enumerates — observer
+CLI flags exist; defaults preserve current behaviour;
+invalid beta values handled safely; invalid direction
+values handled safely; `ObserverFrame` receives CLI /
+config values; no CUDA / OptiX behaviour changed;
+build / test status; verdict — and produces a
+`PASS` / `REPAIR` / `BLOCKED` verdict. Documentation
+only; no source code, no test, no CMake, no
+behavioural change.**
+
+### What ships
+
+- **`docs/OBSERVER_FRAME_CONFIG_AUDIT.md`
+  (new).** Per-slice verdict document mirroring the
+  PENROSE.3 / OBSERVER.3 audit-doc shape:
+    - **§1 VERDICT** — `PASS`. All seven structural
+      checks return `PASS`; no `REPAIR` or
+      `BLOCKED` item is outstanding.
+    - **§2 PER-CHECK RESULTS** — eight-row evidence
+      table. Each row cites concrete file/line
+      observations on
+      `src/core/CommandLine.cpp` (the four parser
+      arms at lines 678-766 + the three new
+      helpers `parse_finite_float` /
+      `parse_vec3` / `parse_perception_mode` at
+      lines 58-119 + the help-text block at lines
+      1314-1364), `src/core/Config.h` (the new
+      `Config::observer` field at line 171),
+      `src/manifold/ObserverFrame.h` (the new
+      `ObserverConfig` POD at line 426), `git
+      diff bf57c9e..16600dc --name-only` output
+      restricted to the renderer subtree
+      (returning zero hits), the `cli_tests`
+      runtime output (`254/254 passed`), the
+      `manifold_identity_tests` runtime output
+      (`349/349 passed`, no regression), and 18
+      concrete named test functions in
+      `tests/cli_tests.cpp` (`test_observer_default_off`,
+      `test_observer_beta_*`,
+      `test_observer_direction_*`,
+      `test_observer_proper_time_*`,
+      `test_observer_perception_mode_*`,
+      `test_observer_all_four_flags_combined`,
+      `test_observer_flags_order_independent`,
+      `test_observer_flags_missing_value_rejected`,
+      `test_observer_default_off_with_other_flags`).
+    - **§3 REASONING SUMMARY** — recap of the
+      OBSERVER.4 commit's five additions
+      (`ObserverConfig` POD on
+      `src/manifold/ObserverFrame.h`;
+      `Config::observer` field on
+      `src/core/Config.h`; four parser arms +
+      three helpers in
+      `src/core/CommandLine.cpp`; help-text
+      block; 18 new tests in
+      `tests/cli_tests.cpp`), plus a per-check
+      reasoning paragraph that ties each
+      verdict back to its evidence. Check #5
+      ("`ObserverFrame` receives CLI / config
+      values") is recorded as PASS at the
+      **config-bridge level**: the CLI
+      populates `Config::observer` (an
+      `ObserverConfig` POD); the
+      `ObserverConfig` → `ObserverFrame` leg is
+      explicitly deferred to OBSERVER.6
+      (camera-to-observer adapter) per the
+      operator's OBSERVER.4 brief.
+    - **§4 NEXT** — renumbered OBSERVER.* sub-slice
+      ladder absorbing this audit slot:
+      OBSERVER.1 planning (LANDED `eee9d6b`);
+      OBSERVER.2 data model (LANDED `85496a5`);
+      OBSERVER.3 data model audit (LANDED
+      `bf57c9e`); OBSERVER.4 CLI / config bridge
+      (LANDED `16600dc`); OBSERVER.5 THIS
+      AUDIT; OBSERVER.6 camera adapter (was
+      OBSERVER.5); OBSERVER.7 CUDA bridge (was
+      OBSERVER.6); OBSERVER.8 OptiX bridge (was
+      OBSERVER.7); OBSERVER.9 debug AOV (was
+      OBSERVER.8); OBSERVER.10 arc capstone (was
+      OBSERVER.9).
+    - **§5 REFERENCES** — 16-entry reference
+      list spanning master instructions,
+      architecture-doc §3.3, the OBSERVER.1
+      plan, the prior OBSERVER.3 audit, the
+      precedent PENROSE.3 / MANI-I.2 audit
+      docs, the audited source + test files,
+      the sibling manifold headers
+      (`ManifoldMode.h`, `RelativityMath.h`),
+      the post-OBSERVER.4 `BUILD_PLAN.md`
+      entry, and both surrounding commit SHAs
+      (`16600dc` audited / `bf57c9e` baseline).
+
+### What does NOT ship
+
+- **No source code.** Nothing in any `src/`
+  subtree is touched (`git diff` outside `docs/`
+  ⇒ 0 bytes). The OBSERVER.4 surface stays
+  exactly as `16600dc` landed it.
+- **No new test binary.** ctest set unchanged
+  at 12. `cli_tests` count unchanged at 254
+  RR_CHECK assertions; `manifold_identity_tests`
+  unchanged at 349.
+- **No CMake change.**
+- **No `OBSERVER_FRAME_RENDERING_PLAN.md`
+  rewrite.** The plan's §7 sub-slice ladder
+  stays as written (the audit-slot insertion is
+  recorded in this audit's §4 as a renumbering
+  ladder, not by editing the plan doc).
+- **No `MODULE_MAP.md` update.** The per-slice
+  audit is doc-only; module-map promotion still
+  waits for OBSERVER.7 / OBSERVER.8 (the
+  renumbered GPU payload bridges) where the new
+  field is first actually consumed by a kernel.
+- **No `MANIFOLD_INTEGRATION_PLAN.md` update.**
+  The integration plan's §11 MANI-I.12 slot
+  remains the documented next step for the
+  final cross-host audit; the OBSERVER.* arc
+  is orthogonal to MANI-I.12.
+- **No `BUILD_PLAN.md` historical-record
+  rewrite.** The MANI-I.* / SCHW.* / PENROSE.* /
+  MANI-CONSUME.* / OBSERVER.1-OBSERVER.4
+  entries above stay as-is; this OBSERVER.5
+  entry is additive.
+- **No Kerr / Kruskal work.** The audit is
+  scoped to the OBSERVER.4 CLI / config bridge
+  surface; new chart families are a separate
+  arc family.
+- **No C4D / server / UI / node-editor touch.**
+
+### Acceptance
+
+- **Compiles.** Documentation-only slice; no
+  build configuration touched. The audit-host
+  build remains at the post-OBSERVER.4 baseline
+  (`100% tests passed, 0 tests failed out of
+  12`; `cli_tests: 254/254 passed`;
+  `manifold_identity_tests: 349/349`;
+  `renderer_tests: 19/19 passed`).
+- **Internally consistent.** The eight-row
+  evidence table cites concrete file/line
+  positions on
+  `src/core/CommandLine.cpp` (lines 58-119 for
+  the helpers; 678-766 for the parser arms;
+  1314-1364 for the help text),
+  `src/core/Config.h` (line 171 for the
+  `observer` field), and
+  `src/manifold/ObserverFrame.h` (line 426 for
+  the `ObserverConfig` POD); concrete diff
+  observations (`git diff bf57c9e..16600dc
+  --name-only` filtered against the renderer
+  subtree returns zero hits); and concrete
+  named test functions in
+  `tests/cli_tests.cpp` (18 functions
+  registered at lines 679-696 of `main()`).
+  The renumbered OBSERVER.* sub-slice ladder
+  in §4 mirrors the OBSERVER.3 audit-slot
+  insertion precedent verbatim + the SCHW.* /
+  PENROSE.* arc-pattern.
+- **Verdict honesty.** The verdict is `PASS`
+  because the structural checks pass — not
+  because of an arbitrary judgement call.
+  Every claim in the evidence table is backed
+  by a file/line reference, a diff
+  observation, a runtime test count, a named
+  test function, OR a smoke-test transcript
+  on the audit host. Check #5 explicitly
+  records the scope boundary: the
+  `ObserverConfig` → `ObserverFrame` data
+  flow is deferred to OBSERVER.6 per the
+  operator's OBSERVER.4 brief (which
+  explicitly forbade "observer-space
+  transforms yet"). Master rule #3 ("no fake
+  stubs") is satisfied: the `ObserverConfig`
+  POD is structurally consumed by the CLI
+  parser + the 18 new tests + the planned
+  OBSERVER.6 adapter — not a fake stub.
+
+### Module status changes
+
+`docs/MODULE_MAP.md` is *not* updated by this
+slice. With OBSERVER.5 verifying OBSERVER.4's
+CLI / config bridge surface, the
+`src/manifold/ObserverFrame.h` POD's module-map
+status remains **Skeleton-Plus**; the `**Wired**`
+promotion still waits for OBSERVER.7 / OBSERVER.8
+(the renumbered GPU payload bridges, where the
+new `perception_mode` field is first actually
+consumed by a kernel). The OBSERVER.5 verdict
+authorises the operator to proceed to OBSERVER.6
+(camera-to-observer adapter; renumbered from the
+original OBSERVER.5) as the next OBSERVER.* impl
+slice when ready.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
