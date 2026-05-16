@@ -4,6 +4,7 @@
 #include "gpu/GpuBuffer.h"  // OptiX Gap A Step 1: GpuBuffer<float> for retained AOV device buffers
 #include "manifold/CoordinateChart.h"  // SCHW.7: trailing render_aovs arg
 #include "manifold/ManifoldMode.h"  // MANI-I.5: trailing render_pathtrace_progressive arg
+#include "manifold/ObserverFrame.h"  // OBSERVER.10: trailing observer_frame arg
 
 #include <string>
 #include <vector>
@@ -307,7 +308,23 @@ public:
         // rides in `OptixLaunchParams::manifold_mode` so
         // MANI-I.6 / MANI-I.7+ can flip a guard without
         // re-growing the launch-params POD).
-        rr::manifold::ManifoldMode manifold_mode = {}) noexcept;
+        rr::manifold::ManifoldMode manifold_mode = {},
+        // OBSERVER.10: per-launch observer-frame payload.
+        // Default `ObserverFrame{}` is the byte-identity
+        // no-op anchor (perception_mode=Identity, beta=0,
+        // world-basis tetrad). Threaded into
+        // `OptixLaunchParams::observer_frame` so a
+        // subsequent slice can gate kernel-side
+        // SR-helper reads on `perception_mode` without
+        // re-growing the launch-params POD or the
+        // entry-point signature. The OptiX programs do
+        // NOT consume this field this slice; the wiring
+        // is in place so the kernel-read wiring can land
+        // without sweeping signatures again. Mirrors the
+        // CUDA-side OBSERVER.8 plumbing
+        // (`AOVTargets::observer_frame` /
+        // `PathTraceConfig::observer_frame`).
+        rr::manifold::ObserverFrame observer_frame = {}) noexcept;
 
     // Stage 20K basic direct-lighting render. Same first-non-
     // empty-mesh selection + GAS-build path as render_mesh_scene.
@@ -453,7 +470,16 @@ public:
         const std::vector<rr::lighting::Light>& lights,
         int width, int height,
         rr::manifold::ManifoldMode manifold_mode = {},
-        rr::manifold::CoordinateChart coordinate_chart = {}) noexcept;
+        rr::manifold::CoordinateChart coordinate_chart = {},
+        // OBSERVER.10: per-launch observer-frame payload.
+        // Default `ObserverFrame{}` is the byte-identity
+        // no-op anchor (perception_mode=Identity, beta=0,
+        // world-basis tetrad). Threaded into
+        // `OptixLaunchParams::observer_frame`. The OptiX
+        // programs do NOT consume the field this slice;
+        // the wiring matches the CUDA-side OBSERVER.8
+        // `AOVTargets::observer_frame` (carry-only).
+        rr::manifold::ObserverFrame observer_frame = {}) noexcept;
 
     // OptiX Gap A Step 1: durable AOV buffer ownership for
     // the OptiX path. See `docs/OPTIX_GAP_A_POLISH_PLAN.md`

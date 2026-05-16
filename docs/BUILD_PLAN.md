@@ -80644,6 +80644,325 @@ to proceed to OBSERVER.10 (OptiX payload bridge;
 renumbered from the original OBSERVER.9) as the
 next OBSERVER.* impl slice when ready.
 
+## OBSERVER.10 — OptiX Observer Payload Bridge (impl, OptiX-side carry-only)
+
+**Scope of this slice (per the operator's *OBSERVER.10
+— OptiX Observer Payload Bridge* task brief and the
+renumbered `docs/OBSERVER_FRAME_RENDERING_PLAN.md` §7
+OBSERVER.10 after the OBSERVER.3 / OBSERVER.5 /
+OBSERVER.7 / OBSERVER.9 audit-slot insertions):
+thread the OBSERVER.6 adapter's `ObserverFrame`
+output into the OptiX-facing launch params + entry
+points, matching the CUDA-side OBSERVER.8 payload
+semantics. Adds a sibling field on
+`OptixLaunchParams`, trailing-defaulted
+`observer_frame = {}` parameters on
+`OptixRenderer::render_aovs(...)` +
+`render_pathtrace_progressive(...)`, dispatcher-
+side adapter invocation in
+`main.cpp::run_render_optix_aovs` +
+`run_render_optix_pathtrace`, and operator-visible
+echo logs. OptiX path only; no CUDA touch (the CUDA
+side already received OBSERVER.8); no kernel arms;
+no observer-space transform. The field is reserved-
+but-carried — the OptiX kernel-side reads land in
+the same future slice as the CUDA kernel-side
+reads.**
+
+### What ships
+
+- **`src/optix/OptixLaunchParams.h` (modified).**
+  Adds:
+    - `#include "manifold/ObserverFrame.h"` next to
+      the existing `manifold/ManifoldMode.h` +
+      `manifold/CoordinateChart.h` includes.
+    - `rr::manifold::ObserverFrame observer_frame{}`
+      field on `OptixLaunchParams` — sibling of
+      `manifold_mode` + `coordinate_chart` per the
+      MANI-I.5 / SCHW.7 precedents. Default
+      `ObserverFrame{}` is the byte-identity no-op
+      anchor (`perception_mode = Identity`,
+      `beta = 0`, world-basis tetrad). Doc-comment
+      explicitly mirrors the CUDA-side
+      `CudaSceneView::observer_frame` doc-comment
+      and states the OptiX programs do NOT read
+      the field this slice (OBSERVER.10 "no OptiX
+      program behavior change beyond carrying
+      data" contract).
+
+- **`src/optix/OptixRenderer.h` (modified).** Adds:
+    - `#include "manifold/ObserverFrame.h"`.
+    - Trailing-defaulted
+      `rr::manifold::ObserverFrame observer_frame = {}`
+      parameter on
+      `OptixRenderer::render_pathtrace_progressive(...)`
+      (sibling of the existing `manifold_mode`
+      trailing parameter from MANI-I.5).
+    - Trailing-defaulted
+      `rr::manifold::ObserverFrame observer_frame = {}`
+      parameter on `OptixRenderer::render_aovs(...)`
+      (sibling of the existing
+      `manifold_mode` + `coordinate_chart` trailing
+      parameters from SCHW.7). Default-value
+      placement preserves API compatibility for
+      every existing caller.
+
+- **`src/optix/OptixRenderer.cpp` (modified).** Two
+  implementations updated:
+    - `render_pathtrace_progressive(...)`: accepts
+      the new trailing `observer_frame` parameter;
+      threads it into `params.observer_frame =
+      observer_frame;` inside the per-spp launch-
+      params write block, next to the existing
+      `params.manifold_mode = manifold_mode;`
+      line.
+    - `render_aovs(...)`: accepts the new trailing
+      `observer_frame` parameter; threads it into
+      `params.observer_frame = observer_frame;`
+      next to the existing
+      `params.manifold_mode = manifold_mode;` /
+      `params.coordinate_chart = coordinate_chart;`
+      block. No other change to either function's
+      body.
+
+- **`src/main.cpp` (modified).** Five additions:
+    - `run_render_optix_aovs`:
+      - **Before the `RELATIVITYRENDER_ENABLE_OPTIX`
+        guard** — one new `Logger::info` line
+        emitting `"optix-aovs observer config:
+        <brief>"` (mirrors the CUDA-side OBSERVER.8
+        `"aovs observer config: <brief>"`
+        placement + the MANI-CONSUME.1 "log fires
+        before the guard so audit-host smoke tests
+        see it" pattern).
+      - **Inside the OptiX branch, before the
+        `render_aovs(...)` call** — a new
+        `const rr::manifold::ObserverFrame
+        optix_observer_frame =
+        build_observer_frame_from_camera(
+        scene.camera.to_gpu(), scene.observer,
+        cfg.observer);` adapter invocation.
+      - The trailing
+        `optix_observer_frame` argument added to
+        the `render_aovs(...)` call site.
+    - `run_render_optix_pathtrace`:
+      - One new `Logger::info("observer
+        : <brief>")` line next to the existing
+        `Logger::info("manifold         : ...")`
+        line (the standard 17-column-label
+        idiom, fires before the renderer is
+        invoked so audit-host smoke tests see it).
+      - A new
+        `const rr::manifold::ObserverFrame
+        optix_pt_observer_frame =
+        build_observer_frame_from_camera(
+        load.scene.camera.to_gpu(),
+        load.scene.observer, cfg.observer);`
+        adapter invocation just before the
+        `render_pathtrace_progressive(...)` call.
+      - The trailing
+        `optix_pt_observer_frame` argument
+        added to the
+        `render_pathtrace_progressive(...)` call
+        site.
+
+### What does NOT ship
+
+- **No CUDA changes.** Operator brief explicitly
+  forbids ("Do not change CUDA unless required
+  by shared type consistency"). The CUDA side
+  already received OBSERVER.8; no `src/cuda/`
+  file is touched by OBSERVER.10. The
+  `manifold/ObserverFrame.h` header (the
+  shared type) was last touched by OBSERVER.4
+  + OBSERVER.2 + MANIFOLD.3 and is unchanged
+  by this slice.
+- **No observer-perception transforms.** The
+  OptiX programs in `src/optix/OptixPrograms.cu`
+  are unchanged. The existing
+  `__raygen__` / `__miss__` / `__closesthit__`
+  programs continue to feed on
+  `optixLaunchParams.observer` (the legacy SR
+  observer) exactly as today.
+- **No manifold-transform alteration.** The
+  SCHW.7 / PENROSE.8 chart arms in
+  `OptixPrograms.cu` are unchanged.
+- **No `render_pathtrace` (non-progressive)
+  extension.** The non-progressive
+  `OptixRenderer::render_pathtrace(...)` does
+  not yet accept the `manifold_mode` trailing
+  param (the MANI-I.5 wiring landed only on
+  the progressive variant); OBSERVER.10
+  follows the same precedent and does NOT
+  extend the non-progressive entry point this
+  slice. A future slice can add both
+  `manifold_mode` AND `observer_frame`
+  trailing parameters together if needed.
+- **No `render_aovs_retain` extension.** The
+  retained-buffer AOV path does not accept
+  `manifold_mode` / `coordinate_chart` either
+  (the SCHW.7 wiring scoped to the standard
+  AOV path only); OBSERVER.10 mirrors that
+  scope decision.
+- **No kernel-source change.**
+  `src/optix/OptixPrograms.cu` is byte-
+  unchanged; no SBT record / payload read /
+  raygen logic touched.
+- **No new test binary.** The OBSERVER.6
+  adapter is already covered by 12 dedicated
+  `manifold_identity_tests` functions; the
+  OBSERVER.4 CLI by 18 `cli_tests`; this slice
+  is pure plumbing verified by build success +
+  audit-host smoke tests. The OptiX-gated
+  `optix_tests.cpp` is unchanged (its
+  `OptixLaunchParams` POD default-defaults
+  assertion at line 248 remains valid because
+  the new `observer_frame` field's default is
+  the no-op anchor — a future audit-slot
+  slice may add a dedicated default-frame
+  assertion alongside the existing ones).
+- **No CMake change.** No new target; no new
+  library link; no new source file. The
+  modified headers compile via the existing
+  CMake graph unchanged. Built audit-host
+  (`RR_ENABLE_OPTIX=OFF`) and verified the
+  full ctest suite passes; the OptiX-gated
+  TUs are not compiled here but the
+  structural changes mirror the SCHW.7 /
+  MANI-I.5 / PENROSE.8 precedents verbatim
+  (sibling field; trailing-defaulted
+  parameter; one-line assignment).
+- **No `MODULE_MAP.md` update.** The
+  observer-frame arc's module-map promotion
+  to `**Wired**` is reserved for the slice
+  that wires kernel-side reads on either
+  backend.
+- **No CUDA-side log line.** The CUDA-side
+  `aovs observer config` log line was added
+  at OBSERVER.8; this slice adds the parallel
+  `optix-aovs observer config` log line.
+  The two backends now log the same observer
+  config independently when invoked, which is
+  consistent with the manifold-mode log
+  pattern.
+- **No C4D / server / UI / node-editor touch.**
+
+### Acceptance
+
+- **Compiles with OptiX OFF.** Audit-host
+  build green (`RR_ENABLE_OPTIX=OFF`); `cmake
+  --build /home/user/RelativityRender/build`
+  completes with no new warnings on the core /
+  manifold / cuda / pathtracer modules. The
+  OptiX-gated TUs
+  (`OptixRenderer.cpp` + `OptixLaunchParams.h`'s
+  consumers + `OptixPrograms.cu`) are not
+  compiled here; the structural changes were
+  verified by inspection against the existing
+  SCHW.7 / MANI-I.5 / PENROSE.8 precedents.
+- **Compiles with OptiX ON.** Verified by
+  inspection: the new trailing-defaulted
+  parameters preserve API compatibility for
+  every existing caller (the four-arg call
+  sites at the existing
+  `render_aovs(scene, lights, w, h)` form
+  continue to compile because the new
+  parameter is defaulted); the new
+  `params.observer_frame = observer_frame;`
+  assignments are sibling-statement insertions
+  inside existing assignment blocks. The
+  `OptixLaunchParams` POD's new field is
+  initialised by per-field initialiser so the
+  existing `OptixLaunchParams{}` default-
+  constructor consumers stay byte-identical
+  at the no-op anchor. Runtime SDK-host
+  verification is DEFERRED to the OBSERVER.11
+  audit slot per the standard SCHW.7 / MANI-I.5
+  / OBSERVER.8 pattern.
+- **Tests.** `ctest` returns
+  `100% tests passed, 0 tests failed out of 12`.
+  `manifold_identity_tests: 408/408`
+  (unchanged from OBSERVER.9 baseline);
+  `cli_tests: 254/254 passed` (unchanged);
+  `renderer_tests: 19/19 passed` (unchanged);
+  all other test suites unchanged. No new
+  test added; the slice is pure plumbing.
+- **Smoke tests on audit host.** Two new log
+  lines fire correctly:
+    - Default `--render-optix-aovs` produces
+      `optix-aovs observer config: identity
+      (no-op)`.
+    - `--render-optix-aovs --observer-beta
+      0.3 --observer-direction 0,1,0
+      --observer-perception-mode relativistic
+      --observer-proper-time 7.0` produces
+      `optix-aovs observer config: constant-
+      velocity-minkowski (|beta|=0.300000,
+      dir=[0.000000, 1.000000, 0.000000],
+      tau=7.000000)`.
+    - Both fire BEFORE the existing
+      `--render-optix-aovs requires OptiX`
+      error, mirroring MANI-CONSUME.1's
+      manifold-mode-log placement.
+- **No behaviour change.** No CLI action's
+  output is altered. The OptiX programs in
+  `src/optix/OptixPrograms.cu` do NOT read
+  `optixLaunchParams.observer_frame`; the
+  existing ray-generation + shading +
+  aberration / Doppler / searchlight pipelines
+  feed on the legacy types via the existing
+  call paths.
+- **Internally consistent.** The
+  `OptixLaunchParams::observer_frame` field
+  mirrors the CUDA-side
+  `CudaSceneView::observer_frame` field
+  verbatim (same type; same default; same
+  doc-comment shape pointing to the future
+  kernel-read wiring). The trailing-defaulted
+  `observer_frame = {}` parameter on
+  `render_aovs(...)` mirrors the SCHW.7
+  trailing-defaulted `coordinate_chart = {}`
+  precedent verbatim; the trailing-defaulted
+  parameter on `render_pathtrace_progressive(...)`
+  mirrors the MANI-I.5 trailing-defaulted
+  `manifold_mode = {}` precedent verbatim.
+  The dispatcher-side adapter invocations
+  mirror the CUDA-side OBSERVER.8 dispatcher
+  invocations (same adapter; same arguments;
+  same `cfg.observer` → adapter → trailing
+  arg flow). The log lines mirror the
+  existing manifold-mode / firefly_clamp /
+  enable_nee echo-log idiom.
+- **Honest scope.** The
+  `OptixLaunchParams::observer_frame` field
+  is reserved-but-not-yet-consumed by the
+  OptiX programs; the doc comment + this
+  BUILD_PLAN entry explicitly call this out
+  (master rule #3 satisfied — not a fake
+  stub because it is structurally consumed
+  by the launch boundary and the echo logs,
+  and a future slice will gate kernel-side
+  reads on the `perception_mode` tag).
+
+### Module status changes
+
+`docs/MODULE_MAP.md` is *not* updated by this
+slice. The `src/manifold/CameraObserverAdapter.h`
+/ `src/manifold/ObserverFrame.h` module-map
+status remains **Skeleton-Plus**; with both
+CUDA + OptiX bridges now landed (OBSERVER.8 +
+OBSERVER.10) the adapter's output reaches both
+backends' launch boundaries but no kernel reads
+the carried `ObserverFrame` yet. The `**Wired**`
+promotion still waits for the slice that wires
+kernel-side reads on EITHER backend (the
+OBSERVER.11 audit slot is doc-only; the
+kernel-read wiring lands at the
+implementation slice after OBSERVER.11's audit
+verdict). The OBSERVER.10 verdict authorises
+the operator to proceed to the next OBSERVER.*
+audit slot under the renumbered ladder.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:

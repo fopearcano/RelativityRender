@@ -1684,6 +1684,31 @@ int run_render_optix_pathtrace(const rr::core::Config& cfg) {
     // mode into either backend's GPU code path.
     Logger::info(std::string("manifold         : ")
                + format_manifold_mode(cfg.manifold));
+    // OBSERVER.10: log the operator's selected observer
+    // config BEFORE the renderer is invoked (mirrors the
+    // manifold + firefly_clamp + enable_nee log lines
+    // above + the CUDA-side OBSERVER.8 dispatcher's
+    // "observer         : ..." line). The OptiX programs
+    // do NOT consume the resulting ObserverFrame this
+    // slice; the line emits so the operator can confirm
+    // what was populated.
+    Logger::info(std::string("observer         : ")
+               + format_observer_config_brief(cfg.observer));
+    // OBSERVER.10 — build the per-render ObserverFrame
+    // from the active camera + legacy SR observer +
+    // CLI-overlay ObserverConfig via the OBSERVER.6
+    // adapter. Default `cfg.observer.perception_mode ==
+    // Identity` produces `rest_frame()` byte-for-byte;
+    // the OptiX programs do NOT consume the field this
+    // slice (`OptixLaunchParams::observer_frame` is
+    // reserved-but-carried per OBSERVER.10's "no OptiX
+    // program behavior change beyond carrying data"
+    // contract).
+    const rr::manifold::ObserverFrame optix_pt_observer_frame =
+        rr::manifold::build_observer_frame_from_camera(
+            load.scene.camera.to_gpu(),
+            load.scene.observer,
+            cfg.observer);
     auto pr = rr::optix::OptixRenderer::render_pathtrace_progressive(
         load.scene, cfg.width, cfg.height,
         kMaxBounces, kSeed, kCheckpoints,
@@ -1695,7 +1720,8 @@ int run_render_optix_pathtrace(const rr::core::Config& cfg) {
         // OptixLaunchParams::manifold_mode field carries the
         // value but no kernel consumes it this slice (MANI-I.6+
         // wires the kernel-side guard).
-        /*manifold_mode=*/cfg.manifold);
+        /*manifold_mode=*/cfg.manifold,
+        /*observer_frame=*/optix_pt_observer_frame);
     if (!pr.ok) {
         Logger::error("optix path-trace progressive render failed: "
                     + pr.message);
@@ -2154,6 +2180,17 @@ int run_render_optix_aovs(const rr::core::Config& cfg) {
     Logger::info("optix-aovs manifold mode: "
                + format_manifold_mode(effective_manifold));
 
+    // OBSERVER.10 — log the operator's resolved observer
+    // config alongside the manifold mode (mirrors the
+    // CUDA-side OBSERVER.8 `aovs observer config` log).
+    // The actual `ObserverFrame` is built inside the
+    // OptiX branch via `build_observer_frame_from_camera(...)`
+    // because it needs the scene's camera; the config log
+    // here shows the operator-selected perception mode +
+    // beta + direction + tau regardless of host.
+    Logger::info("optix-aovs observer config: "
+               + format_observer_config_brief(cfg.observer));
+
 #ifndef RELATIVITYRENDER_ENABLE_OPTIX
     Logger::error("--render-optix-aovs requires OptiX. Rebuild "
                   "with -DRR_ENABLE_OPTIX=ON on a "
@@ -2222,9 +2259,34 @@ int run_render_optix_aovs(const rr::core::Config& cfg) {
         manifold_chart.params.spin             = 1.0f;
         manifold_chart.params.compactification_scale = 1.0f;
     }
+    // OBSERVER.10 — build the per-launch ObserverFrame
+    // payload from the active camera + legacy SR observer +
+    // CLI-overlay ObserverConfig via the OBSERVER.6 host
+    // adapter `build_observer_frame_from_camera(...)`. The
+    // adapter's three perception-mode paths
+    // (Identity / ConstantVelocityMinkowski /
+    // CurvedChartGeodesicPlaceholder) resolve to the
+    // documented byte-identity / full-construction /
+    // structural-passthrough behaviours; the default
+    // `cfg.observer.perception_mode == Identity` produces
+    // `rest_frame()` byte-for-byte so the no-op anchor is
+    // preserved. The OptiX programs do NOT read the field
+    // this slice (mirrors the CUDA-side OBSERVER.8
+    // carry-only contract); the payload travels through
+    // the launch boundary so a subsequent slice can gate
+    // kernel-side SR-helper reads on the perception_mode
+    // tag without re-growing the launch-params POD or
+    // the entry-point signature.
+    const rr::manifold::ObserverFrame optix_observer_frame =
+        rr::manifold::build_observer_frame_from_camera(
+            scene.camera.to_gpu(),
+            scene.observer,
+            cfg.observer);
+
     auto r = rr::optix::OptixRenderer::render_aovs(
         scene, lights, cfg.width, cfg.height,
-        effective_manifold, manifold_chart);
+        effective_manifold, manifold_chart,
+        optix_observer_frame);
     if (!r.ok) {
         Logger::error("optix aovs render failed: " + r.message);
         return 1;

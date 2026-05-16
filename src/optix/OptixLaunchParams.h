@@ -6,6 +6,7 @@
 #include "lighting/Light.h"            // Stage 20K: Light POD union
 #include "manifold/CoordinateChart.h"  // SCHW.7: per-launch chart payload
 #include "manifold/ManifoldMode.h"     // MANI-I.5: per-launch manifold mode
+#include "manifold/ObserverFrame.h"    // OBSERVER.10: per-launch observer-frame payload
 #include "math/Vec2.h"                 // Stage 20M: per-vertex UVs
 #include "relativity/RelativityParams.h"
 
@@ -389,6 +390,45 @@ struct OptixLaunchParams {
     // output is byte-identical to the pre-SCHW.7
     // baseline.
     rr::manifold::CoordinateChart coordinate_chart{};
+
+    // ---- OBSERVER.10 per-launch observer-frame payload ----
+    //
+    // Mirrors the CUDA side's
+    // `CudaSceneView::observer_frame` field landed at
+    // OBSERVER.8. Built by the OBSERVER.6 camera-to-
+    // observer adapter
+    // (`build_observer_frame_from_camera(...)`) at the
+    // dispatcher's call site
+    // (`main.cpp::run_render_optix_aovs` for the AOV
+    // path; `main.cpp::run_render_optix_pathtrace` for
+    // the path-trace path) and threaded into the launch
+    // params via the trailing `observer_frame` parameter
+    // on `OptixRenderer::render_aovs(...)` /
+    // `render_pathtrace_progressive(...)`.
+    //
+    // The default `rr::manifold::ObserverFrame{}` is the
+    // byte-identity no-op anchor: `perception_mode =
+    // Identity`, `beta = 0`, world-basis tetrad, both
+    // time placeholders = 0. With the default, the
+    // OptiX programs (which currently do NOT read this
+    // field per OBSERVER.10's "no OptiX program
+    // behavior change beyond carrying data" contract)
+    // preserve the existing ray-generation + shading
+    // behaviour byte-for-byte.
+    //
+    // The field is reserved-but-carried this slice: a
+    // subsequent slice (no earlier than the kernel-side
+    // reads land on either backend) will gate the SR-
+    // helper call sites on
+    // `observer_frame.perception_mode ==
+    // ConstantVelocityMinkowski` and key the existing
+    // aberration / Doppler / searchlight helpers on
+    // `observer_frame.beta` (instead of the legacy
+    // `observer.velocity`). Until that slice lands the
+    // field travels through the OptiX launch boundary
+    // but is not read by any closest-hit / miss /
+    // raygen program.
+    rr::manifold::ObserverFrame observer_frame{};
 };
 
 }  // namespace rr::optix

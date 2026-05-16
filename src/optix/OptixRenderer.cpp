@@ -1546,7 +1546,8 @@ OptixRenderer::render_pathtrace_progressive(
     const std::vector<int>& checkpoint_samples,
     float firefly_clamp,
     bool  enable_nee,
-    rr::manifold::ManifoldMode manifold_mode) noexcept {
+    rr::manifold::ManifoldMode manifold_mode,
+    rr::manifold::ObserverFrame observer_frame) noexcept {
     PathtraceProgressiveResult R;
 
     if (width <= 0 || height <= 0) {
@@ -1814,6 +1815,16 @@ OptixRenderer::render_pathtrace_progressive(
         // MANI-I.6+ slices can flip a single guard without
         // re-growing the launch-params POD.
         params.manifold_mode = manifold_mode;
+        // OBSERVER.10: per-launch observer-frame payload.
+        // Default `ObserverFrame{}` is the byte-identity
+        // no-op anchor; the OptiX `__raygen__pathtrace`
+        // program does NOT consume this field this slice
+        // (mirrors the CUDA-side OBSERVER.8 carry-only
+        // contract). The wiring is in place so a future
+        // slice can gate kernel-side SR-helper reads on
+        // `perception_mode` without re-growing the
+        // launch-params POD or the entry-point signature.
+        params.observer_frame = observer_frame;
         // NEE.5b: lights uploaded once before the spp
         // loop (see `d_lights` block above). Same pointer
         // + count for every per-launch params write; the
@@ -2518,7 +2529,8 @@ OptixRenderer::render_aovs(
     const std::vector<rr::lighting::Light>& lights,
     int width, int height,
     rr::manifold::ManifoldMode manifold_mode,
-    rr::manifold::CoordinateChart coordinate_chart) noexcept {
+    rr::manifold::CoordinateChart coordinate_chart,
+    rr::manifold::ObserverFrame observer_frame) noexcept {
     AovResult R;
 
     if (width <= 0 || height <= 0) {
@@ -2759,6 +2771,18 @@ OptixRenderer::render_aovs(
     // byte-identity invariant.
     params.manifold_mode     = manifold_mode;
     params.coordinate_chart  = coordinate_chart;
+    // OBSERVER.10: per-launch observer-frame payload.
+    // Default `ObserverFrame{}` is the byte-identity
+    // no-op anchor; the OptiX programs do NOT consume
+    // this field this slice (mirrors the CUDA-side
+    // OBSERVER.8 carry-only contract via
+    // `CudaSceneView::observer_frame` /
+    // `AOVTargets::observer_frame`). The wiring is in
+    // place so a future slice can gate kernel-side
+    // SR-helper reads on `perception_mode` without
+    // re-growing the launch-params POD or the
+    // entry-point signature.
+    params.observer_frame    = observer_frame;
 
     {
         const ::cudaError_t e = ::cudaMemcpy(
