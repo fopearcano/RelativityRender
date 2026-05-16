@@ -79965,6 +79965,200 @@ bridge; renumbered from the original
 OBSERVER.5) as the next OBSERVER.* impl slice
 when ready.
 
+## OBSERVER.7 — Camera-to-Observer Adapter Audit (docs only)
+
+**Scope of this slice (per the operator's *OBSERVER.7
+— Camera-to-Observer Adapter Audit* task brief):
+write `docs/CAMERA_TO_OBSERVER_ADAPTER_AUDIT.md`, the
+per-slice verdict document for OBSERVER.6
+(`e2cde15`). Verifies the eight items the task brief
+enumerates — adapter / helper exists; default camera
+maps to no-op observer; existing relativity params
+propagate correctly; finite-value guarantees exist;
+no CUDA / OptiX changes; no visual behaviour changes;
+build / test status; verdict — and produces a
+`PASS` / `REPAIR` / `BLOCKED` verdict. Documentation
+only; no source code, no test, no CMake, no
+behavioural change.**
+
+### What ships
+
+- **`docs/CAMERA_TO_OBSERVER_ADAPTER_AUDIT.md`
+  (new).** Per-slice verdict document mirroring
+  the PENROSE.5 / OBSERVER.3 / OBSERVER.5
+  audit-doc shape:
+    - **§1 VERDICT** — `PASS`. All seven
+      structural checks return `PASS`; no
+      `REPAIR` or `BLOCKED` item is outstanding.
+    - **§2 PER-CHECK RESULTS** — eight-row
+      evidence table. Each row cites concrete
+      file/line observations on
+      `src/manifold/CameraObserverAdapter.h`
+      (the adapter at line 138; the three
+      perception-mode branches at lines 155 /
+      164 / 172-219; the beta-resolution
+      priority at lines 178-198; the defensive
+      `clampBeta` at lines 202-207), concrete
+      diff observations (`git diff
+      27ec0d9..e2cde15 --name-only` filtered
+      against the broader source tree returning
+      zero hits outside `src/manifold/` +
+      `tests/manifold_identity_tests.cpp` +
+      `docs/`), the `manifold_identity_tests`
+      runtime output (`408/408 passed`, up from
+      349), the `cli_tests` runtime output
+      (`254/254 passed`, no regression), and 12
+      concrete named test functions in
+      `tests/manifold_identity_tests.cpp`
+      (`test_observer_6_default_is_camera_equivalent_no_op`,
+      `test_observer_6_identity_mode_ignores_camera`,
+      `test_observer_6_constant_velocity_zero_beta`,
+      `test_observer_6_constant_velocity_from_legacy_observer`,
+      `test_observer_6_constant_velocity_from_config`,
+      `test_observer_6_config_direction_normalised`,
+      `test_observer_6_zero_direction_falls_back_to_camera_forward`,
+      `test_observer_6_clamp_beta_safety`,
+      `test_observer_6_curved_placeholder_returns_rest_with_tag`,
+      `test_observer_6_tetrad_orthonormal`,
+      `test_observer_6_finite_value_guarantee`,
+      `test_observer_6_proper_time_propagates`).
+    - **§3 REASONING SUMMARY** — recap of the
+      OBSERVER.6 commit's two additions (the
+      adapter header at
+      `src/manifold/CameraObserverAdapter.h`;
+      the 12 new tests at
+      `tests/manifold_identity_tests.cpp`)
+      plus a per-check reasoning paragraph that
+      ties each verdict back to its evidence.
+      Records the documented `is_normalised_timelike`-
+      at-cap exclusion (single-precision float
+      catastrophic cancellation at `|beta| =
+      0.999999`); covered at the precision-
+      stable `|beta| = 0.5` regime instead.
+    - **§4 NEXT** — renumbered OBSERVER.*
+      sub-slice ladder absorbing this audit
+      slot: OBSERVER.1-OBSERVER.6 (LANDED);
+      OBSERVER.7 THIS AUDIT; OBSERVER.8 CUDA
+      payload bridge (was OBSERVER.7);
+      OBSERVER.9 OptiX payload bridge (was
+      OBSERVER.8); OBSERVER.10 observer debug
+      AOV (was OBSERVER.9); OBSERVER.11 arc
+      capstone (was OBSERVER.10).
+    - **§5 REFERENCES** — 17-entry reference
+      list spanning master instructions,
+      architecture-doc §3.3, the OBSERVER.1
+      plan + the prior OBSERVER.3 + OBSERVER.5
+      audits, the precedent PENROSE.5 audit
+      doc, the audited source + test files,
+      the sibling manifold + relativity
+      headers, the host-side Camera class
+      (unchanged), the post-OBSERVER.6
+      `BUILD_PLAN.md` entry, and both
+      surrounding commit SHAs (`e2cde15`
+      audited / `27ec0d9` baseline).
+
+### What does NOT ship
+
+- **No source code.** Nothing in any `src/`
+  subtree is touched (`git diff` outside
+  `docs/` ⇒ 0 bytes). The OBSERVER.6 surface
+  stays exactly as `e2cde15` landed it.
+- **No new test binary.** ctest set unchanged
+  at 12. `manifold_identity_tests` count
+  unchanged at 408 RR_CHECK assertions;
+  `cli_tests` unchanged at 254.
+- **No CMake change.**
+- **No `OBSERVER_FRAME_RENDERING_PLAN.md`
+  rewrite.** The plan's §7 sub-slice ladder
+  stays as written (the audit-slot insertion
+  is recorded in this audit's §4 as a
+  renumbering ladder, not by editing the plan
+  doc).
+- **No `MODULE_MAP.md` update.** The per-slice
+  audit is doc-only; module-map promotion
+  still waits for OBSERVER.8 / OBSERVER.9 (the
+  renumbered GPU payload bridges) where the
+  adapter's output is first actually consumed
+  by a kernel.
+- **No `MANIFOLD_INTEGRATION_PLAN.md` update.**
+  The integration plan's §11 MANI-I.12 slot
+  remains the documented next step for the
+  final cross-host audit; the OBSERVER.* arc
+  is orthogonal to MANI-I.12.
+- **No `BUILD_PLAN.md` historical-record
+  rewrite.** The MANI-I.* / SCHW.* / PENROSE.*
+  / MANI-CONSUME.* / OBSERVER.1-OBSERVER.6
+  entries above stay as-is; this OBSERVER.7
+  entry is additive.
+- **No Kerr / Kruskal work.** The audit is
+  scoped to the OBSERVER.6 adapter surface;
+  new chart families are a separate arc family.
+- **No C4D / server / UI / node-editor touch.**
+
+### Acceptance
+
+- **Compiles.** Documentation-only slice; no
+  build configuration touched. The audit-host
+  build remains at the post-OBSERVER.6 baseline
+  (`100% tests passed, 0 tests failed out of
+  12`; `manifold_identity_tests: 408/408`;
+  `cli_tests: 254/254 passed`;
+  `renderer_tests: 19/19 passed`).
+- **Internally consistent.** The eight-row
+  evidence table cites concrete file/line
+  positions on
+  `src/manifold/CameraObserverAdapter.h` (the
+  audited surface), concrete diff observations
+  (`git diff 27ec0d9..e2cde15 --name-only`
+  filtered against the broader source tree
+  returns zero hits), concrete named test
+  functions in
+  `tests/manifold_identity_tests.cpp` (12
+  functions registered at lines 2077-2088 of
+  `main()`), and the documented float-
+  precision exclusion at the `clampBeta` cap.
+  The renumbered OBSERVER.* sub-slice ladder
+  in §4 mirrors the OBSERVER.3 + OBSERVER.5
+  audit-slot insertion precedent verbatim +
+  the SCHW.* / PENROSE.* arc-pattern.
+- **Verdict honesty.** The verdict is `PASS`
+  because the structural checks pass — not
+  because of an arbitrary judgement call.
+  Every claim in the evidence table is backed
+  by a file/line reference, a diff
+  observation, a runtime test count, OR a
+  named test function. The
+  `is_normalised_timelike` exclusion at the
+  `clampBeta` cap is documented honestly as a
+  known floating-point catastrophic-
+  cancellation issue; the normalisation
+  invariant is covered at the precision-stable
+  beta=0.5 regime by a distinct named test.
+  Master rule #3 ("no fake stubs") is
+  satisfied: the
+  `CurvedChartGeodesicPlaceholder` path is
+  documented as a structural passthrough (not
+  a fake GR solver); the adapter is
+  structurally consumed by 12 tests + the
+  planned OBSERVER.8 kernel-side consumer.
+
+### Module status changes
+
+`docs/MODULE_MAP.md` is *not* updated by this
+slice. With OBSERVER.7 verifying OBSERVER.6's
+adapter surface, the
+`src/manifold/CameraObserverAdapter.h` header's
+module-map status remains **Skeleton-Plus**
+(matching its `ObserverFrame.h` sibling); the
+`**Wired**` promotion still waits for
+OBSERVER.8 / OBSERVER.9 (the renumbered GPU
+payload bridges, where the adapter's output is
+first actually consumed by a kernel). The
+OBSERVER.7 verdict authorises the operator to
+proceed to OBSERVER.8 (CUDA payload bridge;
+renumbered from the original OBSERVER.7) as the
+next OBSERVER.* impl slice when ready.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
