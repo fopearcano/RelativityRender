@@ -28,6 +28,7 @@
 // Hand-rolled assertions via `RR_CHECK`; `g_failed` counts deviations;
 // `main` returns 0 iff `g_failed == 0`. Same shape as math_tests.cpp.
 
+#include "manifold/CameraObserverAdapter.h"
 #include "manifold/CoordinateChart.h"
 #include "manifold/GeodesicState.h"
 #include "manifold/ManifoldMode.h"
@@ -37,6 +38,7 @@
 #include "manifold/PenroseLikeCompactification.h"
 #include "manifold/SchwarzschildLikeWarp.h"
 
+#include "camera/CameraRay.h"
 #include "relativity/RelativityParams.h"
 
 #include <cmath>
@@ -1673,6 +1675,343 @@ void test_penrose_4_other_non_euclidean_passthrough() {
     }
 }
 
+// ---------- OBSERVER.6: Camera-to-observer adapter ----------
+
+// Build a deterministic non-default GpuCamera for the adapter
+// tests. Different from the host Camera's default so the tests
+// can distinguish "camera was read" from "camera was ignored".
+rr::camera::GpuCamera make_test_gpu_camera() {
+    rr::camera::GpuCamera gc{};
+    gc.position      = rr::math::Vec3{ 1.0f,  2.0f,  3.0f};
+    gc.right         = rr::math::Vec3{ 1.0f,  0.0f,  0.0f};
+    gc.up            = rr::math::Vec3{ 0.0f,  1.0f,  0.0f};
+    gc.forward       = rr::math::Vec3{ 0.0f,  0.0f, -1.0f};
+    gc.tan_half_vfov = 0.5f;
+    gc.aspect        = 16.0f / 9.0f;
+    return gc;
+}
+
+// Case 1: default Camera + default Observer + default Config
+// (Identity perception mode) -> rest_frame() byte-for-byte.
+// The adapter's no-op anchor; preserves the byte-identity to
+// today's renderer for the default-default-default invocation.
+void test_observer_6_default_is_camera_equivalent_no_op() {
+    using namespace rr::manifold;
+
+    const rr::camera::GpuCamera     gc{};       // all-zero default
+    const rr::relativity::Observer  obs{};      // velocity = 0
+    const ObserverConfig            cfg{};      // perception_mode = Identity
+
+    ObserverFrame f = build_observer_frame_from_camera(gc, obs, cfg);
+    ObserverFrame ref = rest_frame();
+
+    // Field-by-field byte-identity against rest_frame().
+    RR_CHECK(approx(f.position4, ref.position4));
+    RR_CHECK(approx(f.velocity4, ref.velocity4));
+    RR_CHECK(approx(f.beta,      ref.beta));
+    RR_CHECK(approx(f.right,     ref.right));
+    RR_CHECK(approx(f.up,        ref.up));
+    RR_CHECK(approx(f.forward,   ref.forward));
+    RR_CHECK(f.proper_time     == ref.proper_time);
+    RR_CHECK(f.coordinate_time == ref.coordinate_time);
+    RR_CHECK(f.perception_mode == PerceptionMode::Identity);
+}
+
+// Case 2: non-default Camera + default Observer + Identity
+// Config -> still rest_frame() (Identity mode is the no-op
+// anchor; the camera's non-default position / basis are
+// ignored). This is the operator's "no-op observer does not
+// imply coordinate deformation" gate transposed to the
+// adapter.
+void test_observer_6_identity_mode_ignores_camera() {
+    using namespace rr::manifold;
+
+    const rr::camera::GpuCamera     gc  = make_test_gpu_camera();
+    const rr::relativity::Observer  obs{};                  // velocity = 0
+    ObserverConfig                  cfg{};                  // Identity
+    cfg.beta_magnitude = 0.0f;                              // explicit anchor
+
+    ObserverFrame f = build_observer_frame_from_camera(gc, obs, cfg);
+    RR_CHECK(approx(f.position4, rest_frame().position4));
+    RR_CHECK(approx(f.velocity4, rest_frame().velocity4));
+    RR_CHECK(approx(f.beta,      rest_frame().beta));
+    RR_CHECK(approx(f.right,     rest_frame().right));
+    RR_CHECK(approx(f.up,        rest_frame().up));
+    RR_CHECK(approx(f.forward,   rest_frame().forward));
+    RR_CHECK(f.proper_time     == 0.0f);
+    RR_CHECK(f.coordinate_time == 0.0f);
+    RR_CHECK(f.perception_mode == PerceptionMode::Identity);
+}
+
+// Case 3: ConstantVelocityMinkowski perception mode with
+// zero observer velocity AND zero config beta_magnitude.
+// The resolved beta is zero; the frame has the camera's
+// non-trivial position + tetrad but zero velocity. The
+// kernel-side SR helpers collapse to identity at beta=0 so
+// this path produces byte-identical output to today's
+// renderer (which is the "camera-equivalent" no-op contract
+// the operator brief specifies).
+void test_observer_6_constant_velocity_zero_beta() {
+    using namespace rr::manifold;
+    using rr::math::Vec3;
+    using rr::math::Vec4;
+
+    const rr::camera::GpuCamera     gc  = make_test_gpu_camera();
+    const rr::relativity::Observer  obs{};                  // velocity = 0
+    ObserverConfig                  cfg{};
+    cfg.perception_mode = PerceptionMode::ConstantVelocityMinkowski;
+
+    ObserverFrame f = build_observer_frame_from_camera(gc, obs, cfg);
+    RR_CHECK(approx(f.position4,  Vec4{0.0f, 1.0f, 2.0f, 3.0f}));
+    RR_CHECK(approx(f.velocity4,  Vec4{1.0f, 0.0f, 0.0f, 0.0f}));
+    RR_CHECK(approx(f.beta,       Vec3{0.0f, 0.0f, 0.0f}));
+    RR_CHECK(approx(f.right,      gc.right));
+    RR_CHECK(approx(f.up,         gc.up));
+    RR_CHECK(approx(f.forward,    gc.forward));
+    RR_CHECK(f.proper_time     == 0.0f);
+    RR_CHECK(f.coordinate_time == 0.0f);
+    RR_CHECK(f.perception_mode == PerceptionMode::ConstantVelocityMinkowski);
+}
+
+// Case 4: ConstantVelocityMinkowski with non-zero
+// observer.velocity (the scene-author SR path; legacy
+// `apply_relativity` -> `Observer::velocity`). The adapter
+// uses the legacy velocity directly when config.beta_magnitude
+// is zero. Round-trip via `to_relativity_observer` preserves
+// the input velocity to within the clampBeta cap.
+void test_observer_6_constant_velocity_from_legacy_observer() {
+    using namespace rr::manifold;
+    using rr::math::Vec3;
+
+    const rr::camera::GpuCamera gc = make_test_gpu_camera();
+    rr::relativity::Observer    obs;
+    obs.velocity = Vec3{0.3f, -0.4f, 0.0f};   // |beta| = 0.5
+    ObserverConfig              cfg{};
+    cfg.perception_mode = PerceptionMode::ConstantVelocityMinkowski;
+    cfg.beta_magnitude  = 0.0f;               // CLI-zero -> use observer
+
+    ObserverFrame f = build_observer_frame_from_camera(gc, obs, cfg);
+    RR_CHECK(approx(f.beta, obs.velocity));
+
+    // Round-trip via to_relativity_observer preserves the
+    // input velocity exactly (no clamp triggered at |beta| =
+    // 0.5).
+    rr::relativity::Observer back = to_relativity_observer(f);
+    RR_CHECK(approx(back.velocity, obs.velocity));
+
+    // Frame is timelike-normalised under Minkowski.
+    RR_CHECK(is_normalised_timelike(f, minkowski_metric()));
+}
+
+// Case 5: ConstantVelocityMinkowski with non-zero
+// config.beta_magnitude + non-zero direction. The CLI overlay
+// wins over the legacy observer.velocity. The resulting beta
+// vector is `clampBeta(magnitude) * normalize(direction)`.
+void test_observer_6_constant_velocity_from_config() {
+    using namespace rr::manifold;
+    using rr::math::Vec3;
+
+    const rr::camera::GpuCamera gc = make_test_gpu_camera();
+    rr::relativity::Observer    obs;
+    obs.velocity = Vec3{0.9f, 0.0f, 0.0f};    // would-be-overridden legacy
+
+    ObserverConfig cfg{};
+    cfg.perception_mode = PerceptionMode::ConstantVelocityMinkowski;
+    cfg.beta_magnitude  = 0.5f;
+    cfg.direction       = Vec3{1.0f, 0.0f, 0.0f};
+
+    ObserverFrame f = build_observer_frame_from_camera(gc, obs, cfg);
+    // CLI overlay won: beta = (0.5, 0, 0); observer.velocity
+    // (0.9, 0, 0) was discarded.
+    RR_CHECK(approx(f.beta, Vec3{0.5f, 0.0f, 0.0f}));
+    RR_CHECK(is_normalised_timelike(f, minkowski_metric()));
+}
+
+// Case 6: ConstantVelocityMinkowski with config.direction
+// pre-normalised at a non-unit length. The adapter normalises
+// the direction before scaling by clampBeta(magnitude).
+void test_observer_6_config_direction_normalised() {
+    using namespace rr::manifold;
+    using rr::math::Vec3;
+    using rr::math::length;
+
+    const rr::camera::GpuCamera gc = make_test_gpu_camera();
+    const rr::relativity::Observer obs{};
+    ObserverConfig cfg{};
+    cfg.perception_mode = PerceptionMode::ConstantVelocityMinkowski;
+    cfg.beta_magnitude  = 0.6f;
+    // |direction| = 3, not unit. Adapter should normalise.
+    cfg.direction = Vec3{3.0f, 0.0f, 0.0f};
+
+    ObserverFrame f = build_observer_frame_from_camera(gc, obs, cfg);
+    // Resulting magnitude must match beta_magnitude exactly
+    // (no scale leakage from the non-unit input).
+    const float mag = length(f.beta);
+    RR_CHECK(approx(mag, 0.6f));
+    RR_CHECK(approx(f.beta, Vec3{0.6f, 0.0f, 0.0f}));
+}
+
+// Case 7: ConstantVelocityMinkowski with
+// config.beta_magnitude != 0 AND config.direction == (0,0,0).
+// The adapter falls back to the camera's forward axis (the
+// documented sentinel behaviour; mirrors the `--render-demo`
+// precedent).
+void test_observer_6_zero_direction_falls_back_to_camera_forward() {
+    using namespace rr::manifold;
+    using rr::math::Vec3;
+    using rr::math::length;
+
+    const rr::camera::GpuCamera gc = make_test_gpu_camera();
+    // gc.forward == (0, 0, -1).
+    const rr::relativity::Observer obs{};
+    ObserverConfig cfg{};
+    cfg.perception_mode = PerceptionMode::ConstantVelocityMinkowski;
+    cfg.beta_magnitude  = 0.4f;
+    cfg.direction       = Vec3{0.0f, 0.0f, 0.0f};  // sentinel
+
+    ObserverFrame f = build_observer_frame_from_camera(gc, obs, cfg);
+    // Resulting beta is along (0, 0, -1) at magnitude 0.4.
+    RR_CHECK(approx(f.beta, Vec3{0.0f, 0.0f, -0.4f}));
+    RR_CHECK(approx(length(f.beta), 0.4f));
+}
+
+// Case 8: defensive clamp on the resolved 3-velocity. A
+// non-trivial legacy `observer.velocity` (e.g. injected by a
+// scene file at |beta| > 0.999999) must be capped at
+// clampBeta's cap before the velocity4 derivation. The
+// adapter's defensive second-clamp catches this.
+void test_observer_6_clamp_beta_safety() {
+    using namespace rr::manifold;
+    using rr::math::Vec3;
+    using rr::math::length;
+
+    const rr::camera::GpuCamera gc = make_test_gpu_camera();
+    rr::relativity::Observer    obs;
+    // |beta| = 1.5 (faster than light); the adapter MUST clamp.
+    obs.velocity = Vec3{1.5f, 0.0f, 0.0f};
+    ObserverConfig cfg{};
+    cfg.perception_mode = PerceptionMode::ConstantVelocityMinkowski;
+    cfg.beta_magnitude  = 0.0f;  // CLI-zero -> use observer
+
+    ObserverFrame f = build_observer_frame_from_camera(gc, obs, cfg);
+    const float mag = length(f.beta);
+    RR_CHECK(mag <= 0.999999f + 1.0e-6f);
+    // The frame's per-scalar fields are all finite (clamp
+    // ensures gamma stays finite). The
+    // `is_normalised_timelike` check is intentionally NOT run
+    // at the clampBeta cap: single-precision floats lose
+    // enough precision in the `gamma^2 * (1 - beta^2)`
+    // catastrophic-cancellation that the residual exceeds the
+    // 1.0e-4f tolerance. The lower-beta tests
+    // (`test_observer_6_constant_velocity_from_legacy_observer`
+    // at |beta| = 0.5) cover the normalisation invariant in
+    // the precision-stable regime.
+    RR_CHECK(is_finite_observer_frame(f));
+}
+
+// Case 9: CurvedChartGeodesicPlaceholder mode is a structural
+// passthrough this slice: the adapter returns rest_frame()
+// byte-for-byte EXCEPT preserves the perception_mode tag so
+// downstream kernels can distinguish.
+void test_observer_6_curved_placeholder_returns_rest_with_tag() {
+    using namespace rr::manifold;
+
+    const rr::camera::GpuCamera     gc  = make_test_gpu_camera();
+    rr::relativity::Observer        obs;
+    obs.velocity = rr::math::Vec3{0.7f, 0.0f, 0.0f};  // non-trivial
+    ObserverConfig                  cfg{};
+    cfg.perception_mode = PerceptionMode::CurvedChartGeodesicPlaceholder;
+    cfg.beta_magnitude  = 0.5f;
+    cfg.proper_time     = 99.0f;
+
+    ObserverFrame f = build_observer_frame_from_camera(gc, obs, cfg);
+    // Every scalar field matches rest_frame() EXCEPT
+    // perception_mode (which is preserved as the tag).
+    ObserverFrame ref = rest_frame();
+    RR_CHECK(approx(f.position4, ref.position4));
+    RR_CHECK(approx(f.velocity4, ref.velocity4));
+    RR_CHECK(approx(f.beta,      ref.beta));
+    RR_CHECK(approx(f.right,     ref.right));
+    RR_CHECK(approx(f.up,        ref.up));
+    RR_CHECK(approx(f.forward,   ref.forward));
+    RR_CHECK(f.proper_time     == 0.0f);
+    RR_CHECK(f.coordinate_time == 0.0f);
+    RR_CHECK(f.perception_mode ==
+             PerceptionMode::CurvedChartGeodesicPlaceholder);
+}
+
+// Case 10: tetrad orthonormality. For a default Camera the
+// adapter's tetrad legs are the world basis (right-handed);
+// is_orthonormal_tetrad(...) passes analytically.
+void test_observer_6_tetrad_orthonormal() {
+    using namespace rr::manifold;
+
+    const rr::camera::GpuCamera     gc  = make_test_gpu_camera();
+    const rr::relativity::Observer  obs{};
+    ObserverConfig                  cfg{};
+    cfg.perception_mode = PerceptionMode::ConstantVelocityMinkowski;
+
+    ObserverFrame f = build_observer_frame_from_camera(gc, obs, cfg);
+    RR_CHECK(is_orthonormal_tetrad(f));
+}
+
+// Case 11: finite-value guarantee. For every documented
+// perception mode the adapter's output passes the
+// is_finite_observer_frame validator.
+void test_observer_6_finite_value_guarantee() {
+    using namespace rr::manifold;
+    using rr::math::Vec3;
+
+    const rr::camera::GpuCamera gc = make_test_gpu_camera();
+    rr::relativity::Observer    obs;
+    obs.velocity = Vec3{0.3f, -0.4f, 0.0f};
+
+    const PerceptionMode modes[] = {
+        PerceptionMode::Identity,
+        PerceptionMode::ConstantVelocityMinkowski,
+        PerceptionMode::CurvedChartGeodesicPlaceholder,
+    };
+    for (PerceptionMode mode : modes) {
+        ObserverConfig cfg{};
+        cfg.perception_mode = mode;
+        cfg.beta_magnitude  = 0.4f;
+        cfg.direction       = Vec3{1.0f, 0.0f, 0.0f};
+        cfg.proper_time     = 7.5f;
+        ObserverFrame f = build_observer_frame_from_camera(gc, obs, cfg);
+        RR_CHECK(is_finite_observer_frame(f));
+        RR_CHECK(is_orthonormal_tetrad(f));
+        RR_CHECK(is_normalised_timelike(f, minkowski_metric()));
+    }
+}
+
+// Case 12: proper_time propagation (the OBSERVER.4 CLI
+// surface threads through). On ConstantVelocityMinkowski the
+// resulting frame carries the config's proper_time verbatim;
+// on Identity / CurvedChartGeodesicPlaceholder the
+// proper_time defaults to zero (the rest_frame() anchor).
+void test_observer_6_proper_time_propagates() {
+    using namespace rr::manifold;
+
+    const rr::camera::GpuCamera     gc  = make_test_gpu_camera();
+    const rr::relativity::Observer  obs{};
+
+    // ConstantVelocityMinkowski: tau threads through.
+    ObserverConfig cfg_cv{};
+    cfg_cv.perception_mode = PerceptionMode::ConstantVelocityMinkowski;
+    cfg_cv.proper_time     = 42.5f;
+    ObserverFrame f_cv = build_observer_frame_from_camera(gc, obs, cfg_cv);
+    RR_CHECK(f_cv.proper_time == 42.5f);
+
+    // Identity: tau is NOT threaded (the no-op anchor returns
+    // rest_frame() byte-for-byte; config.proper_time is
+    // ignored on this path).
+    ObserverConfig cfg_id{};
+    cfg_id.perception_mode = PerceptionMode::Identity;
+    cfg_id.proper_time     = 42.5f;
+    ObserverFrame f_id = build_observer_frame_from_camera(gc, obs, cfg_id);
+    RR_CHECK(f_id.proper_time == 0.0f);
+}
+
 }  // namespace
 
 int main() {
@@ -1733,6 +2072,20 @@ int main() {
     test_observer_2_orthonormal_tetrad_default();
     test_observer_2_finite_observer_frame();
     test_observer_2_default_no_deformation();
+
+    // OBSERVER.6: Camera-to-observer adapter.
+    test_observer_6_default_is_camera_equivalent_no_op();
+    test_observer_6_identity_mode_ignores_camera();
+    test_observer_6_constant_velocity_zero_beta();
+    test_observer_6_constant_velocity_from_legacy_observer();
+    test_observer_6_constant_velocity_from_config();
+    test_observer_6_config_direction_normalised();
+    test_observer_6_zero_direction_falls_back_to_camera_forward();
+    test_observer_6_clamp_beta_safety();
+    test_observer_6_curved_placeholder_returns_rest_with_tag();
+    test_observer_6_tetrad_orthonormal();
+    test_observer_6_finite_value_guarantee();
+    test_observer_6_proper_time_propagates();
 
     std::printf("manifold_identity_tests: %d / %d checks passed\n",
                 g_total - g_failed, g_total);

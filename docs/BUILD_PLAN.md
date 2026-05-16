@@ -79641,6 +79641,330 @@ authorises the operator to proceed to OBSERVER.6
 original OBSERVER.5) as the next OBSERVER.* impl
 slice when ready.
 
+## OBSERVER.6 — Camera-to-Observer Adapter (impl, host-only)
+
+**Scope of this slice (per the operator's *OBSERVER.6
+— Camera-to-Observer Adapter* task brief and the
+renumbered `docs/OBSERVER_FRAME_RENDERING_PLAN.md` §7
+OBSERVER.6 after the OBSERVER.3 + OBSERVER.5 audit-
+slot insertions): introduce a host-side adapter that
+builds an `ObserverFrame` from the existing scene-
+side camera state + legacy SR
+`rr::relativity::Observer` + the OBSERVER.4
+`ObserverConfig` overlay. New header-only file under
+`src/manifold/`; one new include in
+`tests/manifold_identity_tests.cpp`; 12 new test
+functions. Host-only plumb; no CUDA, no OptiX, no
+camera ABI change, no renderer touch, no scene-loader
+touch, no observer-space transform, no GPU launch-
+params field.**
+
+### What ships
+
+- **`src/manifold/CameraObserverAdapter.h` (new).**
+  Header-only adapter inside `namespace rr::manifold`
+  carrying:
+    - `inline ObserverFrame
+       build_observer_frame_from_camera(
+            const rr::camera::GpuCamera& gc,
+            const rr::relativity::Observer& observer,
+            const ObserverConfig& config)`.
+      The function consumes the **device-friendly
+      `GpuCamera` POD** rather than the host-side
+      `rr::camera::Camera` class — keeping the
+      manifold module's link graph clean (no new
+      `rr_camera` library dependency; `CameraRay.h`
+      is header-only and pulled in via the
+      transitively-shared `src/` include path from
+      `rr_math`). Dispatchers convert the host
+      Camera via the existing
+      `rr::camera::Camera::to_gpu()` method before
+      invoking the adapter.
+    - **Three perception-mode construction paths**
+      mirroring the SCHW.9 / PENROSE.6 / PENROSE.8
+      dispatcher-merge pattern:
+        - `PerceptionMode::Identity` → return
+          `rest_frame()` byte-for-byte (the no-op
+          anchor). The camera + observer + non-mode
+          config fields are ignored on this path.
+        - `PerceptionMode::ConstantVelocityMinkowski`
+          → full construction:
+            - `position4 = (0, gc.position.x, .y, .z)`
+              (camera-start epoch on Euclidean chart);
+            - `velocity4 = (gamma, gamma*beta.x, ...,
+              gamma*beta.z)` derived from the resolved
+              3-velocity and the existing
+              `rr::relativity::gamma` helper;
+            - `beta` resolved per the documented
+              priority (see Beta resolution policy
+              below);
+            - tetrad legs `right` / `up` / `forward`
+              = camera basis;
+            - `proper_time = config.proper_time`;
+            - `coordinate_time = position4.x`
+              (Euclidean chart);
+            - `perception_mode =
+              ConstantVelocityMinkowski`.
+        - `PerceptionMode::CurvedChartGeodesicPlaceholder`
+          → return `rest_frame()` byte-for-byte
+          EXCEPT preserve `perception_mode =
+          CurvedChartGeodesicPlaceholder` so
+          downstream kernels can distinguish.
+          Structural passthrough this slice
+          (architecture-doc §8 non-goals + OBSERVER.1
+          plan §8 non-goals).
+    - **Beta resolution policy** (within
+      `ConstantVelocityMinkowski`):
+        1. `config.beta_magnitude != 0` AND
+           `length(config.direction) > 0`: use
+           `clampBeta(beta_magnitude) *
+           normalize(direction)`.
+        2. `config.beta_magnitude != 0` AND
+           direction sentinel `(0, 0, 0)`: fall back
+           to `gc.forward` (the documented
+           `ObserverConfig::direction` sentinel +
+           the `--render-demo` precedent).
+        3. `config.beta_magnitude == 0`: use
+           `observer.velocity` directly (the legacy
+           SR observer's 3-velocity from the
+           scene-loader's `apply_relativity` path).
+      The resolved beta is defensively passed through
+      `clampBeta(...)` a second time at the magnitude
+      level so a non-trivial legacy
+      `observer.velocity` (e.g. injected by a
+      scene file at `|beta| > 0.999999`) cannot push
+      `|beta|` past the SR cap. Mirrors the
+      `observer_frame_from(Observer)` precedent in
+      `ObserverFrame.h`.
+
+- **`tests/manifold_identity_tests.cpp` (extended).**
+  Adds `#include "manifold/CameraObserverAdapter.h"`
+  and `#include "camera/CameraRay.h"`, plus 12 new
+  test functions appended to the anonymous namespace
+  and registered in `main()` under a new
+  `// OBSERVER.6: Camera-to-observer adapter`
+  section:
+    - `make_test_gpu_camera()` — a non-default
+      `GpuCamera` helper so the tests can
+      distinguish "camera was read" from "camera
+      was ignored".
+    - `test_observer_6_default_is_camera_equivalent_no_op`
+      — default `GpuCamera` + default `Observer` +
+      default `ObserverConfig` (Identity) → field-
+      by-field `rest_frame()` byte-identity.
+    - `test_observer_6_identity_mode_ignores_camera`
+      — non-default `GpuCamera` + default
+      `Observer` + Identity `ObserverConfig` →
+      still `rest_frame()` byte-for-byte (the no-op
+      anchor ignores the camera).
+    - `test_observer_6_constant_velocity_zero_beta`
+      — `ConstantVelocityMinkowski` with zero
+      velocity → frame carries the camera's non-
+      trivial position + tetrad + zero beta. The
+      "camera-equivalent no-op observer" baseline
+      the operator brief specifies.
+    - `test_observer_6_constant_velocity_from_legacy_observer`
+      — non-zero `observer.velocity` AND zero
+      `config.beta_magnitude` → frame.beta =
+      observer.velocity verbatim. Round-trip via
+      `to_relativity_observer(...)` preserves the
+      input velocity exactly. Timelike-normalised
+      under Minkowski.
+    - `test_observer_6_constant_velocity_from_config`
+      — non-zero `config.beta_magnitude` + direction
+      → CLI overlay wins; `observer.velocity` is
+      discarded.
+    - `test_observer_6_config_direction_normalised`
+      — non-unit `config.direction` →
+      adapter normalises before scaling by
+      `clampBeta(magnitude)`; no scale leakage.
+    - `test_observer_6_zero_direction_falls_back_to_camera_forward`
+      — `config.direction = (0,0,0)` sentinel +
+      non-zero magnitude → falls back to
+      `gc.forward`.
+    - `test_observer_6_clamp_beta_safety` — legacy
+      `observer.velocity = (1.5, 0, 0)` → adapter's
+      defensive clamp caps magnitude at
+      `0.999999`. Finite-value guarantee holds. The
+      `is_normalised_timelike` check is
+      intentionally NOT run at the cap due to
+      single-precision floating-point catastrophic
+      cancellation in `gamma^2 * (1 - beta^2)` at
+      `|beta| = 0.999999`; the normalisation
+      invariant is covered at lower beta in
+      `test_observer_6_constant_velocity_from_legacy_observer`.
+    - `test_observer_6_curved_placeholder_returns_rest_with_tag`
+      — `CurvedChartGeodesicPlaceholder` mode →
+      rest_frame() byte-for-byte EXCEPT the
+      perception_mode tag is preserved as
+      `CurvedChartGeodesicPlaceholder` so downstream
+      kernels can distinguish.
+    - `test_observer_6_tetrad_orthonormal` — for a
+      camera with the world-basis tetrad,
+      `is_orthonormal_tetrad(frame)` returns true on
+      the adapter's output.
+    - `test_observer_6_finite_value_guarantee` —
+      for every perception mode + non-trivial
+      camera + non-trivial observer + non-trivial
+      config, the adapter's output passes
+      `is_finite_observer_frame(...)` +
+      `is_orthonormal_tetrad(...)` +
+      `is_normalised_timelike(...)`.
+    - `test_observer_6_proper_time_propagates` —
+      `ConstantVelocityMinkowski` threads
+      `config.proper_time` into
+      `frame.proper_time`; Identity does NOT
+      (the no-op anchor returns `rest_frame()`
+      whose proper_time = 0).
+
+### What does NOT ship
+
+- **No CUDA changes.** Operator brief explicitly
+  forbids. Nothing in `src/cuda/` is touched.
+- **No OptiX changes.** Operator brief
+  explicitly forbids. Nothing in `src/optix/`
+  is touched.
+- **No ray / perception transforms yet.**
+  Operator brief explicitly forbids. The adapter
+  produces an `ObserverFrame`; no kernel call
+  site reads it. The existing six scene-aware
+  actions continue to feed on the legacy
+  `rr::relativity::Observer` + `RelativityParams`
+  types via the existing call paths.
+- **No visual output changes.** Operator brief
+  explicitly forbids. The default-default-default
+  invocation produces `rest_frame()` byte-for-
+  byte; the kernel-side reads of `ObserverFrame`
+  land at OBSERVER.7 / OBSERVER.8 (the renumbered
+  CUDA / OptiX payload bridges).
+- **No full GR observer / tetrad solver.**
+  Operator brief + OBSERVER.1 plan §8 non-goals
+  explicitly forbid. The
+  `CurvedChartGeodesicPlaceholder` path is a
+  structural passthrough; no parallel transport,
+  no Christoffel symbols, no geodesic ODE.
+- **No Camera ABI change.** The host-side
+  `rr::camera::Camera` class is unchanged. The
+  adapter consumes the device-friendly
+  `GpuCamera` POD (one-time `camera.to_gpu()`
+  conversion at the dispatcher's call site).
+- **No new `RelativityParams` flags.** The
+  existing six flags
+  (`enable_aberration` / `enable_doppler` /
+  `enable_searchlight` / `doppler_color_strength`
+  / `searchlight_strength` / `max_beta`) are
+  preserved verbatim. The adapter consumes
+  `Observer::velocity` only.
+- **No scene-loader extension.** The
+  `.rrscene` `perception` block parser is still
+  deferred (parallel to the OBSERVER.4 CLI
+  surface; merged with `Config::observer` via a
+  dispatcher merge in a future slice).
+- **No GPU launch-params field.** The
+  per-launch `ObserverFrame` payload on
+  `CudaSceneView` + `OptixLaunchParams` is
+  reserved for OBSERVER.7 / OBSERVER.8 (the
+  renumbered GPU bridges); not added this slice.
+- **No path-tracer migration.** The CUDA /
+  OptiX path-tracer kernels remain on the legacy
+  types; OBSERVER.* scope is the `--render-aovs`
+  / `--render-optix-aovs` arc per the
+  OBSERVER.1 plan §8.
+- **No C4D / server / UI / node-editor touch.**
+  Operator brief explicitly forbids.
+- **No CMake change.** No new target; no new
+  library link. The new header is INTERFACE-only
+  and pulled in by `manifold_identity_tests`
+  via the existing `src/` include path
+  (transitively from `rr_math`'s
+  `INTERFACE src` line). `manifold_identity_tests`
+  link line is unchanged at `rr_manifold`.
+- **No `MODULE_MAP.md` update.** The
+  observer-frame arc's module-map promotion to
+  `**Wired**` is reserved for OBSERVER.7 /
+  OBSERVER.8 (the GPU payload bridges, where the
+  field is first actually consumed by a kernel).
+- **No alteration of the OBSERVER.1 plan.** The
+  plan stays as the canonical brief for the arc;
+  this OBSERVER.6 entry does NOT rewrite the
+  plan. The OBSERVER.3 + OBSERVER.5 audits
+  recorded the audit-slot insertions + the
+  renumbering ladder.
+
+### Acceptance
+
+- **Compiles.** Audit-host build green; full
+  rebuild via `cmake --build
+  /home/user/RelativityRender/build` completes
+  with no warnings on the core / manifold
+  modules. The new
+  `manifold/CameraObserverAdapter.h` is
+  consumed by the test binary cleanly via the
+  shared `src/` include path; no new link
+  dependency.
+- **Tests.** `ctest` returns
+  `100% tests passed, 0 tests failed out of 12`.
+  `manifold_identity_tests` reports
+  `408/408 checks passed` (up from `349/349` at
+  the post-OBSERVER.5 baseline: **+59 new
+  RR_CHECK assertions** across the 12 new test
+  functions). `cli_tests: 254/254 passed`
+  (unchanged); `renderer_tests: 19/19 passed`
+  (unchanged). No other test suite touched.
+- **No behaviour change.** No CLI action's
+  output is altered. The adapter is a host-side
+  helper; no kernel call site invokes it yet.
+  The existing six scene-aware actions continue
+  to feed on the legacy types via the existing
+  call paths.
+- **Internally consistent.** The three
+  perception-mode construction paths mirror the
+  OBSERVER.1 plan §7 OBSERVER.6 contract
+  verbatim. The beta resolution policy is
+  consistent with the `ObserverConfig` doc-
+  comment's documented priority (CLI overlay
+  wins; direction sentinel falls back to camera
+  forward; legacy `observer.velocity` is the
+  default-config path). The defensive
+  `clampBeta` second-clamp mirrors the
+  `observer_frame_from(Observer)` precedent.
+  The Identity / CurvedChartGeodesicPlaceholder
+  paths both return `rest_frame()`-equivalent
+  output (modulo the perception_mode tag
+  preservation), matching the OBSERVER.1
+  plan's "byte-identity anchor" wording.
+- **Honest scope.** The
+  `CurvedChartGeodesicPlaceholder` path is
+  documented as a structural passthrough
+  (master rule #3 satisfied: no fake GR solver;
+  no parallel transport; no Christoffel
+  symbols). The Identity path is the byte-
+  identity no-op anchor; subsequent OBSERVER.*
+  slices will gate their kernel arms on this
+  mode to preserve byte-identity by default.
+  The adapter consumes `GpuCamera` rather than
+  the host `Camera` class to keep the manifold
+  module's link graph clean (no new
+  `rr_camera` library dependency for
+  `rr_manifold` consumers).
+
+### Module status changes
+
+`docs/MODULE_MAP.md` is *not* updated by this
+slice. The `src/manifold/ObserverFrame.h`
+header's module-map status remains
+**Skeleton-Plus**; the new
+`src/manifold/CameraObserverAdapter.h` header
+joins it at the same status. The `**Wired**`
+promotion still waits for OBSERVER.7 / OBSERVER.8
+(the renumbered GPU payload bridges, where the
+adapter's output is first actually consumed by a
+kernel). The OBSERVER.6 verdict authorises the
+operator to proceed to OBSERVER.7 (CUDA payload
+bridge; renumbered from the original
+OBSERVER.5) as the next OBSERVER.* impl slice
+when ready.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
