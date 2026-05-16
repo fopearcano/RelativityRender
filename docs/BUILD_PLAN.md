@@ -81213,6 +81213,302 @@ when ready — OR to land the non-debug kernel-
 read wiring first (the audit verdict authorises
 either ordering).
 
+## OBSERVER.12 — Observer Debug AOV Task Definition (docs only)
+
+**Scope of this slice (per the operator's *OBSERVER.12
+— Observer Debug AOV Task Definition* task brief):
+write `docs/OBSERVER_DEBUG_AOV_TASK.md`, the
+operator-facing brief the subsequent impl slice
+will read to decide the exact surface, the
+acceptance gates, and the non-goals for a debug
+AOV that visualises ObserverFrame state. Mirrors
+the MANI-I.7 `MANIFOLD_DEBUG_AOV_TASK.md`
+precedent verbatim in structure — eight numbered
+sections matching the operator's brief ordering
+(exact goal; proposed AOVs; expected behaviour;
+CUDA/OptiX interaction; files likely involved;
+what must not be touched; PASS criteria;
+runtime-deferred CUDA/OptiX checks) plus a
+cross-references appendix. Documentation only;
+no source code, no test, no CMake, no
+behavioural change.**
+
+### What ships
+
+- **`docs/OBSERVER_DEBUG_AOV_TASK.md` (new).**
+  Nine-section task brief covering the eight
+  operator-specified sections plus a
+  cross-references appendix:
+    - **§1 Exact goal** — expose ObserverFrame
+      diagnostics as an optional per-pixel AOV
+      gated on a new `--observer-debug` CLI
+      flag; read-only diagnostic; no perception
+      transform.
+    - **§2 Proposed AOVs** — three candidate
+      channels per the operator's brief
+      (`observerBeta` / `observerDirection` /
+      `observerPerceptionMode`); RECOMMENDED MVP
+      is `observerBeta` (3 floats / pixel; the
+      most informative single channel for
+      "what observer state did the kernel
+      actually see"); the other two are
+      documented as FUTURE forward-looking
+      placeholders. Canonical
+      `AOVType::ObserverBeta` (value `= 7`,
+      appended after `ManifoldCoordinates = 6`)
+      naming + `"observer_beta"` snake_case
+      type name mirroring the existing
+      `DopplerFactor` / `SearchlightFactor` /
+      `ManifoldCoordinates` PascalCase
+      enumerator + snake_case type-name
+      convention.
+    - **§3 Expected behaviour** — three
+      load-bearing invariants: beauty output
+      unchanged (per the no-CLI-change
+      byte-identity claim); debug AOV only
+      active when requested (two-flag gate:
+      `--render-aovs` / `--render-optix-aovs`
+      AND `--observer-debug`); default
+      observer produces neutral diagnostic
+      values (the recommended `observerBeta`
+      AOV's neutral value is `(0, 0, 0)` per
+      the `rest_frame()` anchor).
+    - **§4 CUDA/OptiX interaction** — three
+      sub-sections: read observer payload
+      only (kernel reads
+      `view.observer_frame.beta` /
+      `optixLaunchParams.observer_frame.beta`,
+      writes the read value to the new AOV
+      pointer); no perception transform yet
+      (kernel does NOT call `aberrateDirection`
+      / `dopplerFactor` / `searchlightFactor`
+      on the observer-frame's beta); cross-
+      backend math consistency (structurally
+      guaranteed by single-source-of-truth
+      adapter + identical field encoding).
+    - **§5 Files likely involved** — 17-row
+      file-by-file table with rough net-line
+      estimates from comparable past slices.
+      Covers the AOV data model
+      (`AOV.h` / `AOV.cpp`), the CLI parser +
+      config (`CommandLine.cpp` /
+      `ObserverFrame.h` new `debug_visualization`
+      bool field), the CUDA-side surface
+      (`CudaAOV.cuh` / `CudaRenderer.h/.cu` /
+      `CudaTestKernel.cu`), the OptiX-side
+      surface (`OptixLaunchParams.h` /
+      `OptixRenderer.h/.cpp` /
+      `OptixPrograms.cu`), the dispatchers
+      (`main.cpp`), the tests
+      (`renderer_tests.cpp` / `cli_tests.cpp`),
+      and the fixture + companion doc
+      (`scenes/test_observer_frame.rrscene` +
+      `docs/OBSERVER_FRAME_FIXTURE.md`).
+    - **§6 What must not be touched** — 12
+      explicit non-goals including: Beauty
+      pass kernel arithmetic; existing seven
+      AOV slots' layouts; observer-perception
+      transforms (the operator brief's
+      explicit "no perception transform yet"
+      contract); non-AOV kernel call sites'
+      gating on `perception_mode`; per-pixel
+      observer state; `.rrscene` schema bump;
+      new `--render-*` action; denoiser path;
+      `OptixLaunchParams` field offsets
+      predating OBSERVER.10; existing AOV PPM
+      filenames; the two deferred AOV
+      channels (`observerDirection` /
+      `observerPerceptionMode`); the full
+      kernel-side OBSERVER.* arc migration.
+    - **§7 PASS criteria** — four
+      sub-sections: structural (13 checkboxes
+      covering the new enumerator + factory +
+      CLI flag + AOVTargets / LaunchParams
+      fields + kernel arms + PPM filenames);
+      behavioural (5 checkboxes covering
+      default-off byte-identity, beauty
+      preservation, existing-AOV preservation,
+      neutral-value verification on Identity
+      mode, non-default-value verification on
+      ConstantVelocityMinkowski mode); test
+      surface (4 checkboxes covering ctest,
+      cli_tests delta, renderer_tests delta,
+      standalone-build compile gate);
+      documentation (4 checkboxes covering
+      BUILD_PLAN entry, companion fixture
+      doc, fixture scene file, optional plan
+      §7 update).
+    - **§8 Runtime-deferred CUDA/OptiX
+      checks** — six deferred SDK-host
+      checks: neutral diagnostic on Identity
+      (CUDA); same (OptiX); non-default
+      visualisation (both backends);
+      off-path bit-identity (both backends);
+      composability with `--manifold-debug`;
+      cross-backend equivalence
+      (`cmp aov_observer_beta.ppm
+      optix_aov_observer_beta.ppm` exit
+      status `0`).
+    - **§9 Cross-references** — 17-entry
+      reference list spanning master
+      instructions, architecture-doc §3.3,
+      the OBSERVER.1 plan, all five OBSERVER.*
+      audits, both manifold-debug-AOV
+      precedent docs (MANI-I.7 task + MANI-I.9
+      audit), all source files the impl
+      slice will touch, the existing
+      precedent fixture scene, and the
+      `BUILD_PLAN.md` anchor.
+
+### What does NOT ship
+
+- **No source code.** Nothing in any `src/`
+  subtree is touched (`git diff` outside
+  `docs/` ⇒ 0 bytes). The OBSERVER.10 +
+  OBSERVER.11 surface stays exactly as it
+  landed.
+- **No new test binary.** ctest set unchanged
+  at 12. `manifold_identity_tests` count
+  unchanged at 408 RR_CHECK assertions;
+  `cli_tests` unchanged at 254;
+  `renderer_tests` unchanged at 19.
+- **No CMake change.**
+- **No OBSERVER.12 implementation.** This is
+  the task-definition slice ONLY. The
+  implementation slice consumes this doc as
+  its canonical brief and lands separately
+  when the operator prompts for it.
+- **No `AOVType::ObserverBeta` enumerator
+  yet.** The enum extension is the impl
+  slice's first checkbox; this task brief
+  only proposes the name + value (`= 7`).
+- **No `--observer-debug` CLI flag yet.** The
+  flag is specified in the brief (§5 + §6 +
+  §7) but not added to `CommandLine.cpp` or
+  the help text.
+- **No new `ObserverConfig` field yet.** The
+  brief proposes adding
+  `debug_visualization` `bool` to
+  `ObserverConfig` (§5), but the
+  `src/manifold/ObserverFrame.h` is
+  unchanged.
+- **No GPU launch-params field yet.** The
+  `OptixLaunchParams::aov_observer_beta` /
+  `DeviceAOVView::observer_beta` /
+  `AOVTargets::observer_beta` slots are
+  specified in §5 but not added.
+- **No kernel arm yet.** The
+  `CudaTestKernel.cu` /
+  `OptixPrograms.cu` AOV-write arm changes
+  are specified in §4 + §5 but not added.
+- **No fixture scene yet.** The
+  `scenes/test_observer_frame.rrscene` file
+  is specified in §5 but not authored.
+- **No companion fixture doc yet.** The
+  `docs/OBSERVER_FRAME_FIXTURE.md` doc is
+  specified in §5 + §7 but not written.
+- **No alteration of the OBSERVER.1 plan.**
+  The plan stays as the canonical arc brief;
+  this OBSERVER.12 task doc consumes the
+  plan's §7 OBSERVER.12 slot (renumbered
+  from §7 OBSERVER.7 after the OBSERVER.3 /
+  OBSERVER.5 / OBSERVER.7 / OBSERVER.9 /
+  OBSERVER.11 audit-slot insertions).
+- **No `MANIFOLD_INTEGRATION_PLAN.md`
+  update.** The OBSERVER.* arc is
+  orthogonal to the integration plan.
+- **No `MODULE_MAP.md` update.** The per-slice
+  task definition is doc-only;
+  module-map promotion still waits for the
+  slice that wires kernel-side reads.
+- **No `BUILD_PLAN.md` historical-record
+  rewrite.** The MANI-I.* / SCHW.* /
+  PENROSE.* / MANI-CONSUME.* /
+  OBSERVER.1-OBSERVER.11 entries above stay
+  as-is; this OBSERVER.12 entry is additive.
+- **No `observerDirection` /
+  `observerPerceptionMode` AOVs.** §2 lists
+  these as FUTURE; the implementation slice
+  ships only `observerBeta`. The other two
+  require their own task brief + audit gate
+  if/when the operator wants them.
+- **No Kerr / Kruskal work.**
+- **No C4D / server / UI / node-editor
+  touch.**
+
+### Acceptance
+
+- **Compiles.** Documentation-only slice; no
+  build configuration touched. The audit-host
+  build remains at the post-OBSERVER.11
+  baseline (`100% tests passed, 0 tests
+  failed out of 12`;
+  `manifold_identity_tests: 408/408`;
+  `cli_tests: 254/254 passed`;
+  `renderer_tests: 19/19 passed`).
+- **Internally consistent.** The eight
+  operator-specified sections are present in
+  the task doc in the operator's order; the
+  ninth (cross-references) appendix mirrors
+  the MANI-I.7 task doc's "Cross-references"
+  section verbatim in structure. The
+  three-AOV proposal in §2 reconciles the
+  operator's three named AOVs
+  (`observerBeta`, `observerDirection`,
+  `observerPerceptionMode`) with the
+  OBSERVER.1 plan's "boosted primary-ray
+  direction" wording — RECOMMENDED MVP is
+  `observerBeta` (carry-only; no perception
+  transform; matches the operator's "no
+  perception transform yet" rule); the
+  other two are FUTURE because they would
+  either require a transform
+  (`observerDirection` as the boosted
+  direction) OR be redundant with sidecar
+  log data (`observerPerceptionMode` already
+  appears in the OBSERVER.8 / OBSERVER.10
+  echo logs).
+- **Verdict honesty.** Every claim in the
+  task doc is backed by a cross-reference
+  to a prior landed slice (OBSERVER.6 /
+  OBSERVER.8 / OBSERVER.10 / their audits)
+  or a precedent task brief (MANI-I.7).
+  The "what must not be touched" list (§6)
+  enumerates 12 explicit non-goals
+  including the operator's hard constraints
+  (no perception transform; no
+  observer-direction / observer-perception-
+  mode AOVs at this slice). Master rule #3
+  ("no fake stubs") is satisfied:
+  `observerBeta` is structurally consumable
+  by the kernel (the OBSERVER.8 +
+  OBSERVER.10 carry-only fields are
+  already in place); the impl slice is a
+  natural extension, not a stub.
+
+### Module status changes
+
+`docs/MODULE_MAP.md` is *not* updated by this
+slice. The `src/manifold/CameraObserverAdapter.h`
+/ `src/manifold/ObserverFrame.h` module-map
+status remains **Skeleton-Plus**; the
+`**Wired**` promotion still waits for the slice
+that wires kernel-side reads on either backend.
+The OBSERVER.12 task definition authorises the
+operator to proceed to the OBSERVER.12 impl
+slice (consuming this task doc as its canonical
+brief) as the next OBSERVER.* slot when ready.
+The numbering of the impl slice is the
+operator's call: it may keep `OBSERVER.12` as
+the impl-slice number (with the task brief
+documented as a prelude in this entry) OR
+introduce a `OBSERVER.12.impl` /
+`OBSERVER.12-A` sub-slice number to distinguish
+the brief from the implementation. Either
+numbering matches the MANI-I.7 → MANI-I.8
+precedent (task brief at MANI-I.7; impl at
+MANI-I.8).
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
