@@ -82136,6 +82136,264 @@ to extend the OBSERVER.* arc with the
 broader kernel migration as a new
 task-definition + impl pair.
 
+## OBSERVER.15 — Observer-Frame Arc Capstone Audit (docs only)
+
+**Scope of this slice (per the operator's *OBSERVER.15
+— Observer-Frame Arc Capstone Audit* task brief):
+write `docs/OBSERVER_FRAME_ARC_AUDIT.md`, the
+capstone verdict synthesising the six prior
+per-slice audits (OBSERVER.3 / .5 / .7 / .9 / .11
+/ .14) into a single arc-level
+`PASS` / `PASS_WITH_RUNTIME_DEFERRED` / `REPAIR` /
+`BLOCKED` verdict; survey the eleven items the
+task brief enumerates — data model, CLI bridge,
+adapter, CUDA payload bridge, OptiX payload
+bridge, debug AOV, beauty preservation, no
+perception transform, runtime CUDA/OptiX status,
+remaining risks, recommended next safe stage —
+and answer the operator's load-bearing question
+("decide whether the renderer is ready for actual
+observer-perception transforms"). Mirrors the
+SCHW.11 + PENROSE.12 capstone shapes.
+Documentation only; no source code, no test, no
+CMake, no behavioural change; no observer ray
+transforms started.**
+
+### What ships
+
+- **`docs/OBSERVER_FRAME_ARC_AUDIT.md` (new).**
+  Ten-section capstone-verdict document
+  mirroring the SCHW.11 + PENROSE.12 capstone
+  shapes verbatim:
+    - **§1 VERDICT** —
+      `PASS_WITH_RUNTIME_DEFERRED`. All eight
+      structural arc-level checks return
+      `PASS`; check #9 (runtime CUDA/OptiX)
+      `DEFERRED`; check #10 (remaining risks)
+      `CATALOGUED` (3 follow-up items + 2
+      non-risks); check #11 (next stage) names
+      the perception-transform migration as the
+      recommended next slot.
+    - **§2 ARC TIMELINE** — 15-row table
+      covering every slot from OBSERVER.1
+      planning through OBSERVER.14 audit + this
+      capstone, with commit SHAs + kind +
+      per-slice verdict. All six landed
+      impl slices have matching audit slices;
+      every audit returned PASS or
+      PASS_WITH_RUNTIME_DEFERRED. Cumulative
+      test growth quantified
+      (`manifold_identity_tests +96 RR_CHECK`;
+      `cli_tests +151 RR_CHECK`;
+      `renderer_tests +8 RR_CHECK`).
+    - **§3 PER-CHECK RESULTS** — 11-row
+      evidence table covering each of the
+      operator's enumerated checks. Each row
+      cites the per-slice audit's verdict +
+      concrete file/line evidence from the
+      audited surface. Check #9 records the
+      DEFERRED status with seven SDK-host
+      runtime checks enumerated. Check #10
+      catalogues three follow-up items
+      (perception-transform migration; fixture
+      scene; SDK-host pass) + two non-risks
+      (CurvedChartGeodesicPlaceholder mode;
+      per-pixel observer state).
+    - **§4 ARCHITECTURAL SCOPE — WHAT THE ARC
+      IS AND ISN'T** — explicit boundary
+      enumeration: 7 things the arc IS
+      (data model + CLI surface + host
+      adapter + CUDA bridge + OptiX bridge +
+      debug AOV + 5 echo logs + test surface)
+      vs. 7 things the arc IS NOT (kernel-
+      side perception transform; full GR
+      tetrad solver; Kerr/Kruskal; per-pixel
+      observer state; `.rrscene` block;
+      denoiser integration; fixture scene).
+    - **§5 CROSS-CUTTING INVARIANT CHECK** —
+      three invariants (default-no-op
+      preservation; Beauty + existing-AOV
+      byte-identity; cross-backend semantic
+      equivalence) all PASS with concrete
+      verification methods enumerated.
+    - **§6 BUILD + TEST STATUS** — `ctest
+      12/12 PASS` at HEAD = `4d5be32`. Per-
+      suite counts: `manifold_identity_tests
+      408/408`; `cli_tests 274/274`;
+      `renderer_tests 27/27`; all others
+      unchanged. Audit-host smoke tests
+      verified for all five new flags.
+    - **§7 WHAT THIS AUDIT DOES NOT VERIFY**
+      — explicit scope-boundary listing five
+      runtime items (device-side behaviour;
+      PPM byte-identity; cross-backend AOV
+      equivalence; pathtrace progressive
+      accumulation; visual diagnostic
+      correctness) DEFERRED to SDK host.
+    - **§8 RECOMMENDATION TO OPERATOR** — the
+      load-bearing operator question answered
+      explicitly: **YES, the renderer is
+      structurally ready for actual
+      observer-perception transforms.** Six
+      sub-bullets justifying the readiness
+      (data model in place; CLI surface in
+      place; host adapter in place; CUDA +
+      OptiX bridges in place; debug AOV in
+      place; master rule #3 satisfied across
+      the arc).
+    - **§9 RECOMMENDED NEXT SAFE STAGE** —
+      three candidate stages with
+      prioritisation: (9.1 RECOMMENDED)
+      kernel-side perception-transform
+      migration — guard the existing
+      aberration / Doppler / searchlight
+      call sites on
+      `observer_frame.perception_mode ==
+      ConstantVelocityMinkowski`; (9.2
+      OPTIONAL) fixture scene follow-up;
+      (9.3 DEFERRED) per-pixel observer
+      state.
+    - **§10 REFERENCES** — 28-entry list
+      spanning master instructions,
+      architecture-doc, OBSERVER.1 plan, all
+      six per-slice audits, MANIFOLD.* +
+      MANI-CONSUME.* + SCHW.11 + PENROSE.12
+      precedent audits, every source file
+      the arc touched, every test file the
+      arc extended, the post-OBSERVER.14
+      `BUILD_PLAN.md` entry, and every
+      commit SHA in the arc.
+
+### What does NOT ship
+
+- **No source code.** Nothing in any `src/`
+  subtree is touched (`git diff` outside
+  `docs/` ⇒ 0 bytes). The HEAD = `4d5be32`
+  baseline is preserved exactly.
+- **No new test binary.** ctest set unchanged
+  at 12. Test counts unchanged from the
+  OBSERVER.14 audit baseline
+  (`manifold_identity_tests: 408/408`;
+  `cli_tests: 274/274`;
+  `renderer_tests: 27/27`).
+- **No CMake change.**
+- **No observer ray transforms started.**
+  Operator brief explicitly forbids. The
+  capstone identifies the perception-
+  transform migration as the next slot but
+  does NOT land it. The `CudaTestKernel.cu`
+  / `CudaPathTracer.cu` / `OptixPrograms.cu`
+  non-AOV pipelines continue to feed on
+  `scene.observer.velocity` exactly as
+  today.
+- **No `OBSERVER_FRAME_RENDERING_PLAN.md`
+  rewrite.** The plan stays as the canonical
+  arc brief; this capstone is the verdict
+  document, not a plan revision.
+- **No per-slice audit rewrite.** The six
+  prior audits (OBSERVER.3 / .5 / .7 / .9 /
+  .11 / .14) are preserved as point-in-time
+  historical snapshots; this capstone
+  references them by named verdict, not by
+  rewriting their content.
+- **No `MANIFOLD_INTEGRATION_PLAN.md`
+  update.** The integration plan's §11
+  MANI-I.12 slot remains the documented
+  next step for the cross-host manifold
+  audit; OBSERVER.15 is orthogonal.
+- **No `MODULE_MAP.md` update.** The
+  `CameraObserverAdapter.h` /
+  `ObserverFrame.h` module-map status
+  remains **Skeleton-Plus** at the capstone
+  level (consistent with the OBSERVER.14
+  audit's verdict); the `**Wired**`
+  promotion still waits for the kernel-
+  side perception-transform migration
+  slice (the §9.1 recommended next stage).
+- **No `BUILD_PLAN.md` historical-record
+  rewrite.** The MANI-I.* / SCHW.* /
+  PENROSE.* / MANI-CONSUME.* /
+  OBSERVER.1-OBSERVER.14 entries above
+  stay as-is; this OBSERVER.15 entry is
+  additive.
+- **No Kerr / Kruskal work.** Those
+  families remain at MANIFOLD.1's
+  `*LikePlaceholder` reserved-but-inert
+  state.
+- **No C4D / server / UI / node-editor
+  touch.** Operator brief explicitly
+  forbids.
+
+### Acceptance
+
+- **Compiles.** Documentation-only slice; no
+  build configuration touched. The audit-host
+  build remains at the post-OBSERVER.14
+  baseline (`100% tests passed, 0 tests
+  failed out of 12`;
+  `manifold_identity_tests: 408/408`;
+  `cli_tests: 274/274 passed`;
+  `renderer_tests: 27/27 passed`).
+- **Internally consistent.** The ten-section
+  capstone-verdict document mirrors the
+  SCHW.11 + PENROSE.12 precedent shapes
+  verbatim (verdict variant; arc-timeline
+  table; per-check results; architectural
+  scope; cross-cutting invariants;
+  build/test; what-this-doesn't-verify;
+  recommendation to operator; next stage;
+  references). The 11 per-check rows in §3
+  map 1:1 onto the operator's 11 enumerated
+  checks. Every "PASS" claim is backed by
+  a citation to the relevant per-slice
+  audit's verdict + concrete file/line
+  evidence from the audited surface.
+- **Verdict honesty.** The
+  `PASS_WITH_RUNTIME_DEFERRED` verdict is
+  the appropriate variant per the SCHW.11 +
+  PENROSE.12 + OBSERVER.9 / OBSERVER.11 /
+  OBSERVER.14 precedents (all CUDA / OptiX-
+  touching arcs that landed on an
+  audit-host without SDKs converge to the
+  same verdict). The DEFERRED status is
+  honest about the audit-host limitation;
+  the seven required SDK-host runtime
+  checks are enumerated for a future
+  conversion pass. Master rule #3 ("no
+  fake stubs") satisfied across the arc:
+  every reserved-but-not-yet-consumed
+  field has a documented consumer
+  (dispatcher, echo log, debug AOV, or
+  planned next-arc kernel-read wiring).
+
+### Module status changes
+
+`docs/MODULE_MAP.md` is *not* updated by this
+slice. With OBSERVER.15 closing the foundation
+arc's audit chain, the
+`src/manifold/CameraObserverAdapter.h` /
+`src/manifold/ObserverFrame.h` module-map
+status remains **Skeleton-Plus**; the
+`**Wired**` promotion is reserved for the slice
+that wires the kernel-side perception-transform
+migration (the §9.1 recommended next stage).
+The OBSERVER.15 verdict authorises the operator
+to proceed to one of three candidate next slots:
+**(a)** the kernel-side perception-transform
+migration (RECOMMENDED highest priority; a new
+task-definition + impl pair); **(b)** the
+OBSERVER.* fixture follow-up (OPTIONAL; mirrors
+MANI-I.8 → SCHW.9 cadence); **(c)** manifold-
+orthogonal work (e.g. MANI-I.12 final
+cross-host audit, the Field Interpretation
+Layer Phase 1, denoiser integration with
+chart-aware AOVs, or other path-tracer feature
+breadth). The OBSERVER.* foundation arc is
+**closed** for the audit-host portion; the
+deferred items become PASS-able when a CUDA +
+OptiX-SDK host runs the seven enumerated
+runtime checks.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
