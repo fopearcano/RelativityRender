@@ -83098,6 +83098,277 @@ OBS-P.* arc closes when the audit cycle
 returns PASS / PASS_WITH_RUNTIME_DEFERRED on
 the OBS-P.2 impl + the OBS-P.* arc capstone.
 
+## OBS-P.3 — Kernel-Side Perception Transform Migration Audit (docs only)
+
+**Scope of this slice (per the operator's *OBS-P.3
+— Kernel-Side Perception Transform Migration Audit*
+task brief): write
+`docs/OBSERVER_PERCEPTION_KERNEL_MIGRATION_AUDIT.md`,
+the per-slice verdict document for OBS-P.2
+(`c729b53`). Verifies the eleven items the task
+brief enumerates — aberration / Doppler /
+searchlight calls gated on
+`ConstantVelocityMinkowski`; CUDA + OptiX kernel
+read sites consume the observer-frame fields;
+legacy `RelativityParams` remains adapter input
+only; default scenes unchanged; cross-backend
+semantic alignment; build/test status; runtime
+status; verdict — and produces a `PASS` /
+`PASS_WITH_RUNTIME_DEFERRED` / `REPAIR` /
+`BLOCKED` verdict with check #10 separately
+recording the runtime CUDA/OptiX status (`PASS` /
+`DEFERRED` / `BLOCKED`). Documentation only; no
+source code, no test, no CMake, no behavioural
+change.**
+
+### What ships
+
+- **`docs/OBSERVER_PERCEPTION_KERNEL_MIGRATION_AUDIT.md`
+  (new).** Per-slice verdict document mirroring
+  the MANI-I.9 (manifold debug AOV audit) +
+  OBSERVER.9 / OBSERVER.11 / OBSERVER.14
+  audit-doc shape:
+    - **§1 VERDICT** —
+      `PASS_WITH_RUNTIME_DEFERRED`. All nine
+      structural checks return `PASS`; check
+      #10 (runtime CUDA/OptiX) is `DEFERRED`
+      on the documented audit-host SDK-absence
+      limitation; check #11 (overall verdict)
+      is `PASS_WITH_RUNTIME_DEFERRED`. One
+      scope correction recorded vs the OBS-P.1
+      task brief: 5 sites migrated (not 6 —
+      the CUDA path-tracer's `k_pathtrace_sample`
+      doesn't call SR helpers).
+    - **§2 PER-CHECK RESULTS** — eleven-row
+      evidence table covering each of the
+      operator's enumerated checks. Each row
+      cites concrete file/line observations
+      on the OBS-P.2 surface:
+        - **Check #1** (aberration gated):
+          3 sites verified (CUDA C-1 at
+          `CudaTestKernel.cu:239`; CUDA C-2
+          at `:364`; OptiX O-2 at
+          `OptixPrograms.cu:223`); each
+          downstream of an OBS-P.2 guard.
+        - **Check #2** (Doppler gated):
+          5 sites verified covering both
+          `dopplerFactor` and
+          `applyDopplerColor` chains.
+        - **Check #3** (searchlight gated):
+          3 sites verified.
+        - **Check #4** (CUDA kernels read
+          observer_frame): 2 sites verified
+          (C-1 + C-2). Documents the field-
+          semantics distinction:
+          `ObserverFrame::beta` is the
+          resolved 3-velocity (combined
+          direction × magnitude product);
+          there is no separate
+          `observer_frame.direction` field —
+          the kernel reads `beta` directly per
+          the OBSERVER.7 audit check #3 beta-
+          resolution priority. The operator-
+          listed `observer_frame.direction`
+          in the OBS-P.3 brief refers to the
+          `ObserverConfig::direction` host-side
+          CLI overlay that the OBSERVER.6
+          adapter combines with
+          `beta_magnitude` to produce the
+          resolved beta.
+        - **Check #5** (OptiX kernels read
+          observer_frame): 3 sites verified
+          (O-1, O-2, O-3); cross-backend
+          ternary shape byte-identical to
+          CUDA-side.
+        - **Check #6** (legacy
+          RelativityParams stays adapter
+          input): three-layer verified
+          (scene-loader / Scene types
+          unchanged; OBSERVER.6 adapter
+          still consumes legacy Observer;
+          kernel fallback reads legacy
+          fields directly).
+        - **Check #7** (default scenes
+          unchanged): three-layer
+          (adapter-level neutrality;
+          kernel-side short-circuit;
+          empirical test surface unchanged
+          except for the +28 RR_CHECK
+          delta in `relativity_tests`).
+        - **Check #8** (CUDA/OptiX semantic
+          alignment): five-axis verified
+          (same shared types; same ternary
+          shape; same downstream helper;
+          same upstream adapter; same
+          host-side empirical equivalence
+          test).
+        - **Check #9** (build/test):
+          ctest 12/12 PASS;
+          `relativity_tests: 841/841`
+          (was 813; +28 RR_CHECK);
+          `manifold_identity_tests:
+          408/408`; `cli_tests: 274/274`;
+          `renderer_tests: 27/27`; all
+          others unchanged.
+        - **Check #10** (runtime
+          CUDA/OptiX): `DEFERRED` for
+          BOTH backends on documented
+          SDK-absence. 9 required
+          SDK-host runtime checks
+          enumerated from OBS-P.1
+          §7.4.
+        - **Check #11** (verdict):
+          `PASS_WITH_RUNTIME_DEFERRED`.
+    - **§3 REASONING SUMMARY** — recap of
+      the OBS-P.2 commit's structural
+      surface + per-check reasoning paragraph
+      tying each verdict back to its evidence.
+      Records the 5-vs-6 scope correction
+      explicitly.
+    - **§4 NEXT** — OBS-P arc's sub-slice
+      ladder: OBS-P.1 task definition
+      (LANDED `fc2d83e`); OBS-P.2 impl
+      (LANDED `c729b53`); OBS-P.3 THIS
+      AUDIT; OBS-P.4 (recommended next slot)
+      arc capstone mirroring the OBSERVER.15
+      capstone shape. After OBS-P.4 closes
+      the arc, the operator may proceed to
+      the deferred SDK-host runtime pass, the
+      OBSERVER.* fixture follow-up, the
+      remaining OBSERVER.15 capstone risks
+      #2 + #3 (now actionable), or manifold-
+      orthogonal work.
+    - **§5 REFERENCES** — 25-entry list
+      spanning master instructions,
+      architecture-doc, OBSERVER.1 plan,
+      OBSERVER.15 capstone, OBS-P.1 task
+      brief, all relevant prior audits
+      (OBSERVER.7 / OBSERVER.9 / OBSERVER.11
+      / OBSERVER.14 / SCHW.6 + SCHW.8
+      precedent triple-gate audits), all
+      source/test files the audit references,
+      both surrounding commit SHAs (`c729b53`
+      audited / `fc2d83e` baseline).
+
+### What does NOT ship
+
+- **No source code.** Nothing in any `src/`
+  subtree is touched (`git diff` outside
+  `docs/` ⇒ 0 bytes). The OBS-P.2 surface
+  stays exactly as `c729b53` landed it.
+- **No new test binary.** ctest set
+  unchanged at 12. Test counts unchanged
+  from the post-OBS-P.2 baseline
+  (`relativity_tests: 841/841`;
+  `manifold_identity_tests: 408/408`;
+  `cli_tests: 274/274`;
+  `renderer_tests: 27/27`).
+- **No CMake change.**
+- **No `OBSERVER_PERCEPTION_KERNEL_MIGRATION_TASK.md`
+  rewrite.** The OBS-P.1 task brief is
+  preserved verbatim; this audit explicitly
+  documents the 5-vs-6 scope correction as
+  a per-audit observation, not by editing
+  the brief.
+- **No `OBSERVER_FRAME_ARC_AUDIT.md`
+  modification.** The OBSERVER.15 capstone
+  is preserved as a historical snapshot;
+  this audit references it by named
+  verdict.
+- **No `MODULE_MAP.md` update.** The
+  `**Wired**` promotion is reserved for the
+  OBS-P.4 arc capstone (or for the
+  SDK-host-pass conversion of
+  PASS_WITH_RUNTIME_DEFERRED → PASS).
+- **No `MANIFOLD_INTEGRATION_PLAN.md`
+  update.** The OBS-P arc is orthogonal to
+  the integration plan.
+- **No `BUILD_PLAN.md` historical-record
+  rewrite.** Every prior entry stays
+  as-is.
+- **No Kerr / Kruskal work.**
+- **No new perception model.**
+- **No C4D / server / UI / node-editor
+  touch.**
+
+### Acceptance
+
+- **Compiles.** Documentation-only slice;
+  no build configuration touched. The
+  audit-host build remains at the
+  post-OBS-P.2 baseline (`100% tests
+  passed, 0 tests failed out of 12`;
+  `relativity_tests: 841/841 passed`;
+  `manifold_identity_tests: 408/408`;
+  `cli_tests: 274/274 passed`;
+  `renderer_tests: 27/27 passed`).
+- **Internally consistent.** The eleven-row
+  evidence table cites concrete file/line
+  positions on the OBS-P.2 surface (15+
+  file/line refs across the 5 migrated
+  sites + the 2 new test functions),
+  concrete diff observations (`git diff
+  fc2d83e..c729b53 --name-only` covers
+  exactly 7 files including
+  `relativity_tests.cpp` for the
+  test-surface delta), concrete runtime
+  test counts before and after the
+  OBS-P.2 commit (the +28 RR_CHECK
+  delta in `relativity_tests` is the
+  only test-count change), and audit-host
+  smoke-test transcripts. The OBS-P
+  sub-slice ladder in §4 enumerates the
+  3 landed slots + names OBS-P.4 as the
+  recommended next slot.
+- **Verdict honesty.** The verdict is
+  `PASS_WITH_RUNTIME_DEFERRED` per the
+  SCHW.11 + PENROSE.12 + OBSERVER.9 /
+  OBSERVER.11 / OBSERVER.14 / OBSERVER.15
+  precedents (all CUDA / OptiX-touching
+  arcs landed on an audit-host without
+  SDKs converge to this verdict). Check
+  #10 is honestly recorded as DEFERRED
+  with the SDK-absence rationale; the 9
+  required SDK-host runtime checks are
+  enumerated for a future conversion
+  pass. The 5-vs-6 scope correction is
+  documented explicitly at check #5 +
+  the §1 verdict paragraph + the §3
+  reasoning summary, not silently
+  glossed over. Master rule #3 ("no
+  fake stubs") satisfied: every
+  modified site has a documented
+  legacy fallback branch; the
+  `CurvedChartGeodesicPlaceholder`
+  enumerator remains reserved-but-inert
+  (the ternary routes it to the legacy
+  fallback, same as `Identity`).
+
+### Module status changes
+
+`docs/MODULE_MAP.md` is *not* updated by
+this slice. With OBS-P.3 closing the
+audit of OBS-P.2, the
+`src/manifold/CameraObserverAdapter.h` /
+`src/manifold/ObserverFrame.h` module-map
+status remains **Skeleton-Plus**; the
+`**Wired**` promotion is reserved for
+the OBS-P.4 arc capstone (or for the
+SDK-host-pass conversion of the verdict
+from PASS_WITH_RUNTIME_DEFERRED → PASS).
+The OBS-P.3 verdict authorises the
+operator to proceed to **OBS-P.4 — OBS-P
+Arc Capstone Audit** (recommended next
+slot) under the new OBS-P arc's per-
+slice audit discipline. After OBS-P.4
+closes the arc, the operator may
+proceed to: the deferred SDK-host
+runtime pass; the OBSERVER.* fixture
+follow-up (per OBSERVER.12 task brief
+§5); the OBSERVER.15 capstone risks
+#2 + #3 (now actionable); or
+manifold-orthogonal work.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
