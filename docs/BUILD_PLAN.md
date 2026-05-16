@@ -80436,6 +80436,214 @@ dispatcher-side adapter invocation as the CUDA
 side received here, mirroring the SCHW.5 →
 SCHW.7 (CUDA → OptiX) progression.
 
+## OBSERVER.9 — CUDA Observer Payload Audit (docs only)
+
+**Scope of this slice (per the operator's *OBSERVER.9
+— CUDA Observer Payload Audit* task brief): write
+`docs/OBSERVER_CUDA_PAYLOAD_AUDIT.md`, the per-slice
+verdict document for OBSERVER.8 (`12f4942`). Verifies
+the nine items the task brief enumerates — CUDA
+observer payload exists if needed; ObserverFrame-
+derived values reach CUDA-facing launch/config
+structures; default observer is no-op; beta = 0
+preserves current behaviour; no observer perception
+transform added yet; OptiX path unchanged; build /
+test status; runtime CUDA status; verdict — and
+produces a `PASS` / `REPAIR` / `BLOCKED` verdict
+with check #8 separately recording the runtime
+CUDA status (`PASS` / `DEFERRED` / `BLOCKED`).
+Documentation only; no source code, no test, no
+CMake, no behavioural change.**
+
+### What ships
+
+- **`docs/OBSERVER_CUDA_PAYLOAD_AUDIT.md`
+  (new).** Per-slice verdict document mirroring
+  the PENROSE.7 (CUDA integration audit) +
+  OBSERVER.3 / OBSERVER.5 / OBSERVER.7
+  audit-doc shape:
+    - **§1 VERDICT** — `PASS`. All seven
+      structural checks return `PASS`; check #8
+      runtime CUDA status is `DEFERRED` on the
+      documented audit-host SDK-absence
+      limitation; check #9 verdict is `PASS`.
+    - **§2 PER-CHECK RESULTS** — nine-row
+      evidence table. Each row cites concrete
+      file/line observations on the OBSERVER.8
+      surface:
+        - **Check #1** (CUDA observer payload):
+          file/line refs to the three sibling-
+          field additions (`CudaSceneView::observer_frame{}`
+          at line 137; `AOVTargets::observer_frame
+          = {}` at line 206;
+          `PathTraceConfig::observer_frame{}` at
+          line 215).
+        - **Check #2** (values reach launch
+          structures): file/line refs to the
+          three data paths (AOV render path at
+          `main.cpp:4184`; CUDA path-trace path
+          at `main.cpp:2693`; host-side echo
+          logs at `main.cpp:3917` + `:2772`).
+        - **Check #3** (default no-op): four-
+          layer verification including audit-
+          host smoke-test transcripts.
+        - **Check #4** (beta=0 preservation):
+          three-layer verification.
+        - **Check #5** (no perception
+          transform): three-layer verification
+          via `git diff` filtered against the
+          CUDA kernel sources returning zero
+          hits.
+        - **Check #6** (OptiX unchanged):
+          `git diff --name-only -- 'src/optix/'`
+          returns zero hits.
+        - **Check #7** (build/test): ctest
+          12/12 PASS; `manifold_identity_tests
+          408/408`; `cli_tests 254/254`;
+          `renderer_tests 19/19`; all unchanged
+          from the OBSERVER.7 baseline.
+        - **Check #8** (runtime CUDA):
+          `DEFERRED` on documented SDK-absence
+          (mirrors the SCHW.5 / PENROSE.6 /
+          MANI-CONSUME.1 deferral pattern).
+          Required runtime checks for a future
+          SDK-host pass enumerated.
+        - **Check #9** (verdict): `PASS`.
+    - **§3 REASONING SUMMARY** — recap of the
+      OBSERVER.8 commit's five additions
+      (three sibling fields + one one-line
+      thread + one helper + two dispatcher
+      invocations + two log lines); plus a
+      per-check reasoning paragraph that ties
+      each verdict back to its evidence.
+    - **§4 NEXT** — renumbered OBSERVER.*
+      sub-slice ladder absorbing this audit
+      slot: OBSERVER.1-OBSERVER.8 (LANDED);
+      OBSERVER.9 THIS AUDIT; OBSERVER.10
+      OptiX payload bridge (was OBSERVER.9);
+      OBSERVER.11 observer debug AOV (was
+      OBSERVER.10); OBSERVER.12 arc capstone
+      (was OBSERVER.11).
+    - **§5 REFERENCES** — 19-entry list
+      spanning master instructions,
+      architecture-doc §3.3 / §6, the
+      OBSERVER.1 plan + the prior OBSERVER.3 /
+      OBSERVER.5 / OBSERVER.7 audits, the
+      precedent PENROSE.7 + SCHW.5 completion +
+      MANI-CONSUME.2 audits, the audited
+      source files (CudaScene.cuh,
+      CudaRenderer.h, CudaRenderer.cu,
+      PathTracer.h, main.cpp), the sibling
+      manifold + adapter headers, the
+      explicitly-unchanged OptiX surface
+      (OptixLaunchParams.h /
+      OptixPrograms.cu / OptixRenderer.h/.cpp),
+      the unchanged test files, the
+      post-OBSERVER.8 `BUILD_PLAN.md` entry,
+      and both surrounding commit SHAs
+      (`12f4942` audited / `a0215c0` baseline).
+
+### What does NOT ship
+
+- **No source code.** Nothing in any `src/`
+  subtree is touched (`git diff` outside
+  `docs/` ⇒ 0 bytes). The OBSERVER.8 surface
+  stays exactly as `12f4942` landed it.
+- **No new test binary.** ctest set unchanged
+  at 12. `manifold_identity_tests` count
+  unchanged at 408 RR_CHECK assertions;
+  `cli_tests` unchanged at 254.
+- **No CMake change.**
+- **No `OBSERVER_FRAME_RENDERING_PLAN.md`
+  rewrite.** The plan's §7 sub-slice ladder
+  stays as written (the audit-slot insertion
+  is recorded in this audit's §4 as a
+  renumbering ladder, not by editing the plan
+  doc).
+- **No `MODULE_MAP.md` update.** The per-slice
+  audit is doc-only; the
+  `CameraObserverAdapter.h` / `ObserverFrame.h`
+  module-map status remains
+  **Skeleton-Plus**; the `**Wired**` promotion
+  still waits for the slice that wires
+  kernel-side reads.
+- **No `MANIFOLD_INTEGRATION_PLAN.md` update.**
+  The integration plan's §11 MANI-I.12 slot
+  remains the documented next step for the
+  final cross-host audit; the OBSERVER.* arc
+  is orthogonal to MANI-I.12.
+- **No `BUILD_PLAN.md` historical-record
+  rewrite.** The MANI-I.* / SCHW.* / PENROSE.*
+  / MANI-CONSUME.* / OBSERVER.1-OBSERVER.8
+  entries above stay as-is; this OBSERVER.9
+  entry is additive.
+- **No Kerr / Kruskal work.** The audit is
+  scoped to the OBSERVER.8 CUDA-side payload
+  surface; new chart families are a separate
+  arc family.
+- **No C4D / server / UI / node-editor touch.**
+
+### Acceptance
+
+- **Compiles.** Documentation-only slice; no
+  build configuration touched. The audit-host
+  build remains at the post-OBSERVER.8 baseline
+  (`100% tests passed, 0 tests failed out of
+  12`; `manifold_identity_tests: 408/408`;
+  `cli_tests: 254/254 passed`;
+  `renderer_tests: 19/19 passed`).
+- **Internally consistent.** The nine-row
+  evidence table cites concrete file/line
+  positions on the OBSERVER.8 surface, concrete
+  diff observations (`git diff a0215c0..12f4942`
+  filtered against (a) the CUDA kernel sources
+  returns zero hits — proving the kernel
+  arms are byte-unchanged; (b) `src/optix/`
+  returns zero hits — proving the OptiX
+  side is byte-unchanged), and audit-host
+  smoke-test transcripts for both new log
+  lines. The renumbered OBSERVER.* sub-slice
+  ladder in §4 mirrors the OBSERVER.3 +
+  OBSERVER.5 + OBSERVER.7 audit-slot insertion
+  precedent verbatim.
+- **Verdict honesty.** The verdict is `PASS`
+  because the structural checks pass — not
+  because of an arbitrary judgement call.
+  Every claim in the evidence table is backed
+  by a file/line reference, a diff observation,
+  a runtime test count, OR an audit-host smoke-
+  test transcript. Check #8 (runtime CUDA) is
+  honestly recorded as `DEFERRED` on the
+  documented audit-host SDK-absence
+  limitation — NOT `BLOCKED` because the
+  structural plumbing is verified PASS, the
+  no-op-by-default invariant is verified at
+  audit-host smoke tests, and the operator's
+  brief explicitly scopes OBSERVER.8 to
+  carry-only behaviour (no kernel reads).
+  Master rule #3 ("no fake stubs") is
+  satisfied: the reserved-but-not-yet-consumed
+  `observer_frame` fields are structurally
+  consumed by the dispatcher invocations +
+  the echo logs; a future slice will gate
+  kernel-side reads on the `perception_mode`
+  tag.
+
+### Module status changes
+
+`docs/MODULE_MAP.md` is *not* updated by this
+slice. With OBSERVER.9 verifying OBSERVER.8's
+CUDA-side payload surface, the
+`src/manifold/CameraObserverAdapter.h` /
+`src/manifold/ObserverFrame.h` module-map status
+remains **Skeleton-Plus**; the `**Wired**`
+promotion still waits for the slice that wires
+kernel-side reads (gated on `perception_mode`).
+The OBSERVER.9 verdict authorises the operator
+to proceed to OBSERVER.10 (OptiX payload bridge;
+renumbered from the original OBSERVER.9) as the
+next OBSERVER.* impl slice when ready.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
