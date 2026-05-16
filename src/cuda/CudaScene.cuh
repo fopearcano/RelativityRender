@@ -21,6 +21,7 @@
 #include "lighting/Light.h"
 #include "manifold/CoordinateChart.h"  // SCHW.5: per-launch chart payload
 #include "manifold/ManifoldMode.h"     // SCHW.5: per-launch manifold mode
+#include "manifold/ObserverFrame.h"    // OBSERVER.8: per-launch observer-frame payload
 #include "material/MaterialTypes.h"
 #include "relativity/RelativityParams.h"
 
@@ -105,6 +106,35 @@ struct CudaSceneView {
     // CLI or scene file (SCHW.9).
     rr::manifold::ManifoldMode        manifold_mode{};
     rr::manifold::CoordinateChart     coordinate_chart{};
+
+    // ---- OBSERVER.8 per-launch observer-frame payload ----
+    //
+    // Built by the OBSERVER.6 camera-to-observer adapter
+    // (`build_observer_frame_from_camera(...)`) at the
+    // dispatcher's call site
+    // (`main.cpp::run_render_aovs` for the AOV path) and
+    // threaded into the view by
+    // `CudaRenderer::render_scene_with_aovs`.
+    //
+    // The default `rr::manifold::ObserverFrame{}` is the
+    // byte-identity no-op anchor: `perception_mode =
+    // Identity`, `beta = 0`, world-basis tetrad, both
+    // time placeholders = 0. With the default, the kernel
+    // arms (which currently do NOT read this field per
+    // OBSERVER.8's "no CUDA kernel behavior change beyond
+    // carrying data" contract) preserve the existing
+    // ray-generation + shading behaviour byte-for-byte.
+    //
+    // The field is reserved-but-carried this slice: a
+    // subsequent slice (no earlier than the kernel-side
+    // reads land) will gate the SR-helper call sites on
+    // `observer_frame.perception_mode == ConstantVelocityMinkowski`
+    // and key the existing aberration / Doppler /
+    // searchlight helpers on `observer_frame.beta` (instead
+    // of the legacy `observer.velocity`). Until that slice
+    // lands the field travels through the launch boundary
+    // but is not read.
+    rr::manifold::ObserverFrame       observer_frame{};
 };
 
 }

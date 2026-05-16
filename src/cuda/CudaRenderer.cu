@@ -300,6 +300,16 @@ CudaRenderer::Result CudaRenderer::render_scene_with_aovs(
     view.manifold_mode    = targets.manifold_mode;
     view.coordinate_chart = targets.coordinate_chart;
 
+    // OBSERVER.8 — thread the per-launch observer-frame
+    // payload. Default `ObserverFrame{}` is the byte-
+    // identity no-op anchor (perception_mode = Identity,
+    // beta = 0, world-basis tetrad). The kernel arms do
+    // NOT read this field this slice; the carry-through
+    // exists so a subsequent slice can wire kernel-side
+    // observer-frame reads without an AOVTargets /
+    // CudaSceneView ABI change.
+    view.observer_frame   = targets.observer_frame;
+
     return run_kernel_render(width, height,
         [view](float* device_pixels, int w, int h) {
             launch_render_scene(device_pixels, w, h, view, /*stream=*/nullptr);

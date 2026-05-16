@@ -3,6 +3,7 @@
 #include "image/Image.h"
 #include "manifold/CoordinateChart.h"  // SCHW.5: AOVTargets manifold payload
 #include "manifold/ManifoldMode.h"     // SCHW.5: AOVTargets manifold payload
+#include "manifold/ObserverFrame.h"    // OBSERVER.8: AOVTargets observer-frame payload
 
 #include <string>
 
@@ -186,6 +187,23 @@ public:
         // runtime dial.
         rr::manifold::ManifoldMode    manifold_mode    = {};
         rr::manifold::CoordinateChart coordinate_chart = {};
+
+        // OBSERVER.8 — per-launch observer-frame payload.
+        // The host (`main.cpp::run_render_aovs`) calls the
+        // OBSERVER.6 adapter
+        // `build_observer_frame_from_camera(...)` to build
+        // this from `scene.camera.to_gpu()` +
+        // `scene.observer` + `cfg.observer` and assigns
+        // the result here; `CudaRenderer::render_scene_with_aovs`
+        // threads it into `CudaSceneView::observer_frame`.
+        // Default `ObserverFrame{}` is the byte-identity
+        // no-op anchor (`perception_mode = Identity`,
+        // `beta = 0`, world-basis tetrad). The CUDA kernel
+        // arms do NOT read this field this slice — the
+        // field is carried through the launch boundary so
+        // a subsequent slice can wire kernel-side reads
+        // without changing the AOVTargets ABI again.
+        rr::manifold::ObserverFrame   observer_frame   = {};
     };
 
     [[nodiscard]] static Result render_scene_with_aovs(

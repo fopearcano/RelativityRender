@@ -2,6 +2,7 @@
 
 #include "image/Image.h"
 #include "manifold/ManifoldMode.h"
+#include "manifold/ObserverFrame.h"      // OBSERVER.8: per-render observer-frame payload
 #include "math/Vec3.h"
 
 #include <string>
@@ -187,6 +188,31 @@ struct PathTraceConfig {
     // the OptiX `__raygen__pathtrace` program continue to
     // ignore this field. MANI-I.4 is the first GPU touch.
     rr::manifold::ManifoldMode manifold;
+
+    // OBSERVER.8 — per-render observer-frame the renderer
+    // will eventually consult for the observer-side
+    // aberration / Doppler / searchlight pipeline (see
+    // `docs/OBSERVER_FRAME_RENDERING_PLAN.md` §6, §7
+    // OBSERVER.8). Built by the OBSERVER.6 adapter
+    // `build_observer_frame_from_camera(...)` at the
+    // dispatcher's call site (`main.cpp::run_render_pathtrace`
+    // for the path-trace path) from
+    // `scene.camera.to_gpu()` + `scene.observer` +
+    // `cfg.observer`. Default `ObserverFrame{}` is the
+    // byte-identity no-op anchor (`perception_mode =
+    // Identity`, `beta = 0`, world-basis tetrad);
+    // OBSERVER.8 ships only the field + host-side echo log
+    // line, no kernel consumption — the CUDA
+    // `launch_pathtrace_sample` launcher signature is
+    // intentionally NOT extended this slice to avoid
+    // sweeping the kernel-arg ABI when the kernel does not
+    // yet read the field. A subsequent slice will (a)
+    // extend `launch_pathtrace_sample` with a trailing
+    // `observer_frame` parameter (mirroring MANI-I.5's
+    // `manifold_mode` trailing-arg pattern), then (b)
+    // gate the SR-helper call sites on the
+    // `perception_mode` tag.
+    rr::manifold::ObserverFrame observer_frame;
 };
 
 // Result of a path-trace render. Mirrors the shape used by every

@@ -38,6 +38,8 @@
 // RELATIVITYRENDER_ENABLE_OPTIX inside the dispatcher).
 #include "geometry/Mesh.h"
 #include "lighting/Light.h"            // Stage 20N: needed by --render-optix-aovs dispatcher (audit-host build too)
+#include "manifold/CameraObserverAdapter.h"  // OBSERVER.8: host-side adapter for ObserverFrame
+#include "manifold/ObserverFrame.h"          // OBSERVER.8: ObserverFrame + PerceptionMode + format helper
 #include "material/MaterialTypes.h"
 #include "math/Vec2.h"
 #include "math/Vec3.h"
@@ -170,6 +172,49 @@ inline std::string format_manifold_mode(
          + ", strength=" + std::to_string(m.strength)
          + ", debug="    + (m.debug_visualization ? "on" : "off")
          + ")";
+}
+
+// OBSERVER.8 — operator-visible echo of the resolved
+// `ObserverConfig` that the CUDA render / pathtrace launch
+// structures carry this slice. Same shape as
+// `format_manifold_mode` above: returns a short single-line
+// description suitable for the host-side `Logger::info`
+// line that fires alongside the manifold-mode log on every
+// host (audit-host + CUDA host alike). Mode-by-mode format:
+//   - `Identity`                       -> "identity (no-op)"
+//   - `ConstantVelocityMinkowski`     -> "constant-velocity-minkowski
+//                                          (|beta|=..., dir=[x,y,z],
+//                                           tau=...)"
+//   - `CurvedChartGeodesicPlaceholder` -> "curved-chart-geodesic
+//                                          (placeholder; no-op)"
+// The line is informational; no kernel consumes the
+// resulting `ObserverFrame` this slice (OBSERVER.8 "no
+// CUDA kernel behavior change beyond carrying data"
+// contract). The downstream camera-to-observer adapter
+// (`build_observer_frame_from_camera(...)`) consumes this
+// config + the active camera + the legacy
+// `rr::relativity::Observer` to produce the frame the
+// launch structures carry.
+inline std::string format_observer_config_brief(
+        const rr::manifold::ObserverConfig& c) {
+    using rr::manifold::PerceptionMode;
+    switch (c.perception_mode) {
+        case PerceptionMode::Identity:
+            return "identity (no-op)";
+        case PerceptionMode::ConstantVelocityMinkowski:
+            return std::string("constant-velocity-minkowski (|beta|=")
+                 + std::to_string(c.beta_magnitude)
+                 + ", dir=["
+                 + std::to_string(c.direction.x) + ", "
+                 + std::to_string(c.direction.y) + ", "
+                 + std::to_string(c.direction.z) + "]"
+                 + ", tau="
+                 + std::to_string(c.proper_time)
+                 + ")";
+        case PerceptionMode::CurvedChartGeodesicPlaceholder:
+            return "curved-chart-geodesic (placeholder; no-op)";
+    }
+    return "unknown";
 }
 
 // Stage 19C.1: denoiser-friendly timing log. Same shape as
@@ -2632,6 +2677,23 @@ int run_render_pathtrace(const rr::core::Config& cfg) {
         // MANI-I.4 is the first slice that wires the field into
         // either backend's GPU code path.
         pcfg.manifold = cfg.manifold;
+        // OBSERVER.8 — build the per-render ObserverFrame from
+        // the active camera + legacy SR observer + CLI-overlay
+        // ObserverConfig via the OBSERVER.6 host adapter
+        // `build_observer_frame_from_camera(...)`. Default
+        // `cfg.observer.perception_mode == Identity` produces
+        // `rest_frame()` byte-for-byte; the kernel does NOT
+        // consume `pcfg.observer_frame` this slice (the CUDA
+        // `launch_pathtrace_sample` launcher signature is
+        // intentionally NOT extended this slice; the kernel-
+        // arg ABI sweep is deferred to the slice that
+        // actually wires kernel-side reads). The host-side
+        // echo log a few lines below reads the resolved
+        // config for operator visibility.
+        pcfg.observer_frame = rr::manifold::build_observer_frame_from_camera(
+            scene.camera.to_gpu(),
+            scene.observer,
+            cfg.observer);
         // Other PathTraceConfig fields (max_bounces, seed,
         // environment_color, environment_intensity) keep their
         // defaults. The defaults produce a moderate cool sky tint
@@ -2699,6 +2761,15 @@ int run_render_pathtrace(const rr::core::Config& cfg) {
         // populated even though the kernel ignored it.
         Logger::info(std::string("manifold         : ")
                    + format_manifold_mode(pcfg.manifold));
+        // OBSERVER.8: log the operator's selected observer
+        // config (the CLI source for the resolved
+        // `pcfg.observer_frame`). Same 17-column label width
+        // idiom; the line emits so the operator can confirm
+        // what was populated even though the CUDA path-
+        // trace kernel does not consume the field this
+        // slice.
+        Logger::info(std::string("observer         : ")
+                   + format_observer_config_brief(cfg.observer));
 
         if (!save_image_or_error(r.image, run.path, run.label,
                                  width, height)) {
@@ -3834,6 +3905,18 @@ int run_render_aovs(const rr::core::Config& cfg) {
     rr::core::Logger::info("aovs manifold mode: "
                          + format_manifold_mode(pre_effective_manifold));
 
+    // OBSERVER.8 — log the operator's resolved observer
+    // config alongside the manifold mode (mirrors
+    // MANI-CONSUME.1's "log fires before the RR_HAS_CUDA
+    // guard so audit-host smoke tests see it" pattern).
+    // The actual `ObserverFrame` is built inside the
+    // CUDA branch via `build_observer_frame_from_camera(...)`
+    // because it needs the scene's camera; the config
+    // log here shows the operator-selected perception
+    // mode + beta + direction + tau regardless of host.
+    rr::core::Logger::info("aovs observer config: "
+                         + format_observer_config_brief(cfg.observer));
+
 #ifndef RR_HAS_CUDA
     rr::core::Logger::error("--render-aovs requires CUDA. Rebuild with "
                             "-DRR_ENABLE_CUDA=ON on a host with the CUDA "
@@ -4097,6 +4180,29 @@ int run_render_aovs(const rr::core::Config& cfg) {
     }
     targets.manifold_mode    = effective_cuda_manifold;
     targets.coordinate_chart = cuda_manifold_chart;
+
+    // OBSERVER.8 — build the per-launch ObserverFrame
+    // payload from the active camera + legacy SR observer +
+    // CLI-overlay ObserverConfig via the OBSERVER.6 host
+    // adapter `build_observer_frame_from_camera(...)`. The
+    // adapter's three perception-mode paths
+    // (Identity / ConstantVelocityMinkowski /
+    // CurvedChartGeodesicPlaceholder) resolve to the
+    // documented byte-identity / full-construction /
+    // structural-passthrough behaviours; the default
+    // `cfg.observer.perception_mode == Identity` produces
+    // `rest_frame()` byte-for-byte so the no-op anchor is
+    // preserved. The kernel does NOT read
+    // `targets.observer_frame` this slice (OBSERVER.8 "no
+    // CUDA kernel behavior change beyond carrying data"
+    // contract); the payload travels through the launch
+    // boundary so a subsequent slice can gate kernel-side
+    // SR-helper reads on `perception_mode` without
+    // changing the AOVTargets / CudaSceneView ABI again.
+    targets.observer_frame = rr::manifold::build_observer_frame_from_camera(
+        scene.camera.to_gpu(),
+        scene.observer,
+        cfg.observer);
 
     auto r = rr::cuda::CudaRenderer::render_scene_with_aovs(
         gpu_scene, cfg.width, cfg.height, targets);
