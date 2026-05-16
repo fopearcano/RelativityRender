@@ -83369,6 +83369,290 @@ follow-up (per OBSERVER.12 task brief
 #2 + #3 (now actionable); or
 manifold-orthogonal work.
 
+## OBS-F.1 — ObserverFrame Fixture Task (docs only)
+
+**Scope of this slice (per the operator's *OBS-F.1
+— ObserverFrame Fixture Task* brief): write
+`docs/OBSERVER_FRAME_FIXTURE_TASK.md`, the
+operator-facing brief the subsequent impl slice
+(OBS-F.2) will consume to define a dedicated
+ObserverFrame fixture scene
+(`scenes/test_observer_frame.rrscene`) + its
+companion doc (`docs/OBSERVER_FRAME_FIXTURE.md`).
+First slice of the new **Observer Fixture (OBS-F)
+arc** that lifts the OBSERVER.12 task brief §5 +
+OBSERVER.15 capstone §10 risk #2 deferred fixture
+follow-up. Mirrors the OBSERVER.12 + OBS-P.1
+task-brief precedents. Documentation only; no
+source code, no test, no CMake, no scene file,
+no behavioural change.**
+
+### What ships
+
+- **`docs/OBSERVER_FRAME_FIXTURE_TASK.md`
+  (new).** Seven-section task brief covering
+  the six operator-specified sections plus a
+  cross-references appendix:
+    - **§1 Exact goal** — add an isolated
+      `scenes/test_observer_frame.rrscene`
+      fixture that exercises non-default
+      `ObserverFrame` fields via the
+      operator-facing CLI surface, without
+      modifying any default scene or
+      requiring a `.rrscene` schema
+      extension. Three sub-goals: parser
+      regression anchor, OBSERVER.* arc
+      runtime-validation fixture,
+      convergence-equivalence anchor for
+      the OBS-P.3 audit's check #8 at SDK
+      runtime. Documents the load-bearing
+      design decision: the fixture authors
+      the legacy `relativity` block (which
+      populates `scene.observer.velocity`);
+      the OBSERVER.6 adapter routes this
+      onto `observer_frame.beta` when the
+      operator engages
+      `--observer-perception-mode
+      relativistic`; the OBS-P.2 kernel
+      ternary engages the gated path. NO
+      new `.rrscene` schema field needed.
+    - **§2 Fixture requirements** — six
+      sub-sections covering observer
+      velocity (`betaVelocity = 0.5`,
+      `velocityDirection = [0,0,-1]`,
+      strengths = 1.0); perception mode
+      via CLI (no scene-file `observer`
+      block at OBS-F); simple geometry
+      (5-6 spheres + ground plane + 2
+      lights mirroring SCHW.9 /
+      PENROSE.10); safe camera framing
+      (forward-facing toward observer
+      motion direction); resolution +
+      render settings (1280x720, spp=1,
+      max_depth=1); no manifold chart
+      (keeps the fixture isolated to
+      observer-frame behaviour).
+    - **§3 Expected behavior** — three
+      load-bearing invariants: default
+      scenes unchanged; fixture
+      exercises the OBSERVER.6 adapter
+      → OBS-P.2 kernel gate end-to-end
+      when the operator passes the
+      perception-mode flag; runtime
+      visual/AOV validation DEFERRED
+      until an SDK host runs the
+      fixture (mirrors the OBSERVER.9
+      / OBSERVER.11 / OBSERVER.14 /
+      OBS-P.3 deferred-runtime
+      pattern).
+    - **§4 Files likely involved** —
+      6-row table covering the fixture
+      scene file (~80 lines, mirrors
+      SCHW.9 shape), the companion doc
+      (~400-500 lines, mirrors
+      SCHW.9/PENROSE.10 companion-doc
+      shape), the BUILD_PLAN.md entry,
+      and explicit "none expected" rows
+      for parser / source code / CMake.
+      Optional 20-line
+      `tests/io_tests.cpp` extension
+      noted as scope-dependent.
+      ~500-700 net-line delta estimate
+      (data + documentation only).
+    - **§5 What must not be touched** —
+      13 explicit non-goals: no CUDA /
+      OptiX kernel changes; no new
+      perception model; no new manifold
+      math; no `.rrscene` schema
+      extension; no new CLI flag; no
+      new AOV; no `RelativityParams`
+      change; no source-code change;
+      no historical rewrite; no
+      `MODULE_MAP` update; no prior-doc
+      modification; no Kerr/Kruskal;
+      no C4D/server/UI/node-editor.
+    - **§6 PASS criteria** — four
+      sub-sections: structural (7
+      checkboxes covering the fixture
+      structure + JSON validity + no
+      new file beyond the documented
+      three); behavioural (4 checkboxes
+      covering default scenes
+      unchanged + audit-host parse
+      success + ctest unchanged +
+      companion-doc visual-signature
+      coverage); documentation (2
+      checkboxes for the two new doc
+      files); runtime SDK-host DEFERRED
+      (7 checkboxes enumerating future
+      SDK-host runtime verifications:
+      default-mode byte-identity,
+      opt-in path engagement, cross-
+      source convergence-equivalence,
+      OBSERVER.13 debug-AOV
+      consistency, cross-backend AOV
+      equivalence, OptiX path-trace
+      convergence,
+      `RelativityParams` orthogonality
+      live test).
+    - **§7 Cross-references** — 19-entry
+      list spanning master instructions,
+      architecture-doc, OBSERVER.1
+      plan, OBSERVER.15 capstone (the
+      doc whose §10 risk #2 this OBS-F
+      arc lifts), OBSERVER.12 task
+      brief §5 (the original deferred
+      fixture-task reference), all
+      OBSERVER.* + OBS-P.* per-slice
+      audits referencing this fixture
+      follow-up, the precedent
+      SCHW.9 / PENROSE.10 fixture
+      docs + scene files, the
+      `test_relativity.rrscene`
+      minimal precedent, every source
+      file the fixture exercises
+      (without modifying).
+
+### What does NOT ship
+
+- **No source code.** Nothing in any
+  `src/` subtree is touched
+  (`git diff` outside `docs/` ⇒ 0
+  bytes). The post-OBS-P.3 HEAD =
+  `dc2869e` baseline is preserved
+  exactly.
+- **No new test binary.** ctest set
+  unchanged at 12. Test counts
+  unchanged
+  (`relativity_tests: 841/841`;
+  `manifold_identity_tests:
+  408/408`; `cli_tests: 274/274`;
+  `renderer_tests: 27/27`).
+- **No CMake change.**
+- **No fixture scene yet.** The
+  `scenes/test_observer_frame.rrscene`
+  file is documented in §2 + §4 but
+  not authored. OBS-F.2 (the impl
+  slice) lands the scene.
+- **No companion fixture doc yet.**
+  `docs/OBSERVER_FRAME_FIXTURE.md`
+  is documented in §4 + §6 but not
+  written. OBS-F.2 lands it.
+- **No OBS-F.2 implementation.**
+  This is the task-definition
+  slice ONLY. The implementation
+  slice consumes this doc as its
+  canonical brief and lands
+  separately when the operator
+  prompts for it.
+- **No `.rrscene` schema
+  extension.** The fixture uses
+  only pre-existing scene-block
+  fields; no new `observer`
+  scene block.
+- **No new CLI flag.** The
+  OBSERVER.4 `--observer-*`
+  surface + the OBSERVER.13
+  `--observer-debug` flag
+  comprise the entire CLI
+  surface the fixture
+  exercises.
+- **No prior-doc modification.**
+  Every prior arc document
+  (OBSERVER.1 / .12 / .14 / .15;
+  OBS-P.1 / .3) preserved
+  verbatim.
+- **No `MODULE_MAP.md` update.**
+- **No `MANIFOLD_INTEGRATION_PLAN.md`
+  update.**
+- **No `BUILD_PLAN.md` historical
+  rewrite.**
+- **No Kerr / Kruskal work.**
+- **No C4D / server / UI /
+  node-editor touch.**
+
+### Acceptance
+
+- **Compiles.** Documentation-only
+  slice; no build configuration
+  touched. The audit-host build
+  remains at the post-OBS-P.3
+  baseline (`100% tests passed,
+  0 tests failed out of 12`;
+  `relativity_tests: 841/841
+  passed`;
+  `manifold_identity_tests:
+  408/408`;
+  `cli_tests: 274/274 passed`;
+  `renderer_tests: 27/27
+  passed`).
+- **Internally consistent.** The
+  six operator-specified sections
+  are present in the operator's
+  order; the seventh (cross-
+  references) appendix mirrors
+  the OBSERVER.12 + OBS-P.1
+  task-brief precedents. The
+  fixture-requirements section
+  (§2) reconciles the operator's
+  per-field requirements
+  (`betaVelocity > 0`, finite
+  direction, perception mode =
+  ConstantVelocityMinkowski,
+  simple geometry, safe camera,
+  no manifold) with the
+  pre-existing scene-format
+  vocabulary — the design uses
+  the legacy `relativity` block
+  + the OBSERVER.4 CLI flag to
+  engage `ConstantVelocityMinkowski`
+  at invocation time, avoiding
+  the need for a `.rrscene`
+  schema extension.
+- **Verdict honesty.** Every
+  claim in the task doc is
+  backed by a cross-reference
+  to a prior landed slice
+  (OBSERVER.1-OBSERVER.15;
+  OBS-P.1-OBS-P.3) or a
+  precedent fixture (SCHW.9 /
+  PENROSE.10). The "what must
+  not be touched" list (§5)
+  enumerates 13 explicit
+  non-goals. Master rule #3
+  ("no fake stubs") is
+  satisfied: the fixture
+  exercises real pre-existing
+  parser surface + real
+  pre-existing kernel reads;
+  no placeholder code; no new
+  schema field.
+
+### Module status changes
+
+`docs/MODULE_MAP.md` is *not*
+updated by this slice. The
+OBS-F.1 task brief lands but
+no implementation; the
+`src/manifold/CameraObserverAdapter.h`
+/ `src/manifold/ObserverFrame.h`
+module-map status remains
+**Skeleton-Plus**. The OBS-F.1
+verdict authorises the operator
+to proceed to **OBS-F.2 —
+fixture implementation** (the
+fixture scene + companion doc)
+as the next OBS-F slot when
+ready. After OBS-F.2 + OBS-F.3
+(its audit) land, the operator
+may proceed to the deferred
+SDK-host runtime pass that
+converts the OBSERVER.* +
+OBS-P.* + OBS-F.* arc family's
+verdicts from
+PASS_WITH_RUNTIME_DEFERRED →
+PASS.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
