@@ -80963,6 +80963,256 @@ verdict). The OBSERVER.10 verdict authorises
 the operator to proceed to the next OBSERVER.*
 audit slot under the renumbered ladder.
 
+## OBSERVER.11 — OptiX Observer Payload Audit (docs only)
+
+**Scope of this slice (per the operator's *OBSERVER.11
+— OptiX Observer Payload Audit* task brief): write
+`docs/OBSERVER_OPTIX_PAYLOAD_AUDIT.md`, the per-slice
+verdict document for OBSERVER.10 (`977ff73`).
+Verifies the ten items the task brief enumerates —
+OptiX observer payload exists if needed;
+ObserverFrame-derived values reach OptiX launch
+params; semantics match CUDA observer payload;
+default observer is no-op; beta = 0 preserves
+current behaviour; no observer perception
+transform added yet; CUDA path unchanged except
+shared types if needed; OptiX OFF build remains
+valid; runtime CUDA/OptiX status; verdict — and
+produces a `PASS` / `REPAIR` / `BLOCKED` verdict
+with check #9 separately recording the runtime
+CUDA/OptiX status (`PASS` / `DEFERRED` /
+`BLOCKED`). Documentation only; no source code,
+no test, no CMake, no behavioural change.**
+
+### What ships
+
+- **`docs/OBSERVER_OPTIX_PAYLOAD_AUDIT.md`
+  (new).** Per-slice verdict document mirroring
+  the PENROSE.9 (OptiX integration audit) +
+  OBSERVER.9 (CUDA-side payload audit) +
+  OBSERVER.3 / OBSERVER.5 / OBSERVER.7
+  audit-doc shape:
+    - **§1 VERDICT** — `PASS`. All eight
+      structural checks return `PASS`; check #9
+      runtime CUDA/OptiX status is `DEFERRED` on
+      the documented audit-host SDK-absence
+      limitation; check #10 verdict is `PASS`.
+    - **§2 PER-CHECK RESULTS** — ten-row
+      evidence table. Each row cites concrete
+      file/line observations on the OBSERVER.10
+      surface:
+        - **Check #1** (OptiX observer payload):
+          file/line refs to the three
+          attachment-point additions
+          (`OptixLaunchParams::observer_frame{}`
+          at line 431; `render_aovs(...,
+          observer_frame = {})` trailing-default
+          at OptixRenderer.h:482;
+          `render_pathtrace_progressive(...,
+          observer_frame = {})` trailing-default
+          at OptixRenderer.h:327).
+        - **Check #2** (values reach launch
+          params): file/line refs to the two
+          data paths (OptiX AOV at
+          `main.cpp:2281`; OptiX path-trace at
+          `main.cpp:1708`) + the
+          `params.observer_frame = observer_frame;`
+          threads inside `OptixRenderer.cpp`
+          (lines 1827 + 2785) + the two host-side
+          log lines (`main.cpp:2191` +
+          `:1693-1694`).
+        - **Check #3** (semantics match CUDA):
+          four-axis verification (same shared
+          type; same upstream adapter; same
+          dispatcher-merge precedent; same
+          operator-visible log shape).
+        - **Check #4** (default no-op): four-
+          layer verification including audit-
+          host smoke-test of `optix-aovs
+          observer config: identity (no-op)`.
+        - **Check #5** (beta=0 preservation):
+          three-layer verification (adapter
+          resolution; launch-params carry-
+          through; OptiX programs ignore the
+          field).
+        - **Check #6** (no perception
+          transform): three-layer verification
+          via `git diff` filtered against
+          `src/optix/OptixPrograms.cu` and
+          `OptixSBT.h` returning zero hits.
+        - **Check #7** (CUDA path unchanged):
+          `git diff --name-only -- 'src/cuda/'
+          'src/pathtracer/' 'src/manifold/'`
+          returns zero hits; OBSERVER.8 CUDA-
+          side plumbing preserved verbatim.
+        - **Check #8** (OptiX OFF build): audit-
+          host `cmake --build` succeeds; pre-
+          guard log lines execute on every host;
+          post-guard adapter calls + OptiX
+          entry-point invocations properly
+          `#ifndef RELATIVITYRENDER_ENABLE_OPTIX`
+          gated.
+        - **Check #9** (runtime CUDA/OptiX):
+          `DEFERRED` on documented SDK-absence
+          for BOTH backends (mirrors the
+          OBSERVER.9 / SCHW.5 / PENROSE.6
+          deferral pattern). Required runtime
+          checks for a future SDK-host pass
+          enumerated (including a cross-backend
+          equivalence check).
+        - **Check #10** (verdict): `PASS`.
+    - **§3 REASONING SUMMARY** — recap of the
+      OBSERVER.10 commit's six additions (one
+      sibling field on OptixLaunchParams; two
+      trailing-defaulted entry-point parameters;
+      two `params.observer_frame = ...`
+      assignments; two dispatcher-side adapter
+      invocations; two log lines); plus a per-
+      check reasoning paragraph that ties each
+      verdict back to its evidence.
+    - **§4 NEXT** — renumbered OBSERVER.*
+      sub-slice ladder absorbing this audit
+      slot: OBSERVER.1-OBSERVER.10 (LANDED);
+      OBSERVER.11 THIS AUDIT; OBSERVER.12
+      observer debug AOV (was OBSERVER.10 in
+      the post-OBSERVER.7 plan; renumbered
+      through OBSERVER.9 + OBSERVER.11 audit
+      insertions); OBSERVER.13 arc capstone
+      (was OBSERVER.11). Notes the operator
+      may instead choose to land the non-debug
+      kernel-read wiring first; the OBSERVER.10
+      audit verdict authorises either ordering.
+    - **§5 REFERENCES** — 23-entry reference
+      list spanning master instructions,
+      architecture-doc §3.3 / §6, the
+      OBSERVER.1 plan + the prior OBSERVER.3 /
+      OBSERVER.5 / OBSERVER.7 / OBSERVER.9
+      audits, the precedent PENROSE.9 +
+      SCHW.8 + MANI-CONSUME.2 audits, the
+      audited source files
+      (OptixLaunchParams.h, OptixRenderer.h,
+      OptixRenderer.cpp, main.cpp), the
+      sibling manifold + adapter headers, the
+      explicitly-unchanged CUDA surface
+      (CudaScene.cuh, CudaRenderer.h/.cu,
+      PathTracer.h), the explicitly-unchanged
+      OptiX kernel surface
+      (OptixPrograms.cu, OptixSBT.h), the
+      unchanged test files, the
+      post-OBSERVER.10 `BUILD_PLAN.md` entry,
+      and both surrounding commit SHAs
+      (`977ff73` audited / `e5fe441` baseline).
+
+### What does NOT ship
+
+- **No source code.** Nothing in any `src/`
+  subtree is touched (`git diff` outside
+  `docs/` ⇒ 0 bytes). The OBSERVER.10 surface
+  stays exactly as `977ff73` landed it.
+- **No new test binary.** ctest set unchanged
+  at 12. `manifold_identity_tests` count
+  unchanged at 408 RR_CHECK assertions;
+  `cli_tests` unchanged at 254;
+  `renderer_tests` unchanged at 19.
+- **No CMake change.**
+- **No `OBSERVER_FRAME_RENDERING_PLAN.md`
+  rewrite.** The plan's §7 sub-slice ladder
+  stays as written (the audit-slot insertion
+  is recorded in this audit's §4 as a
+  renumbering ladder, not by editing the plan
+  doc).
+- **No `MODULE_MAP.md` update.** The per-slice
+  audit is doc-only; the
+  `CameraObserverAdapter.h` / `ObserverFrame.h`
+  module-map status remains
+  **Skeleton-Plus**; the `**Wired**`
+  promotion still waits for the slice that
+  wires kernel-side reads on either backend.
+- **No `MANIFOLD_INTEGRATION_PLAN.md` update.**
+  The integration plan's §11 MANI-I.12 slot
+  remains the documented next step for the
+  final cross-host audit; the OBSERVER.* arc
+  is orthogonal to MANI-I.12.
+- **No `BUILD_PLAN.md` historical-record
+  rewrite.** The MANI-I.* / SCHW.* / PENROSE.*
+  / MANI-CONSUME.* / OBSERVER.1-OBSERVER.10
+  entries above stay as-is; this OBSERVER.11
+  entry is additive.
+- **No Kerr / Kruskal work.** The audit is
+  scoped to the OBSERVER.10 OptiX-side payload
+  surface; new chart families are a separate
+  arc family.
+- **No C4D / server / UI / node-editor touch.**
+
+### Acceptance
+
+- **Compiles.** Documentation-only slice; no
+  build configuration touched. The audit-host
+  build remains at the post-OBSERVER.10 baseline
+  (`100% tests passed, 0 tests failed out of
+  12`; `manifold_identity_tests: 408/408`;
+  `cli_tests: 254/254 passed`;
+  `renderer_tests: 19/19 passed`).
+- **Internally consistent.** The ten-row
+  evidence table cites concrete file/line
+  positions on the OBSERVER.10 surface,
+  concrete diff observations (`git diff
+  e5fe441..977ff73` filtered against (a) the
+  OptiX kernel sources returns zero hits —
+  proving the OptiX programs are byte-
+  unchanged; (b) `src/cuda/` /
+  `src/pathtracer/` / `src/manifold/`
+  returns zero hits — proving the CUDA side
+  is byte-unchanged), and audit-host smoke-
+  test transcripts for both new OptiX-
+  dispatcher log lines. The renumbered
+  OBSERVER.* sub-slice ladder in §4 mirrors
+  the OBSERVER.3 + OBSERVER.5 + OBSERVER.7 +
+  OBSERVER.9 audit-slot insertion precedent
+  verbatim.
+- **Verdict honesty.** The verdict is `PASS`
+  because the structural checks pass — not
+  because of an arbitrary judgement call.
+  Every claim in the evidence table is backed
+  by a file/line reference, a diff observation,
+  a runtime test count, OR an audit-host smoke-
+  test transcript. Check #9 (runtime CUDA/OptiX)
+  is honestly recorded as `DEFERRED` for BOTH
+  backends on the documented audit-host
+  SDK-absence limitation — NOT `BLOCKED`
+  because the structural plumbing is verified
+  PASS on both backends, the no-op-by-default
+  invariant is verified at audit-host smoke
+  tests for both backends, and the operator's
+  brief explicitly scopes OBSERVER.10 to OptiX
+  carry-only behaviour (no OptiX program reads).
+  Master rule #3 ("no fake stubs") is
+  satisfied: the reserved-but-not-yet-consumed
+  `OptixLaunchParams::observer_frame` field is
+  structurally consumed by the dispatcher
+  invocations + the echo logs; a future slice
+  will gate kernel-side reads on the
+  `perception_mode` tag.
+
+### Module status changes
+
+`docs/MODULE_MAP.md` is *not* updated by this
+slice. With OBSERVER.11 verifying OBSERVER.10's
+OptiX-side payload surface, the
+`src/manifold/CameraObserverAdapter.h` /
+`src/manifold/ObserverFrame.h` module-map
+status remains **Skeleton-Plus**; the
+`**Wired**` promotion still waits for the slice
+that wires kernel-side reads on either backend
+(both backends' launch boundaries are now
+ready). The OBSERVER.11 verdict authorises the
+operator to proceed to OBSERVER.12 (observer
+debug AOV; renumbered from the original
+OBSERVER.10) as the next OBSERVER.* impl slice
+when ready — OR to land the non-debug kernel-
+read wiring first (the audit verdict authorises
+either ordering).
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
