@@ -313,6 +313,17 @@ extern "C" __global__ void __miss__radiance() {
             optixLaunchParams.aov_manifold_coordinates[pix_idx_3 + 1] = 0.0f;
             optixLaunchParams.aov_manifold_coordinates[pix_idx_3 + 2] = 0.0f;
         }
+        // OBSERVER.13 — observer-frame debug AOV (miss side).
+        // Writes `(0, 0, 0)` matching the Normal /
+        // ManifoldCoordinates AOVs' miss convention. Null-
+        // gated; see the closest-hit arm for the host-side
+        // allocation status (gated on
+        // `cfg.observer.debug_visualization`).
+        if (optixLaunchParams.aov_observer_beta != nullptr) {
+            optixLaunchParams.aov_observer_beta[pix_idx_3 + 0] = 0.0f;
+            optixLaunchParams.aov_observer_beta[pix_idx_3 + 1] = 0.0f;
+            optixLaunchParams.aov_observer_beta[pix_idx_3 + 2] = 0.0f;
+        }
     }
 }
 
@@ -846,6 +857,39 @@ extern "C" __global__ void __closesthit__radiance() {
         optixLaunchParams.aov_manifold_coordinates[pix_idx_3 + 0] = hit_pos.x;
         optixLaunchParams.aov_manifold_coordinates[pix_idx_3 + 1] = hit_pos.y;
         optixLaunchParams.aov_manifold_coordinates[pix_idx_3 + 2] = hit_pos.z;
+    }
+
+    // OBSERVER.13 — observer-frame debug AOV (closest-hit
+    // side). Writes `optixLaunchParams.observer_frame.beta`
+    // per hit pixel. Read-only on the observer payload —
+    // no perception transform (no aberration / Doppler /
+    // searchlight re-keying on the observer-frame beta)
+    // per the OBSERVER.12 task brief §4.2 contract.
+    // Mirrors the CUDA-side OBSERVER.13 arm at
+    // `CudaTestKernel.cu` in shape (null-gated; 3-float-per-
+    // pixel write). The `optixLaunchParams.observer_frame`
+    // field is populated by OBSERVER.10's
+    // `OptixRenderer::render_aovs` from the OBSERVER.6
+    // adapter output via the host dispatcher. On the
+    // default Identity perception mode every hit pixel
+    // writes `(0, 0, 0)` (the `rest_frame()` anchor's
+    // beta); on ConstantVelocityMinkowski with a non-zero
+    // observer beta every hit pixel writes the same flat
+    // colour `(beta.x, beta.y, beta.z)`. Single-source-of-
+    // truth math with the CUDA arm (both read the same
+    // field; both write the same value).
+    if (optixLaunchParams.aov_observer_beta != nullptr) {
+        const uint3 idx_ob = optixGetLaunchIndex();
+        const int   x_ob   = static_cast<int>(idx_ob.x);
+        const int   y_ob   = static_cast<int>(idx_ob.y);
+        const int   W_ob   = optixLaunchParams.width;
+        const int   pix_idx_3 = (y_ob * W_ob + x_ob) * 3;
+        optixLaunchParams.aov_observer_beta[pix_idx_3 + 0] =
+            optixLaunchParams.observer_frame.beta.x;
+        optixLaunchParams.aov_observer_beta[pix_idx_3 + 1] =
+            optixLaunchParams.observer_frame.beta.y;
+        optixLaunchParams.aov_observer_beta[pix_idx_3 + 2] =
+            optixLaunchParams.observer_frame.beta.z;
     }
 }
 

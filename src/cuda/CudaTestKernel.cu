@@ -696,6 +696,35 @@ __global__ void k_render_scene(float* pixels, int width, int height,
             scene.aovs.manifold_coordinates[pix_idx_3 + 2] = 0.0f;
         }
     }
+
+    // OBSERVER.13 — observer-frame debug AOV. Writes
+    // `scene.observer_frame.beta` per hit pixel and
+    // `(0, 0, 0)` per miss pixel. Read-only on the observer
+    // payload — no perception transform (no aberration /
+    // Doppler / searchlight re-keying on the observer-frame
+    // beta) per the OBSERVER.12 task brief §4.2 contract.
+    // Mirrors the manifold_coordinates arm above in shape
+    // (null-gated; hit-vs-miss branch; 3-float-per-pixel
+    // write). The `scene.observer_frame` field is populated
+    // by OBSERVER.8's `CudaRenderer::render_scene_with_aovs`
+    // from the OBSERVER.6 adapter output via the host
+    // dispatcher. On the default Identity perception mode
+    // every hit pixel writes `(0, 0, 0)` (the
+    // `rest_frame()` anchor's beta); on
+    // ConstantVelocityMinkowski with a non-zero
+    // observer beta every hit pixel writes the same flat
+    // colour `(beta.x, beta.y, beta.z)`.
+    if (scene.aovs.observer_beta != nullptr) {
+        if (best.hit) {
+            scene.aovs.observer_beta[pix_idx_3 + 0] = scene.observer_frame.beta.x;
+            scene.aovs.observer_beta[pix_idx_3 + 1] = scene.observer_frame.beta.y;
+            scene.aovs.observer_beta[pix_idx_3 + 2] = scene.observer_frame.beta.z;
+        } else {
+            scene.aovs.observer_beta[pix_idx_3 + 0] = 0.0f;
+            scene.aovs.observer_beta[pix_idx_3 + 1] = 0.0f;
+            scene.aovs.observer_beta[pix_idx_3 + 2] = 0.0f;
+        }
+    }
 }
 
 }  // namespace

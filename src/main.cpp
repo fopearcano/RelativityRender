@@ -2286,7 +2286,11 @@ int run_render_optix_aovs(const rr::core::Config& cfg) {
     auto r = rr::optix::OptixRenderer::render_aovs(
         scene, lights, cfg.width, cfg.height,
         effective_manifold, manifold_chart,
-        optix_observer_frame);
+        optix_observer_frame,
+        // OBSERVER.13 — gate the observer_beta AOV on the
+        // `--observer-debug` CLI flag (default off
+        // preserves the pre-OBSERVER.13 byte-identity).
+        cfg.observer.debug_visualization);
     if (!r.ok) {
         Logger::error("optix aovs render failed: " + r.message);
         return 1;
@@ -2349,6 +2353,21 @@ int run_render_optix_aovs(const rr::core::Config& cfg) {
         all_ok &= save_one(r.manifold_coordinates,
                            "output/optix_aov_manifold_coordinates.ppm",
                            "OptiX AOV manifold coordinates");
+    }
+
+    // OBSERVER.13 — save the OptiX observer-beta debug AOV
+    // when the operator opted in via `--observer-debug`.
+    // The kernel arm short-circuits when the device buffer
+    // is null, so on the default
+    // `cfg.observer.debug_visualization = false` path
+    // `r.observer_beta` stays as the empty `Image{}` and
+    // we don't emit a PPM. File name mirrors the CUDA
+    // path's `output/aov_observer_beta.ppm` convention
+    // with the OptiX-side `optix_aov_*` stem.
+    if (cfg.observer.debug_visualization) {
+        all_ok &= save_one(r.observer_beta,
+                           "output/optix_aov_observer_beta.ppm",
+                           "OptiX AOV observer beta");
     }
 
     // OptiX Gap A Step 3.5: when `--denoise` is set, run the
@@ -4176,6 +4195,34 @@ int run_render_aovs(const rr::core::Config& cfg) {
         }
     }
 
+    // OBSERVER.13 — opt-in 8th AOV: the observer-frame
+    // debug visualisation slot. Allocated only when the
+    // operator passes `--observer-debug` (which sets
+    // `cfg.observer.debug_visualization = true`). When
+    // the gate is off, the GpuAOVBuffer's
+    // `device_ptr()` returns `nullptr` and the kernel's
+    // `observer_beta` write arm short-circuits — every
+    // `--render-aovs` invocation without `--observer-debug`
+    // is byte-identical to the pre-OBSERVER.13 baseline.
+    // The OBSERVER.4 `cfg.observer.debug_visualization`
+    // field is host-only; the OBSERVER.6 adapter's
+    // resulting `targets.observer_frame` carries the
+    // perception state independent of this gate. The two
+    // debug-AOV gates (`--manifold-debug` +
+    // `--observer-debug`) are orthogonal; both can be
+    // active at the same launch per OBSERVER.12 task
+    // brief §8.5.
+    rr::renderer::GpuAOVBuffer observer_beta_buffer{
+        rr::renderer::AOV::make_observer_beta()};
+    if (cfg.observer.debug_visualization) {
+        if (!observer_beta_buffer.resize(cfg.width, cfg.height)) {
+            rr::core::Logger::error("aovs: resize failed for "
+                                  + std::string(rr::renderer::aov_type_name(
+                                        rr::renderer::AOVType::ObserverBeta)));
+            return 1;
+        }
+    }
+
     rr::cuda::CudaRenderer::AOVTargets targets;
     targets.beauty               = aov_set[0].device_ptr();
     targets.normal               = aov_set[1].device_ptr();
@@ -4193,6 +4240,14 @@ int run_render_aovs(const rr::core::Config& cfg) {
     // the raw `best.position` (MANI-I.8 baseline).
     targets.manifold_coordinates = effective_cuda_manifold.debug_visualization
                                    ? manifold_coords_buffer.device_ptr()
+                                   : nullptr;
+    // OBSERVER.13 — set the observer_beta device-pointer
+    // target only when the operator opted in via
+    // `--observer-debug`. On the default-off path the
+    // pointer stays `nullptr` and the kernel's write arm
+    // short-circuits.
+    targets.observer_beta        = cfg.observer.debug_visualization
+                                   ? observer_beta_buffer.device_ptr()
                                    : nullptr;
 
     // SCHW.5 — build a per-launch `CoordinateChart` from
@@ -4308,6 +4363,22 @@ int run_render_aovs(const rr::core::Config& cfg) {
                              "output/aov_manifold_coordinates.ppm",
                              cfg.width, cfg.height,
                              "AOV manifold coordinates")) {
+            all_ok = false;
+        }
+    }
+
+    // OBSERVER.13 — save the observer-frame debug AOV when
+    // the operator opted in via `--observer-debug`. Mirrors
+    // the manifold-coordinates save path above verbatim:
+    // `GpuAOVBuffer`'s standard download + PPM-write helper;
+    // file name `output/aov_observer_beta.ppm` matches the
+    // existing `output/aov_<lowercase>.ppm` convention and
+    // the snake_case `aov_type_name(ObserverBeta)`.
+    if (cfg.observer.debug_visualization) {
+        if (!save_aov_to_ppm(observer_beta_buffer,
+                             "output/aov_observer_beta.ppm",
+                             cfg.width, cfg.height,
+                             "AOV observer beta")) {
             all_ok = false;
         }
     }

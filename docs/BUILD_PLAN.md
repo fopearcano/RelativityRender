@@ -81509,6 +81509,393 @@ numbering matches the MANI-I.7 → MANI-I.8
 precedent (task brief at MANI-I.7; impl at
 MANI-I.8).
 
+## OBSERVER.13 — Observer Debug AOV Implementation (impl, AOV + CUDA + OptiX + CLI)
+
+**Scope of this slice (per the operator's *OBSERVER.13
+— Observer Debug AOV Implementation* task brief +
+the OBSERVER.12 task doc as canonical reference):
+add an optional `AOVType::ObserverBeta` AOV that
+writes `observer_frame.beta` per hit pixel and
+`(0, 0, 0)` per miss pixel, gated on a new
+`--observer-debug` CLI modifier flag, on both CUDA
++ OptiX backends. Read-only on the observer
+payload — no perception transform applied. Beauty
+output + every existing AOV + every default render
+behaviour unchanged. Mirrors the MANI-I.8 manifold
+debug AOV precedent verbatim in shape, structure,
+gate placement, file-naming convention, and
+cross-backend symmetry.**
+
+### What ships
+
+- **`src/renderer/AOV.h` + `src/renderer/AOV.cpp`
+  (modified).** Adds:
+    - `AOVType::ObserverBeta = 7` enumerator
+      appended at the end of the `AOVType` enum
+      (preserves every pre-OBSERVER.13 value's
+      offset).
+    - `aov_component_count(ObserverBeta) -> 3`.
+    - `aov_type_name(ObserverBeta) -> "observer_beta"`.
+    - `AOV::make_observer_beta(std::string name = {})`
+      factory mirroring the
+      `make_manifold_coordinates(...)` shape
+      verbatim.
+
+- **`src/manifold/ObserverFrame.h` (modified).**
+  Adds:
+    - `bool debug_visualization = false` field on
+      `ObserverConfig` (sibling of
+      `perception_mode`). Default `false`
+      preserves the pre-OBSERVER.13 byte-identity.
+      Doc-comment mirrors the
+      `ManifoldMode::debug_visualization` shape +
+      explains the two-flag gate composition with
+      `--render-aovs` / `--render-optix-aovs`.
+
+- **`src/core/CommandLine.cpp` (modified).** Adds:
+    - `--observer-debug` modifier flag parser arm
+      (presence-only; sets
+      `r.config.observer.debug_visualization =
+      true`). Mirrors the `--manifold-debug`
+      parser arm verbatim in shape.
+    - Help-text entry for the new flag, placed
+      after the `--observer-perception-mode`
+      block.
+
+- **`src/cuda/CudaAOV.cuh` (modified).** Adds:
+    - `float* observer_beta = nullptr` field on
+      `DeviceAOVView` (sibling of
+      `manifold_coordinates`). Doc-comment
+      explains the read-only-on-observer-payload
+      contract (no perception transform).
+
+- **`src/cuda/CudaRenderer.h` (modified).** Adds:
+    - `float* observer_beta = nullptr` field on
+      `AOVTargets` (sibling of
+      `manifold_coordinates`).
+
+- **`src/cuda/CudaRenderer.cu` (modified).** One-
+  line thread inside `render_scene_with_aovs`:
+  `view.aovs.observer_beta = targets.observer_beta;`
+  next to the existing
+  `view.aovs.manifold_coordinates = targets.manifold_coordinates;`
+  line.
+
+- **`src/cuda/CudaTestKernel.cu` (modified).** Adds
+  a new `observer_beta` write arm at the end of
+  the `k_render_scene` per-pixel block (after
+  the existing `manifold_coordinates` arm). Null-
+  gated on `scene.aovs.observer_beta != nullptr`;
+  hit writes `scene.observer_frame.beta` as three
+  floats; miss writes `(0, 0, 0)`. Read-only on
+  the observer payload — no `aberrateDirection`
+  / `dopplerFactor` / `searchlightFactor` calls.
+
+- **`src/optix/OptixLaunchParams.h` (modified).**
+  Adds:
+    - `float* aov_observer_beta = nullptr` field
+      at the end of the launch-params POD (after
+      `aov_manifold_coordinates`). Doc-comment
+      mirrors the manifold-coordinates slot
+      verbatim + states the host-side allocator
+      gate (`render_aovs`'s new trailing
+      `observer_debug` parameter).
+
+- **`src/optix/OptixPrograms.cu` (modified).** Adds:
+    - Closest-hit observer_beta write arm:
+      reads `optixLaunchParams.observer_frame.beta`
+      directly; writes three floats per hit
+      pixel. Null-gated on
+      `optixLaunchParams.aov_observer_beta != nullptr`.
+    - Miss observer_beta write arm: writes
+      `(0, 0, 0)` per miss pixel (Normal /
+      ManifoldCoordinates miss convention).
+      Same null-gate.
+    - Single-source-of-truth math with the CUDA
+      arm (both read the same field; both write
+      the same value).
+
+- **`src/optix/OptixRenderer.h` (modified).** Adds:
+    - `rr::image::Image observer_beta` field on
+      `AovResult` (sibling of
+      `manifold_coordinates`). Empty `Image{}`
+      when the gate is off.
+    - Trailing `bool observer_debug = false`
+      parameter on `OptixRenderer::render_aovs(...)`
+      (after the OBSERVER.10
+      `observer_frame = {}` parameter). Default
+      `false` preserves API compatibility for
+      every existing caller.
+
+- **`src/optix/OptixRenderer.cpp` (modified).**
+  Updates `render_aovs` implementation:
+    - Accepts the new trailing
+      `observer_debug` parameter.
+    - Conditionally allocates
+      `d_aov_observer_b` via the existing
+      `alloc_aov(...)` helper when
+      `observer_debug` is `true` (the
+      `device_allocs` registry handles cleanup
+      automatically).
+    - Threads the pointer into
+      `params.aov_observer_beta`.
+    - Conditionally downloads the device buffer
+      into `R.observer_beta` after the launch
+      via the existing `download_3(...)` helper.
+
+- **`src/main.cpp` (modified).** Two dispatcher
+  updates:
+    - `run_render_aovs` (CUDA): allocates a
+      `GpuAOVBuffer{AOV::make_observer_beta()}`
+      conditioned on
+      `cfg.observer.debug_visualization`;
+      threads `device_ptr()` into
+      `targets.observer_beta`; saves the
+      downloaded buffer as
+      `output/aov_observer_beta.ppm` via the
+      existing `save_aov_to_ppm(...)` helper
+      after the render returns.
+    - `run_render_optix_aovs` (OptiX): passes
+      `cfg.observer.debug_visualization` as the
+      new trailing `observer_debug` argument
+      to `render_aovs(...)`; saves the
+      downloaded `r.observer_beta` Image as
+      `output/optix_aov_observer_beta.ppm` via
+      the existing `save_one(...)` helper after
+      the render returns.
+
+- **`tests/renderer_tests.cpp` (extended).** Adds
+  3 new test functions:
+    - `test_observer_13_observer_beta_aov_type`
+      — verifies enumerator value (7), component
+      count (3), name (`"observer_beta"`).
+    - `test_observer_13_observer_beta_factory_default_name`
+      — verifies the factory with no explicit
+      name uses the lowercase enum name.
+    - `test_observer_13_observer_beta_factory_custom_name`
+      — verifies the factory honours a caller-
+      supplied name.
+
+- **`tests/cli_tests.cpp` (extended).** Adds 3 new
+  test functions:
+    - `test_observer_debug_flag` — verifies
+      `--observer-debug` flips
+      `r.config.observer.debug_visualization`
+      to `true`.
+    - `test_observer_debug_default_off` —
+      anchors the C++ default-init contract.
+    - `test_observer_debug_combined_with_other_flags`
+      — verifies the flag composes cleanly with
+      `--render-aovs` + all `--observer-*` +
+      all `--manifold-*` flags; the two
+      debug-AOV gates are orthogonal per
+      OBSERVER.12 task brief §8.5.
+  Plus extends
+  `test_observer_default_off_with_other_flags`
+  with one new assertion: across all 8
+  non-observer argv vectors,
+  `observer.debug_visualization` stays at the
+  default `false`.
+
+### What does NOT ship
+
+- **No ray transform.** Operator brief
+  explicitly forbids. The kernel reads
+  `observer_frame.beta` and writes it directly
+  to the AOV; no `aberrateDirection` /
+  `dopplerFactor` / `searchlightFactor` call
+  is added to any code path.
+- **No relativity behavior change.** Operator
+  brief explicitly forbids. The existing six
+  scene-aware actions (`--render-pathtrace`,
+  `--render-mesh-scene`, `--render-material-scene`,
+  `--render-direct-lighting`, `--render-aovs`,
+  `--render-optix-aovs`) continue to feed on
+  `scene.observer.velocity` exactly as today.
+- **No manifold transform change.** Operator
+  brief explicitly forbids. The SCHW.* /
+  PENROSE.* chart arms in `CudaTestKernel.cu`
+  / `OptixPrograms.cu` are unchanged. The
+  `manifold_coordinates` AOV write arm is
+  unchanged.
+- **No `observerDirection` / `observerPerceptionMode`
+  AOVs.** The OBSERVER.12 task doc proposed
+  three AOVs; OBSERVER.13 ships only
+  `observerBeta` as the MVP per the
+  recommended scope. The other two are
+  documented as FUTURE in the task doc.
+- **No fixture scene.** The
+  `scenes/test_observer_frame.rrscene` fixture
+  + the `docs/OBSERVER_FRAME_FIXTURE.md`
+  companion doc are deferred to a follow-up
+  slice (mirrors MANI-I.8 → SCHW.9 cadence
+  where the AOV impl landed first and the
+  fixture / companion doc landed at the
+  parameter-authoring slice). The OBSERVER.13
+  impl is verifiable on default scenes (the
+  Identity-mode no-op anchor produces a flat
+  `(0, 0, 0)` AOV at every hit pixel).
+- **No CMake change.** No new target; no new
+  library link; no new source file. The new
+  headers / .cu files compile via the existing
+  CMake graph unchanged.
+- **No `.rrscene` schema change.** The
+  `--observer-debug` gate is CLI-only; no
+  scene-file `observer` block is added (the
+  OBSERVER.12 task doc explicitly defers the
+  scene-file extension).
+- **No new `--render-*` action.** The two-flag
+  composition (`--render-aovs --observer-debug`
+  / `--render-optix-aovs --observer-debug`)
+  is the only entry point. Mirrors MANI-I.8
+  precedent verbatim.
+- **No denoiser integration.** The denoiser
+  consumes Beauty / Albedo / Normal only; it
+  continues to do so. The new `observer_beta`
+  AOV is denoiser-ignored.
+- **No `MODULE_MAP.md` update.** The OBSERVER.13
+  slice exercises the kernel-side read of
+  `observer_frame.beta` for the AOV write
+  ONLY; the broader OBSERVER.* arc's kernel-
+  side migration (gating aberration /
+  Doppler / searchlight on `perception_mode`)
+  is a separate future slice. Module-map
+  promotion still waits for that broader
+  migration.
+- **No alteration of the OBSERVER.1 plan or
+  the OBSERVER.12 task doc.** Both are
+  preserved verbatim; OBSERVER.13 lands as
+  the impl slice consuming the task doc as
+  its canonical brief.
+- **No C4D / server / UI / node-editor touch.**
+
+### Acceptance
+
+- **Compiles.** Audit-host build green
+  (`RR_ENABLE_CUDA=OFF`, `RR_ENABLE_OPTIX=OFF`);
+  `cmake --build /home/user/RelativityRender/build`
+  completes with no new warnings on any
+  module. The CUDA / OptiX kernel sources
+  (`CudaTestKernel.cu` / `OptixPrograms.cu`)
+  are not compiled on the audit host; the
+  structural changes there mirror the MANI-I.8
+  manifold-coordinates precedent verbatim
+  (same null-gate; same 3-float-per-pixel
+  write; same hit-vs-miss branch) so the SDK-
+  host compile is structurally identical to
+  the MANI-I.8 baseline.
+- **Tests.** `ctest` returns
+  `100% tests passed, 0 tests failed out of 12`.
+  `renderer_tests: 27/27 passed` (up from
+  19; **+8 new RR_CHECK assertions** across
+  3 new test functions).
+  `cli_tests: 274/274 passed` (up from 254;
+  **+20 new RR_CHECK assertions** across 3
+  new test functions plus 1 new assertion on
+  the existing `test_observer_default_off_with_other_flags`).
+  `manifold_identity_tests: 408/408` (unchanged
+  — the OBSERVER.13 slice does not touch the
+  `ObserverFrame` POD itself or the OBSERVER.6
+  adapter).
+- **Smoke tests on audit host.** `--help`
+  includes the new `--observer-debug` flag
+  entry. `--render-aovs --observer-debug
+  --observer-beta 0.5 --observer-direction
+  1,0,0 --observer-perception-mode
+  relativistic` parses cleanly + the existing
+  `aovs observer config: constant-velocity-
+  minkowski (|beta|=0.500000, ...)` log fires
+  before the `--render-aovs requires CUDA`
+  error (no behaviour change to the parser
+  surface).
+- **No behaviour change at default.** Without
+  `--observer-debug`, the
+  `cfg.observer.debug_visualization` field
+  stays at the default `false`; the
+  `targets.observer_beta` /
+  `params.aov_observer_beta` pointers stay
+  `nullptr`; the kernel arms short-circuit;
+  no `output/aov_observer_beta.ppm` /
+  `output/optix_aov_observer_beta.ppm` PPM
+  is emitted. The Beauty + the existing seven
+  AOV PPMs are byte-identical to the
+  pre-OBSERVER.13 baseline (verified
+  structurally: `git diff` outside the new-
+  field touches shows no changes to existing
+  kernel arms).
+- **Internally consistent.** The OBSERVER.13
+  surface mirrors the MANI-I.8 manifold-
+  coordinates precedent verbatim:
+    - Enumerator appended at end (`= 7` after
+      `ManifoldCoordinates = 6`).
+    - Factory function shape
+      (`make_observer_beta(std::string name =
+      {})`).
+    - `DeviceAOVView` / `AOVTargets` sibling
+      field (`observer_beta` next to
+      `manifold_coordinates`).
+    - `OptixLaunchParams` sibling field
+      (`aov_observer_beta` next to
+      `aov_manifold_coordinates`).
+    - CLI flag (`--observer-debug` parallel to
+      `--manifold-debug`).
+    - Config bit
+      (`ObserverConfig::debug_visualization`
+      parallel to
+      `ManifoldMode::debug_visualization`).
+    - Dispatcher gate pattern (CUDA: allocate
+      `GpuAOVBuffer` → thread pointer → save
+      PPM; OptiX: trailing bool → internal
+      allocate → download into `AovResult` →
+      save PPM).
+    - Output filename convention
+      (`output/aov_observer_beta.ppm` /
+      `output/optix_aov_observer_beta.ppm`
+      mirrors `aov_manifold_coordinates.ppm`).
+    - Test function naming pattern
+      (`test_observer_13_observer_beta_*`
+      parallel to
+      `test_mani_i_8_manifold_coordinates_*`).
+  Cross-backend AOV byte-equivalence
+  structurally guaranteed (both backends read
+  the same `view.observer_frame.beta` /
+  `optixLaunchParams.observer_frame.beta` field
+  populated from the same
+  `build_observer_frame_from_camera(...)`
+  adapter output; the AOV write is a direct
+  field copy with no backend-specific
+  arithmetic).
+- **Honest scope.** The kernel-side reads of
+  `observer_frame.beta` for the AOV write are
+  the ONLY new kernel reads of the
+  OBSERVER.* observer-frame data; no
+  perception transform is applied; the broader
+  OBSERVER.* kernel-side migration (gating
+  aberration / Doppler / searchlight on
+  `perception_mode`) remains deferred per the
+  operator's "no observer perception transform
+  yet" rule.
+
+### Module status changes
+
+`docs/MODULE_MAP.md` is *not* updated by this
+slice. The
+`src/manifold/CameraObserverAdapter.h` /
+`src/manifold/ObserverFrame.h` module-map
+status remains **Skeleton-Plus**; the OBSERVER.13
+slice exercises the kernel-side read of
+`observer_frame.beta` for the new AOV write
+ONLY — this is a narrow kernel touch (read +
+copy; no transform). The full `**Wired**`
+promotion still waits for the slice that
+gates the aberration / Doppler / searchlight
+helpers on `perception_mode == ConstantVelocityMinkowski`
+(the broader OBSERVER.* arc migration). The
+OBSERVER.13 verdict authorises the operator
+to proceed to OBSERVER.14 (audit of the
+OBSERVER.13 implementation) under the
+renumbered ladder when ready.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:

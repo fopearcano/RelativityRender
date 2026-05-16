@@ -73,6 +73,28 @@ enum class AOVType : std::uint32_t {
     // `--render-aovs --manifold-debug` (see
     // `docs/MANIFOLD_DEBUG_AOV_TASK.md`).
     ManifoldCoordinates = 6,
+    // OBSERVER.13 — observer-frame debug-visualisation AOV.
+    // Writes a 3-component (Vec3) per-pixel value carrying
+    // the active observer's `ObserverFrame::beta` (the
+    // OBSERVER.8 + OBSERVER.10 carry-only field, populated
+    // by the OBSERVER.6 camera-to-observer adapter from the
+    // CLI / scene observer config). On the default
+    // `PerceptionMode::Identity` mode this equals `(0, 0, 0)`
+    // at every pixel (the no-op anchor). On
+    // `ConstantVelocityMinkowski` mode with a non-zero
+    // observer beta, every hit pixel writes the same
+    // `(beta.x, beta.y, beta.z)` value — a flat colour
+    // confirming the kernel saw the per-launch observer
+    // payload intact. Miss pixels write `(0, 0, 0)`. Opt-in:
+    // allocated only when the operator passes
+    // `--render-aovs --observer-debug` (CUDA) /
+    // `--render-optix-aovs --observer-debug` (OptiX) (see
+    // `docs/OBSERVER_DEBUG_AOV_TASK.md`). Read-only
+    // diagnostic — the kernel does NOT apply any
+    // perception transform (no aberration / Doppler /
+    // searchlight re-keying on the observer-frame beta);
+    // that is reserved for a separate future slice.
+    ObserverBeta = 7,
 };
 
 // Number of float channels an `AOVType` writes per pixel. Used by
@@ -128,6 +150,12 @@ public:
     // `name() == "manifold_coordinates"` (or the caller-
     // supplied name).
     [[nodiscard]] static AOV make_manifold_coordinates(std::string name = {});
+    // OBSERVER.13 — observer debug AOV factory. Returns an
+    // `AOV` with `type() == AOVType::ObserverBeta` and
+    // `name() == "observer_beta"` (or the caller-supplied
+    // name). Mirrors the `make_manifold_coordinates(...)`
+    // factory shape verbatim.
+    [[nodiscard]] static AOV make_observer_beta(std::string name = {});
 
     [[nodiscard]] AOVId              id()              const noexcept { return id_; }
     [[nodiscard]] AOVType            type()            const noexcept { return type_; }

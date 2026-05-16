@@ -77,6 +77,23 @@ struct DeviceAOVView {
     // Future MANI-I.9+ slices will branch on
     // `manifold_mode.chart` inside this write arm.
     float* manifold_coordinates = nullptr;  // 3 floats / pixel
+
+    // OBSERVER.13 — observer-frame debug-visualisation AOV.
+    // Writes the per-pixel `view.observer_frame.beta` value
+    // on hit and `(0, 0, 0)` on miss (matches the Normal /
+    // ManifoldCoordinates AOVs' miss convention). The
+    // `view.observer_frame` field is populated by the
+    // dispatcher via the OBSERVER.6 camera-to-observer
+    // adapter and threaded through OBSERVER.8's
+    // `CudaSceneView::observer_frame` carry-only slot. The
+    // AOV write is read-only on the observer payload — no
+    // perception transform (no aberration / Doppler /
+    // searchlight re-keying) is applied this slice per the
+    // OBSERVER.12 task brief's "no perception transform yet"
+    // contract. Opt-in: the pointer is null unless the
+    // operator passes `--render-aovs --observer-debug`
+    // (see `docs/OBSERVER_DEBUG_AOV_TASK.md`).
+    float* observer_beta        = nullptr;  // 3 floats / pixel
 };
 
 }  // namespace rr::cuda

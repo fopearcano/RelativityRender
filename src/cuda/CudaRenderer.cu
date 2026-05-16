@@ -290,6 +290,11 @@ CudaRenderer::Result CudaRenderer::render_scene_with_aovs(
     // null-check skips the write arm and the per-pixel
     // arithmetic for the existing six AOVs is unchanged.
     view.aovs.manifold_coordinates = targets.manifold_coordinates;
+    // OBSERVER.13 — null when not requested; the kernel's
+    // null-check skips the observer_beta write arm and the
+    // per-pixel arithmetic for the existing seven AOVs is
+    // unchanged.
+    view.aovs.observer_beta        = targets.observer_beta;
 
     // SCHW.5 — thread the per-launch manifold payload
     // into the kernel-visible view. Defaults (the

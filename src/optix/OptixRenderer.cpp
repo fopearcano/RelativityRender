@@ -2530,7 +2530,8 @@ OptixRenderer::render_aovs(
     int width, int height,
     rr::manifold::ManifoldMode manifold_mode,
     rr::manifold::CoordinateChart coordinate_chart,
-    rr::manifold::ObserverFrame observer_frame) noexcept {
+    rr::manifold::ObserverFrame observer_frame,
+    bool observer_debug) noexcept {
     AovResult R;
 
     if (width <= 0 || height <= 0) {
@@ -2702,6 +2703,7 @@ OptixRenderer::render_aovs(
     void* d_aov_doppler    = nullptr;
     void* d_aov_search     = nullptr;
     void* d_aov_manifold_c = nullptr;
+    void* d_aov_observer_b = nullptr;
     if (!alloc_aov(framebuffer_floats, d_framebuffer)
      || !alloc_aov(aov3_floats,        d_aov_beauty)
      || !alloc_aov(aov3_floats,        d_aov_normal)
@@ -2728,6 +2730,28 @@ OptixRenderer::render_aovs(
             cleanup();
             R.message =
                 "render_aovs: cudaMalloc(aov_manifold_coordinates) failed";
+            return R;
+        }
+    }
+    // OBSERVER.13 — opt-in 8th AOV: `aov_observer_beta`.
+    // Allocated only when the operator passes
+    // `--observer-debug` (which sets
+    // `cfg.observer.debug_visualization = true` →
+    // threaded to this function's trailing
+    // `observer_debug` parameter). When the gate is off,
+    // the device pointer stays `nullptr` and the OptiX
+    // programs' OBSERVER.13 write arms short-circuit —
+    // every existing `--render-optix-aovs` invocation
+    // without `--observer-debug` is byte-identical to the
+    // pre-OBSERVER.13 baseline. The two debug-AOV gates
+    // (`manifold_mode.debug_visualization` +
+    // `observer_debug`) are orthogonal; both can be
+    // active at the same launch.
+    if (observer_debug) {
+        if (!alloc_aov(aov3_floats, d_aov_observer_b)) {
+            cleanup();
+            R.message =
+                "render_aovs: cudaMalloc(aov_observer_beta) failed";
             return R;
         }
     }
@@ -2763,6 +2787,12 @@ OptixRenderer::render_aovs(
     // SchwarzschildLike && strength > 0` activation gate.
     params.aov_manifold_coordinates =
         static_cast<float*>(d_aov_manifold_c);
+    // OBSERVER.13 — null when the gate is off; allocated
+    // buffer when the trailing `observer_debug` parameter
+    // is `true`. The OptiX programs guard on this pointer
+    // to short-circuit the observer_beta write arm.
+    params.aov_observer_beta =
+        static_cast<float*>(d_aov_observer_b);
     // SCHW.7 — per-launch manifold/chart payload. Threaded
     // from the host caller so the OptiX kernels can engage
     // the SchwarzschildLike warp arm when the operator
@@ -2882,6 +2912,21 @@ OptixRenderer::render_aovs(
         R.message =
             "render_aovs: cudaMemcpy(d->h, "
             "aov_manifold_coordinates) failed";
+        return R;
+    }
+    // OBSERVER.13 — only download the observer_beta AOV
+    // when the host allocated the device buffer (i.e. the
+    // operator opted in via `--observer-debug`). On the
+    // default path `d_aov_observer_b` is `nullptr` and
+    // `R.observer_beta` stays as a default-constructed
+    // empty `Image{}`. Same encoding as
+    // `manifold_coordinates`: 3 floats per pixel.
+    if (d_aov_observer_b != nullptr
+     && !download_3(d_aov_observer_b, R.observer_beta)) {
+        cleanup();
+        R.message =
+            "render_aovs: cudaMemcpy(d->h, "
+            "aov_observer_beta) failed";
         return R;
     }
 

@@ -764,6 +764,24 @@ CommandLine::ParseResult CommandLine::parse(int argc, char** argv) {
                                 + " (expected one of: default, relativistic)";
                 return r;
             }
+        } else if (a == "--observer-debug") {
+            // OBSERVER.13 modifier flag (NOT an action). Sets
+            // `r.config.observer.debug_visualization = true`.
+            // Parallel to `--manifold-debug` (MANI-I.1) — a
+            // presence-only switch with no value consumed.
+            // When set alongside `--render-aovs` /
+            // `--render-optix-aovs`, the dispatcher allocates
+            // the `observer_beta` device buffer and the CUDA /
+            // OptiX kernels write `view.observer_frame.beta`
+            // per hit pixel + `(0, 0, 0)` per miss pixel; the
+            // dispatcher then saves the resulting AOV PPM
+            // (`output/aov_observer_beta.ppm` /
+            // `output/optix_aov_observer_beta.ppm`). Default
+            // off matches the pre-OBSERVER.13 renderer byte-
+            // for-byte; the OBSERVER.13 task brief §3.1
+            // beauty-output invariant + §3.2 two-flag gate
+            // pattern are both upheld.
+            r.config.observer.debug_visualization = true;
         } else if (a == "--width") {
             if (!take_value(argc, argv, i, a, value, r.error_message)) {
                 r.action = Action::Error;
@@ -1364,6 +1382,26 @@ std::string CommandLine::usage(std::string_view argv0) {
        << "                        renderer byte-for-byte. Unknown values "
                                   "are a parse\n"
        << "                        error.\n"
+       << "  --observer-debug      OBSERVER.13 modifier flag (not an action). "
+                                  "Sets the\n"
+       << "                        ObserverConfig::debug_visualization "
+                                  "toggle. When set\n"
+       << "                        alongside --render-aovs / "
+                                  "--render-optix-aovs the\n"
+       << "                        dispatcher allocates an observer_beta AOV "
+                                  "buffer and\n"
+       << "                        the kernel writes view.observer_frame.beta "
+                                  "per hit\n"
+       << "                        pixel (0,0,0 on miss); the dispatcher saves "
+                                  "the result\n"
+       << "                        as output/aov_observer_beta.ppm (or "
+                                  "optix_aov_*).\n"
+       << "                        Default off matches the pre-OBSERVER.13 "
+                                  "renderer\n"
+       << "                        byte-for-byte. Parallel to --manifold-debug; "
+                                  "the two\n"
+       << "                        gates are orthogonal and can be active "
+                                  "together.\n"
        << "  --width  <int>        Render width in pixels "
                                   "(default 1280).\n"
        << "  --height <int>        Render height in pixels "

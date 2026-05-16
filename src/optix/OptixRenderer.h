@@ -431,6 +431,20 @@ public:
         // float per pixel, hit position post-warp on hit and
         // `(0, 0, 0)` on miss.
         rr::image::Image manifold_coordinates;
+        // OBSERVER.13: populated only when the operator opts
+        // in via `--observer-debug` (which sets
+        // `cfg.observer.debug_visualization = true` →
+        // threaded to `render_aovs(...)`'s trailing
+        // `observer_debug` parameter). Empty
+        // `rr::image::Image{}` otherwise (the OptiX programs
+        // null-gate on `params.aov_observer_beta`, the host
+        // allocates the device buffer only on the opt-in,
+        // and the download skips when the buffer was not
+        // allocated). Encoding matches the CUDA
+        // `aov_observer_beta.ppm` payload: 3-channel float
+        // per pixel; `observer_frame.beta` on hit;
+        // `(0, 0, 0)` on miss.
+        rr::image::Image observer_beta;
         float            gpu_time_ms = 0.0f;
     };
 
@@ -476,10 +490,26 @@ public:
         // no-op anchor (perception_mode=Identity, beta=0,
         // world-basis tetrad). Threaded into
         // `OptixLaunchParams::observer_frame`. The OptiX
-        // programs do NOT consume the field this slice;
-        // the wiring matches the CUDA-side OBSERVER.8
-        // `AOVTargets::observer_frame` (carry-only).
-        rr::manifold::ObserverFrame observer_frame = {}) noexcept;
+        // programs read the field at OBSERVER.13 only for
+        // the new observer_beta AOV write arm (gated on
+        // `observer_debug` below); the non-AOV pipelines
+        // continue to feed on the legacy
+        // `scene.observer.velocity` exactly as today.
+        rr::manifold::ObserverFrame observer_frame = {},
+        // OBSERVER.13: opt-in observer-frame debug AOV
+        // gate. Default `false` preserves the pre-
+        // OBSERVER.13 byte-identity baseline (the OptiX
+        // programs' observer_beta write arm short-circuits
+        // because `params.aov_observer_beta` stays
+        // `nullptr`). When `true`, the implementation
+        // allocates the per-launch `aov_observer_beta`
+        // device buffer, threads the pointer through
+        // `OptixLaunchParams::aov_observer_beta`, and
+        // downloads the buffer into
+        // `AovResult::observer_beta` after the launch.
+        // Dispatchers in `main.cpp::run_render_optix_aovs`
+        // pass `cfg.observer.debug_visualization` here.
+        bool observer_debug = false) noexcept;
 
     // OptiX Gap A Step 1: durable AOV buffer ownership for
     // the OptiX path. See `docs/OPTIX_GAP_A_POLISH_PLAN.md`

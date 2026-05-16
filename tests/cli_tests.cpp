@@ -616,6 +616,51 @@ void test_observer_flags_missing_value_rejected() {
     RR_CHECK(r_mode.action == Action::Error);
 }
 
+// Case O18b: `--observer-debug` flips
+// `observer.debug_visualization` to `true`. Presence-only
+// flag (no value consumed), mirroring the
+// `--manifold-debug` (M9) precedent.
+void test_observer_debug_flag() {
+    const auto r = run({"prog", "--observer-debug"});
+    RR_CHECK(r.action != Action::Error);
+    RR_CHECK(r.config.observer.debug_visualization == true);
+}
+
+// Case O18c: `--observer-debug` defaults to `false` when not
+// passed (anchors the C++ default-init contract).
+void test_observer_debug_default_off() {
+    const auto r = run({"prog"});
+    RR_CHECK(r.action != Action::Error);
+    RR_CHECK(r.config.observer.debug_visualization == false);
+}
+
+// Case O18d: `--observer-debug` composes cleanly with the
+// existing `--render-aovs` / `--render-optix-aovs` actions
+// + the other `--observer-*` flags + the `--manifold-*`
+// flags (the two debug-AOV gates are orthogonal per
+// OBSERVER.12 task brief §8.5).
+void test_observer_debug_combined_with_other_flags() {
+    const auto r = run({"prog",
+                        "--render-aovs",
+                        "--observer-debug",
+                        "--observer-beta", "0.5",
+                        "--observer-direction", "1,0,0",
+                        "--observer-perception-mode", "relativistic",
+                        "--manifold-debug",
+                        "--manifold-enable",
+                        "--manifold-chart", "schwarzschild-like",
+                        "--manifold-strength", "0.4"});
+    RR_CHECK(r.action != Action::Error);
+    RR_CHECK(r.config.observer.debug_visualization == true);
+    RR_CHECK(r.config.observer.beta_magnitude      == 0.5f);
+    RR_CHECK(r.config.observer.perception_mode ==
+             PerceptionMode::ConstantVelocityMinkowski);
+    RR_CHECK(r.config.manifold.debug_visualization == true);
+    RR_CHECK(r.config.manifold.enabled             == true);
+    RR_CHECK(r.config.manifold.chart   == ChartType::SchwarzschildLike);
+    RR_CHECK(r.config.manifold.strength            == 0.4f);
+}
+
 // Case O18: default-off byte-identity anchor. Across various
 // non-observer argv vectors, the four observer fields stay at
 // their pre-OBSERVER.4 defaults. This is the parser-surface
@@ -646,6 +691,10 @@ void test_observer_default_off_with_other_flags() {
         RR_CHECK(r.config.observer.proper_time    == 0.0f);
         RR_CHECK(r.config.observer.perception_mode ==
                  PerceptionMode::Identity);
+        // OBSERVER.13: debug_visualization defaults to false
+        // across every non-observer argv vector — the
+        // pre-OBSERVER.13 byte-identity anchor.
+        RR_CHECK(r.config.observer.debug_visualization == false);
     }
 }
 
@@ -694,6 +743,10 @@ int main() {
     test_observer_flags_order_independent();
     test_observer_flags_missing_value_rejected();
     test_observer_default_off_with_other_flags();
+    // OBSERVER.13: --observer-debug modifier flag.
+    test_observer_debug_flag();
+    test_observer_debug_default_off();
+    test_observer_debug_combined_with_other_flags();
 
     std::fprintf(stderr, "cli_tests: %d/%d passed\n",
                  g_total - g_failed, g_total);

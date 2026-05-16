@@ -172,6 +172,16 @@ public:
         // `--render-aovs --manifold-debug` is in effect.
         float* manifold_coordinates = nullptr;
 
+        // OBSERVER.13 — observer-frame debug-visualisation
+        // AOV. Default `nullptr` means "not requested"; the
+        // kernel skips the write arm and the existing seven
+        // AOVs are byte-identical to the pre-OBSERVER.13
+        // baseline. Set to a device buffer pointer when
+        // `--render-aovs --observer-debug` is in effect
+        // (the dispatcher gates allocation on
+        // `cfg.observer.debug_visualization`).
+        float* observer_beta        = nullptr;
+
         // SCHW.5 — per-launch manifold payload. Defaults
         // are the pre-pivot disabled / Euclidean /
         // strength-0 no-op anchor. The CUDA kernel's

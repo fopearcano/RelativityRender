@@ -468,6 +468,27 @@ struct ObserverConfig {
     // future curved-chart implementation arc lands per the
     // OBSERVER.1 plan §3.6 + §8 non-goals.
     PerceptionMode perception_mode = PerceptionMode::Identity;
+
+    // OBSERVER.13 - observer-debug AOV gate. When `true`, the
+    // `--render-aovs` / `--render-optix-aovs` dispatchers
+    // allocate the per-launch `aov_observer_beta` device
+    // buffer + thread the device pointer through
+    // `AOVTargets::observer_beta` (CUDA) /
+    // `OptixLaunchParams::aov_observer_beta` (OptiX); the
+    // CUDA + OptiX kernels then write `observer_frame.beta`
+    // per hit pixel + `(0, 0, 0)` per miss pixel to the
+    // device buffer; the dispatcher saves the resulting AOV
+    // as `output/aov_observer_beta.ppm` (CUDA) /
+    // `output/optix_aov_observer_beta.ppm` (OptiX). Default
+    // `false` preserves the pre-OBSERVER.13 byte-identity
+    // baseline (no buffer allocation; no AOV PPM emitted;
+    // the kernel's null-gate skips the write arm). Set by
+    // the `--observer-debug` CLI modifier flag (parallel to
+    // the existing `--manifold-debug` flag's
+    // `ManifoldMode::debug_visualization` field). The two
+    // gates are orthogonal — both can be active at the same
+    // launch per OBSERVER.12 task brief §8.5.
+    bool debug_visualization = false;
 };
 
 }

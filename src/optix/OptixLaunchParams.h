@@ -332,6 +332,24 @@ struct OptixLaunchParams {
     // OptixLaunchParams ABI bump.
     float* aov_manifold_coordinates = nullptr;
 
+    // ---- OBSERVER.13 observer-frame debug AOV ----
+    //
+    // 3 floats / pixel (Vec3; `observer_frame.beta` on hit;
+    // `(0, 0, 0)` on miss). Mirrors the CUDA
+    // `DeviceAOVView::observer_beta` slot landed at
+    // OBSERVER.13. Default `nullptr` makes the OptiX
+    // closest-hit / miss programs' observer_beta write arms
+    // short-circuit, preserving the pre-OBSERVER.13 pixel
+    // output byte-for-byte. The host-side
+    // `OptixRenderer::render_aovs` allocates a device buffer
+    // for this slot only when its trailing `bool
+    // observer_debug` parameter is `true` (the dispatcher
+    // gates allocation on
+    // `cfg.observer.debug_visualization`). Read-only on the
+    // observer payload — no perception transform is applied
+    // per the OBSERVER.12 task brief §4.2 contract.
+    float* aov_observer_beta = nullptr;
+
     // ---- MANI-I.5 manifold rendering mode ----
     //
     // Per-launch Manifold Core mode the renderer reads to

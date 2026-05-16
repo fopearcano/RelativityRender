@@ -139,6 +139,51 @@ void test_mani_i_8_manifold_coordinates_factory_custom_name() {
     RR_CHECK(aov.name() == "custom_manifold_dbg");
 }
 
+// OBSERVER.13 — observer-frame debug AOV type registration.
+// Mirrors the MANI-I.8 manifold-coordinates AOV tests verbatim;
+// verifies the data-model surface lands correctly per the
+// OBSERVER.12 task brief's §7.1 structural PASS criteria.
+void test_observer_13_observer_beta_aov_type() {
+    using rr::renderer::AOV;
+    using rr::renderer::AOVType;
+
+    // Enumerator value is 7 (appended at the end of the enum
+    // after `ManifoldCoordinates = 6`; preserves the offsets
+    // of every pre-OBSERVER.13 enumerator).
+    RR_CHECK(static_cast<unsigned>(AOVType::ObserverBeta) == 7u);
+
+    // Component count is 3 (Vec3 per pixel encoding
+    // observer_frame.beta).
+    RR_CHECK(rr::renderer::aov_component_count(
+                 AOVType::ObserverBeta) == 3);
+
+    // Stable lowercase name for filenames / log output.
+    RR_CHECK(rr::renderer::aov_type_name(
+                 AOVType::ObserverBeta) == "observer_beta");
+}
+
+void test_observer_13_observer_beta_factory_default_name() {
+    using rr::renderer::AOV;
+    using rr::renderer::AOVType;
+
+    // Factory with no explicit name uses the lowercase enum
+    // name as the AOV's name.
+    AOV aov = AOV::make_observer_beta();
+    RR_CHECK(aov.type()            == AOVType::ObserverBeta);
+    RR_CHECK(aov.name()            == "observer_beta");
+    RR_CHECK(aov.component_count() == 3);
+}
+
+void test_observer_13_observer_beta_factory_custom_name() {
+    using rr::renderer::AOV;
+    using rr::renderer::AOVType;
+
+    // Factory honours a caller-supplied name.
+    AOV aov = AOV::make_observer_beta("custom_observer_dbg");
+    RR_CHECK(aov.type() == AOVType::ObserverBeta);
+    RR_CHECK(aov.name() == "custom_observer_dbg");
+}
+
 }  // namespace
 
 int main() {
@@ -150,6 +195,11 @@ int main() {
     test_mani_i_8_manifold_coordinates_aov_type();
     test_mani_i_8_manifold_coordinates_factory_default_name();
     test_mani_i_8_manifold_coordinates_factory_custom_name();
+
+    // OBSERVER.13: observer-frame debug AOV type registration.
+    test_observer_13_observer_beta_aov_type();
+    test_observer_13_observer_beta_factory_default_name();
+    test_observer_13_observer_beta_factory_custom_name();
 
     std::printf("renderer_tests: %d / %d passed\n",
                 g_total - g_failed, g_total);
