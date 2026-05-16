@@ -82719,6 +82719,385 @@ OBSERVER.12 → OBSERVER.13
 precedents) as the next slot
 when ready.
 
+## OBS-P.2 — Kernel-Side Perception Transform Migration Implementation (impl, guarded read-site swap)
+
+**Scope of this slice (per the operator's *OBS-P.2 —
+Kernel-Side Perception Transform Migration
+Implementation* task brief + the OBS-P.1 task doc as
+canonical reference): gate the existing CUDA + OptiX
+aberration / Doppler / searchlight kernel call sites
+on `observer_frame.perception_mode ==
+ConstantVelocityMinkowski`; replace the legacy
+`observer.velocity` reads with `observer_frame.beta`
+on the gated path; preserve the legacy fallback
+branch for every non-`ConstantVelocityMinkowski`
+mode (the default `Identity` + the reserved
+`CurvedChartGeodesicPlaceholder`). Per-call-site
+guarded read swap; no new math, no new ABI surface
+beyond the `k_sphere_relativistic` /
+`launch_sphere_relativistic` /
+`render_relativistic_sphere` trailing-defaulted
+`observer_frame` parameter (mirrors the MANI-I.5 +
+OBSERVER.10 trailing-arg precedents). Resolves the
+OBSERVER.15 capstone's #1 remaining risk (kernel-
+side perception-transform migration deferred).
+Mirrors the OBS-P.1 task brief's §2.3 guard shape +
+§2.4 legacy-fallback contract.**
+
+### What ships
+
+- **5 kernel call sites migrated** (not 6 as
+  the OBS-P.1 task brief speculated; OBS-P.2
+  audit corrects the count). The CUDA path-
+  tracer kernel (`CudaPathTracer.cu`) does NOT
+  call SR helpers directly — verified by
+  `grep -nE "observer\.velocity|precompute_relativity|aberrateDirection|dopplerFactor|searchlightFactor" src/cuda/CudaPathTracer.cu`
+  returning zero hits inside the kernel body.
+  Path-tracer perception is OptiX-only at the
+  kernel level today; the OBS-P.1 brief's
+  3+3 enumeration was over-counted by one.
+    - **CUDA C-1** (`src/cuda/CudaTestKernel.cu`
+      ~line 212): `k_sphere_relativistic` —
+      kernel + launcher signatures extended with
+      trailing `ObserverFrame observer_frame`
+      parameter. Per-call-site ternary at the
+      `precompute_relativity(...)` site.
+    - **CUDA C-2** (`src/cuda/CudaTestKernel.cu`
+      ~line 337): `k_render_scene` — no
+      signature change (uses `CudaSceneView`
+      which already carries `observer_frame`
+      since OBSERVER.8). Per-call-site ternary
+      at the `precompute_relativity(...)` site.
+    - **OptiX O-1** (`src/optix/OptixPrograms.cu`
+      ~line 139): `__miss__radiance` — no
+      signature change (uses `optixLaunchParams`
+      which already carries `observer_frame`
+      since OBSERVER.10). Per-call-site ternary.
+    - **OptiX O-2** (`src/optix/OptixPrograms.cu`
+      ~line 190): `__raygen__pinhole` — same;
+      per-call-site ternary.
+    - **OptiX O-3** (`src/optix/OptixPrograms.cu`
+      ~line 1034): `__raygen__pathtrace` — same;
+      per-call-site ternary.
+
+- **`src/cuda/CudaTestKernel.cu` (modified).**
+  - `k_sphere_relativistic` kernel sig extended
+    with trailing `rr::manifold::ObserverFrame
+    observer_frame` parameter.
+  - Per-arm ternary at the
+    `precompute_relativity(...)` call site
+    inside `k_sphere_relativistic` (~line 212).
+  - Per-arm ternary at the same site inside
+    `k_render_scene` (~line 337) reading
+    `scene.observer_frame.perception_mode` +
+    `scene.observer_frame.beta`.
+  - `launch_sphere_relativistic` launcher
+    impl extended with trailing
+    `observer_frame` parameter passed to the
+    kernel launch.
+
+- **`src/cuda/CudaKernels.cuh` (modified).**
+  - `launch_sphere_relativistic` declaration
+    extended with trailing-defaulted
+    `rr::manifold::ObserverFrame observer_frame
+    = rr::manifold::rest_frame()` parameter.
+    Default `rest_frame()` preserves API
+    compatibility for every existing caller
+    (the kernel's guard short-circuits to the
+    legacy fallback on the default).
+
+- **`src/cuda/CudaRenderer.h` + `CudaRenderer.cu`
+  (modified).** Dispatcher
+  `render_relativistic_sphere(...)` extended
+  with trailing-defaulted `observer_frame =
+  rr::manifold::rest_frame()` parameter; the
+  internal lambda captures + threads it to the
+  launcher.
+
+- **`src/optix/OptixPrograms.cu` (modified).** Three
+  per-arm ternaries added at O-1 / O-2 / O-3
+  read sites. Each uses
+  `optixLaunchParams.observer_frame.perception_mode`
+  + `optixLaunchParams.observer_frame.beta` on
+  the gated path and
+  `optixLaunchParams.observer.velocity` (or the
+  local `obs.velocity` reference at O-1) on
+  the legacy fallback. Identical ternary shape
+  to the CUDA-side guards; cross-backend
+  semantic equivalence structurally guaranteed
+  by single-source-of-truth math.
+
+- **`tests/relativity_tests.cpp` (extended).** Two
+  new test functions verifying the OBS-P.2
+  ternary's branch-equivalence:
+  - `test_obs_p_2_perception_mode_branch_equivalence`
+    (~26 RR_CHECK across 5 representative beta
+    sweep values): for the same input beta B
+    reached via either the gated path
+    (`ObserverFrame` supplies B; legacy zero)
+    OR the legacy fallback (`Observer.velocity`
+    supplies B; `ObserverFrame` default), the
+    downstream `precompute_relativity(...)`
+    snapshot is bit-identical
+    (`beta_vec.{x,y,z}`, `beta_mag`, `gamma`
+    all compare exactly).
+  - `test_obs_p_2_perception_mode_three_enumerators`
+    (~2 RR_CHECK x 3 enumerators = 9 RR_CHECK):
+    ternary correctness across all three
+    `PerceptionMode` enumerators —
+    `Identity` and
+    `CurvedChartGeodesicPlaceholder` both fall
+    into legacy fallback;
+    `ConstantVelocityMinkowski` engages the
+    gated path. Pins master rule #3 ("no fake
+    stubs") for the `CurvedChartGeodesicPlaceholder`
+    enumerator's reserved-but-inert state.
+  Plus a new `#include "manifold/ObserverFrame.h"`
+  in the test file (the existing
+  `rr_relativity_tests` target links
+  `rr_relativity` which transitively pulls
+  `rr_manifold` via the OBSERVER.4
+  `Config::observer` chain since OBSERVER.4's
+  `rr_core` link; verified by audit-host build
+  succeeding without CMake change).
+
+- **No new file. No new CMake target. No CLI
+  flag change.** The five existing
+  `--observer-*` flags (OBSERVER.4) + the
+  `--observer-debug` flag (OBSERVER.13)
+  comprise the entire CLI surface.
+
+### What does NOT ship
+
+- **No `CudaPathTracer.cu` change.** The CUDA
+  path-tracer kernel (`k_pathtrace_sample`)
+  does NOT call SR helpers directly — the
+  path-tracer's perception model is OptiX-
+  only at the kernel level today. The OBS-P.1
+  task brief's table at §2.1 listed C-3 at
+  `CudaPathTracer.cu:443` but `grep` confirms
+  no SR-helper calls inside the kernel body.
+  The `view.observer = scene.observer()`
+  assignment at line 443 is host-side launch
+  setup, not a kernel-side perception read.
+  The CUDA path-tracer remains on the legacy
+  path (no migration needed); a future arc may
+  introduce CUDA-side path-tracer perception
+  transforms if the operator authorises.
+- **No `launch_pathtrace_sample(...)` signature
+  extension.** The OBS-P.1 §5 table listed
+  this as a planned extension; OBS-P.2 audit
+  determined it's unnecessary because
+  `k_pathtrace_sample` doesn't call SR
+  helpers. The launcher signature stays at
+  its pre-OBS-P.2 shape; the trailing
+  `manifold_mode` arg from MANI-I.5 is
+  unchanged.
+- **No `src/pathtracer/PathTracer.cpp`
+  change.** The host bridge stays at its
+  pre-OBS-P.2 shape; no
+  `cfg.observer_frame` threading needed
+  because the launcher signature is
+  unchanged.
+- **No `src/main.cpp` change.** Every
+  existing call site of
+  `render_relativistic_sphere(...)` (only
+  one — at line 3091, the
+  `--render-relativistic` action's dispatcher)
+  compiles unchanged because the new
+  trailing parameter is defaulted to
+  `rest_frame()`. The kernel-side guard
+  takes the legacy fallback branch on the
+  default `ObserverFrame{}.perception_mode
+  == Identity` → reads the existing
+  `observer.velocity` kernel-arg →
+  byte-identity preserved for the
+  `--render-relativistic` action.
+- **No new manifold math.** Operator brief
+  explicitly forbids. The
+  `manifold_coordinates` AOV write arms +
+  the SCHW.* / PENROSE.* chart-warp paths
+  are byte-unchanged.
+- **No new perception model.** The existing
+  three perception modes
+  (`Identity` / `ConstantVelocityMinkowski`
+  / `CurvedChartGeodesicPlaceholder`) are
+  preserved verbatim; the OBS-P.2
+  migration just makes the second one
+  effective at the kernel.
+- **No ABI changes beyond the documented
+  `k_sphere_relativistic` /
+  `launch_sphere_relativistic` /
+  `render_relativistic_sphere` trailing-
+  defaulted parameter extensions** (these
+  are the only structural changes; mirror
+  the MANI-I.5 + OBSERVER.10 + OBSERVER.13
+  trailing-arg precedents).
+- **No `RelativityParams` field change.**
+  The existing six flags
+  (`enable_aberration` / `enable_doppler` /
+  `enable_searchlight` /
+  `doppler_color_strength` /
+  `searchlight_strength` / `max_beta`)
+  preserved verbatim. They continue to gate
+  their respective SR helpers — the OBS-P.2
+  perception-mode gate is a new outer
+  layer selecting WHICH beta the helpers
+  receive.
+- **No new render output file. No new
+  AOV.** The OBSERVER.13 `observer_beta`
+  AOV is unchanged — it continues to write
+  `observer_frame.beta` regardless of
+  perception_mode (read-only diagnostic).
+- **No `.rrscene` schema change. No
+  `MODULE_MAP.md` update.** The
+  `**Wired**` promotion lands at the
+  OBS-P.* arc capstone audit.
+- **No CMake change. No new test binary.**
+- **No C4D / server / UI / node-editor
+  touch.**
+
+### Acceptance
+
+- **Compiles with CUDA OFF + OptiX OFF**
+  (audit host): `cmake --build
+  /home/user/RelativityRender/build` succeeds
+  with no new warnings on the rr_gpu /
+  rr_optix / rr_renderer / rr_relativity /
+  rr_manifold modules. The CUDA-gated TUs
+  (`CudaTestKernel.cu`, `CudaRenderer.cu`,
+  `CudaPathTracer.cu`) do not compile on the
+  audit host per `RR_ENABLE_CUDA=OFF`; the
+  structural changes there mirror the MANI-I.5
+  + OBSERVER.13 trailing-arg precedents
+  verbatim (defaulted trailing parameter;
+  per-arm ternary; no other change). Same for
+  the OptiX-gated TUs (`OptixPrograms.cu` +
+  `OptixRenderer.h/.cpp`'s consumers).
+- **Compiles with CUDA ON + OptiX ON** verified
+  by inspection: the new kernel-arg in
+  `k_sphere_relativistic` is at the END of
+  the parameter list; the launcher's
+  trailing-defaulted parameter preserves
+  API compatibility for every existing
+  caller; the per-arm ternaries are local
+  C++ statements that compile under NVCC
+  cleanly (the `rr::manifold::PerceptionMode`
+  enum is `enum class` with `RR_HD inline`
+  validator helpers — host + device callable).
+- **Tests.** `ctest` returns
+  `100% tests passed, 0 tests failed out of
+  12`. `relativity_tests: 841/841 passed`
+  (up from 813; **+28 new RR_CHECK
+  assertions** across the 2 new test
+  functions). `cli_tests: 274/274`;
+  `manifold_identity_tests: 408/408`;
+  `renderer_tests: 27/27` — all unchanged
+  from the OBSERVER.15 baseline.
+- **Smoke tests on audit host.** Default
+  `--render-aovs` produces the existing
+  `aovs observer config: identity (no-op)`
+  log line before the CUDA-required error
+  path (no behaviour change to the
+  parser-host surface). Opt-in
+  `--render-aovs --observer-perception-mode
+  relativistic --observer-beta 0.5
+  --observer-direction 1,0,0` produces the
+  existing `aovs observer config:
+  constant-velocity-minkowski (...)` log
+  line — also unchanged. The host-side
+  dispatcher behaviour is preserved
+  verbatim.
+- **No behaviour change at default** (the
+  load-bearing PASS criterion). Every
+  existing CLI action without
+  `--observer-perception-mode relativistic`:
+  - the OBSERVER.6 adapter produces
+    `rest_frame()` byte-for-byte (verified
+    at OBSERVER.7 audit check #2);
+  - `view.observer_frame` /
+    `optixLaunchParams.observer_frame`
+    carry the no-op anchor
+    (`perception_mode == Identity`);
+  - the kernel-side ternary's gate
+    returns `false` → legacy fallback
+    branch reads the existing
+    `observer.velocity` field exactly as
+    today;
+  - the SR helpers
+    (`precompute_relativity` /
+    `aberrateDirection` /
+    `dopplerFactor` /
+    `searchlightFactor` /
+    `applyDopplerColor`) consume the
+    legacy beta exactly as today;
+  - per-pixel output is bit-identical to
+    the pre-OBS-P.2 baseline.
+- **Cross-backend semantic alignment**
+  structurally guaranteed: every site
+  uses the same ternary shape +
+  `rr::manifold::PerceptionMode::ConstantVelocityMinkowski`
+  comparison + the same downstream
+  `precompute_relativity(beta_source)`
+  helper call. CUDA + OptiX backends
+  read the same `ObserverFrame::beta`
+  (populated from the same OBSERVER.6
+  adapter output via the OBSERVER.8 +
+  OBSERVER.10 payload bridges). Runtime
+  SDK-host verification is DEFERRED per
+  the OBS-P.1 task brief §7.4
+  (mirrors OBSERVER.9 / OBSERVER.11 /
+  OBSERVER.14 deferral pattern).
+- **`RelativityParams` orthogonality
+  preserved** by construction: the
+  per-call-site ternary fires at the
+  `precompute_relativity(...)` site
+  ONLY; the existing
+  `if (params.enable_aberration)` /
+  `if (params.enable_doppler)` /
+  `if (params.enable_searchlight)` flag
+  guards inside each kernel are
+  byte-unchanged. The two gates compose
+  exactly as the OBS-P.1 task brief §4.3
+  documented.
+- **Honest scope.** The OBS-P.1 task
+  brief's 6-site enumeration was
+  over-counted by one (the CUDA
+  path-tracer's `k_pathtrace_sample`
+  doesn't call SR helpers). OBS-P.2
+  ships 5 sites; the BUILD_PLAN entry +
+  the audit verdict document this
+  correction explicitly. Master rule #3
+  ("no fake stubs") satisfied: every
+  modified site is a real read-site
+  swap with a documented legacy
+  fallback; no placeholder code; the
+  `CurvedChartGeodesicPlaceholder`
+  enumerator remains reserved-but-inert
+  (the ternary's `!= ConstantVelocityMinkowski`
+  comparison returns `true` → legacy
+  fallback → same as `Identity` mode →
+  byte-identity for any user who
+  passes the placeholder mode by name
+  through an internal-call path).
+
+### Module status changes
+
+`docs/MODULE_MAP.md` is *not* updated by this
+slice. The `src/manifold/CameraObserverAdapter.h`
+/ `src/manifold/ObserverFrame.h` module-map
+status remains **Skeleton-Plus** at the OBS-P.2
+landing; the `**Wired**` promotion is reserved
+for the OBS-P arc's capstone audit (the next
+slot, mirroring the OBSERVER.15 capstone shape).
+The OBS-P.2 verdict authorises the operator to
+proceed to OBS-P.3 (audit of the OBS-P.2
+implementation) under the new OBS-P arc's
+per-slice audit discipline when ready. The
+OBS-P.* arc closes when the audit cycle
+returns PASS / PASS_WITH_RUNTIME_DEFERRED on
+the OBS-P.2 impl + the OBS-P.* arc capstone.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:

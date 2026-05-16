@@ -72,7 +72,16 @@ void launch_sphere_relativistic(float* device_pixels, int width, int height,
                                 rr::relativity::Observer        observer,
                                 rr::relativity::RelativityParams params,
                                 rr::geometry::Sphere            sphere,
-                                cudaStream_t                    stream = 0);
+                                cudaStream_t                    stream = 0,
+                                // OBS-P.2: trailing per-launch observer frame.
+                                // Default `rest_frame()` carries
+                                // `perception_mode == Identity` so the kernel
+                                // guard short-circuits to the legacy
+                                // `observer.velocity` path — byte-identity
+                                // for every pre-OBS-P.2 caller. Mirrors the
+                                // MANI-I.5 trailing-arg precedent.
+                                rr::manifold::ObserverFrame observer_frame =
+                                    rr::manifold::rest_frame());
 
 // Host-callable launcher for the multi-sphere scene-render kernel.
 // Defined in CudaTestKernel.cu. Per pixel the device runs the full

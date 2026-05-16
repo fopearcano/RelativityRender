@@ -134,7 +134,8 @@ CudaRenderer::Result CudaRenderer::render_relativistic_sphere(
         const rr::relativity::Observer&       observer,
         const rr::relativity::RelativityParams& params,
         const rr::geometry::Sphere&           sphere,
-        int width, int height) {
+        int width, int height,
+        rr::manifold::ObserverFrame observer_frame) {
     if (sphere.radius <= 0.0f) {
         Result r;
         r.message = "sphere radius must be positive";
@@ -145,11 +146,17 @@ CudaRenderer::Result CudaRenderer::render_relativistic_sphere(
     // the kernel sees a self-contained POD bundle.
     const auto obs = observer;
     const auto par = params;
+    // OBS-P.2: capture the trailing observer-frame by value too.
+    // Default `rest_frame()` (perception_mode = Identity) makes
+    // the kernel-side guard fall into the legacy path, preserving
+    // every pre-OBS-P.2 caller's output bit-for-bit.
+    const auto obs_frame = observer_frame;
     return run_kernel_render(width, height,
-        [cam, obs, par, sphere](float* device_pixels, int w, int h) {
+        [cam, obs, par, sphere, obs_frame](float* device_pixels, int w, int h) {
             launch_sphere_relativistic(device_pixels, w, h,
                                        cam, obs, par, sphere,
-                                       /*stream=*/nullptr);
+                                       /*stream=*/nullptr,
+                                       obs_frame);
         });
 }
 

@@ -83,7 +83,16 @@ public:
         const rr::relativity::Observer&       observer,
         const rr::relativity::RelativityParams& params,
         const rr::geometry::Sphere&           sphere,
-        int width, int height);
+        int width, int height,
+        // OBS-P.2: trailing per-launch observer frame.
+        // Default `rest_frame()` (perception_mode = Identity,
+        // beta = 0) keeps every existing caller's output bit-
+        // for-bit (the kernel's OBS-P.2 guard short-circuits
+        // to the legacy `observer.velocity` path on the
+        // non-`ConstantVelocityMinkowski` mode). Mirrors the
+        // MANI-I.5 / OBSERVER.10 trailing-arg precedent.
+        rr::manifold::ObserverFrame observer_frame =
+            rr::manifold::rest_frame());
 
     // Render an uploaded multi-sphere scene with the full
     // relativistic perception pipeline. The kernel runs a closest-hit

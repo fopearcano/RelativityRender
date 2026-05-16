@@ -195,7 +195,8 @@ __global__ void k_sphere_relativistic(float* pixels, int width, int height,
                                       rr::camera::GpuCamera           cam,
                                       rr::relativity::Observer        observer,
                                       rr::relativity::RelativityParams params,
-                                      rr::geometry::Sphere            sphere) {
+                                      rr::geometry::Sphere            sphere,
+                                      rr::manifold::ObserverFrame     observer_frame) {
     const int x = blockIdx.x * blockDim.x + threadIdx.x;
     const int y = blockIdx.y * blockDim.y + threadIdx.y;
     if (x >= width || y >= height) return;
@@ -209,7 +210,26 @@ __global__ void k_sphere_relativistic(float* pixels, int width, int height,
     // would recompute them, paying four `sqrt`s per pixel for
     // values that depend only on the per-launch observer
     // velocity.
-    const auto rel = rr::relativity::precompute_relativity(observer.velocity);
+    //
+    // OBS-P.2 perception-mode gate. When the operator passes
+    // `--observer-perception-mode relativistic`, the OBSERVER.6
+    // adapter populates `observer_frame.beta` from the CLI
+    // overlay + the legacy SR Observer; the kernel reads the
+    // observer-frame beta. When the operator stays on the
+    // default `Identity` perception mode (or any non-
+    // `ConstantVelocityMinkowski` mode, including the reserved
+    // `CurvedChartGeodesicPlaceholder`), the ternary falls back
+    // to the legacy `observer.velocity` — the byte-identity
+    // anchor for every pre-OBS-P.2 invocation. Mirrors the
+    // SCHW.5 / PENROSE.6 per-arm guard pattern; warp-uniform
+    // because `perception_mode` is per-launch.
+    const bool perception_active =
+        (observer_frame.perception_mode ==
+            rr::manifold::PerceptionMode::ConstantVelocityMinkowski);
+    const Vec3 beta_source = perception_active
+        ? observer_frame.beta
+        : observer.velocity;
+    const auto rel = rr::relativity::precompute_relativity(beta_source);
 
     // 1. Camera ray.
     auto ray = rr::camera::generate_camera_ray(cam, x, y, width, height);
@@ -270,15 +290,24 @@ void launch_sphere_relativistic(float* device_pixels, int width, int height,
                                 rr::relativity::Observer        observer,
                                 rr::relativity::RelativityParams params,
                                 rr::geometry::Sphere            sphere,
-                                cudaStream_t                    stream) {
+                                cudaStream_t                    stream,
+                                rr::manifold::ObserverFrame     observer_frame) {
     if (!device_pixels || width <= 0 || height <= 0) return;
 
     const dim3 block(16, 16);
     const dim3 grid((width  + block.x - 1) / block.x,
                     (height + block.y - 1) / block.y);
 
+    // OBS-P.2: thread the per-launch ObserverFrame to the
+    // kernel. Default `rr::manifold::rest_frame()` carries
+    // `perception_mode == Identity`; the kernel's guard
+    // short-circuits to the legacy `observer.velocity`
+    // path — byte-identity anchor for every pre-OBS-P.2
+    // caller. Mirrors the MANI-I.5 / SCHW.5 trailing-arg
+    // precedent.
     k_sphere_relativistic<<<grid, block, 0, stream>>>(
-        device_pixels, width, height, cam, observer, params, sphere);
+        device_pixels, width, height, cam, observer, params, sphere,
+        observer_frame);
 }
 
 // ---------- Stage 6B: multi-sphere scene render ------------------
@@ -305,8 +334,26 @@ __global__ void k_render_scene(float* pixels, int width, int height,
     // these via internal `length` + `gamma` calls; the precompute
     // halves the per-pixel `sqrt` count through the relativity
     // stack and shortens the dependent chain through the kernel.
-    const auto rel = rr::relativity::precompute_relativity(
-        scene.observer.velocity);
+    //
+    // OBS-P.2 perception-mode gate. When the operator passes
+    // `--observer-perception-mode relativistic`, the OBSERVER.6
+    // adapter resolves the operator-selected beta into
+    // `scene.observer_frame.beta` (carried via OBSERVER.8's
+    // `CudaSceneView::observer_frame` field). The kernel reads
+    // that beta on the gated path; on the default `Identity`
+    // mode (or any non-`ConstantVelocityMinkowski` mode), the
+    // ternary falls back to the legacy `scene.observer.velocity`
+    // — the byte-identity anchor for every pre-OBS-P.2
+    // invocation. Mirrors the SCHW.5 / PENROSE.6 per-arm guard
+    // pattern; warp-uniform because `perception_mode` is
+    // per-launch.
+    const bool perception_active =
+        (scene.observer_frame.perception_mode ==
+            rr::manifold::PerceptionMode::ConstantVelocityMinkowski);
+    const Vec3 beta_source = perception_active
+        ? scene.observer_frame.beta
+        : scene.observer.velocity;
+    const auto rel = rr::relativity::precompute_relativity(beta_source);
 
     // 1. Camera ray.
     auto ray = rr::camera::generate_camera_ray(scene.camera,

@@ -136,7 +136,26 @@ apply_doppler_and_searchlight(rr::math::Vec3 base_color,
 
     // Stage 18A.3: precompute the launch-invariant relativity
     // scalars (|beta|, gamma) once per program invocation.
-    const auto rel = rr::relativity::precompute_relativity(obs.velocity);
+    //
+    // OBS-P.2 perception-mode gate. On the gated path
+    // (`observer_frame.perception_mode ==
+    // ConstantVelocityMinkowski`) read
+    // `optixLaunchParams.observer_frame.beta` (the OBSERVER.10
+    // carry-only field, populated from the OBSERVER.6 adapter
+    // output via the host dispatcher). On the legacy fallback
+    // path (default `Identity` mode, or the reserved-but-inert
+    // `CurvedChartGeodesicPlaceholder`) read `obs.velocity` —
+    // the byte-identity anchor for every pre-OBS-P.2
+    // invocation. Mirrors the CUDA-side OBS-P.2 guard at
+    // `CudaTestKernel.cu` per the OBSERVER.11 audit check #3
+    // cross-backend semantic-equivalence contract.
+    const bool perception_active =
+        (optixLaunchParams.observer_frame.perception_mode ==
+            rr::manifold::PerceptionMode::ConstantVelocityMinkowski);
+    const rr::math::Vec3 beta_source = perception_active
+        ? optixLaunchParams.observer_frame.beta
+        : obs.velocity;
+    const auto rel = rr::relativity::precompute_relativity(beta_source);
 
     // Doppler factor for the (possibly aberrated) photon
     // direction in the scene frame. Computed once and reused.
@@ -186,8 +205,20 @@ extern "C" __global__ void __raygen__pinhole() {
     // Stage 18A.3: feed the precomputed `(|beta|, gamma)`
     // snapshot into `aberrateDirection` so the per-pixel `sqrt`
     // count drops by one (the `length(beta_vec)` reduction).
-    const auto rel = rr::relativity::precompute_relativity(
-        optixLaunchParams.observer.velocity);
+    //
+    // OBS-P.2 perception-mode gate. See the `__miss__radiance`
+    // arm above for the contract — gated path reads
+    // `observer_frame.beta`; legacy fallback reads
+    // `observer.velocity`. Identical ternary shape on both
+    // arms guarantees cross-arm + cross-backend byte-
+    // equivalence at the precompute step.
+    const bool perception_active_pinhole =
+        (optixLaunchParams.observer_frame.perception_mode ==
+            rr::manifold::PerceptionMode::ConstantVelocityMinkowski);
+    const rr::math::Vec3 beta_source_pinhole = perception_active_pinhole
+        ? optixLaunchParams.observer_frame.beta
+        : optixLaunchParams.observer.velocity;
+    const auto rel = rr::relativity::precompute_relativity(beta_source_pinhole);
     if (optixLaunchParams.params.enable_aberration) {
         ray.direction = rr::relativity::aberrateDirection(
             rel, ray.direction);
@@ -1031,8 +1062,20 @@ extern "C" __global__ void __raygen__pathtrace() {
 
     // Stage 18A.3: precomputed relativity invariants reused
     // across the spp loop.
-    const auto rel = rr::relativity::precompute_relativity(
-        optixLaunchParams.observer.velocity);
+    //
+    // OBS-P.2 perception-mode gate. Same ternary shape as the
+    // `__miss__radiance` + `__raygen__pinhole` arms — gated
+    // path reads `observer_frame.beta`; legacy fallback reads
+    // `observer.velocity`. The path-tracer's per-spp loop
+    // reuses the snapshot, so the guard fires once per
+    // program invocation regardless of bounce count.
+    const bool perception_active_pt =
+        (optixLaunchParams.observer_frame.perception_mode ==
+            rr::manifold::PerceptionMode::ConstantVelocityMinkowski);
+    const rr::math::Vec3 beta_source_pt = perception_active_pt
+        ? optixLaunchParams.observer_frame.beta
+        : optixLaunchParams.observer.velocity;
+    const auto rel = rr::relativity::precompute_relativity(beta_source_pt);
 
     Vec3 rgb_sum{0.0f, 0.0f, 0.0f};
     Vec3 primary_dir{0.0f, 0.0f, -1.0f};

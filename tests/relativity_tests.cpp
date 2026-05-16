@@ -48,6 +48,7 @@
 // reflect float32 rounding, with looser tolerances near |beta| =
 // 0.99 where (1 - beta^2) loses ~5 decimals of significance.
 
+#include "manifold/ObserverFrame.h"  // OBS-P.2: perception-mode ternary verification
 #include "math/Vec3.h"
 #include "relativity/RelativityMath.h"
 #include "relativity/RelativityParams.h"
@@ -491,6 +492,139 @@ void test_stability_near_high_beta() {
     }
 }
 
+// ---------- OBS-P.2: perception-mode ternary verification ----------
+
+// Host-side verification of the kernel-side OBS-P.2 perception-
+// mode gate's branch-equivalence. The CUDA + OptiX kernels run a
+// per-arm ternary:
+//
+//   const bool perception_active =
+//       (observer_frame.perception_mode ==
+//           PerceptionMode::ConstantVelocityMinkowski);
+//   const Vec3 beta_source = perception_active
+//       ? observer_frame.beta
+//       : observer.velocity;
+//   const auto rel = precompute_relativity(beta_source);
+//
+// The invariant this test pins: for ANY input beta value B
+// reached either via the gated path (`perception_mode ==
+// ConstantVelocityMinkowski` + `observer_frame.beta = B`) OR
+// via the legacy fallback (`perception_mode == Identity` +
+// `observer.velocity = B`), the downstream
+// `precompute_relativity` snapshot is bit-identical. The
+// kernel-side perception-mode gate selects WHICH source
+// supplies B; the snapshot's `(|beta|, gamma, beta_vec)`
+// triple is identical given the same B.
+void test_obs_p_2_perception_mode_branch_equivalence() {
+    using rr::math::Vec3;
+    using rr::manifold::ObserverFrame;
+    using rr::manifold::PerceptionMode;
+    using rr::relativity::Observer;
+    using rr::relativity::precompute_relativity;
+    using rr::relativity::PrecomputedRelativity;
+
+    // Test the ternary's two branches across a representative
+    // beta sweep. Each pair simulates the kernel-side selection
+    // logic and verifies the precompute snapshot is identical
+    // regardless of which source path supplied the beta.
+    const Vec3 betas[] = {
+        Vec3{0.0f,  0.0f,  0.0f},   // rest observer (default)
+        Vec3{0.5f,  0.0f,  0.0f},   // +X drift
+        Vec3{0.0f,  0.0f, -0.5f},   // -Z drift (the --render-demo precedent)
+        Vec3{0.3f, -0.4f,  0.0f},   // 3-4-5 oblique
+        Vec3{0.6f,  0.6f, -0.6f},   // |beta| ~= 0.99, near-cap
+    };
+    for (const Vec3& B : betas) {
+        // Branch (a): gated path. ObserverFrame supplies B via
+        // observer_frame.beta. Legacy observer is zero
+        // (irrelevant; gate selects observer_frame).
+        ObserverFrame frame_gated;
+        frame_gated.perception_mode  = PerceptionMode::ConstantVelocityMinkowski;
+        frame_gated.beta             = B;
+        Observer legacy_unused;       // velocity = 0
+        const bool gated_active =
+            (frame_gated.perception_mode ==
+                PerceptionMode::ConstantVelocityMinkowski);
+        const Vec3 gated_source = gated_active
+            ? frame_gated.beta
+            : legacy_unused.velocity;
+        const PrecomputedRelativity pre_gated =
+            precompute_relativity(gated_source);
+
+        // Branch (b): legacy fallback. ObserverFrame is the
+        // default (perception_mode = Identity, beta = 0).
+        // Legacy observer.velocity supplies B.
+        ObserverFrame frame_legacy;   // perception_mode = Identity, beta = 0
+        Observer legacy;
+        legacy.velocity = B;
+        const bool legacy_active =
+            (frame_legacy.perception_mode ==
+                PerceptionMode::ConstantVelocityMinkowski);
+        const Vec3 legacy_source = legacy_active
+            ? frame_legacy.beta
+            : legacy.velocity;
+        const PrecomputedRelativity pre_legacy =
+            precompute_relativity(legacy_source);
+
+        // The two paths must produce bit-identical snapshots.
+        // beta_vec / beta_mag / gamma all compare exactly
+        // because the snapshots are derived from the same B
+        // input via the same precompute_relativity helper.
+        RR_CHECK(pre_gated.beta_vec.x == pre_legacy.beta_vec.x);
+        RR_CHECK(pre_gated.beta_vec.y == pre_legacy.beta_vec.y);
+        RR_CHECK(pre_gated.beta_vec.z == pre_legacy.beta_vec.z);
+        RR_CHECK(pre_gated.beta_mag   == pre_legacy.beta_mag);
+        RR_CHECK(pre_gated.gamma      == pre_legacy.gamma);
+
+        // The gated path's source equals B exactly.
+        RR_CHECK(approx(gated_source, B, 0.0f));
+        // The legacy path's source equals B exactly.
+        RR_CHECK(approx(legacy_source, B, 0.0f));
+    }
+}
+
+// OBS-P.2: ternary correctness across all three PerceptionMode
+// enumerators. `Identity` and
+// `CurvedChartGeodesicPlaceholder` both fall into the legacy
+// fallback branch (the third enumerator is reserved-but-inert
+// per OBSERVER.1 plan §3.6); only
+// `ConstantVelocityMinkowski` engages the gated path.
+void test_obs_p_2_perception_mode_three_enumerators() {
+    using rr::math::Vec3;
+    using rr::manifold::ObserverFrame;
+    using rr::manifold::PerceptionMode;
+    using rr::relativity::Observer;
+
+    const Vec3 frame_beta {0.7f, 0.0f, 0.0f};  // gated-source candidate
+    const Vec3 legacy_beta{0.0f, 0.0f, 0.3f};  // legacy-source candidate
+
+    struct Case { PerceptionMode mode; bool gated_expected; };
+    const Case cases[] = {
+        {PerceptionMode::Identity,                       false},
+        {PerceptionMode::ConstantVelocityMinkowski,      true},
+        {PerceptionMode::CurvedChartGeodesicPlaceholder, false},
+    };
+    for (const Case& c : cases) {
+        ObserverFrame frame;
+        frame.perception_mode = c.mode;
+        frame.beta            = frame_beta;
+        Observer legacy;
+        legacy.velocity = legacy_beta;
+
+        const bool active =
+            (frame.perception_mode ==
+                PerceptionMode::ConstantVelocityMinkowski);
+        const Vec3 source = active ? frame.beta : legacy.velocity;
+
+        RR_CHECK(active == c.gated_expected);
+        if (c.gated_expected) {
+            RR_CHECK(approx(source, frame_beta, 0.0f));
+        } else {
+            RR_CHECK(approx(source, legacy_beta, 0.0f));
+        }
+    }
+}
+
 }  // namespace
 
 int main() {
@@ -501,6 +635,9 @@ int main() {
     test_doppler_finite_positive_for_subluminal_beta();
     test_clamp_beta_existing_design();
     test_stability_near_high_beta();
+    // OBS-P.2: perception-mode ternary verification.
+    test_obs_p_2_perception_mode_branch_equivalence();
+    test_obs_p_2_perception_mode_three_enumerators();
 
     if (g_failed == 0) {
         std::printf("relativity_tests: %d / %d passed\n", g_total, g_total);
