@@ -81896,6 +81896,246 @@ to proceed to OBSERVER.14 (audit of the
 OBSERVER.13 implementation) under the
 renumbered ladder when ready.
 
+## OBSERVER.14 — Observer Debug AOV Audit (docs only)
+
+**Scope of this slice (per the operator's *OBSERVER.14
+— Observer Debug AOV Audit* task brief): write
+`docs/OBSERVER_DEBUG_AOV_AUDIT.md`, the per-slice
+verdict document for OBSERVER.13 (`b34e265`).
+Verifies the nine items the task brief
+enumerates — observer debug AOV exists; beauty
+output unchanged by default; default observer
+diagnostic is neutral; AOV generation is
+optional; CUDA path status; OptiX path status;
+no observer perception transform added yet;
+runtime status; verdict — and produces a
+`PASS` / `REPAIR` / `BLOCKED` verdict with
+check #8 separately recording the runtime
+CUDA/OptiX status (`PASS` / `DEFERRED` /
+`BLOCKED`). Documentation only; no source
+code, no test, no CMake, no behavioural
+change.**
+
+### What ships
+
+- **`docs/OBSERVER_DEBUG_AOV_AUDIT.md`
+  (new).** Per-slice verdict document mirroring
+  the MANI-I.9 (manifold debug AOV audit) +
+  OBSERVER.9 / OBSERVER.11 / OBSERVER.3 /
+  OBSERVER.5 / OBSERVER.7 audit-doc shape:
+    - **§1 VERDICT** — `PASS`. All eight
+      structural checks return `PASS`; check #8
+      runtime CUDA/OptiX status is `DEFERRED`
+      on the documented audit-host SDK-absence
+      limitation; check #9 verdict is `PASS`.
+    - **§2 PER-CHECK RESULTS** — nine-row
+      evidence table. Each row cites concrete
+      file/line observations on the OBSERVER.13
+      surface:
+        - **Check #1** (AOV exists): file/line
+          refs to the nine attachment-point
+          additions (enumerator at
+          `AOV.h:97`; component count at
+          `AOV.cpp:16`; type name at
+          `AOV.cpp:34`; factory at
+          `AOV.cpp:101`; CUDA fields at
+          `CudaAOV.cuh:96` +
+          `CudaRenderer.h:184`; CUDA thread at
+          `CudaRenderer.cu:297`; OptiX field
+          at `OptixLaunchParams.h:351`; OptiX
+          AovResult field at
+          `OptixRenderer.h:447`).
+        - **Check #2** (beauty unchanged):
+          four-layer verification including
+          empirical anchor across 8
+          non-observer argv vectors.
+        - **Check #3** (default neutral):
+          two-layer verification (OBSERVER.6
+          adapter returns `rest_frame()` on
+          Identity → AOV writes `(0, 0, 0)`).
+        - **Check #4** (AOV optional): four-
+          layer (CLI gate; dispatcher gate;
+          two-flag composition; orthogonality
+          with `--manifold-debug`).
+        - **Check #5** (CUDA path): four-layer
+          (data path; kernel arm; buffer alloc
+          + PPM save; compile-time validation).
+        - **Check #6** (OptiX path): same
+          four-layer structure mirroring SCHW.7
+          + MANI-I.8 precedents.
+        - **Check #7** (no perception
+          transform): three-layer (kernel arms
+          call zero SR helpers; non-AOV kernel
+          paths byte-unchanged via `git diff`;
+          `perception_mode` tag dormant in AOV
+          write).
+        - **Check #8** (runtime CUDA/OptiX):
+          `DEFERRED` on documented SDK-absence
+          for BOTH backends. Six required
+          runtime checks enumerated for a
+          future SDK-host pass (mirroring the
+          OBSERVER.12 task brief §8 + the
+          OBSERVER.9 / OBSERVER.11
+          deferred-checks list).
+        - **Check #9** (verdict): `PASS`.
+    - **§3 REASONING SUMMARY** — recap of the
+      OBSERVER.13 commit's surface across all
+      five subsystems (AOV data model; CLI
+      surface; CUDA backend; OptiX backend;
+      dispatchers) + the tests (6 new test
+      functions across `renderer_tests` +
+      `cli_tests`), plus a per-check reasoning
+      paragraph that ties each verdict back to
+      its evidence.
+    - **§4 NEXT** — renumbered OBSERVER.*
+      sub-slice ladder absorbing this audit
+      slot: OBSERVER.1-OBSERVER.13 (LANDED);
+      OBSERVER.14 THIS AUDIT; OBSERVER.15
+      arc capstone audit (was OBSERVER.13 in
+      the post-OBSERVER.11 ladder, renumbered
+      through OBSERVER.12 task definition +
+      OBSERVER.13 impl + OBSERVER.14 audit).
+      Notes the operator may instead choose
+      to land the fixture follow-up first OR
+      to extend the OBSERVER.* arc with the
+      broader kernel migration as a new
+      task-definition + impl pair.
+    - **§5 REFERENCES** — 25-entry reference
+      list spanning master instructions,
+      architecture-doc, OBSERVER.1 plan, the
+      OBSERVER.12 task definition, all 6 prior
+      OBSERVER.* audits, the MANI-I.9
+      precedent audit, all source files the
+      OBSERVER.13 commit touched, the
+      unchanged test files, the
+      post-OBSERVER.13 `BUILD_PLAN.md` entry,
+      and both surrounding commit SHAs
+      (`b34e265` audited / `e6d6ffc` baseline).
+
+### What does NOT ship
+
+- **No source code.** Nothing in any `src/`
+  subtree is touched (`git diff` outside
+  `docs/` ⇒ 0 bytes). The OBSERVER.13
+  surface stays exactly as `b34e265` landed
+  it.
+- **No new test binary.** ctest set unchanged
+  at 12. `renderer_tests` count unchanged at
+  27 RR_CHECK; `cli_tests` unchanged at 274;
+  `manifold_identity_tests` unchanged at 408.
+- **No CMake change.**
+- **No `OBSERVER_FRAME_RENDERING_PLAN.md`
+  rewrite.** The plan's §7 sub-slice ladder
+  stays as written (the audit-slot insertion
+  is recorded in this audit's §4 as a
+  renumbering ladder, not by editing the
+  plan doc).
+- **No `OBSERVER_DEBUG_AOV_TASK.md`
+  rewrite.** The OBSERVER.12 task brief
+  stays as written; this OBSERVER.14 audit
+  verifies the OBSERVER.13 implementation
+  against the task brief's PASS criteria
+  without editing the brief.
+- **No `MODULE_MAP.md` update.** The per-slice
+  audit is doc-only; the
+  `CameraObserverAdapter.h` /
+  `ObserverFrame.h` module-map status remains
+  **Skeleton-Plus**; the `**Wired**`
+  promotion still waits for the broader
+  OBSERVER.* arc migration that gates the
+  aberration / Doppler / searchlight helpers
+  on `perception_mode`.
+- **No `MANIFOLD_INTEGRATION_PLAN.md`
+  update.** The OBSERVER.* arc is orthogonal
+  to the integration plan.
+- **No `BUILD_PLAN.md` historical-record
+  rewrite.** The MANI-I.* / SCHW.* /
+  PENROSE.* / MANI-CONSUME.* /
+  OBSERVER.1-OBSERVER.13 entries above stay
+  as-is; this OBSERVER.14 entry is additive.
+- **No Kerr / Kruskal work.**
+- **No C4D / server / UI / node-editor
+  touch.**
+
+### Acceptance
+
+- **Compiles.** Documentation-only slice; no
+  build configuration touched. The audit-host
+  build remains at the post-OBSERVER.13
+  baseline (`100% tests passed, 0 tests
+  failed out of 12`;
+  `renderer_tests: 27/27 passed`;
+  `cli_tests: 274/274 passed`;
+  `manifold_identity_tests: 408/408`).
+- **Internally consistent.** The nine-row
+  evidence table cites concrete file/line
+  positions on the OBSERVER.13 surface
+  (9 attachment-point file/line refs at
+  check #1 alone), concrete diff observations
+  (`git diff e6d6ffc..b34e265` filtered
+  against the kernel sources shows ONLY
+  ADDITIONS, never modifications to existing
+  kernel arms — proving "no perception
+  transform added"), runtime test counts
+  before and after the OBSERVER.13 commit
+  (renderer_tests +8 RR_CHECK; cli_tests
+  +20 RR_CHECK; manifold_identity_tests
+  unchanged), and audit-host smoke-test
+  transcripts for the new `--observer-debug`
+  flag. The renumbered OBSERVER.* sub-slice
+  ladder in §4 mirrors the OBSERVER.3 +
+  OBSERVER.5 + OBSERVER.7 + OBSERVER.9 +
+  OBSERVER.11 audit-slot insertion precedent
+  verbatim.
+- **Verdict honesty.** The verdict is `PASS`
+  because the structural checks pass — not
+  because of an arbitrary judgement call.
+  Every claim in the evidence table is
+  backed by a file/line reference, a diff
+  observation, a runtime test count, OR an
+  audit-host smoke-test transcript. Check
+  #8 (runtime CUDA/OptiX) is honestly
+  recorded as `DEFERRED` for BOTH backends on
+  the documented audit-host SDK-absence
+  limitation — NOT `BLOCKED` because the
+  structural plumbing is verified PASS on
+  both backends, the data-model + CLI tests
+  pass on the audit host, and the kernel-side
+  write arms structurally mirror the MANI-I.8
+  precedent verbatim (which is verified-green
+  on SDK hosts per the MANI-I.9 audit).
+  Master rule #3 ("no fake stubs") is
+  satisfied: the OBSERVER.13 AOV is
+  structurally consumed by the CUDA + OptiX
+  kernel arms; the data path is end-to-end
+  verifiable on an SDK host.
+
+### Module status changes
+
+`docs/MODULE_MAP.md` is *not* updated by this
+slice. With OBSERVER.14 verifying OBSERVER.13's
+debug-AOV impl, the
+`src/manifold/CameraObserverAdapter.h` /
+`src/manifold/ObserverFrame.h` module-map
+status remains **Skeleton-Plus** — the
+OBSERVER.13 slice exercised the kernel-side
+read of `observer_frame.beta` for the AOV
+write ONLY (narrow kernel touch; read +
+copy; no transform). The full `**Wired**`
+promotion still waits for the slice that
+gates the aberration / Doppler /
+searchlight helpers on
+`perception_mode == ConstantVelocityMinkowski`
+(the broader OBSERVER.* arc migration). The
+OBSERVER.14 verdict authorises the operator
+to proceed to OBSERVER.15 (arc capstone
+audit) under the renumbered ladder when
+ready — OR to land the fixture follow-up
+first per OBSERVER.12 task brief §5 — OR
+to extend the OBSERVER.* arc with the
+broader kernel migration as a new
+task-definition + impl pair.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
