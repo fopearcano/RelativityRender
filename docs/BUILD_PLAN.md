@@ -85586,6 +85586,285 @@ deferred FIELD-I.* GPU bridges + the
 FIELD-I.* fixture's SDK-host runtime
 pass.
 
+## FIELD-I.5 — Field Mapping Config Audit (docs only)
+
+**Scope of this slice (per the operator's *FIELD-I.5 —
+Field Mapping Config Audit* task brief): write
+`docs/FIELD_MAPPING_CONFIG_AUDIT.md`, the per-slice
+verdict document for FIELD-I.4 (`683a16d`). Verifies
+the seven items the task brief enumerates — field
+mapping target enum exists; mapping parameters exist;
+default mapping is None / no-op; no renderer behaviour
+changed; no CUDA / OptiX behaviour changed; build /
+test status; verdict — and produces a `PASS` /
+`REPAIR` / `BLOCKED` verdict. Documentation only; no
+source code, no test, no CMake, no scene file, no
+behavioural change. The FIELD-I.5 slot is inserted
+between the FIELD-I.4 impl slice and the subsequent
+FIELD-I.6 (CLI + Config bridge) impl slice;
+subsequent FIELD-I.* sub-slices renumber by one
+(mirrors the FIELD-I.3 / OBSERVER.3 / OBSERVER.5 /
+OBSERVER.7 / OBSERVER.9 / OBSERVER.11 / OBSERVER.14 /
+OBS-P.3 / OBS-F.3 audit-slot insertion precedent).**
+
+### What ships
+
+- **`docs/FIELD_MAPPING_CONFIG_AUDIT.md` (new, ~530
+  lines).** Per-slice verdict document mirroring the
+  FIELD-I.3 (host-side POD-leaf audit) +
+  OBSERVER.3 / OBSERVER.5 / OBSERVER.7 / OBS-F.3
+  precedent shapes:
+    - **§1 VERDICT** — `PASS`. All six structural
+      checks return `PASS`; check #7 (overall
+      verdict) is `PASS`. NOT
+      `PASS_WITH_RUNTIME_DEFERRED` because
+      FIELD-I.4 is a host-side POD-leaf with zero
+      kernel surface — there is no runtime portion
+      to defer. The `RR_HD inline` decoration on
+      `evaluate_mapping(...)` preserves device-
+      callability for future FIELD-I.* kernel-
+      bridge consumption, but no CUDA / OptiX TU
+      consumes the helper this slice.
+    - **§2 PER-CHECK RESULTS** — seven-row evidence
+      table. Each row cites concrete file / line
+      observations on the FIELD-I.4 surface:
+        - **Check #1** (field mapping target enum
+          exists): `src/field/FieldMapping.h:206-211`
+          defines `enum class FieldMappingTarget {
+          None = 0, ColorMultiplier, Emission,
+          DiagnosticAOV };` (the four enumerators
+          the brief names). `None = 0` is the
+          explicit default anchor.
+        - **Check #2** (mapping parameters exist):
+          `src/field/FieldMapping.h:263-270`
+          defines `struct FieldMappingConfig` with
+          the six brief-specified fields:
+          `target` (default `None`), `strength`
+          (default `0.0f`), `bias` (default
+          `0.0f`), `min_value` (default `0.0f`),
+          `max_value` (default `1.0f`),
+          `clamp_output` (default `false`).
+        - **Check #3** (default mapping is None /
+          no-op): three-layer verified —
+          (a) `FieldMappingConfig{}.target ==
+          FieldMappingTarget::None` by construction;
+          (b) `evaluate_mapping(...)` short-circuits
+          to `0.0f` at `FieldMapping.h:279-281` when
+          `target == None`;
+          (c) `disabled_field_mapping_config()`
+          factory returns `FieldMappingConfig{}`
+          byte-for-byte at `FieldMapping.h:301`.
+          Empirically verified by four RR_CHECK
+          tests (default-target-none / target-none-
+          short-circuit / factory / factory-equals-
+          default-constructed).
+        - **Check #4** (no renderer behaviour
+          changed): `git diff 3df70d9..683a16d
+          --name-only -- 'src/'
+          ':(exclude)src/field/'` returns zero
+          hits. Every `src/cuda/` / `src/optix/` /
+          `src/pathtracer/` / `src/renderer/` /
+          `src/scene/` / `src/io/` / `src/core/` /
+          `src/manifold/` / `src/math/` file is
+          byte-unchanged from the FIELD-I.3
+          baseline.
+        - **Check #5** (no CUDA / OptiX behaviour
+          changed): `git diff 3df70d9..683a16d
+          --name-only -- 'src/cuda/' 'src/optix/'`
+          returns zero hits. The CUDA + OptiX
+          backends are byte-unchanged.
+        - **Check #6** (build / test status):
+          audit-host `ctest` returns `100% tests
+          passed, 0 tests failed out of 13`
+          (unchanged from FIELD-I.3; same ctest
+          set, no new ctest target). `field_tests:
+          135 / 135 passed` (135 total = 80
+          FIELD-I.2 + 55 NEW FIELD-I.4). All other
+          suites unchanged. Full rebuild clean;
+          no new warnings. Empirically verified.
+        - **Check #7** (verdict): `PASS`.
+    - **§3 REASONING SUMMARY** — recap of the
+      FIELD-I.4 commit's three-file shape
+      (`src/field/FieldMapping.h` extension,
+      `tests/field_tests.cpp` extension,
+      `docs/BUILD_PLAN.md` entry), per-check
+      reasoning paragraphs tying each verdict back
+      to its evidence, master-rule satisfaction
+      recap (#3 + #11 + #12 + #16), and the
+      explicit framing that FIELD-I.4 is a host-
+      side POD-leaf slice with no kernel surface
+      to defer.
+    - **§4 NEXT** — documents the renumbered
+      FIELD-I.* sub-slice ladder absorbing the
+      FIELD-I.5 audit slot: FIELD-I.6 = CLI +
+      Config bridge (was FIELD-I.5; originally
+      FIELD-I.4 on the pre-FIELD-I.3 ladder);
+      FIELD-I.7 = config-bridge audit; FIELD-I.8 =
+      scalar diagnostic AOV; FIELD-I.9 = AOV
+      audit; FIELD-I.10 = CUDA bridge; FIELD-I.11
+      = CUDA audit; FIELD-I.12 = OptiX bridge;
+      FIELD-I.13 = OptiX audit; FIELD-I.14 =
+      fixture; FIELD-I.15 = fixture audit;
+      FIELD-I.16 = arc capstone. Three candidate
+      next slots with prioritisation: (a)
+      FIELD-I.6 CLI + Config bridge (RECOMMENDED
+      — natural continuation of the FIELD-I.*
+      arc); (b) manifold-orthogonal work (deferred
+      SDK-host runtime pass for the OBSERVER /
+      OBS-P / OBS-F arc family; MANI-I.12 final
+      cross-host manifold audit; denoiser
+      integration with chart-aware AOVs;
+      path-tracer feature breadth); (c) direct
+      FIELD-I.* kernel bridge prototype skipping
+      the CLI / AOV / fixture surface (NOT
+      recommended).
+    - **§5 REFERENCES** — entry list spanning
+      master instructions, architecture-doc,
+      FIELD-I.1 plan, FIELD-I.3 precedent
+      audit doc, FIELD-I.4 commit (`683a16d`),
+      FIELD-I.3 baseline commit (`3df70d9`), the
+      audited `src/field/FieldMapping.h` header
+      surface, the extended `tests/field_tests.cpp`
+      binary, every prior FIELD.* /
+      OBSERVER.* / OBS-P.* / OBS-F.*
+      precedent audit doc, every unchanged
+      source / test / build file in the
+      `src/` + `tests/` + CMake surface.
+
+### What does NOT ship
+
+- **No source code.** Nothing in any `src/`
+  subtree is touched. The post-FIELD-I.4 HEAD =
+  `683a16d` baseline is preserved exactly.
+  `git diff 683a16d..HEAD -- 'src/'` returns
+  zero hits.
+- **No new test binary.** ctest set unchanged
+  at 13. Test counts unchanged
+  (`relativity_tests: 841/841`;
+  `manifold_identity_tests: 408/408`;
+  `cli_tests: 274/274`;
+  `renderer_tests: 27/27`;
+  `field_tests: 135/135`).
+- **No CMake change.**
+- **No `FieldMapping.h` modification.** The
+  FIELD-I.4 surface is preserved verbatim.
+- **No `tests/field_tests.cpp` modification.**
+- **No `FIELD_SCALAR_MODEL_AUDIT.md`
+  modification.** The FIELD-I.3 audit is
+  preserved verbatim as the precedent host-
+  side POD-leaf audit doc; this audit is the
+  per-slice verdict for FIELD-I.4.
+- **No `FIELD_INTERPRETATION_PHASE1_PLAN.md`
+  modification.** The FIELD-I.1 plan is the
+  canonical FIELD-I.* arc reference.
+- **No prior-arc-document modification.**
+  Every OBSERVER.* + OBS-P.* + OBS-F.* +
+  FIELD-I.1 / .2 / .3 / .4 arc document
+  preserved verbatim.
+- **No `MODULE_MAP.md` update.** The
+  `rr_field` skeleton's module-map status
+  carries forward from the FIELD-I.4 entry
+  unchanged.
+- **No `MANIFOLD_INTEGRATION_PLAN.md` update.**
+- **No `BUILD_PLAN.md` historical rewrite.**
+  Every prior entry stays as-is; the FIELD-I.5
+  entry appends at the end of the FIELD-I.4
+  entry.
+- **No new perception model.** No
+  `PerceptionMode` enumerator added.
+- **No quantum / tensor / curvature
+  simulation.**
+- **No C4D / server / UI / node-editor touch.**
+
+### Acceptance
+
+- **Compiles.** Documentation-only slice; no
+  build configuration touched. The audit-host
+  build remains at the post-FIELD-I.4 baseline
+  (`100% tests passed, 0 tests failed out of
+  13`; `field_tests: 135/135`;
+  `relativity_tests: 841/841`;
+  `manifold_identity_tests: 408/408`;
+  `cli_tests: 274/274`;
+  `renderer_tests: 27/27`).
+- **Internally consistent.** The seven-row
+  evidence table cites concrete file / line
+  positions on the FIELD-I.4 surface (the
+  ~+168 lines on `src/field/FieldMapping.h`
+  with explicit line ranges for the new enum,
+  POD, evaluator, and factory; the +245 lines
+  on `tests/field_tests.cpp`), concrete diff
+  observations (two `git diff` invocations
+  filtered against `src/` and `src/cuda/` +
+  `src/optix/`, both returning zero hits
+  outside the documented FIELD-I.4 changes),
+  and the audit-host ctest transcript from
+  the FIELD-I.4 landing commit. The host-side
+  POD-leaf treatment matches the FIELD-I.3 /
+  OBSERVER.3 / OBSERVER.5 / OBSERVER.7
+  precedent.
+- **Verdict honesty.** The verdict is `PASS`
+  (not `PASS_WITH_RUNTIME_DEFERRED`) because
+  FIELD-I.4 is a host-side POD-leaf slice
+  with zero kernel surface — there is no
+  runtime portion to defer. The `RR_HD inline`
+  decoration preserves device-callability
+  for future FIELD-I.* kernel-bridge
+  consumption, but the FIELD-I.4 surface is
+  fully exercised by the audit-host
+  `field_tests` binary's 55 NEW RR_CHECK
+  assertions (135 total). Master rule #3
+  ("no fake stubs") satisfied: every
+  enumerator + parameter slot on the
+  FIELD-I.4 surface has a documented +
+  testable behaviour; `None` is the explicit
+  no-op anchor (not a placeholder; the
+  documented short-circuit is the contract);
+  no reserved-but-undefined slots; no
+  `*Placeholder` suffix needed because every
+  target HAS a defined evaluator behaviour
+  today. Master rule #11 ("explicit,
+  testable interfaces") satisfied: every
+  documented behaviour is tested empirically
+  by the 55 new RR_CHECK assertions (enum
+  distinctness, factory, target-None short-
+  circuit, three-channel dispatch routing,
+  bias additivity, clamp on/off/high/low/in-
+  range, degenerate-range defence, negative-
+  strength inversion). Master rule #12 ("do
+  not overbuild a later system before the
+  current layer works") satisfied: scope is
+  deliberately narrow (no renderer
+  integration; no GPU bridge; no CLI; no
+  AOV; no fixture); each of those is a
+  separate FIELD-I.* sub-slice with its
+  own audit gate.
+
+### Module status changes
+
+`docs/MODULE_MAP.md` is *not* updated by this
+slice. The `rr_field` skeleton's module-map
+status carries forward from the FIELD-I.4
+entry unchanged. The FIELD-I.5 audit
+authorises the operator to proceed to:
+**(a)** FIELD-I.6 — CLI + Config bridge (the
+renumbered next FIELD-I.* impl slot;
+RECOMMENDED as natural continuation of the
+FIELD-I.* arc); **(b)** manifold-orthogonal
+work (deferred SDK-host runtime pass for the
+OBSERVER.* + OBS-P.* + OBS-F.* arc family;
+MANI-I.12 final cross-host manifold audit;
+denoiser integration with chart-aware AOVs;
+path-tracer feature breadth);
+**(c)** a direct FIELD-I.* kernel bridge
+prototype (NOT recommended; skips the CLI /
+Config / AOV / fixture surface needed to
+author + diagnose kernel reads). The
+FIELD-I.* arc's `**Wired**` promotion is
+reserved for the deferred FIELD-I.* GPU
+bridges + the FIELD-I.* fixture's SDK-host
+runtime pass.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
