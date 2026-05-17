@@ -89898,6 +89898,257 @@ kernels' beauty-mapping arms end-to-end
 against the FIELD-BEAUTY.7 fixtures (per §6 of
 the companion doc).
 
+## FIELD-BEAUTY.8 — Scalar Field Beauty Mapping Capstone Audit (docs only)
+
+**Scope of this slice (per the operator's *FIELD-BEAUTY.8
+— Scalar Field Beauty Mapping Capstone Audit* task
+brief): write `docs/FIELD_SCALAR_BEAUTY_MAPPING_AUDIT.md`,
+the arc-level capstone verdict for the FIELD-BEAUTY.*
+arc (FIELD-BEAUTY.3 – FIELD-BEAUTY.7). Verifies the
+twelve items the task brief enumerates — CUDA + OptiX
+ColorMultiplier mappings exist; CUDA + OptiX Emission
+mappings exist; activation rules; default no-op
+anchors; AOV preservation; fixture authoring; runtime
+status; remaining risks; recommended next safe stage
+— and produces one of four verdicts (PASS /
+PASS_WITH_RUNTIME_DEFERRED / REPAIR / BLOCKED).
+Documentation only; no source code, no test, no
+CMake, no scene file, no behavioural change.**
+
+### What ships
+
+- **`docs/FIELD_SCALAR_BEAUTY_MAPPING_AUDIT.md` (new,
+  ~1100 lines).** Arc-level capstone verdict
+  document mirroring the OBSERVER.15 capstone audit
+  shape, adapted for the FIELD-BEAUTY.* arc's
+  beauty-mapping scope:
+    - **§1 VERDICT** — `PASS_WITH_RUNTIME_DEFERRED`.
+      All eleven structural / runtime-status checks
+      pass on the audit-host side. The six SDK-host
+      runtime scenarios from FIELD-BEAUTY.6 §3.10
+      (plus a seventh cross-backend byte-identity
+      check) defer to the future FIELD-BEAUTY.9
+      CLI bridge slice's audit on a CUDA + OptiX-SDK
+      host. The verdict honestly captures "the
+      arc's structural surface is complete +
+      verified on audit-host" + "the kernel arms'
+      empirical PPM outputs are deferred to SDK
+      host".
+    - **§2 PER-CHECK RESULTS** — twelve-row evidence
+      table. Each row cites the per-slice audit
+      reference + concrete file/line evidence:
+      checks #1 + #2 cite FIELD-BEAUTY.4; checks
+      #3 + #4 cite FIELD-BEAUTY.6 (with explicit
+      reference to the §3.7 five-axis symmetry
+      argument); checks #5 + #6 + #7 cite both
+      FIELD-BEAUTY.4 + FIELD-BEAUTY.6; check #8
+      cites the per-line diff against both
+      kernel AOV-write blocks; check #9 cites
+      FIELD-BEAUTY.7 fixture isolation + the
+      one-variable-difference principle; check
+      #10 enumerates the seven deferred SDK-host
+      scenarios; check #11 documents three
+      remaining risks (CLI bridge not landed;
+      no path-tracer integration; no per-target
+      color); check #12 recommends FIELD-BEAUTY.9
+      as the next safe stage.
+    - **§3 REASONING SUMMARY** — arc shape recap
+      (5 slices over 5 per-slice commits; ~460
+      net source lines + ~2400 doc lines + 2
+      fixtures + 0 CMake change); per-check
+      reasoning paragraphs; master-rule
+      satisfaction recap (#1 + #3 + #11 + #12 +
+      #16); honest-framing recap of the unfilled
+      FIELD-BEAUTY.1 + FIELD-BEAUTY.2 task brief
+      slots (preserved across the entire arc) +
+      the out-of-scope FIELD_INTERPRETATION_PHASE1_AUDIT.md
+      (FIELD-I.* capstone is a separate slice;
+      deferred).
+    - **§4 NEXT** — documents the post-capstone
+      FIELD-BEAUTY.* ladder (FIELD-BEAUTY.9 =
+      CLI + Config + dispatcher bridge;
+      FIELD-BEAUTY.10 = CLI bridge audit;
+      FIELD-BEAUTY.11 = arc-wide SDK-host runtime
+      pass). Six candidate next slots with
+      prioritisation: (a) HIGHLY RECOMMENDED
+      FIELD-BEAUTY.9; (b) RECOMMENDED combined
+      FIELD-COMBINED CLI bridge (merges
+      FIELD-BEAUTY.9 + FIELD-I.15 into one
+      slice for maximum converging-leverage);
+      (c) manifold-orthogonal work; (d) NOT
+      RECOMMENDED FIELD-I.* arc capstone before
+      CLI bridge; (e) NOT RECOMMENDED direct
+      path-tracer integration; (f) DEFERRABLE
+      retroactive task brief authoring.
+    - **§5 REFERENCES** — entry list spanning
+      master instructions, architecture-doc,
+      design-doc §4.1 + §4.2 anchors, every
+      FIELD-I.* + FIELD-BEAUTY.* per-slice
+      precedent (with the unfilled slots
+      honestly marked), an arc-wide source
+      surface inventory table (10 source files
+      + 2 fixtures + 0 CMake change), an
+      arc-wide documentation surface inventory
+      table, surrounding commit SHAs, and the
+      shared cross-backend math leaves both
+      arcs consume.
+
+### What does NOT ship
+
+- **No source code.** Nothing in any `src/`
+  subtree is touched. The post-FIELD-BEAUTY.7
+  HEAD = `3aee852` baseline is preserved
+  exactly. `git diff 3aee852..HEAD -- 'src/'`
+  returns zero hits.
+- **No new test binary.** ctest set unchanged
+  at 13 (audit-host) / 14 (OptiX-ON-no-SDK).
+  Test counts unchanged.
+- **No CMake change.**
+- **No FIELD-BEAUTY.* per-slice source file
+  modification.** The FIELD-BEAUTY.3 +
+  FIELD-BEAUTY.5 kernel arms preserved
+  verbatim. The FIELD-BEAUTY.7 fixtures +
+  parser preserved verbatim.
+- **No FIELD-BEAUTY.4 + FIELD-BEAUTY.6 +
+  FIELD-BEAUTY.7 audit-doc / companion-doc
+  modification.** The per-slice audits are the
+  evidence basis this capstone synthesises;
+  the documents themselves are preserved
+  verbatim.
+- **No FIELD-I.* arc-document modification.**
+  Every FIELD-I.1 – FIELD-I.14 audit / task
+  brief / companion doc preserved verbatim.
+- **No prior-arc-document modification.** Every
+  OBSERVER.* + OBS-P.* + OBS-F.* arc document
+  preserved verbatim.
+- **No `MODULE_MAP.md` update.**
+- **No `MANIFOLD_INTEGRATION_PLAN.md` update.**
+- **No `BUILD_PLAN.md` historical rewrite.**
+  Every prior entry stays as-is; the
+  FIELD-BEAUTY.8 entry appends at the end of
+  the FIELD-BEAUTY.7 entry.
+- **No `FIELD_SCALAR_BEAUTY_MAPPING_PLAN.md` /
+  `FIELD_SCALAR_BEAUTY_MAPPING_TASK.md`
+  authoring.** The missing FIELD-BEAUTY.1 +
+  FIELD-BEAUTY.2 slots remain unfilled (this
+  capstone preserves the honest framing per
+  §3.12 of the audit doc; retroactive authoring
+  deferrable to operator discretion per §4.2
+  (f)).
+- **No `FIELD_INTERPRETATION_PHASE1_AUDIT.md`
+  authoring.** The FIELD-I.* arc capstone is
+  a separate slice (the parallel arc's
+  closure); out of scope for this
+  FIELD-BEAUTY.8 capstone (acknowledged at
+  §3.12 of the audit doc).
+- **No new perception model.**
+- **No quantum / tensor / curvature
+  simulation.**
+- **No C4D / server / UI / node-editor touch.**
+
+### Acceptance
+
+- **Compiles.** Documentation-only slice; no
+  build configuration touched. The audit-host
+  build remains at the post-FIELD-BEAUTY.7
+  baseline (`100% tests passed, 0 tests failed
+  out of 13`; `renderer_tests: 35/35`;
+  `field_tests: 135/135`;
+  `relativity_tests: 841/841`;
+  `manifold_identity_tests: 408/408`;
+  `cli_tests: 274/274`). The OptiX-ON-no-SDK
+  build remains at the FIELD-BEAUTY.7 baseline
+  (14/14 ctest PASS).
+- **Internally consistent.** The twelve-row
+  evidence table cites the per-slice audit
+  references (FIELD-BEAUTY.4 + FIELD-BEAUTY.6)
+  for the structural checks + concrete
+  file/line evidence on the FIELD-BEAUTY.3 +
+  FIELD-BEAUTY.5 + FIELD-BEAUTY.7 surfaces.
+  The arc-shape recap at §3.1 cites the
+  aggregate diff stat (10 source files + 2
+  fixtures + ~460 source lines + ~2400 doc
+  lines + 0 CMake change). The five-axis
+  cross-backend symmetry argument is inherited
+  from the FIELD-BEAUTY.6 audit's §3.7 + cited
+  at this capstone's checks #3 + #4 + §3.3.
+  The runtime-status framing matches the
+  FIELD-BEAUTY.4 + FIELD-BEAUTY.6 per-slice
+  precedent applied at arc scope.
+- **Verdict honesty.** `PASS_WITH_RUNTIME_DEFERRED`
+  is the honest verdict — every structural
+  check passes on the audit-host side; the
+  runtime portion is honestly deferred to the
+  future FIELD-BEAUTY.9 CLI bridge slice's
+  audit on a CUDA + OptiX-SDK host. Master
+  rule #1 + #3 + #11 + #12 + #16 satisfied
+  across the arc (recap at §3.11 of the
+  audit doc). The honest framing of the
+  unfilled FIELD-BEAUTY.1 + FIELD-BEAUTY.2
+  task brief slots is preserved across every
+  per-slice commit's BUILD_PLAN entry and
+  acknowledged at this capstone's §3.12. The
+  three remaining risks at check #11 are
+  documented as scope-deferral (not bugs).
+
+### Module status changes
+
+`docs/MODULE_MAP.md` is *not* updated by this
+slice. With the FIELD-BEAUTY.8 capstone, the
+FIELD-BEAUTY.* arc's per-slice gate chain is
+closed; the arc-level structural surface is
+verified PASS. The `rr_gpu` + `rr_optix` +
+`rr_scene` libraries' module-map statuses carry
+forward from the FIELD-I.9 + FIELD-I.11 +
+FIELD-I.13 entries unchanged (the FIELD-BEAUTY.*
+arc reuses the existing `rr_field` PUBLIC links
+on all three; no new link added).
+
+The FIELD-BEAUTY.* arc's `**Wired**` promotion
+remains reserved for the FIELD-BEAUTY.11
+post-CLI-bridge SDK-host runtime pass that
+exercises both backend kernels' beauty-mapping
+arms end-to-end against the FIELD-BEAUTY.7
+fixtures. The FIELD-BEAUTY.9 CLI bridge slice
+is the single load-bearing follow-up that
+converts the entire FIELD-BEAUTY.4 +
+FIELD-BEAUTY.6 + FIELD-BEAUTY.8 runtime-
+deferred verdict tail to PASS in one SDK-host
+audit.
+
+The FIELD-BEAUTY.8 capstone authorises the
+operator to proceed to: **(a)** HIGHLY
+RECOMMENDED FIELD-BEAUTY.9 — CLI + Config +
+dispatcher bridge (the renumbered next
+FIELD-BEAUTY.* impl slot; closes the entire
+FIELD-BEAUTY.* arc family's runtime-deferred
+verdict tail on SDK-host with a single
+subsequent audit); **(b)** RECOMMENDED
+combined FIELD-COMBINED CLI bridge (merges
+FIELD-BEAUTY.9 + FIELD-I.15 into one slice;
+ships both FIELD-I.* diagnostic-AOV CLI +
+FIELD-BEAUTY.* beauty-mapping CLI together;
+single SDK-host audit closes both arcs'
+runtime-deferred verdict tails); **(c)**
+manifold-orthogonal work (deferred SDK-host
+runtime pass for the OBSERVER.* + OBS-P.* +
+OBS-F.* arc family; MANI-I.12 final cross-host
+manifold audit; denoiser integration with
+chart-aware AOVs; path-tracer feature
+breadth); **(d) NOT RECOMMENDED**
+FIELD_INTERPRETATION_PHASE1_AUDIT.md
+(FIELD-I.* arc capstone) before the CLI
+bridge — risks the same
+`PASS_WITH_RUNTIME_DEFERRED` verdict the
+FIELD-I.* per-slice audits already carry;
+better to land the CLI bridge first then
+capstone both arcs together; **(e) NOT
+RECOMMENDED** direct path-tracer integration
+slice — premature before SDK-host
+verification of the primary-hit arm;
+**(f) DEFERRABLE** retroactive task brief
+authoring (operator discretion).
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
