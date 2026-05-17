@@ -84960,6 +84960,274 @@ slot (the new FIELD-I.2 type), plus a
 `--field-*` CLI flag surface mirroring
 the OBSERVER.4 `--observer-*` flag pattern.
 
+## FIELD-I.3 — Scalar Field Model Audit (docs only)
+
+**Scope of this slice (per the operator's *FIELD-I.3 —
+Scalar Field Model Audit* task brief): write
+`docs/FIELD_SCALAR_MODEL_AUDIT.md`, the per-slice
+verdict document for FIELD-I.2 (`40c387b`). Verifies
+the seven items the task brief enumerates — scalar
+field model exists; default disabled / no-op behaviour
+exists; constant / radial representation exists or is
+explicitly deferred; no renderer behaviour changed; no
+CUDA / OptiX behaviour changed; build / test status;
+verdict — and produces a `PASS` / `REPAIR` / `BLOCKED`
+verdict. Documentation only; no source code, no test,
+no CMake, no scene file, no behavioural change. The
+FIELD-I.3 slot is inserted between the FIELD-I.2 impl
+slice and the subsequent FIELD-I.4 (field mapping
+config + CLI flags) impl slice; subsequent FIELD-I.*
+sub-slices renumber by one (mirrors the OBSERVER.3 /
+OBSERVER.5 / OBSERVER.7 / OBSERVER.9 / OBSERVER.11 /
+OBSERVER.14 / OBS-P.3 / OBS-F.3 audit-slot insertion
+precedent).**
+
+### What ships
+
+- **`docs/FIELD_SCALAR_MODEL_AUDIT.md` (new, ~293
+  lines).** Per-slice verdict document mirroring the
+  OBSERVER.3 / OBSERVER.5 / OBSERVER.7 / OBS-F.3
+  (host-side POD-leaf audits) shapes:
+    - **§1 VERDICT** — `PASS`. All six structural
+      checks return `PASS`; check #7 (overall verdict)
+      is `PASS`. NOT `PASS_WITH_RUNTIME_DEFERRED`
+      because FIELD-I.2 is a host-side POD-leaf with
+      zero kernel surface — there is no runtime
+      portion to defer. The `RR_HD inline`
+      decoration on the `evaluate(...)` helpers
+      preserves device-callability for future
+      FIELD-I.* kernel-bridge consumption, but no
+      CUDA / OptiX TU consumes the helpers this
+      slice.
+    - **§2 PER-CHECK RESULTS** — seven-row evidence
+      table. Each row cites concrete file / line
+      observations on the FIELD-I.2 surface:
+        - **Check #1** (scalar field model exists):
+          `src/field/ScalarField.h` carries the new
+          `ScalarFieldKind` enum + `ScalarFieldConfig`
+          POD + `evaluate(...)` Vec3 + Vec4 overloads
+          + `disabled_scalar_field_config()` factory
+          + the internal `scalar_field_smoothstep`
+          helper. Verified by direct inspection of
+          the post-FIELD-I.2 HEAD.
+        - **Check #2** (default disabled / no-op
+          behaviour exists): three-layer verified —
+          (a) `disabled_scalar_field_config()` returns
+          `ScalarFieldConfig{}` byte-for-byte; (b)
+          default POD has `enabled = false` (master
+          switch); (c) enabled-but-`strength = 0.0f`
+          short-circuits to `0`. Empirically verified
+          by the `test_disabled_scalar_field_config_factory`
+          + `test_default_evaluate_returns_zero_at_*`
+          + `test_zero_strength_short_circuits` RR_CHECK
+          tests.
+        - **Check #3** (constant / radial representation
+          exists or is explicitly deferred): `Constant`
+          + `Radial` are concretely implemented;
+          `ProceduralPlaceholder` is explicitly
+          deferred per master rule #3 (the
+          `*Placeholder` suffix makes the
+          non-implementation status visible at the
+          type level; the evaluator returns `0`
+          everywhere; the `test_procedural_placeholder_returns_zero`
+          test pins this behaviour).
+        - **Check #4** (no renderer behaviour
+          changed): `git diff 4b0d482..40c387b
+          --name-only --
+          'src/' ':(exclude)src/field/'` returns zero
+          hits. Every `src/cuda/` / `src/optix/` /
+          `src/pathtracer/` / `src/renderer/` /
+          `src/scene/` / `src/io/` / `src/core/` /
+          `src/manifold/` / `src/math/` file is
+          byte-unchanged from the FIELD-I.1 baseline.
+        - **Check #5** (no CUDA / OptiX behaviour
+          changed): `git diff 4b0d482..40c387b
+          --name-only -- 'src/cuda/' 'src/optix/'`
+          returns zero hits. The CUDA + OptiX
+          backends are byte-unchanged.
+        - **Check #6** (build / test status):
+          audit-host `ctest` returns `100% tests
+          passed, 0 tests failed out of 13` (up
+          from 12; **+1 new test binary**
+          `field_tests`). `field_tests: 80 / 80
+          NEW`. All other suites unchanged
+          (`relativity_tests: 841/841`;
+          `manifold_identity_tests: 408/408`;
+          `cli_tests: 274/274`; `renderer_tests:
+          27/27`). Empirically verified.
+        - **Check #7** (verdict): `PASS`.
+    - **§3 REASONING SUMMARY** — recap of the
+      FIELD-I.2 commit's three-file addition
+      (`src/field/ScalarField.h` extension,
+      `tests/field_tests.cpp` new, `CMakeLists.txt`
+      ctest-target addition), per-check reasoning
+      paragraphs tying each verdict back to its
+      evidence, master-rule satisfaction recap
+      (#3 + #11 + #12 + #16), and the explicit
+      framing that FIELD-I.2 is a host-side POD-
+      leaf slice with no kernel surface to defer.
+    - **§4 NEXT** — documents the renumbered
+      FIELD-I.* sub-slice ladder absorbing the
+      FIELD-I.3 audit slot: FIELD-I.4 = field
+      mapping config + CLI flags (was FIELD-I.3);
+      FIELD-I.5 = AOV (was FIELD-I.4); FIELD-I.6 =
+      CUDA bridge (was FIELD-I.5); FIELD-I.7 =
+      OptiX bridge (was FIELD-I.6); FIELD-I.8 =
+      fixture scene (was FIELD-I.7); FIELD-I.9 =
+      arc capstone (was FIELD-I.8). Three
+      candidate next slots with prioritisation:
+      (a) FIELD-I.4 field mapping config + CLI
+      flags (RECOMMENDED — natural continuation
+      of the FIELD-I.* arc); (b) manifold-
+      orthogonal work (deferred SDK-host runtime
+      pass for the OBSERVER / OBS-P / OBS-F arc
+      family; MANI-I.12 final cross-host manifold
+      audit; denoiser integration with chart-aware
+      AOVs; path-tracer feature breadth); (c)
+      direct FIELD-I.* kernel bridge prototype
+      (NOT recommended; skips the config / AOV /
+      fixture surface needed to author + diagnose
+      kernel reads).
+    - **§5 REFERENCES** — entry list spanning
+      master instructions, architecture-doc,
+      FIELD-I.1 plan, FIELD-I.2 commit (`40c387b`),
+      FIELD-I.1 baseline commit (`4b0d482`), the
+      audited `src/field/ScalarField.h` header
+      surface, the new `tests/field_tests.cpp`
+      binary, the `CMakeLists.txt` ctest-target
+      addition, every prior FIELD.* /
+      OBSERVER.* / OBS-P.* / OBS-F.*
+      precedent audit doc, and the related
+      `MANIFOLD_INTEGRATION_PLAN.md` /
+      `FIELD_INTERPRETATION_LAYER.md` design
+      references.
+
+### What does NOT ship
+
+- **No source code.** Nothing in any `src/`
+  subtree is touched. The post-FIELD-I.2 HEAD =
+  `40c387b` baseline is preserved exactly.
+  `git diff 40c387b..HEAD -- 'src/'` returns
+  zero hits.
+- **No new test binary.** ctest set unchanged
+  at 13. Test counts unchanged
+  (`relativity_tests: 841/841`;
+  `manifold_identity_tests: 408/408`;
+  `cli_tests: 274/274`;
+  `renderer_tests: 27/27`;
+  `field_tests: 80/80`).
+- **No CMake change.**
+- **No `ScalarField.h` modification.** The
+  FIELD-I.2 surface is preserved verbatim.
+- **No `tests/field_tests.cpp` modification.**
+- **No `FIELD_INTERPRETATION_PHASE1_PLAN.md`
+  modification.** The FIELD-I.1 plan is the
+  canonical FIELD-I.* arc reference; this
+  audit doc is the per-slice verdict for
+  FIELD-I.2.
+- **No prior-arc-document modification.**
+  Every OBSERVER.* + OBS-P.* + OBS-F.* arc
+  document preserved verbatim.
+- **No `MODULE_MAP.md` update.** The
+  `rr_field` skeleton's module-map status
+  carries forward from the FIELD-I.2 entry
+  unchanged.
+- **No `MANIFOLD_INTEGRATION_PLAN.md` update.**
+- **No `BUILD_PLAN.md` historical rewrite.**
+  Every prior entry stays as-is; the FIELD-I.3
+  entry appends at the end of the FIELD-I.2
+  entry.
+- **No new perception model.** No
+  `PerceptionMode` enumerator added.
+- **No quantum / tensor / curvature
+  simulation.**
+- **No C4D / server / UI / node-editor touch.**
+
+### Acceptance
+
+- **Compiles.** Documentation-only slice; no
+  build configuration touched. The audit-host
+  build remains at the post-FIELD-I.2 baseline
+  (`100% tests passed, 0 tests failed out of
+  13`; `field_tests: 80/80`;
+  `relativity_tests: 841/841`;
+  `manifold_identity_tests: 408/408`;
+  `cli_tests: 274/274`;
+  `renderer_tests: 27/27`).
+- **Internally consistent.** The seven-row
+  evidence table cites concrete file / line
+  positions on the FIELD-I.2 surface (the
+  ~+222 lines on `src/field/ScalarField.h`,
+  the new ~430-line `tests/field_tests.cpp`,
+  the `CMakeLists.txt` `field_tests` ctest
+  target addition), concrete diff observations
+  (two `git diff` invocations filtered against
+  `src/` and `src/cuda/` + `src/optix/`,
+  both returning zero hits outside the
+  documented FIELD-I.2 changes), and the
+  audit-host ctest transcript from the
+  FIELD-I.2 landing commit. The host-side
+  POD-leaf treatment matches the OBSERVER.3 /
+  OBSERVER.5 / OBSERVER.7 precedent.
+- **Verdict honesty.** The verdict is `PASS`
+  (not `PASS_WITH_RUNTIME_DEFERRED`) because
+  FIELD-I.2 is a host-side POD-leaf slice
+  with zero kernel surface — there is no
+  runtime portion to defer. The `RR_HD inline`
+  decoration preserves device-callability
+  for future FIELD-I.* kernel-bridge
+  consumption, but the FIELD-I.2 surface is
+  fully exercised by the audit-host
+  `field_tests` binary's 80 RR_CHECK
+  assertions. Master rule #3 ("no fake
+  stubs") satisfied: the
+  `ProceduralPlaceholder` enumerator is
+  reserved-but-inert with the
+  `*Placeholder` suffix making the
+  non-implementation status visible at the
+  type level + the `0`-returning evaluator
+  + the explicit `test_procedural_placeholder_returns_zero`
+  test pinning the behaviour. Master rule
+  #11 ("explicit, testable interfaces")
+  satisfied: every documented behaviour is
+  tested (default-disabled / no-op / kind
+  dispatch / Vec3+Vec4 overload routing /
+  defence-in-depth on degenerate envelope +
+  falloff ≤ 0). Master rule #12 ("do not
+  overbuild a later system before the
+  current layer works") satisfied: scope is
+  deliberately narrow (no renderer
+  integration; no GPU bridge; no CLI; no
+  AOV; no fixture); each of those is a
+  separate FIELD-I.* sub-slice with its
+  own audit gate.
+
+### Module status changes
+
+`docs/MODULE_MAP.md` is *not* updated by this
+slice. The `rr_field` skeleton's module-map
+status carries forward from the FIELD-I.2
+entry unchanged. The FIELD-I.3 audit
+authorises the operator to proceed to:
+**(a)** FIELD-I.4 — field mapping config +
+CLI flags (the renumbered next FIELD-I.*
+impl slot; RECOMMENDED as natural
+continuation of the FIELD-I.* arc);
+**(b)** manifold-orthogonal work (deferred
+SDK-host runtime pass for the OBSERVER.* +
+OBS-P.* + OBS-F.* arc family; MANI-I.12
+final cross-host manifold audit; denoiser
+integration with chart-aware AOVs;
+path-tracer feature breadth);
+**(c)** a direct FIELD-I.* kernel bridge
+prototype (NOT recommended; skips the
+config / AOV / fixture surface needed to
+author + diagnose kernel reads). The
+FIELD-I.* arc's `**Wired**` promotion is
+reserved for the deferred FIELD-I.6 +
+FIELD-I.7 GPU bridges + the FIELD-I.8
+fixture's SDK-host runtime pass.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
