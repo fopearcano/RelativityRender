@@ -88759,6 +88759,269 @@ end-to-end against a fixture that engages
 both `scalar_field` + `field_mapping`
 blocks.
 
+## FIELD-BEAUTY.4 — CUDA Scalar Field Beauty Mapping Audit (docs only)
+
+**Scope of this slice (per the operator's *FIELD-BEAUTY.4
+— CUDA Scalar Field Beauty Mapping Audit* task brief):
+write `docs/FIELD_SCALAR_BEAUTY_CUDA_AUDIT.md`, the
+per-slice verdict document for FIELD-BEAUTY.3
+(`8b8f100`). Verifies the ten items the task brief
+enumerates — CUDA ColorMultiplier mapping exists; CUDA
+Emission mapping exists; mapping activates only when
+field enabled AND target selected; default mapping
+remains no-op; disabled field remains no-op;
+fieldScalar diagnostic AOV remains available; OptiX
+path unchanged; build/test status; runtime CUDA
+status (PASS / DEFERRED / BLOCKED); and the overall
+verdict (PASS / REPAIR / BLOCKED). Documentation
+only; no source code, no test, no CMake, no scene
+file, no behavioural change.**
+
+### What ships
+
+- **`docs/FIELD_SCALAR_BEAUTY_CUDA_AUDIT.md` (new,
+  ~900 lines).** Per-slice verdict document
+  mirroring the FIELD-I.10 + FIELD-I.12 precedent
+  CUDA / OptiX bridge audit shapes, adapted for
+  the FIELD-BEAUTY.3 scope (beauty-modulation
+  kernel arm rather than AOV-only kernel arm):
+    - **§1 VERDICT** — `PASS`. All nine
+      structural / runtime-status checks return
+      their expected verdicts. Check #9 (runtime
+      CUDA) is `PASS_WITH_RUNTIME_DEFERRED` —
+      audit-host has no CUDA SDK; structural
+      data-path verified by clean compile + 13/13
+      audit-host ctest pass + 14/14 OptiX-ON-no-SDK
+      ctest pass at the FIELD-BEAUTY.3 landing.
+    - **§2 PER-CHECK RESULTS** — ten-row evidence
+      table. Each row cites concrete file / line
+      observations on the FIELD-BEAUTY.3 surface:
+        - **Check #1** (ColorMultiplier mapping
+          exists): `CudaTestKernel.cu:605-607`
+          defines the `if (target ==
+          ColorMultiplier) { color = color *
+          mapped; }` branch; the `mapped` value
+          is computed at lines 598-604 via
+          `evaluate_mapping(evaluate(...))`.
+        - **Check #2** (Emission mapping exists):
+          `CudaTestKernel.cu:608-611` defines the
+          `else if (target == Emission) { color =
+          color + Vec3{mapped, mapped, mapped}; }`
+          branch (grayscale additive emission;
+          FIELD-I.4 POD has no per-target color
+          today).
+        - **Check #3** (mapping activates only
+          when field enabled AND target
+          selected): two-gate verified — outer
+          `if (best.hit &&
+          scalar_field_config.enabled)` at line
+          597; inner target gates at lines 605 +
+          608. Both gates must open.
+        - **Check #4** (default mapping remains
+          no-op): default `target = None`
+          (FIELD-I.4 audit); inner gates don't
+          match None; fall-through is the
+          documented no-op.
+        - **Check #5** (disabled field remains
+          no-op): default `enabled = false`
+          (FIELD-I.2 audit); outer gate
+          short-circuits.
+        - **Check #6** (fieldScalar diagnostic
+          AOV remains available): FIELD-I.9
+          AOV write arm at `CudaTestKernel.cu:797-805`
+          byte-identical; per-line diff
+          confirms zero changes inside the
+          AOV-write block.
+        - **Check #7** (OptiX path unchanged):
+          `git diff 8a5dd54..8b8f100 --name-only
+          -- 'src/optix/'` returns zero hits.
+        - **Check #8** (build/test status):
+          audit-host `ctest 13/13 PASS`;
+          OptiX-ON-no-SDK 14/14 PASS at landing.
+        - **Check #9** (runtime CUDA status):
+          `PASS_WITH_RUNTIME_DEFERRED`. Five
+          deferred SDK-host scenarios
+          enumerated (ColorMultiplier
+          visualization; Emission visualization;
+          disabled-field baseline;
+          default-mapping baseline; Doppler /
+          searchlight interaction).
+        - **Check #10** (verdict): `PASS`.
+    - **§3 REASONING SUMMARY** — recap of the
+      FIELD-BEAUTY.3 commit's five-file shape
+      (4 CUDA sources + BUILD_PLAN.md), per-check
+      reasoning paragraphs tying each verdict
+      back to its evidence (with specific cross-
+      references to the FIELD-I.3 + FIELD-I.5
+      audit anchors), master-rule satisfaction
+      recap (#3 + #11 + #12 + #16), and the
+      explicit framing that FIELD-BEAUTY.3 is the
+      first impl in the FIELD-BEAUTY.* arc which
+      opens PARALLEL to the FIELD-I.* arc.
+    - **§4 NEXT** — documents the FIELD-BEAUTY.*
+      sub-slice ladder: FIELD-BEAUTY.5 = OptiX-
+      side beauty mapping; FIELD-BEAUTY.6 = OptiX
+      audit; FIELD-BEAUTY.7 = CLI + Config +
+      dispatcher bridge; FIELD-BEAUTY.8 = CLI
+      audit; FIELD-BEAUTY.9 = fixture extension;
+      FIELD-BEAUTY.10 = fixture audit;
+      FIELD-BEAUTY.11 = arc capstone. Four
+      candidate next slots with prioritisation:
+      (a) FIELD-BEAUTY.5 OptiX-side beauty
+      mapping (RECOMMENDED — pairs symmetrically
+      with FIELD-BEAUTY.3 so future CLI flips
+      both backends' arms simultaneously);
+      (b) manifold-orthogonal work;
+      (c) direct CLI bridge skipping OptiX bridge
+      (NOT recommended — would create CUDA-only
+      mapping asymmetry); (d) RETROACTIVE
+      authoring of the missing
+      `FIELD_SCALAR_BEAUTY_MAPPING_TASK.md`
+      task brief (deferrable to operator
+      discretion).
+    - **§5 REFERENCES** — entry list spanning
+      master instructions, architecture-doc,
+      design-doc §4.1 + §4.2 anchors, every
+      FIELD-I.* arc precedent (FIELD-I.1 / .3 /
+      .5 / .6 / .8 / .10 / .12 / .13 / .14), the
+      FIELD-BEAUTY.* arc references (with the
+      FIELD-BEAUTY.1 + FIELD-BEAUTY.2 slots
+      honestly marked UNFILLED), the audited
+      source surface with line refs, surrounding
+      commit SHAs, every unchanged source / test
+      / scene / build file in the surface.
+
+### What does NOT ship
+
+- **No source code.** Nothing in any `src/`
+  subtree is touched. The post-FIELD-BEAUTY.3
+  HEAD = `8b8f100` baseline is preserved
+  exactly. `git diff 8b8f100..HEAD -- 'src/'`
+  returns zero hits.
+- **No new test binary.** ctest set unchanged
+  at 13 (audit-host) / 14 (OptiX-ON-no-SDK).
+  Test counts unchanged.
+- **No CMake change.**
+- **No `CudaScene.cuh` / `CudaRenderer.h` /
+  `CudaRenderer.cu` / `CudaTestKernel.cu`
+  modification.** The FIELD-BEAUTY.3 CUDA
+  bridge surface is preserved verbatim.
+- **No `FIELD_SCALAR_BEAUTY_MAPPING_TASK.md`
+  authoring.** The missing task brief from
+  FIELD-BEAUTY.1 + FIELD-BEAUTY.2 is honestly
+  documented in this audit's §3.1 + §5.3 but
+  NOT retroactively authored (operator
+  discretion).
+- **No FIELD-I.* arc-document modification.**
+  Every FIELD-I.1 through FIELD-I.14 audit /
+  task brief / companion doc preserved
+  verbatim.
+- **No prior-arc-document modification.**
+  Every OBSERVER.* + OBS-P.* + OBS-F.* arc
+  document preserved verbatim.
+- **No `MODULE_MAP.md` update.**
+- **No `MANIFOLD_INTEGRATION_PLAN.md` update.**
+- **No `BUILD_PLAN.md` historical rewrite.**
+  Every prior entry stays as-is; the
+  FIELD-BEAUTY.4 entry appends at the end of
+  the FIELD-BEAUTY.3 entry.
+- **No new perception model.**
+- **No quantum / tensor / curvature
+  simulation.**
+- **No C4D / server / UI / node-editor touch.**
+
+### Acceptance
+
+- **Compiles.** Documentation-only slice; no
+  build configuration touched. The audit-host
+  build remains at the post-FIELD-BEAUTY.3
+  baseline (`100% tests passed, 0 tests failed
+  out of 13`; `renderer_tests: 35/35`;
+  `field_tests: 135/135`;
+  `relativity_tests: 841/841`;
+  `manifold_identity_tests: 408/408`;
+  `cli_tests: 274/274`). The OptiX-ON-no-SDK
+  build remains at the FIELD-BEAUTY.3 baseline
+  (14/14 ctest PASS).
+- **Internally consistent.** The ten-row
+  evidence table cites concrete file / line
+  positions on the FIELD-BEAUTY.3 surface (the
+  +41 lines on `CudaScene.cuh`; the +23 lines
+  on `CudaRenderer.h`; the +15 lines on
+  `CudaRenderer.cu`; the +73 lines on
+  `CudaTestKernel.cu` with explicit line
+  ranges for the new kernel arm at 547-614 +
+  the inner branches at 605-607 + 608-611),
+  concrete diff observations (two `git diff`
+  invocations filtered against `src/optix/`
+  and other source subtrees, both returning
+  the expected results), and the audit-host
+  ctest transcript from the FIELD-BEAUTY.3
+  landing commit. The runtime-status
+  treatment matches the FIELD-I.10 + FIELD-I.12
+  + FIELD-I.14 precedent for the
+  `PASS_WITH_RUNTIME_DEFERRED` shape.
+- **Verdict honesty.** The verdict is `PASS`
+  because: (a) the structural kernel-arm
+  surface is well-formed (both ColorMultiplier
+  + Emission branches wired); (b) the double-
+  gate honest scope is satisfied (outer
+  `enabled` + inner target); (c) the default-
+  state preservation is verified across both
+  no-op anchors (None target + disabled
+  field); (d) the diagnostic-AOV preservation
+  is structural (per-line diff confirms zero
+  changes in the AOV-write block); (e) the
+  OptiX-isolation is structural (zero
+  `src/optix/` hits); (f) both build configs
+  empirically verified. The runtime status's
+  `PASS_WITH_RUNTIME_DEFERRED` is honest: the
+  SDK-host scenarios from §3.10 require both
+  the future CLI bridge slice AND a CUDA SDK
+  host. Master rule #3 + #11 + #12 + #16
+  satisfied. The honest framing of the
+  missing prerequisite task brief
+  (`docs/FIELD_SCALAR_BEAUTY_MAPPING_TASK.md`)
+  is preserved at §3.1 + §5.3 of the audit
+  doc.
+
+### Module status changes
+
+`docs/MODULE_MAP.md` is *not* updated by this
+slice. The `rr_gpu` library's module-map
+status carries forward from the FIELD-I.9
+entry unchanged (FIELD-BEAUTY.3 reuses the
+existing `rr_field` PUBLIC link). The
+FIELD-BEAUTY.4 audit authorises the operator
+to proceed to: **(a)** FIELD-BEAUTY.5 —
+OptiX-side beauty mapping (the renumbered
+next FIELD-BEAUTY.* impl slot; RECOMMENDED
+as natural continuation of the FIELD-BEAUTY.*
+arc; mirrors FIELD-BEAUTY.3's CUDA bridge
+for the OptiX path; pairs symmetrically so
+future CLI flips both backends' mapping arms
+simultaneously); **(b)** manifold-orthogonal
+work (deferred SDK-host runtime pass for the
+OBSERVER.* + OBS-P.* + OBS-F.* + FIELD-I.* +
+FIELD-BEAUTY.* arc family; MANI-I.12 final
+cross-host manifold audit; denoiser
+integration with chart-aware AOVs;
+path-tracer feature breadth);
+**(c)** a direct CLI bridge slice skipping
+the OptiX bridge (NOT recommended — would
+create CUDA-only mapping asymmetry; the
+cross-backend bit-identity expectation
+breaks until both bridges are in place);
+**(d)** RETROACTIVE authoring of the missing
+`docs/FIELD_SCALAR_BEAUTY_MAPPING_TASK.md`
+task brief (the operator may want to
+backfill the standard task-brief precedent;
+deferrable to operator discretion). The
+FIELD-BEAUTY.* arc's `**Wired**` promotion
+is reserved for the post-CLI-bridge SDK-host
+runtime pass that exercises both backend
+kernels' beauty-mapping arms end-to-end.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
