@@ -84633,6 +84633,333 @@ SDK-host pass enumerated at
 those arcs' deferred-check
 lists).
 
+## FIELD-I.2 — Scalar Field Model (impl, POD-leaf + tests + ctest target)
+
+**Scope of this slice (per the operator's *FIELD-I.2 —
+Scalar Field Model* task brief + the FIELD-I.1 plan as
+canonical reference): add the `ScalarFieldKind` enum +
+the tagged-union `ScalarFieldConfig` POD to
+`src/field/ScalarField.h` so the FIELD-I.* arc has a
+single artist-authoring config record for scalar field
+data. Three concrete kinds ship: `Constant` (returns
+constant value), `Radial` (smoothstep envelope with
+falloff exponent), `ProceduralPlaceholder` (reserved-but-
+inert per master rule #3). Plus 80 new RR_CHECK
+assertions in a new `tests/field_tests.cpp` binary + a
+new `field_tests` ctest target. Header-only POD-leaf
+change; no CUDA, no OptiX, no renderer integration, no
+new perception model.**
+
+### What ships
+
+- **`src/field/ScalarField.h` (modified, +222 lines).**
+  Adds:
+    - **`ScalarFieldKind` enum** (3 enumerators):
+      `Constant = 0` (the explicit default anchor; the
+      default-constructed `ScalarFieldConfig{}` carries
+      this kind), `Radial`, `ProceduralPlaceholder`. The
+      `*Placeholder` suffix on the third enumerator
+      follows the MANIFOLD.1 precedent
+      (`KruskalLikePlaceholder` /
+      `KerrLikePlaceholder`); selecting it produces
+      "no-output-this-slice" per master rule #3.
+    - **`ScalarFieldConfig` POD** carrying the operator's
+      brief-specified fields:
+        - `bool enabled = false` — master switch (when
+          false, `evaluate` returns `0`).
+        - `float strength = 0.0f` — artist override (when
+          zero, `evaluate` returns `0` even with
+          `enabled = true`).
+        - `ScalarFieldKind kind = Constant` — active
+          kind selector.
+        - `Vec3 center = (0, 0, 0)` — Radial origin.
+        - `float min_radius = 0.0f` — Radial inner radius
+          (returns `min_value` at distance ≤ this).
+        - `float max_radius = 1.0f` — Radial outer radius
+          (returns `max_value` at distance ≥ this).
+        - `float falloff = 1.0f` — Radial smoothstep
+          exponent (clamped to positive at evaluate-
+          time as defence-in-depth; values ≤ 0 fall
+          back to 1.0).
+        - `float min_value = 0.0f` — Radial inner value.
+        - `float max_value = 1.0f` — Radial outer value
+          + smoothstep upper bound.
+        - `float constant_value = 0.0f` — Constant
+          kind's value.
+      Default state is the documented no-op anchor:
+      `disabled_scalar_field_config()` returns
+      `ScalarFieldConfig{}` byte-for-byte; every
+      `evaluate(...)` call site returns `0`.
+    - **`evaluate(ScalarFieldConfig, Vec3) → float`**
+      RR_HD inline evaluator dispatching on `kind`:
+        - `Constant` → `strength * constant_value`.
+        - `Radial` → smoothstep envelope per the doc
+          comment. Computes squared distance to avoid
+          sqrt-of-zero at center; uses a saturating
+          smoothstep cubic `3t² - 2t³`; applies falloff
+          exponent via `powf(t_lin, falloff_safe)` only
+          when `falloff ≠ 1.0` (fast-path for the
+          common linear case); defence-in-depth on
+          degenerate `max_radius ≤ min_radius` returns
+          `0`; defence-in-depth on `falloff ≤ 0`
+          falls back to `1.0`.
+        - `ProceduralPlaceholder` → `0.0f` (reserved-
+          but-inert).
+    - **`evaluate(ScalarFieldConfig, Vec4) → float`**
+      Vec4 overload routing through the spatial part
+      `(event.y, event.z, event.w)` (the time
+      component `event.x` is intentionally ignored for
+      the three Phase 1 kinds; the overload exists so
+      future time-dependent field kinds can land
+      without widening every call site).
+    - **`disabled_scalar_field_config()`** factory
+      returning the default no-op anchor.
+    - **`scalar_field_smoothstep(float a, float b,
+      float x) → float`** local helper for the
+      Radial evaluator's saturating smoothstep cubic
+      (not exposed beyond `evaluate(...)`).
+  Mirrors the existing
+  `ConstantScalarField` /
+  `SampledScalarField` PODs that landed at FIELD.2;
+  the new tagged-union `ScalarFieldConfig` is the
+  operator-authoring surface the FIELD-I.* arc
+  consumes, while the legacy PODs remain valid for
+  programmatic / kernel-internal use.
+
+- **`tests/field_tests.cpp` (new, ~430 lines).** 17
+  test functions covering the 80 RR_CHECK assertions
+  across 6 logical sections:
+    - **§1 Enum + factory + default-POD anchors**
+      (3 tests):
+      `test_scalar_field_kind_enumerators_distinct`
+      (pairwise enumerator distinctness +
+      `Constant = 0` explicit anchor);
+      `test_disabled_scalar_field_config_factory` (12
+      RR_CHECK on every field's default value);
+      `test_default_scalar_field_config_default_constructed`
+      (verifies factory output is byte-identical to
+      default-constructed POD).
+    - **§2 Default disabled / no-op anchors** (2
+      tests): default POD's `evaluate` returns 0 on
+      4 representative positions (including the
+      origin + a far point at `1e6`); enabled-but-
+      zero-strength config short-circuits to 0
+      regardless of non-trivial parameters (the
+      "wired but quiet" anchor).
+    - **§3 Constant kind** (2 tests): returns
+      `strength * constant_value` regardless of
+      position (3 representative positions);
+      strength scaling: 1.0, 0.5, 2.0, -1.0.
+    - **§4 Radial kind** (7 tests):
+      `min_value` at-or-inside `min_radius` (center +
+      on min_radius sphere + inside); `max_value`
+      at-or-outside `max_radius` (on max_radius sphere
+      + outside on axis + outside oblique direction
+      `(6, 8, 0)` distance 10); smoothstep midway at
+      t=0.5 returns 0.5 with falloff=1; strength
+      scaling at smoothstep midway; offset center at
+      `(3, 4, 0)` with center / midway / outside
+      tests; degenerate envelope (max ≤ min) returns
+      0 in 3 sub-cases (inverted + equal min/max);
+      falloff exponent at 2.0 reshapes transition
+      (closed-form: smoothstep at t_pow = 0.25
+      returns 0.15625), falloff ≤ 0 falls back to 1.0.
+    - **§5 ProceduralPlaceholder kind** (1 test):
+      returns 0 regardless of any other field's value
+      (3 representative positions with all
+      parameter slots populated to non-default
+      values).
+    - **§6 Vec4 overload** (2 tests): consumes
+      spatial part `(event.y, event.z, event.w)`;
+      time component `event.x` ignored;
+      Constant + Radial both route correctly.
+
+- **`CMakeLists.txt` (modified, +25 lines).** Adds
+  the new `field_tests` ctest target:
+    - `add_executable(field_tests
+      tests/field_tests.cpp)` with `rr_field`
+      INTERFACE link (transitively pulls `rr_math`).
+    - `rr_apply_warnings(field_tests)` for project-
+      standard warning flags.
+    - `add_test(NAME field_tests COMMAND
+      field_tests)` registration.
+    - Doc-comment block above the target describing
+      the 6-section assertion surface (mirrors the
+      precedent style at
+      `relativity_tests` + `manifold_identity_tests`
+      target definitions).
+
+### What does NOT ship
+
+- **No renderer integration.** Operator brief
+  explicitly forbids. Nothing in
+  `src/cuda/` / `src/optix/` / `src/pathtracer/`
+  / `src/renderer/` / `src/scene/` / `src/io/`
+  is touched. The `ScalarFieldConfig` POD lives
+  on `rr_field` only; no consumer reads it from
+  the launch payload yet.
+- **No CUDA changes.** Operator brief explicitly
+  forbids. The `RR_HD inline` decoration on the
+  new `evaluate(...)` + `scalar_field_smoothstep`
+  helpers preserves device-callability for
+  future FIELD-I.5 / FIELD-I.6 kernel-bridge
+  consumption, but no CUDA TU consumes the
+  helpers this slice.
+- **No OptiX changes.** Operator brief
+  explicitly forbids.
+- **No new perception model.** The three
+  existing `PerceptionMode` enumerators
+  preserved verbatim. The FIELD-I.2 surface
+  does not interact with the OBSERVER.* arc.
+- **No quantum / tensor / curvature
+  simulation.** Operator brief explicitly
+  forbids. The reserved `Vector` / `Tensor` /
+  `Curvature` / `ProbabilityAmplitudePlaceholder`
+  enumerators on `FieldType.h:18-23` remain
+  reserved-but-inert.
+- **No new field type beyond scalar.** Phase 1
+  is scalar-only per the FIELD-I.1 plan §2.1.
+- **No SampledScalarField backend.** The
+  existing `SampledScalarField` POD's
+  `default_value`-returning placeholder is
+  unchanged; the texture / grid backend
+  remains deferred to a future arc.
+- **No `FieldMapping` / `FieldInterpreter`
+  modification.** Those PODs landed at
+  FIELD.3 + provide the multi-channel mapping
+  surface; FIELD-I.2's `ScalarFieldConfig` is
+  the kind-tagged input config, NOT a
+  replacement for them. The FIELD-I.3 slice
+  is the natural integration point where the
+  `FieldInterpreter` POD gains a
+  `ScalarFieldConfig source_field` slot (TBD).
+- **No CLI flag.** No `--field-*` parser
+  extension. The FIELD-I.3 slice lands the
+  CLI surface.
+- **No `.rrscene` schema bump.** No
+  `fieldInterpreter` scene block parser
+  extension. FIELD-I.3 lands the scene-
+  loader extension.
+- **No diagnostic AOV.** No
+  `AOVType::FieldScalarDiagnostic`
+  enumerator. FIELD-I.4 lands the AOV
+  data-model extension.
+- **No GPU launch-params field.** No
+  `CudaSceneView::field_interpreter` /
+  `OptixLaunchParams::field_interpreter`
+  slots. FIELD-I.5 + FIELD-I.6 land the
+  GPU bridges.
+- **No fixture scene.** No
+  `scenes/test_field_interpreter.rrscene`.
+  FIELD-I.7 lands the fixture.
+- **No `FieldType.h` modification.** The
+  existing five-slot enum is unchanged.
+- **No `FIELD_INTERPRETATION_LAYER.md`
+  rewrite.** The existing design doc is
+  preserved verbatim.
+- **No `src/field/README.md` rewrite.** The
+  existing FIELD.* skeleton's status
+  document preserved; the FIELD-I.1 plan
+  is the canonical FIELD-I.* arc
+  reference.
+- **No `MODULE_MAP.md` update.** The
+  `rr_field` skeleton's module-map status
+  carries forward unchanged.
+- **No `MANIFOLD_INTEGRATION_PLAN.md`
+  update.**
+- **No C4D / server / UI / node-editor
+  touch.**
+
+### Acceptance
+
+- **Compiles.** Audit-host build green; full
+  rebuild via `cmake --build
+  /home/user/RelativityRender/build` adds the
+  new `field_tests` target and completes with
+  no new warnings on any module.
+- **Tests.** `ctest` returns
+  `100% tests passed, 0 tests failed out of
+  13` (up from 12; **+1 new test binary**
+  `field_tests`). The new binary reports
+  `field_tests: 80 / 80 passed` (80 new
+  RR_CHECK assertions across 17 test
+  functions covering the 6 logical
+  sections). All other test suites
+  unchanged:
+  `relativity_tests: 841/841 passed`;
+  `manifold_identity_tests: 408/408`;
+  `cli_tests: 274/274 passed`;
+  `renderer_tests: 27/27 passed`.
+- **No behaviour change.** No CLI action's
+  output is altered. The new
+  `ScalarFieldConfig` POD lives on
+  `rr_field` only; no consumer reads it.
+  The existing rendering pipeline is
+  byte-unchanged.
+- **Internally consistent.** The
+  `ScalarFieldKind` enum mirrors the
+  `CoordinateChartType` /
+  `PerceptionMode` style precedent (`enum
+  class` + explicit `= 0` on the
+  default + comma-separated enumerators).
+  The `ScalarFieldConfig` POD carries
+  exactly the fields the operator's brief
+  enumerated (enabled / strength / center /
+  radius/falloff / value range) plus the
+  `kind` selector. The `evaluate(...)`
+  helpers use the same `RR_HD inline`
+  signature shape as the existing
+  `ConstantScalarField` / `SampledScalarField`
+  `evaluate(...)` overloads at FIELD.2; the
+  Vec4 overload routes to the Vec3
+  evaluator on the spatial part. Master
+  rule #3 satisfied: the
+  `ProceduralPlaceholder` enumerator is
+  reserved-but-inert with documented
+  `0`-returning evaluator and the
+  `*Placeholder` suffix making the
+  non-implementation status visible at the
+  type level. Master rule #12 satisfied:
+  scope is deliberately narrow (no
+  renderer integration; no GPU bridge; no
+  CLI; no AOV; no fixture); each of those
+  is a separate FIELD-I.* sub-slice with
+  its own audit gate.
+- **Honest scope.** The
+  `ProceduralPlaceholder` enumerator's
+  evaluator returns `0` everywhere with a
+  documented future-replacement comment;
+  it is NOT a fake stub because future
+  FIELD-I.* sub-slices (or a kernel-bridge
+  slice's per-platform procedural bank)
+  will replace this branch with a concrete
+  procedural evaluator. The defence-in-
+  depth `falloff ≤ 0` clamp + the
+  degenerate envelope `max ≤ min` return-0
+  behaviour are tested explicitly (master
+  rule #3 + #11 satisfied — explicit,
+  testable interfaces).
+
+### Module status changes
+
+`docs/MODULE_MAP.md` is *not* updated by this
+slice. The `rr_field` skeleton's module-map
+status carries forward unchanged (the
+INTERFACE library's link graph + include
+graph are byte-identical to the
+pre-FIELD-I.2 state; only the header content
+expanded). The FIELD-I.2 verdict authorises
+the operator to proceed to **FIELD-I.3 —
+field mapping config + CLI flags** as the
+next FIELD-I.* impl slice when ready. The
+FIELD-I.3 slice extends `rr::core::Config`
+with a `field_interpreter` field carrying a
+`FieldInterpreter` POD (existing FIELD.3
+type) + a `ScalarFieldConfig source_field`
+slot (the new FIELD-I.2 type), plus a
+`--field-*` CLI flag surface mirroring
+the OBSERVER.4 `--observer-*` flag pattern.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:

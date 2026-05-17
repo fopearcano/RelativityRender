@@ -973,6 +973,31 @@ if(RR_BUILD_TESTS)
     rr_apply_warnings(manifold_identity_tests)
     add_test(NAME manifold_identity_tests COMMAND manifold_identity_tests)
 
+    # field_tests (FIELD-I.2) covers the tagged-union scalar-
+    # field config POD landed at `src/field/ScalarField.h`:
+    # the `ScalarFieldKind` enum's three enumerators are
+    # pairwise distinct + `Constant = 0` is the explicit
+    # anchor; the `disabled_scalar_field_config()` factory's
+    # output is byte-identical to the default-constructed
+    # POD; the `evaluate(...)` Vec3 + Vec4 overloads return
+    # 0 on the disabled-default + zero-strength paths;
+    # Constant kind returns `strength * constant_value`
+    # regardless of position; Radial kind returns
+    # `min_value` at-or-inside `min_radius`, `max_value`
+    # at-or-outside `max_radius`, the smoothstep cubic
+    # interpolated value in-band, with the `falloff`
+    # exponent reshaping the transition + clamped to
+    # positive at parse-time, and 0 on degenerate envelope
+    # configs (defence-in-depth); ProceduralPlaceholder
+    # kind is reserved-but-inert (always returns 0
+    # regardless of other params, per master rule #3). Links
+    # rr_field (header-only INTERFACE library, transitively
+    # pulls rr_math).
+    add_executable(field_tests tests/field_tests.cpp)
+    target_link_libraries(field_tests PRIVATE rr_field)
+    rr_apply_warnings(field_tests)
+    add_test(NAME field_tests COMMAND field_tests)
+
     # demo_tests (Stage 19E.2) covers the `--render-demo` action's
     # relativistic-perception layer end-to-end on the host: the
     # demo's exact camera / observer composition fed through

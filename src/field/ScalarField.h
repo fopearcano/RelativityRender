@@ -169,4 +169,226 @@ RR_HD inline SampledScalarField zero_sampled_scalar_field() {
     return SampledScalarField{};
 }
 
+// FIELD-I.2 — tagged-union scalar-field config POD.
+//
+// `ScalarFieldConfig` is the artist-facing single-POD
+// configuration for a scalar field, gating its evaluator
+// behind a `kind` enum + per-kind parameter slots. This is
+// the operator-authoring surface the FIELD-I.* arc consumes
+// for Phase 1; the legacy `ConstantScalarField` +
+// `SampledScalarField` PODs above remain valid for
+// programmatic / kernel-internal use, but the tagged config
+// here is what scene files + CLI flags + the
+// `FieldInterpreter` payload reference.
+//
+// Default state: `kind = Constant`, `enabled = false`,
+// `strength = 0`, all parameter slots at their natural
+// no-op defaults. Every default-default invocation produces
+// zero contribution at every evaluator call site.
+//
+// Three concrete kinds (per
+// `docs/FIELD_INTERPRETATION_PHASE1_PLAN.md` §2.2):
+//
+//   - `Constant`: returns `constant_value` regardless of
+//     position. The simplest sampler; not a stub.
+//   - `Radial`: returns
+//     `lerp(min_value, max_value,
+//           smoothstep01(t))`
+//     where `t = pow(saturate((|position - center| -
+//     min_radius) / (max_radius - min_radius)), falloff)`.
+//     Produces a radial smoothstep envelope from
+//     `min_value` (at `|delta| <= min_radius`) to
+//     `max_value` (at `|delta| >= max_radius`), with the
+//     `falloff` exponent reshaping the transition.
+//     Mirrors the SCHW.1 / PENROSE.2 radial-symmetric
+//     authoring pattern.
+//   - `ProceduralPlaceholder`: reserved-but-inert per the
+//     FIELD-I.1 plan §2.2. Returns `0.0f` everywhere; a
+//     future FIELD-I.* sub-slice (or FIELD-I.5 / .6
+//     kernel-bridge) lifts this into a concrete procedural
+//     evaluator (e.g. 3D sinusoidal lattice). Selecting
+//     this kind today produces a "no-output-this-slice"
+//     diagnostic per master rule #3 (the `*Placeholder`
+//     naming convention from MANIFOLD.1's
+//     `KruskalLikePlaceholder` / `KerrLikePlaceholder`
+//     enumerators).
+enum class ScalarFieldKind {
+    Constant              = 0,
+    Radial,
+    ProceduralPlaceholder,
+};
+
+// Saturating `smoothstep` between `a` and `b`. Returns `0`
+// when `x <= a`, `1` when `x >= b`, and the standard
+// `3t^2 - 2t^3` smoothstep cubic in between. Local helper
+// for the `Radial` kind; not exposed beyond
+// `evaluate(ScalarFieldConfig, ...)`.
+RR_HD inline float scalar_field_smoothstep(float a, float b, float x) {
+    if (!(b > a)) return 0.0f;  // degenerate range; returns 0
+    const float t_raw = (x - a) / (b - a);
+    const float t = t_raw < 0.0f ? 0.0f : (t_raw > 1.0f ? 1.0f : t_raw);
+    return t * t * (3.0f - 2.0f * t);
+}
+
+// Single-POD tagged-union scalar-field config.
+struct ScalarFieldConfig {
+    // Master switch. `false` (default) disables the
+    // evaluator entirely; `evaluate(...)` returns `0`
+    // regardless of every other field.
+    bool enabled = false;
+
+    // Artist-controlled strength multiplier applied at the
+    // evaluator's output. Default `0.0f` makes the
+    // evaluator return `0` even when `enabled = true`.
+    // Lets future scene-file authors keep a field "wired
+    // but quiet" until they explicitly dial it up.
+    float strength = 0.0f;
+
+    // Active kind selector. Default `Constant`. Switching
+    // kinds at authoring time does NOT reset the other
+    // parameter slots; the artist may pre-author all
+    // parameter slots and toggle the kind to compare
+    // behaviours.
+    ScalarFieldKind kind = ScalarFieldKind::Constant;
+
+    // Center / origin used by the `Radial` kind as the
+    // reference point for the radial distance computation.
+    // Default origin `(0, 0, 0)`.
+    rr::math::Vec3 center = {0.0f, 0.0f, 0.0f};
+
+    // Inner radius of the `Radial` smoothstep envelope.
+    // For positions `|delta| <= min_radius`, the evaluator
+    // returns `min_value`. Default `0.0f`.
+    float min_radius = 0.0f;
+
+    // Outer radius of the `Radial` smoothstep envelope.
+    // For positions `|delta| >= max_radius`, the evaluator
+    // returns `max_value`. Default `1.0f`. Required
+    // `max_radius > min_radius` for a non-degenerate
+    // envelope; the evaluator returns `0` on degenerate
+    // configs (defence-in-depth against artist authoring
+    // errors).
+    float max_radius = 1.0f;
+
+    // Smoothstep falloff exponent. The radial parameter
+    // `t = (|delta| - min_radius) / (max_radius -
+    // min_radius)` is raised to this power before the
+    // smoothstep cubic. Default `1.0f` (no reshaping).
+    // Values > 1 push the transition outward; values
+    // in `(0, 1)` push it inward. Negative / zero values
+    // are clamped to `1.0f` (defence-in-depth).
+    float falloff = 1.0f;
+
+    // Output value at `|delta| <= min_radius` for the
+    // `Radial` kind. Default `0.0f`.
+    float min_value = 0.0f;
+
+    // Output value at `|delta| >= max_radius` for the
+    // `Radial` kind. Default `1.0f`. Also the upper bound
+    // for the smoothstep interpolation.
+    float max_value = 1.0f;
+
+    // Output value for the `Constant` kind, returned at
+    // every position. Default `0.0f`. Unused by the
+    // `Radial` and `ProceduralPlaceholder` kinds.
+    float constant_value = 0.0f;
+};
+
+// Evaluate the tagged-union scalar-field config at a
+// spatial position. Returns `0.0f` when the field is
+// disabled or strength is zero (the no-op anchor). When
+// enabled, dispatches on `kind`:
+//
+//   - `Constant`              → `strength * constant_value`
+//   - `Radial`                → `strength * lerp(min_value,
+//                                  max_value,
+//                                  smoothstep(min_radius,
+//                                             max_radius,
+//                                             |position - center|^falloff))`
+//     (see header comment for the falloff exponent's
+//      semantics; degenerate `max_radius <= min_radius`
+//      configurations return `0`)
+//   - `ProceduralPlaceholder` → `0.0f`
+//                              (reserved-but-inert per
+//                               master rule #3; future
+//                               FIELD-I.* sub-slice
+//                               replaces this branch with
+//                               a concrete procedural
+//                               evaluator)
+//
+// `RR_HD inline` so the same evaluator runs on both host
+// (audit-host tests) and device (future FIELD-I.5 /
+// FIELD-I.6 kernel bridges).
+RR_HD inline float evaluate(const ScalarFieldConfig& c,
+                            rr::math::Vec3 position) {
+    if (!c.enabled || c.strength == 0.0f) return 0.0f;
+    switch (c.kind) {
+        case ScalarFieldKind::Constant:
+            return c.strength * c.constant_value;
+        case ScalarFieldKind::Radial: {
+            // Defence-in-depth: degenerate envelope returns 0.
+            if (!(c.max_radius > c.min_radius)) return 0.0f;
+            const rr::math::Vec3 delta{position.x - c.center.x,
+                                       position.y - c.center.y,
+                                       position.z - c.center.z};
+            const float r2 = delta.x*delta.x + delta.y*delta.y + delta.z*delta.z;
+            // Avoid sqrt-of-zero edge cases by checking the
+            // squared distance against min_radius^2 first.
+            const float min2 = c.min_radius * c.min_radius;
+            if (r2 <= min2) return c.strength * c.min_value;
+            const float max2 = c.max_radius * c.max_radius;
+            if (r2 >= max2) return c.strength * c.max_value;
+            // In-band: compute the radial position once and
+            // apply the falloff exponent.
+            const float r = sqrtf(r2);
+            const float t_lin = (r - c.min_radius)
+                              / (c.max_radius - c.min_radius);
+            // Clamp falloff to a safe positive value per the
+            // doc comment.
+            const float falloff_safe = (c.falloff > 0.0f)
+                ? c.falloff : 1.0f;
+            // pow(t, falloff_safe) reshapes the transition.
+            // Floor t at 0 to handle FP rounding above (r2
+            // > min2 but r < min_radius numerically).
+            const float t_pow = (t_lin <= 0.0f)
+                ? 0.0f
+                : ((falloff_safe == 1.0f) ? t_lin
+                                          : powf(t_lin, falloff_safe));
+            // smoothstep(0, 1, t_pow).
+            const float s = scalar_field_smoothstep(0.0f, 1.0f, t_pow);
+            return c.strength
+                 * (c.min_value + s * (c.max_value - c.min_value));
+        }
+        case ScalarFieldKind::ProceduralPlaceholder:
+            // Reserved-but-inert per master rule #3 (no
+            // fake stubs); future FIELD-I.* sub-slice will
+            // replace this branch with a concrete
+            // procedural evaluator.
+            return 0.0f;
+    }
+    return 0.0f;
+}
+
+// Evaluate the tagged-union scalar-field config at a
+// spacetime event. The time component is intentionally
+// ignored at this slice — the three Phase 1 kinds
+// (Constant / Radial / ProceduralPlaceholder) are all
+// spatially-dependent only. The overload exists so future
+// time-dependent field kinds (4D-evolved textures, etc.)
+// can land without widening every call site.
+RR_HD inline float evaluate(const ScalarFieldConfig& c,
+                            rr::math::Vec4 event) {
+    return evaluate(c, rr::math::Vec3{event.y, event.z, event.w});
+}
+
+// Returns the default disabled scalar-field config
+// (`enabled = false`, `strength = 0`, `kind = Constant`,
+// all parameters at their natural no-op defaults). The
+// safe anchor: `evaluate(disabled_scalar_field_config(),
+// position)` returns `0.0f` at every position. Matches the
+// factory convention of the other field-layer types.
+RR_HD inline ScalarFieldConfig disabled_scalar_field_config() {
+    return ScalarFieldConfig{};
+}
+
 }
