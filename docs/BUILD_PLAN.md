@@ -88195,6 +88195,276 @@ reserved for the post-CLI-bridge SDK-host
 runtime pass that exercises the fixture
 end-to-end (per §6 of the companion doc).
 
+## FIELD-I.14 — Scalar Field Fixture Audit (docs only)
+
+**Scope of this slice (per the operator's *FIELD-I.14 —
+Scalar Field Fixture Audit* task brief): write
+`docs/FIELD_SCALAR_FIXTURE_AUDIT.md`, the per-slice
+verdict document for FIELD-I.13 (`98a0e35`). Verifies
+the nine items the task brief enumerates — fixture
+scene exists; fixture enables scalar field config;
+fixture targets fieldScalar diagnostic AOV; values
+are bounded/safe; default scenes remain unchanged;
+parser changes are minimal; no beauty shading
+changes; CUDA/OptiX runtime status
+(PASS / DEFERRED / BLOCKED); and the overall verdict
+(PASS / REPAIR / BLOCKED). Documentation only; no
+source code, no test, no CMake, no scene file, no
+behavioural change.**
+
+### What ships
+
+- **`docs/FIELD_SCALAR_FIXTURE_AUDIT.md` (new, ~880
+  lines).** Per-slice verdict document mirroring the
+  OBS-F.3 + MANI-I.9 precedent fixture-audit
+  shapes, adapted for the FIELD-I.13 scope (fixture
+  scene + minimal parser + companion doc; no
+  renderer wiring):
+    - **§1 VERDICT** — `PASS`. All eight
+      structural / runtime-status checks PASS.
+      Check #8 (runtime CUDA/OptiX) is
+      `PASS_WITH_RUNTIME_DEFERRED` — the audit-host
+      exercises the parser surface end-to-end via
+      `--scene-info` smoke; the SDK-host runtime
+      scenarios from FIELD-I.13 companion doc §6
+      all require both the future CLI bridge slice
+      AND an SDK host (both deferred).
+    - **§2 PER-CHECK RESULTS** — nine-row evidence
+      table. Each row cites concrete file / line /
+      block observations on the FIELD-I.13
+      surface:
+        - **Check #1** (fixture scene exists):
+          `scenes/test_scalar_field_diagnostic.rrscene`
+          (75 lines) + `docs/FIELD_SCALAR_FIXTURE.md`
+          (~500 lines) ship at landing.
+          Audit-host `--scene-info` smoke confirms
+          parser cleanness.
+        - **Check #2** (fixture enables scalar
+          field config): `scalar_field` block at
+          lines 19-29 of the fixture file authors
+          `enabled: true`; exercises 8 of 10
+          FIELD-I.2 fields.
+        - **Check #3** (targets fieldScalar AOV):
+          companion doc §1.1 + §3 + §6 enumerate
+          the AOV target + the five deferred
+          SDK-host runtime scenarios mapping to
+          FIELD-I.6 §8.1 + §8.4 + §8.5 + §8.6 +
+          §8.7.
+        - **Check #4** (bounded/safe values):
+          six-axis verified — bool / finite
+          floats / canonical enum string /
+          non-degenerate envelope (`max_radius >
+          min_radius`) / canonical `[0, 1]`
+          grayscale range / positive falloff.
+          FIELD-I.3 audit's defence-in-depth
+          branches NOT triggered.
+        - **Check #5** (default scenes unchanged):
+          `git diff 505c2b9..98a0e35 --name-only --
+          'scenes/' ':(exclude)scenes/test_scalar_field_diagnostic.rrscene'`
+          returns zero hits. Every pre-FIELD-I.13
+          `.rrscene` fixture is byte-identical.
+        - **Check #6** (parser changes minimal):
+          ~165 lines across 2 source files + 1
+          CMake line + 24 header lines. Every
+          parsed field maps 1:1 to an existing
+          FIELD-I.2 POD slot; no new fields
+          invented; the parser's shape mirrors
+          `apply_manifold(...)` precedent
+          verbatim.
+        - **Check #7** (no beauty shading
+          changes): `git diff 505c2b9..98a0e35
+          --name-only -- 'src/cuda/'
+          'src/optix/' 'src/manifold/'
+          'src/relativity/' 'src/renderer/'
+          'src/main.cpp' 'src/core/'` returns
+          zero hits. No kernel TU, renderer.h,
+          dispatcher, observer/manifold/relativity
+          surface touched.
+        - **Check #8** (CUDA/OptiX runtime
+          status): `PASS_WITH_RUNTIME_DEFERRED`.
+          Audit-host build (OptiX OFF) 13/13
+          ctest PASS at FIELD-I.13 landing.
+          OptiX-ON-no-SDK build 14/14 ctest
+          PASS. SDK-host runtime scenarios from
+          FIELD-I.13 companion doc §6 deferred
+          (require both CLI bridge slice AND
+          SDK host).
+        - **Check #9** (verdict): `PASS`.
+    - **§3 REASONING SUMMARY** — recap of the
+      FIELD-I.13 commit's six-file shape (2 source
+      + 1 CMake + 1 scene + 1 companion doc +
+      BUILD_PLAN.md), per-check reasoning
+      paragraphs, master-rule satisfaction recap
+      (#3 + #11 + #12 + #16), and the explicit
+      framing that FIELD-I.13 is a fixture +
+      minimal parser slice with SDK-host runtime
+      DEFERRED.
+    - **§4 NEXT** — documents the renumbered
+      FIELD-I.* sub-slice ladder absorbing the
+      FIELD-I.14 audit slot: FIELD-I.15 = CLI +
+      Config + dispatcher bridge; FIELD-I.16 =
+      CLI bridge audit; FIELD-I.17 = mapping CLI;
+      FIELD-I.18 = mapping CLI audit; FIELD-I.19
+      = mapping kernel pipeline; FIELD-I.20 =
+      mapping audit; FIELD-I.21 = arc capstone.
+      Three candidate next slots with
+      prioritisation: (a) FIELD-I.15 CLI bridge
+      (RECOMMENDED — flips both backend AOV
+      gates reachable simultaneously; closes
+      FIELD-I.10 + FIELD-I.12 + FIELD-I.14
+      audits' runtime-deferred portions on
+      SDK-host); (b) manifold-orthogonal work;
+      (c) direct FIELD-I.4 mapping CLI surface
+      skipping FIELD-I.15 (NOT recommended —
+      would author mapping without diagnostic
+      AOV).
+    - **§5 REFERENCES** — entry list spanning
+      master instructions, architecture-doc,
+      design-doc §4.6 anchor, every FIELD-I.*
+      arc precedent (FIELD-I.1 / .3 / .5 / .6 /
+      .8 / .10 / .12 / .13), OBS-F.3 +
+      MANI-I.9 precedent fixture-audit doc
+      shapes, the audited source surface,
+      fixture + companion doc, surrounding
+      commit SHAs.
+
+### What does NOT ship
+
+- **No source code.** Nothing in any `src/`
+  subtree is touched. The post-FIELD-I.13 HEAD
+  = `98a0e35` baseline is preserved exactly.
+  `git diff 98a0e35..HEAD -- 'src/'` returns
+  zero hits.
+- **No new test binary.** ctest set unchanged
+  at 13 (audit-host) / 14 (OptiX-ON-no-SDK).
+  Test counts unchanged.
+- **No CMake change.** The `rr_field` PUBLIC
+  link on `rr_scene` from FIELD-I.13 is
+  preserved verbatim.
+- **No `Scene.h` / `SceneLoader.cpp`
+  modification.** The FIELD-I.13 parser surface
+  is preserved verbatim.
+- **No scene-file modification.** The
+  `scenes/test_scalar_field_diagnostic.rrscene`
+  fixture is preserved verbatim. Every default
+  scene is preserved verbatim.
+- **No `FIELD_SCALAR_FIXTURE.md` modification.**
+  The FIELD-I.13 companion doc is preserved
+  verbatim.
+- **No `FIELD_SCALAR_DIAGNOSTIC_AOV_TASK.md` /
+  earlier-arc-doc modification.** Every
+  FIELD-I.* precedent doc preserved verbatim.
+- **No `FIELD_INTERPRETATION_PHASE1_PLAN.md`
+  modification.** The FIELD-I.1 plan is the
+  canonical FIELD-I.* arc reference.
+- **No prior-arc-document modification.** Every
+  OBSERVER.* + OBS-P.* + OBS-F.* + FIELD-I.1 –
+  FIELD-I.13 arc document preserved verbatim.
+- **No `MODULE_MAP.md` update.**
+- **No `MANIFOLD_INTEGRATION_PLAN.md` update.**
+- **No `BUILD_PLAN.md` historical rewrite.**
+  Every prior entry stays as-is; the FIELD-I.14
+  entry appends at the end of the FIELD-I.13
+  entry.
+- **No new perception model.**
+- **No quantum / tensor / curvature
+  simulation.**
+- **No C4D / server / UI / node-editor touch.**
+
+### Acceptance
+
+- **Compiles.** Documentation-only slice; no
+  build configuration touched. The audit-host
+  build remains at the post-FIELD-I.13 baseline
+  (`100% tests passed, 0 tests failed out of
+  13`; `renderer_tests: 35/35`;
+  `field_tests: 135/135`;
+  `relativity_tests: 841/841`;
+  `manifold_identity_tests: 408/408`;
+  `cli_tests: 274/274`). The OptiX-ON-no-SDK
+  build remains at the FIELD-I.13 baseline
+  (14/14 ctest PASS).
+- **Internally consistent.** The nine-row
+  evidence table cites concrete file / line /
+  block positions on the FIELD-I.13 surface
+  (the 75-line fixture file's `scalar_field`
+  block at lines 19-29; the 24 lines on
+  `src/scene/Scene.h` with the field-declaration
+  line ref; the 150 lines on
+  `src/io/SceneLoader.cpp` with the new
+  parser + helper line refs; the 1 line on
+  `CMakeLists.txt` for the PUBLIC link; the
+  ~500-line companion doc's section references
+  for the AOV-target + bounded-values
+  documentation), concrete diff observations
+  (three `git diff` invocations filtered
+  against `scenes/`, `tests/`, and
+  source-tree subtrees, all returning expected
+  results), and the audit-host `--scene-info`
+  smoke transcript from the FIELD-I.13 landing
+  commit. The runtime-status treatment matches
+  the OBS-F.3 + MANI-I.9 precedent fixture-
+  audit shape with the FIELD-I.10 / FIELD-I.12
+  SDK-host deferral framing inherited.
+- **Verdict honesty.** The verdict is `PASS`
+  because: (a) the fixture scene + companion
+  doc exist + parser-clean (check #1 + #2);
+  (b) the diagnostic-AOV target is documented
+  + the safe values + the default-scene
+  preservation are all satisfied; (c) the
+  parser is minimal per the operator's "Do
+  not broaden scene format beyond fixture
+  needs" rule; (d) the no-beauty-shading-
+  changes rule is honoured (no kernel /
+  renderer / dispatcher TU touched);
+  (e) the audit-host + OptiX-ON-no-SDK builds
+  are both empirically verified. The runtime
+  status's `PASS_WITH_RUNTIME_DEFERRED` is
+  honest: the SDK-host kernel verification
+  scenarios from `docs/FIELD_SCALAR_FIXTURE.md`
+  §6 apply but require both a CUDA + OptiX-SDK
+  host AND the future CLI bridge slice's
+  `--field-debug` gate. Master rule #3 + #11 +
+  #12 + #16 satisfied.
+
+### Module status changes
+
+`docs/MODULE_MAP.md` is *not* updated by this
+slice. The `rr_scene` library's module-map
+status carries forward from the FIELD-I.13
+entry unchanged (with the `rr_field` PUBLIC
+link in place). The FIELD-I.14 audit
+authorises the operator to proceed to:
+**(a)** FIELD-I.15 — CLI + Config + dispatcher
+bridge (the renumbered next FIELD-I.* impl
+slot; RECOMMENDED as natural continuation of
+the FIELD-I.* arc; flips both backend AOV
+gates reachable simultaneously via the
+`--field-debug` CLI flag; threads
+`cfg.scalar_field_config` /
+`scene.scalar_field_config` from CLI / scene
+loader through both `run_render_aovs` AND
+`run_render_optix_aovs` into their respective
+payload fields; closes the FIELD-I.10 +
+FIELD-I.12 + FIELD-I.14 audits'
+runtime-deferred portions on SDK-host);
+**(b)** manifold-orthogonal work (deferred
+SDK-host runtime pass for the OBSERVER.* +
+OBS-P.* + OBS-F.* arc family; MANI-I.12 final
+cross-host manifold audit; denoiser
+integration with chart-aware AOVs;
+path-tracer feature breadth);
+**(c)** a direct FIELD-I.4 `FieldMappingConfig`
+CLI surface slice skipping the FIELD-I.15
+bridge (NOT recommended — would author the
+mapping CLI without a diagnostic AOV to
+verify mapping behaviour visually). The
+FIELD-I.* arc's `**Wired**` promotion is
+reserved for the post-CLI-bridge SDK-host
+runtime pass that exercises both backend
+kernels end-to-end against the FIELD-I.13
+fixture.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
