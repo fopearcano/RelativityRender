@@ -86147,6 +86147,285 @@ arc's `**Wired**` promotion is reserved for
 the FIELD-I.7 SDK-host runtime pass plus
 the FIELD-I.* mapping-kernel-bridge slices.
 
+## FIELD-I.7 — Scalar Field Diagnostic AOV Implementation (impl, AOV data model only)
+
+**Scope of this slice (per the operator's *FIELD-I.7 —
+Scalar Field Diagnostic AOV Implementation* task
+brief): land the AOV data-model entry for the
+`fieldScalar` diagnostic AOV — the enumerator slot,
+the component count, the lowercase name, the
+factory function — into `src/renderer/AOV.h` /
+`src/renderer/AOV.cpp`. Intentionally NARROWER than
+the FIELD-I.6 task brief's full surface: the
+operator's FIELD-I.7 brief enumerates only three
+implement-only bullets (AOV enum/type entry; neutral/
+default scalar diagnostic write path if field is
+disabled; output file naming consistent with existing
+AOV system), so the kernel arms, the CLI `--field-debug`
+flag, the `CudaSceneView::scalar_field_config` payload
+field, the `OptixLaunchParams::scalar_field_config`
+payload field, the dispatcher emit, and the fixture
+scene all defer to follow-up slices. The
+"neutral/default scalar diagnostic write path if
+field is disabled" requirement is satisfied by the
+documented contract on the new `AOVType::FieldScalar`
+enumerator's doc-comment (the future kernel arm
+returns `0.0f` at every pixel when
+`evaluate(scalar_field_config, hit_pos)` short-
+circuits on the disabled-field config); no actual
+write path is wired this slice. The "output file
+naming consistent with existing AOV system"
+requirement is satisfied by the snake_case
+`"field_scalar"` name (mirrors `observer_beta` /
+`manifold_coordinates` precedent verbatim; the
+natural future PPM filenames are
+`output/aov_field_scalar.ppm` (CUDA) /
+`output/optix_aov_field_scalar.ppm` (OptiX) without
+any string-builder rework). Mirrors the OBSERVER.13
+AOV data-model entry's scope verbatim except for
+the single-channel component count (1 float vs Vec3).**
+
+### What ships
+
+- **`src/renderer/AOV.h` (modified, +46 lines).**
+  Adds (after the existing OBSERVER.13
+  `ObserverBeta = 7` enumerator + factory
+  declaration):
+    - **`AOVType::FieldScalar = 8`** enumerator at
+      the end of the `AOVType` enum. Carries an
+      extensive doc-comment block documenting:
+      the per-pixel encoding contract (single
+      float from `rr::field::evaluate(config,
+      hit_pos)`); the disabled-field neutral
+      anchor (`0.0f` at every pixel when the
+      config is `disabled_scalar_field_config()`);
+      the future two-flag CLI gate
+      (`--render-aovs --field-debug` /
+      `--render-optix-aovs --field-debug`);
+      the future kernel-arm contract (read-only
+      on `scalar_field_config`; no
+      `FieldMappingConfig` consumption; no
+      beauty modulation); the PPM filename
+      convention; and an explicit statement
+      that the FIELD-I.7 slice ships ONLY the
+      data-model entry (no kernel arm, no CLI,
+      no payload field, no dispatcher emit).
+    - **`AOV::make_field_scalar(std::string name
+      = {})`** factory declaration. Doc-comment
+      mirrors the `make_observer_beta(...)`
+      precedent verbatim.
+
+- **`src/renderer/AOV.cpp` (modified, +13 lines).**
+  Adds:
+    - `aov_component_count(AOVType::FieldScalar)`
+      → `1` (single-channel; mirrors the
+      `Depth` / `DopplerFactor` /
+      `SearchlightFactor` precedent).
+    - `aov_type_name(AOVType::FieldScalar)` →
+      `"field_scalar"` (snake_case; mirrors
+      the `observer_beta` /
+      `manifold_coordinates` precedent).
+    - `AOV::make_field_scalar(...)` factory
+      body. Default-name fallback uses
+      `aov_type_name(AOVType::FieldScalar)` =
+      `"field_scalar"`; caller-supplied name
+      passes through verbatim.
+
+- **`tests/renderer_tests.cpp` (modified, +56
+  lines).** Adds the FIELD-I.7 test trio
+  mirroring the OBSERVER.13 precedent verbatim:
+    - **`test_field_i_7_field_scalar_aov_type`**
+      (3 RR_CHECKs): verifies
+      `AOVType::FieldScalar == 8u`,
+      `aov_component_count == 1`,
+      `aov_type_name == "field_scalar"`.
+    - **`test_field_i_7_field_scalar_factory_default_name`**
+      (3 RR_CHECKs): verifies factory output's
+      `type()`, `name()`, `component_count()`
+      on the default-name path.
+    - **`test_field_i_7_field_scalar_factory_custom_name`**
+      (2 RR_CHECKs): verifies factory's caller-
+      supplied name passes through verbatim.
+  Net 8 new RR_CHECK assertions; `renderer_tests`
+  grows from 27 → 35 total.
+
+### What does NOT ship
+
+- **No kernel arm.** No CUDA write site at
+  `src/cuda/CudaTestKernel.cu`. No OptiX write
+  site at `src/optix/OptixPrograms.cu`. The
+  operator brief's "neutral/default scalar
+  diagnostic write path if field is disabled"
+  is satisfied by the documented contract on
+  the new enumerator's doc-comment block;
+  the actual kernel-arm landing defers to a
+  follow-up slice.
+- **No `--field-debug` CLI flag.** No
+  `--field-*` field-authoring flag. No
+  `src/core/CommandLine.cpp` extension. The
+  AOV cannot be requested via CLI this slice.
+  The operator brief's "AOV only when
+  requested/generated" guarantee is satisfied
+  by absence: no consumer can request the AOV
+  because no CLI surface exists; therefore no
+  PPM file can ever be emitted this slice.
+- **No `rr::core::Config` extension.** No
+  `scalar_field_config` field; no
+  `field_debug_visualization` flag. The
+  Config-side payload bridge defers.
+- **No `CudaSceneView::scalar_field_config`
+  payload field.** No
+  `OptixLaunchParams::scalar_field_config`
+  payload field. The launch-payload bridge
+  defers.
+- **No `DeviceAOVView::field_scalar` slot.**
+  No `AOVTargets::field_scalar` field. No
+  `OptixLaunchParams::aov_field_scalar`
+  pointer. The AOV-target plumbing defers.
+- **No dispatcher emit.** No `main.cpp`
+  extension. No new PPM file path. The
+  `output/aov_field_scalar.ppm` /
+  `output/optix_aov_field_scalar.ppm`
+  filenames are documented in the AOV.h
+  doc-comment but no save-site exists this
+  slice.
+- **No fixture scene.** No
+  `scenes/test_field_diagnostic.rrscene`. No
+  companion `docs/FIELD_DIAGNOSTIC_FIXTURE.md`.
+- **No beauty-pass modification.** Every
+  existing CLI action's beauty output is
+  byte-identical to the pre-FIELD-I.7 baseline
+  (`193d306` = the FIELD-I.6 task brief
+  commit). The only files modified are
+  `src/renderer/AOV.h`, `src/renderer/AOV.cpp`,
+  `tests/renderer_tests.cpp`, and
+  `docs/BUILD_PLAN.md`; no kernel TU is
+  touched.
+- **No field-to-color / emission mapping.**
+  The operator brief explicitly forbids. No
+  consumer of `FieldMappingConfig` is wired
+  this slice; the FIELD-I.4 POD remains
+  unused by any renderer arithmetic.
+- **No quantum / tensor / curvature
+  simulation.**
+- **No manifold math change.** No
+  `src/manifold/` file touched.
+- **No new perception model.**
+- **No `.rrscene` schema bump.**
+- **No `MODULE_MAP.md` update.** The
+  `rr_renderer` library's module-map status
+  carries forward unchanged (AOV.h /
+  AOV.cpp extension is internal to the
+  existing library; no new export, no new
+  TU, no new dep).
+- **No C4D / server / UI / node-editor
+  touch.**
+
+### Acceptance
+
+- **Compiles.** Audit-host build green; full
+  rebuild via `cmake --build
+  /home/user/RelativityRender/build` adds no
+  new warnings on any module.
+- **Tests.** `ctest` returns
+  `100% tests passed, 0 tests failed out of
+  13` (unchanged from FIELD-I.6; no new
+  ctest target). `renderer_tests` reports
+  `35 / 35 passed` (35 total = 27 pre-
+  FIELD-I.7 baseline + 8 NEW FIELD-I.7).
+  All other suites unchanged:
+  `relativity_tests: 841/841 passed`;
+  `manifold_identity_tests: 408/408`;
+  `cli_tests: 274/274 passed`;
+  `field_tests: 135/135 passed`.
+- **No behaviour change.** No CLI action's
+  output is altered. No `--render-aovs` /
+  `--render-optix-aovs` invocation emits a
+  new PPM file (the FIELD-I.7 surface adds
+  no save-site). No `--render-*` action's
+  output set changes.
+- **Internally consistent.** The
+  `AOVType::FieldScalar = 8` enumerator is
+  appended at the END of the enum,
+  preserving every pre-FIELD-I.7 value
+  (Beauty = 0 ... ObserverBeta = 7).
+  The factory + name + component count
+  follow the `make_observer_beta(...)` /
+  `make_manifold_coordinates(...)` precedent
+  shape verbatim. The component count is 1
+  (single-channel; matches the operator
+  brief's "optional grayscale/normalized
+  visualization" — a single float
+  encoded as grayscale at PPM save time).
+  The lowercase snake_case name
+  `"field_scalar"` is consistent with the
+  existing convention and produces natural
+  future PPM filenames matching the
+  existing `aov_*.ppm` /
+  `optix_aov_*.ppm` pattern without any
+  string-builder rework.
+- **Honest scope.** Master rule #3 ("no
+  fake stubs") satisfied: the AOV data-
+  model entry is fully wired (enum / name
+  / component count / factory all
+  produce well-formed values; 8 new
+  RR_CHECK assertions verify them
+  empirically). The doc-comment block on
+  the enumerator + on the factory
+  documents the future kernel-arm contract
+  honestly; no fake stub pretending the
+  kernel arm exists. The "neutral/default
+  scalar diagnostic write path if field is
+  disabled" requirement is documented as
+  contract on the future kernel-arm
+  doc-comment, not as a wired but vestigial
+  no-op kernel arm. Master rule #12 ("do
+  not overbuild a later system before the
+  current layer works") satisfied: scope
+  is deliberately narrow per the operator's
+  three-bullet brief; the kernel arm + CLI
+  + payload field + dispatcher + fixture
+  are all reserved for follow-up slices
+  with their own audit gates.
+
+### Module status changes
+
+`docs/MODULE_MAP.md` is *not* updated by this
+slice. The `rr_renderer` library's module-
+map status carries forward unchanged (AOV.h /
+AOV.cpp content expanded; link graph + include
+graph byte-identical). The `rr_field`
+skeleton's status carries forward from the
+FIELD-I.5 entry unchanged. The FIELD-I.7
+verdict authorises the operator to proceed
+to: **(a)** the FIELD-I.7 audit (a docs-only
+verdict slice mirroring the FIELD-I.5 /
+FIELD-I.3 / OBSERVER.14 / MANI-I.9 /
+OBS-F.3 audit-slot insertion precedent;
+RECOMMENDED before the next impl slot, to
+lock in the AOV data-model entry's contract
+before the kernel-arm + CLI + payload field
+slices land); **(b)** the next FIELD-I.*
+impl slot — the kernel-arm + CLI +
+payload-field bridge that wires the
+diagnostic AOV end-to-end (consumes the
+new `AOVType::FieldScalar = 8` +
+`make_field_scalar(...)` surface; lands
+the `--field-debug` modifier flag +
+`scalar_field_config` payload field +
+kernel write sites + dispatcher emit;
+the natural continuation per the FIELD-I.6
+task brief's §5 files-likely-involved
+table); **(c)** manifold-orthogonal work
+(deferred SDK-host runtime pass for the
+OBSERVER.* + OBS-P.* + OBS-F.* arc family;
+MANI-I.12 final cross-host manifold audit;
+denoiser integration with chart-aware
+AOVs; path-tracer feature breadth). The
+FIELD-I.* arc's `**Wired**` promotion is
+reserved for the FIELD-I.* kernel-bridge
+slices' SDK-host runtime pass.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:

@@ -95,6 +95,52 @@ enum class AOVType : std::uint32_t {
     // searchlight re-keying on the observer-frame beta);
     // that is reserved for a separate future slice.
     ObserverBeta = 7,
+    // FIELD-I.7 — scalar-field diagnostic AOV.
+    // Writes a 1-component (single float) per-pixel value
+    // carrying the result of evaluating the active
+    // `rr::field::ScalarFieldConfig` at the per-pixel hit
+    // position via the FIELD-I.2 RR_HD inline
+    // `rr::field::evaluate(config, hit_pos)` helper. On the
+    // default `disabled_scalar_field_config()` state
+    // (`enabled = false`, `strength = 0.0f`) this equals
+    // `0.0f` at every pixel — the documented
+    // "field-disabled = neutral/zero diagnostic" anchor.
+    // On a non-default field engagement (a future slice
+    // ships the CLI surface to author `cfg.scalar_field_config`),
+    // hit pixels write the smoothstep / constant / procedural
+    // sample at the world-space hit position; miss pixels
+    // write `0.0f`. The PPM encoder replicates the single
+    // float to RGB at save time (mirrors the existing
+    // `Depth` / `DopplerFactor` / `SearchlightFactor`
+    // single-channel AOV encoding precedent). Opt-in:
+    // a future kernel-bridge slice (the FIELD-I.* arc's
+    // diagnostic-AOV-kernel slot) gates write-site
+    // engagement on a new `--field-debug` modifier flag
+    // composed with `--render-aovs` (CUDA) or
+    // `--render-optix-aovs` (OptiX) — same two-flag
+    // composition as `--manifold-debug` / `--observer-debug`
+    // (see `docs/FIELD_SCALAR_DIAGNOSTIC_AOV_TASK.md`).
+    // Read-only diagnostic: the kernel does NOT apply any
+    // `FieldMappingConfig` transform (no strength / bias /
+    // clamp / target-channel routing); the future
+    // mapping-pipeline integration is a separate slice.
+    // Output filenames follow the existing convention:
+    // `output/aov_field_scalar.ppm` (CUDA) /
+    // `output/optix_aov_field_scalar.ppm` (OptiX), mirroring
+    // `aov_observer_beta.ppm` / `aov_manifold_coordinates.ppm`
+    // naming verbatim.
+    //
+    // FIELD-I.7 ships only the data-model entry: the
+    // enumerator, the component count, the lowercase name,
+    // and the `make_field_scalar(...)` factory. No CUDA
+    // kernel arm, no OptiX kernel arm, no `--field-debug`
+    // CLI flag, no `CudaSceneView::scalar_field_config`
+    // payload field, no `OptixLaunchParams::scalar_field_config`
+    // payload field, no dispatcher emit, no fixture scene.
+    // Those land in a follow-up slice that consumes this
+    // enumerator + factory and wires them through the
+    // kernels.
+    FieldScalar = 8,
 };
 
 // Number of float channels an `AOVType` writes per pixel. Used by
@@ -156,6 +202,14 @@ public:
     // name). Mirrors the `make_manifold_coordinates(...)`
     // factory shape verbatim.
     [[nodiscard]] static AOV make_observer_beta(std::string name = {});
+    // FIELD-I.7 — scalar-field diagnostic AOV factory.
+    // Returns an `AOV` with `type() == AOVType::FieldScalar`
+    // and `name() == "field_scalar"` (or the caller-
+    // supplied name). Mirrors the `make_observer_beta(...)`
+    // factory shape verbatim; the new AOV's single-float
+    // component count is the only behavioural difference
+    // (vs the Vec3 ObserverBeta).
+    [[nodiscard]] static AOV make_field_scalar(std::string name = {});
 
     [[nodiscard]] AOVId              id()              const noexcept { return id_; }
     [[nodiscard]] AOVType            type()            const noexcept { return type_; }

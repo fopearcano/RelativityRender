@@ -184,6 +184,55 @@ void test_observer_13_observer_beta_factory_custom_name() {
     RR_CHECK(aov.name() == "custom_observer_dbg");
 }
 
+// FIELD-I.7 — scalar-field diagnostic AOV type registration.
+// Mirrors the OBSERVER.13 observer-beta AOV tests verbatim;
+// verifies the data-model surface lands correctly per the
+// FIELD-I.6 task brief's §7.1 structural PASS criteria.
+void test_field_i_7_field_scalar_aov_type() {
+    using rr::renderer::AOV;
+    using rr::renderer::AOVType;
+
+    // Enumerator value is 8 (appended at the end of the enum
+    // after `ObserverBeta = 7`; preserves the offsets of
+    // every pre-FIELD-I.7 enumerator).
+    RR_CHECK(static_cast<unsigned>(AOVType::FieldScalar) == 8u);
+
+    // Component count is 1 (single-float per-pixel scalar;
+    // mirrors the existing `Depth` / `DopplerFactor` /
+    // `SearchlightFactor` single-channel encoding
+    // precedent).
+    RR_CHECK(rr::renderer::aov_component_count(
+                 AOVType::FieldScalar) == 1);
+
+    // Stable lowercase name for filenames / log output.
+    // The PPM file naming follows the existing convention
+    // (`aov_field_scalar.ppm` / `optix_aov_field_scalar.ppm`).
+    RR_CHECK(rr::renderer::aov_type_name(
+                 AOVType::FieldScalar) == "field_scalar");
+}
+
+void test_field_i_7_field_scalar_factory_default_name() {
+    using rr::renderer::AOV;
+    using rr::renderer::AOVType;
+
+    // Factory with no explicit name uses the lowercase enum
+    // name as the AOV's name.
+    AOV aov = AOV::make_field_scalar();
+    RR_CHECK(aov.type()            == AOVType::FieldScalar);
+    RR_CHECK(aov.name()            == "field_scalar");
+    RR_CHECK(aov.component_count() == 1);
+}
+
+void test_field_i_7_field_scalar_factory_custom_name() {
+    using rr::renderer::AOV;
+    using rr::renderer::AOVType;
+
+    // Factory honours a caller-supplied name.
+    AOV aov = AOV::make_field_scalar("custom_field_dbg");
+    RR_CHECK(aov.type() == AOVType::FieldScalar);
+    RR_CHECK(aov.name() == "custom_field_dbg");
+}
+
 }  // namespace
 
 int main() {
@@ -200,6 +249,11 @@ int main() {
     test_observer_13_observer_beta_aov_type();
     test_observer_13_observer_beta_factory_default_name();
     test_observer_13_observer_beta_factory_custom_name();
+
+    // FIELD-I.7: scalar-field diagnostic AOV type registration.
+    test_field_i_7_field_scalar_aov_type();
+    test_field_i_7_field_scalar_factory_default_name();
+    test_field_i_7_field_scalar_factory_custom_name();
 
     std::printf("renderer_tests: %d / %d passed\n",
                 g_total - g_failed, g_total);
