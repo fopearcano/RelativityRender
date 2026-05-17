@@ -17,6 +17,7 @@
 #include "cuda/CudaAOV.cuh"       // DeviceAOVView for the AOV write slot
 #include "cuda/CudaMesh.cuh"
 #include "cuda/CudaTexture.cuh"   // DeviceTextureView for the texture array slot
+#include "field/ScalarField.h"    // FIELD-I.9: per-launch scalar-field config payload
 #include "geometry/Sphere.h"
 #include "lighting/Light.h"
 #include "manifold/CoordinateChart.h"  // SCHW.5: per-launch chart payload
@@ -135,6 +136,43 @@ struct CudaSceneView {
     // lands the field travels through the launch boundary
     // but is not read.
     rr::manifold::ObserverFrame       observer_frame{};
+
+    // ---- FIELD-I.9 per-launch scalar-field config payload ----
+    //
+    // The FIELD-I.4 + FIELD-I.2 tagged-form
+    // `rr::field::ScalarFieldConfig` POD; default
+    // `disabled_scalar_field_config()` (= `enabled = false,
+    // strength = 0.0f, kind = Constant`, all other defaults
+    // = 0). With the default, the kernel arm reading this
+    // field
+    // (`CudaTestKernel.cu::k_render_scene`'s `FieldScalar`
+    // AOV-write arm) computes
+    // `rr::field::evaluate(scalar_field_config, hit_pos)`
+    // which short-circuits to `0.0f` at every position (the
+    // FIELD-I.3 audit's check #2 three-layer no-op anchor).
+    //
+    // The CUDA kernel's FIELD-I.9 AOV-write arm reads this
+    // field **only** when the corresponding
+    // `aovs.field_scalar` device pointer is non-null (i.e.
+    // when the operator has requested the diagnostic AOV).
+    // No other kernel arm consumes this payload field this
+    // slice — the FIELD-I.6 task brief §6 "no
+    // field-to-beauty mapping yet" non-goal is satisfied
+    // structurally because the field is not read by the
+    // beauty / Normal / Depth / Albedo / DopplerFactor /
+    // SearchlightFactor / ManifoldCoordinates / ObserverBeta
+    // arms.
+    //
+    // Populated by `CudaRenderer::render_scene_with_aovs`
+    // from `AOVTargets::scalar_field_config`. Until a future
+    // CLI / scene-loader slice lands the authoring surface
+    // (the renumbered FIELD-I.11 CLI + Config bridge), every
+    // dispatcher call site passes the default; the kernel
+    // arm therefore writes `0.0f` per pixel into the AOV
+    // (the documented "field-disabled = neutral/zero
+    // diagnostic" anchor from the FIELD-I.6 task brief's
+    // §3.2).
+    rr::field::ScalarFieldConfig      scalar_field_config{};
 };
 
 }

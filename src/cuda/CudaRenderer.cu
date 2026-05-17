@@ -302,6 +302,11 @@ CudaRenderer::Result CudaRenderer::render_scene_with_aovs(
     // per-pixel arithmetic for the existing seven AOVs is
     // unchanged.
     view.aovs.observer_beta        = targets.observer_beta;
+    // FIELD-I.9 — null when not requested; the kernel's
+    // null-check skips the FieldScalar write arm and the
+    // per-pixel arithmetic for the existing eight AOVs is
+    // unchanged.
+    view.aovs.field_scalar         = targets.field_scalar;
 
     // SCHW.5 — thread the per-launch manifold payload
     // into the kernel-visible view. Defaults (the
@@ -321,6 +326,23 @@ CudaRenderer::Result CudaRenderer::render_scene_with_aovs(
     // observer-frame reads without an AOVTargets /
     // CudaSceneView ABI change.
     view.observer_frame   = targets.observer_frame;
+
+    // FIELD-I.9 — thread the per-launch scalar-field
+    // config payload. Default
+    // `disabled_scalar_field_config()` is the byte-
+    // identity no-op anchor (`enabled = false`,
+    // `strength = 0.0f`); even when the FieldScalar AOV
+    // pointer is non-null, the kernel arm's
+    // `evaluate(...)` short-circuits to `0.0f` at every
+    // position. The kernel arm gates its consumption on
+    // `aovs.field_scalar != nullptr` AND uses this field
+    // exclusively for the AOV-write path; the beauty
+    // pass + Normal / Depth / Albedo / DopplerFactor /
+    // SearchlightFactor / ManifoldCoordinates /
+    // ObserverBeta arms do NOT read this field (the
+    // FIELD-I.6 task brief's "no field-to-beauty
+    // mapping yet" non-goal is structurally satisfied).
+    view.scalar_field_config = targets.scalar_field_config;
 
     return run_kernel_render(width, height,
         [view](float* device_pixels, int w, int h) {

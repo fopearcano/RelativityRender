@@ -86745,17 +86745,16 @@ slice. The `rr_renderer` library's module-
 map status carries forward from the FIELD-I.7
 entry unchanged. The FIELD-I.8 audit
 authorises the operator to proceed to:
-**(a)** FIELD-I.9 — kernel-bridge
-implementation (the renumbered next
-FIELD-I.* impl slot; RECOMMENDED as natural
-continuation of the FIELD-I.* arc; consumes
-the FIELD-I.7 AOV data-model entry +
-lands the kernel arms + `--field-debug`
-CLI flag + payload fields + dispatcher
-emit per the FIELD-I.6 task brief's §4 +
-§5; closes the FIELD-I.7 audit's checks
-#5 + #6 + #8 runtime-deferred portions
-when its own audit runs); **(b)** manifold-
+**(a)** FIELD-I.9 — Scalar Field CUDA Bridge
+(the renumbered next FIELD-I.* impl slot;
+RECOMMENDED as natural continuation of the
+FIELD-I.* arc; consumes the FIELD-I.7 AOV
+data-model entry + threads
+`scalar_field_config` into CUDA launch
+payloads + adds CUDA kernel arm for
+`FieldScalar` consumption; OptiX wiring +
+CLI flag + dispatcher emit deferred to
+separate slices); **(b)** manifold-
 orthogonal work (deferred SDK-host runtime
 pass for the OBSERVER.* + OBS-P.* + OBS-F.*
 arc family; MANI-I.12 final cross-host
@@ -86769,6 +86768,287 @@ diagnostics). The FIELD-I.* arc's
 `**Wired**` promotion is reserved for the
 FIELD-I.9 kernel-bridge slice's SDK-host
 runtime pass.
+
+## FIELD-I.9 — Scalar Field CUDA Bridge (impl, CUDA launch payload + kernel arm)
+
+**Scope of this slice (per the operator's *FIELD-I.9 —
+Scalar Field CUDA Bridge* task brief): thread the
+FIELD-I.2 `rr::field::ScalarFieldConfig` POD into the
+CUDA launch payload (`CudaSceneView`,
+`AOVTargets`) and add the CUDA kernel arm that
+consumes it to write the FieldScalar diagnostic
+AOV. CUDA-only; OptiX wiring deferred to a separate
+slice. Intentionally narrow per the operator's
+four-bullet brief: only the data threading + the
+single-AOV consumption — no field-to-color/emission
+mapping, no beauty modulation, no observer/manifold
+behaviour change.**
+
+### What ships
+
+- **`src/cuda/CudaScene.cuh` (modified, +37 lines).**
+  Adds the new `rr::field::ScalarFieldConfig
+  scalar_field_config{}` field to `CudaSceneView`
+  (sibling of `manifold_mode` / `coordinate_chart` /
+  `observer_frame`). Default
+  `disabled_scalar_field_config()` (= `enabled =
+  false`, `strength = 0.0f`) keeps the kernel arm
+  computing `evaluate(...)` → `0.0f` at every
+  position even when the AOV pointer is non-null
+  (the FIELD-I.3 audit's three-layer no-op anchor).
+  New `#include "field/ScalarField.h"`.
+
+- **`src/cuda/CudaAOV.cuh` (modified, +22 lines).**
+  Adds the new `float* field_scalar = nullptr`
+  pointer slot to `DeviceAOVView` (sibling of
+  `observer_beta`). Single-channel (1 float /
+  pixel) mirroring the existing `depth` /
+  `doppler_factor` / `searchlight_factor` 1-channel
+  AOV precedent. Doc-comment documents the
+  read-only-on-scalar-field-payload contract + the
+  "no FieldMappingConfig transform" non-goal + the
+  future `--field-debug` gate.
+
+- **`src/cuda/CudaRenderer.h` (modified, +33
+  lines).** Adds two new fields to the
+  `AOVTargets` host-side POD:
+    - **`float* field_scalar = nullptr`** — the
+      AOV-pass device buffer pointer (sibling of
+      `observer_beta`). Default `nullptr` is the
+      "AOV not requested" anchor; structurally
+      unreachable this slice because no
+      dispatcher caller flips it on (the future
+      CLI bridge slice owns that flip).
+    - **`rr::field::ScalarFieldConfig
+      scalar_field_config = {}`** — the
+      per-launch field-config payload (sibling
+      of `observer_frame`). Default
+      `disabled_scalar_field_config()` is the
+      byte-identity no-op anchor; the kernel arm
+      gates its consumption on `aovs.field_scalar
+      != nullptr` AND short-circuits to `0.0f`
+      on the disabled default.
+  New `#include "field/ScalarField.h"`.
+
+- **`src/cuda/CudaRenderer.cu` (modified, +24
+  lines).** Threads both new fields from
+  `AOVTargets` into the kernel-visible
+  `CudaSceneView` inside
+  `render_scene_with_aovs`:
+    - `view.aovs.field_scalar =
+      targets.field_scalar;` (sibling of the
+      `aovs.observer_beta` thread).
+    - `view.scalar_field_config =
+      targets.scalar_field_config;` (sibling of
+      the `observer_frame` thread).
+  Doc-comments preserve the FIELD-I.6 task
+  brief's "no field-to-beauty mapping yet"
+  non-goal framing.
+
+- **`src/cuda/CudaTestKernel.cu` (modified, +29
+  lines).** Adds the new CUDA kernel write arm
+  immediately after the OBSERVER.13
+  `observer_beta` arm at the end of
+  `k_render_scene`. Mirrors the 1-channel AOV
+  shape (`pix_idx_1` single-index write):
+    - Gate: `if (scene.aovs.field_scalar !=
+      nullptr)`.
+    - Hit: `const Vec3 hit_pos_v3 =
+      {best.position.x, best.position.y,
+      best.position.z}; scene.aovs.field_scalar[pix_idx_1]
+      = rr::field::evaluate(scene.scalar_field_config,
+      hit_pos_v3);`.
+    - Miss: `scene.aovs.field_scalar[pix_idx_1] =
+      0.0f;`.
+  Doc-comment documents: the no-mapping contract
+  (per FIELD-I.6 §6 non-goal); the structural
+  unreachability this slice (no caller flips the
+  pointer on); the disabled-field neutral-zero
+  anchor (the `evaluate(...)` short-circuit
+  returns `0.0f`).
+
+- **`CMakeLists.txt` (modified, +5 lines).** Adds
+  `rr_field` as a PUBLIC link dep on `rr_gpu`
+  (mirroring the existing `rr_manifold` PUBLIC
+  precedent at line 763). The new
+  `AOVTargets::scalar_field_config` field on
+  `CudaRenderer.h` exposes the
+  `rr::field::ScalarFieldConfig` POD by value;
+  `rr_gpu` consumers (RelativityRender,
+  gpu_tests, rr_renderer, rr_optix) inherit the
+  include path via the existing rr_gpu PUBLIC
+  link.
+
+### What does NOT ship
+
+- **No OptiX wiring.** Operator brief explicitly
+  forbids: "Do not modify OptiX yet". The
+  `src/optix/` tree is byte-identical to the
+  pre-FIELD-I.9 baseline (FIELD-I.8 audit
+  HEAD = `7cd4557`). The `OptixLaunchParams` /
+  `OptixRenderer` / `OptixPrograms.cu` surfaces
+  retain their pre-FIELD-I.9 shape; the OptiX
+  bridge lands as a separate slice.
+- **No field-to-color / emission mapping.**
+  Operator brief explicitly forbids. The kernel
+  arm reads `evaluate(scalar_field_config,
+  hit_pos)` exclusively for the AOV-write path;
+  the beauty pass / Normal / Depth / Albedo /
+  DopplerFactor / SearchlightFactor /
+  ManifoldCoordinates / ObserverBeta arms do
+  NOT read `scene.scalar_field_config`. The
+  FIELD-I.4 `FieldMappingConfig` POD remains
+  unused by any kernel arm.
+- **No CLI flag.** No `--field-debug`
+  modifier flag. No `--field-*` authoring
+  flag. No `src/core/CommandLine.cpp`
+  extension. The `AOVTargets::field_scalar`
+  pointer is structurally unreachable this
+  slice; every dispatcher caller passes
+  `nullptr` (the default). A future CLI
+  bridge slice flips the gate.
+- **No `rr::core::Config` extension.** No
+  `scalar_field_config` field on `Config`.
+  No `field_debug_visualization` flag. The
+  Config-side payload bridge defers.
+- **No dispatcher emit.** No `main.cpp`
+  extension. No new PPM file path
+  (`output/aov_field_scalar.ppm`).
+- **No fixture scene.**
+- **No companion fixture doc.**
+- **No beauty-pass modification.** Every
+  existing CLI action's beauty output is
+  pixel-bit-identical to the pre-FIELD-I.9
+  baseline (`7cd4557` = the FIELD-I.8 audit
+  commit). The new CUDA kernel arm fires
+  ONLY when `aovs.field_scalar != nullptr`,
+  which never holds in any current dispatcher
+  call site.
+- **No observer/manifold behaviour change.**
+  The OBSERVER.* + OBS-P.* + OBS-F.* + SCHW.*
+  + PENROSE.* arcs' verdicts carry forward
+  unchanged. No `manifold_mode` /
+  `observer_frame` field on
+  `CudaSceneView` or `AOVTargets` is
+  modified.
+- **No quantum / tensor / curvature
+  simulation.**
+- **No `.rrscene` schema bump.**
+- **No `MODULE_MAP.md` update.**
+- **No C4D / server / UI / node-editor
+  touch.**
+
+### Acceptance
+
+- **Compiles.** Audit-host build green; full
+  rebuild via `cmake --build
+  /home/user/RelativityRender/build` adds no
+  new warnings on any module. The reconfigure
+  picks up the new `rr_field` PUBLIC link on
+  `rr_gpu` cleanly.
+- **Tests.** `ctest` returns
+  `100% tests passed, 0 tests failed out of
+  13` (unchanged from FIELD-I.8; no new
+  ctest target). `renderer_tests` reports
+  `35 / 35 passed` (unchanged from FIELD-I.7).
+  `field_tests` reports `135 / 135 passed`
+  (unchanged from FIELD-I.4). All other
+  suites unchanged:
+  `relativity_tests: 841/841 passed`;
+  `manifold_identity_tests: 408/408`;
+  `cli_tests: 274/274 passed`.
+- **No behaviour change.** No CLI action's
+  output is altered. No
+  `--render-aovs` / `--render-pathtrace` /
+  `--render-scene` / `--render-mesh-scene`
+  / `--render-material-scene` /
+  `--render-direct-lighting` /
+  `--render-relativistic` invocation
+  produces a new PPM file or changes any
+  existing PPM byte. The new CUDA kernel
+  arm fires only when
+  `aovs.field_scalar != nullptr`, which is
+  the structural unreachability anchor this
+  slice.
+- **Internally consistent.** The new
+  `scalar_field_config` field on
+  `CudaSceneView` + `AOVTargets` follows the
+  OBSERVER.8 `observer_frame` precedent
+  shape verbatim (in-class default
+  `{} = disabled_scalar_field_config()`;
+  threaded by-value through the
+  `render_scene_with_aovs` dispatcher into
+  the kernel view). The new
+  `field_scalar` pointer on `DeviceAOVView`
+  + `AOVTargets` follows the OBSERVER.13
+  `observer_beta` precedent shape verbatim
+  (default `nullptr`; null-gated kernel
+  arm; mirror of the existing
+  `observer_beta` write-arm structure).
+  The kernel write arm uses the
+  `pix_idx_1` single-index AOV write
+  precedent (matches `depth` /
+  `doppler_factor` / `searchlight_factor`).
+  The new `rr_field` PUBLIC link on
+  `rr_gpu` mirrors the `rr_manifold`
+  PUBLIC precedent already in place.
+- **Honest scope.** Master rule #3 ("no
+  fake stubs") satisfied: the kernel arm
+  is fully wired (real `evaluate(...)`
+  invocation; real pointer dereferences;
+  real on-hit + on-miss branches); no
+  empty scaffold. The arm's
+  structural-unreachability via
+  null-pointer-gate is honest scope
+  framing per the doc-comment ("until a
+  future CLI / dispatcher slice flips the
+  pointer on..."). Master rule #11
+  satisfied: the kernel arm's behaviour
+  is documented as contract on the
+  doc-comment + structurally rooted in
+  the audit-host-verified FIELD-I.2
+  `evaluate(...)` semantics (FIELD-I.3
+  audit's check #2 three-layer no-op
+  anchor). Master rule #12 satisfied:
+  scope deliberately narrow to CUDA
+  bridge only — OptiX deferred, CLI
+  deferred, dispatcher emit deferred,
+  field-to-beauty mapping deferred.
+
+### Module status changes
+
+`docs/MODULE_MAP.md` is *not* updated by this
+slice. The `rr_gpu` library gains an explicit
+PUBLIC link to `rr_field` (the
+INTERFACE/header-only Field Interpretation
+Layer skeleton); the include path was
+already transitively available, but the
+explicit link makes the dependency graph
+honest. The FIELD-I.9 verdict authorises
+the operator to proceed to: **(a)** the
+FIELD-I.9 audit (a docs-only verdict slice
+mirroring the FIELD-I.8 / FIELD-I.5 /
+FIELD-I.3 audit-slot insertion precedent;
+RECOMMENDED before the next impl slot, to
+lock in the CUDA bridge contract before
+the OptiX bridge + CLI + dispatcher slices
+land); **(b)** FIELD-I.* — Scalar Field
+OptiX Bridge (mirrors this CUDA bridge
+slice for the OptiX path; reads
+`optixLaunchParams.scalar_field_config`;
+writes to `optixLaunchParams.aov_field_scalar`);
+**(c)** FIELD-I.* — CLI + Config + dispatcher
+bridge (the natural next bridge slice that
+flips the `AOVTargets::field_scalar` gate
+on via the `--field-debug` CLI flag;
+threads `cfg.scalar_field_config` from the
+operator-authoring CLI through
+`run_render_aovs` into `AOVTargets`);
+**(d)** manifold-orthogonal work. The
+FIELD-I.* arc's `**Wired**` promotion is
+reserved for the post-CLI-bridge SDK-host
+runtime pass that exercises the kernel
+arm end-to-end.
 
 ## Next stage
 

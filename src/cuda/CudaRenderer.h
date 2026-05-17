@@ -1,5 +1,6 @@
 #pragma once
 
+#include "field/ScalarField.h"         // FIELD-I.9: AOVTargets scalar-field config payload
 #include "image/Image.h"
 #include "manifold/CoordinateChart.h"  // SCHW.5: AOVTargets manifold payload
 #include "manifold/ManifoldMode.h"     // SCHW.5: AOVTargets manifold payload
@@ -191,6 +192,19 @@ public:
         // `cfg.observer.debug_visualization`).
         float* observer_beta        = nullptr;
 
+        // FIELD-I.9 — scalar-field diagnostic AOV. Default
+        // `nullptr` means "not requested"; the kernel skips
+        // the FieldScalar write arm and the existing eight
+        // AOVs are byte-identical to the pre-FIELD-I.9
+        // baseline. A future CLI / dispatcher slice (the
+        // renumbered FIELD-I.11 CLI + Config bridge) sets
+        // this to a device buffer pointer when the
+        // documented `--render-aovs --field-debug` gate is
+        // engaged; until that slice lands the field is
+        // structurally unreachable (kernel arm exists; no
+        // caller flips the pointer on).
+        float* field_scalar         = nullptr;
+
         // SCHW.5 — per-launch manifold payload. Defaults
         // are the pre-pivot disabled / Euclidean /
         // strength-0 no-op anchor. The CUDA kernel's
@@ -223,6 +237,27 @@ public:
         // a subsequent slice can wire kernel-side reads
         // without changing the AOVTargets ABI again.
         rr::manifold::ObserverFrame   observer_frame   = {};
+
+        // FIELD-I.9 — per-launch scalar-field config
+        // payload. Default `ScalarFieldConfig{}` =
+        // `disabled_scalar_field_config()` is the
+        // byte-identity no-op anchor (`enabled = false`,
+        // `strength = 0.0f`). The CUDA kernel arm that
+        // consumes this field (`CudaTestKernel.cu::k_render_scene`'s
+        // FieldScalar AOV-write arm) gates its consumption
+        // on `aovs.field_scalar != nullptr` — when the AOV
+        // is not requested the kernel arm short-circuits
+        // and this field is never read. Even when the AOV
+        // IS requested, the default `disabled_scalar_field_config()`
+        // makes `rr::field::evaluate(...)` return `0.0f` at
+        // every position (the FIELD-I.3 audit's check #2
+        // three-layer no-op anchor). The dispatcher
+        // (`main.cpp::run_render_aovs`) will populate this
+        // from `cfg.scalar_field_config` in a future CLI
+        // bridge slice; until that slice lands every
+        // dispatcher caller passes the default no-op
+        // anchor verbatim.
+        rr::field::ScalarFieldConfig  scalar_field_config = {};
     };
 
     [[nodiscard]] static Result render_scene_with_aovs(

@@ -94,6 +94,28 @@ struct DeviceAOVView {
     // operator passes `--render-aovs --observer-debug`
     // (see `docs/OBSERVER_DEBUG_AOV_TASK.md`).
     float* observer_beta        = nullptr;  // 3 floats / pixel
+
+    // FIELD-I.9 — scalar-field diagnostic AOV. Writes the
+    // per-pixel `rr::field::evaluate(view.scalar_field_config,
+    // hit_pos)` result on hit and `0.0f` on miss (matches the
+    // Depth / DopplerFactor / SearchlightFactor 1-channel AOVs'
+    // miss convention). The `view.scalar_field_config` field
+    // is populated by the dispatcher via FIELD-I.9's
+    // `CudaRenderer::render_scene_with_aovs` from
+    // `AOVTargets::scalar_field_config`. The AOV write is
+    // read-only on the scalar-field payload — no
+    // `FieldMappingConfig` transform (no strength / bias /
+    // clamp / target-channel routing) is applied this slice
+    // per the FIELD-I.6 task brief's "no field-to-beauty
+    // mapping yet" non-goal. Opt-in: the pointer is null
+    // unless a future CLI / dispatcher slice flips it on
+    // (the documented future gate is `--render-aovs
+    // --field-debug`; see
+    // `docs/FIELD_SCALAR_DIAGNOSTIC_AOV_TASK.md` §3.3). Until
+    // that slice lands the kernel arm exists but is
+    // structurally unreachable because no AOVTargets caller
+    // sets the pointer to non-null.
+    float* field_scalar         = nullptr;  // 1 float / pixel
 };
 
 }  // namespace rr::cuda

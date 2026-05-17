@@ -772,6 +772,38 @@ __global__ void k_render_scene(float* pixels, int width, int height,
             scene.aovs.observer_beta[pix_idx_3 + 2] = 0.0f;
         }
     }
+
+    // FIELD-I.9 — scalar-field diagnostic AOV. Writes
+    // `rr::field::evaluate(scene.scalar_field_config,
+    // hit_pos)` per hit pixel and `0.0f` per miss pixel.
+    // The raw scalar sample is the AOV's value; no
+    // `FieldMappingConfig` transform (no strength / bias /
+    // clamp / target-channel routing) is applied this
+    // slice per the FIELD-I.6 task brief's "no
+    // field-to-beauty mapping yet" non-goal. The arm
+    // mirrors the Depth / DopplerFactor / SearchlightFactor
+    // 1-channel AOV shape (single index, single float).
+    // Null-gated so the AOV pass is opt-in; until a future
+    // CLI / dispatcher slice flips the pointer on (the
+    // documented future gate is `--render-aovs
+    // --field-debug`) the arm is structurally unreachable
+    // because every dispatcher caller passes
+    // `targets.field_scalar = nullptr` (the default). On
+    // the default `disabled_scalar_field_config()` config
+    // the evaluator's `enabled = false` short-circuit
+    // returns `0.0f` at every position; the AOV PPM is
+    // flat black — the documented "field-disabled =
+    // neutral/zero diagnostic" anchor.
+    if (scene.aovs.field_scalar != nullptr) {
+        if (best.hit) {
+            const rr::math::Vec3 hit_pos_v3{
+                best.position.x, best.position.y, best.position.z};
+            scene.aovs.field_scalar[pix_idx_1] =
+                rr::field::evaluate(scene.scalar_field_config, hit_pos_v3);
+        } else {
+            scene.aovs.field_scalar[pix_idx_1] = 0.0f;
+        }
+    }
 }
 
 }  // namespace
