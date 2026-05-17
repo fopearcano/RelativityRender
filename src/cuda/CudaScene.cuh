@@ -17,6 +17,7 @@
 #include "cuda/CudaAOV.cuh"       // DeviceAOVView for the AOV write slot
 #include "cuda/CudaMesh.cuh"
 #include "cuda/CudaTexture.cuh"   // DeviceTextureView for the texture array slot
+#include "field/FieldMapping.h"   // FIELD-BEAUTY.3: per-launch field-mapping config payload
 #include "field/ScalarField.h"    // FIELD-I.9: per-launch scalar-field config payload
 #include "geometry/Sphere.h"
 #include "lighting/Light.h"
@@ -173,6 +174,46 @@ struct CudaSceneView {
     // diagnostic" anchor from the FIELD-I.6 task brief's
     // §3.2).
     rr::field::ScalarFieldConfig      scalar_field_config{};
+
+    // ---- FIELD-BEAUTY.3 per-launch field-mapping config payload ----
+    //
+    // The FIELD-I.4 single-target tagged-form
+    // `rr::field::FieldMappingConfig` POD; default
+    // `disabled_field_mapping_config()` (= `target = None,
+    // strength = 0.0f, bias = 0.0f, min_value = 0.0f,
+    // max_value = 1.0f, clamp_output = false`). Companion to
+    // `scalar_field_config` above; together they describe
+    // **what** the scalar field is + **how** it maps into a
+    // beauty channel.
+    //
+    // The CUDA kernel's FIELD-BEAUTY.3 beauty-mapping arm
+    // (`CudaTestKernel.cu::k_render_scene`) gates on the
+    // double-condition `scalar_field_config.enabled == true`
+    // AND `field_mapping_config.target` ∈ {`ColorMultiplier`,
+    // `Emission`}. Default `disabled_field_mapping_config()`
+    // (target = None) preserves byte-identical output by
+    // construction even when `scalar_field_config.enabled
+    // = true` — the target-None short-circuit in
+    // `evaluate_mapping(...)` returns 0 AND the kernel arm's
+    // target-specific guard skips both ColorMultiplier and
+    // Emission branches.
+    //
+    // The FieldScalar diagnostic AOV's write arm (FIELD-I.9
+    // at `CudaTestKernel.cu`'s post-framebuffer-write block)
+    // does NOT consume this field — the diagnostic AOV
+    // writes the raw `evaluate(scalar_field_config,
+    // hit_pos)` output regardless of mapping target. This
+    // preserves the FIELD-I.6 task brief §3.2 "neutral/zero
+    // diagnostic" anchor + the FIELD-I.4 audit's
+    // mapping-vs-diagnostic separation.
+    //
+    // Populated by `CudaRenderer::render_scene_with_aovs`
+    // from `AOVTargets::field_mapping_config`. Until a
+    // future CLI / scene-loader slice lands the authoring
+    // surface, every dispatcher caller passes the default
+    // `disabled_field_mapping_config()`; the beauty-mapping
+    // arms are structurally unreachable.
+    rr::field::FieldMappingConfig     field_mapping_config{};
 };
 
 }

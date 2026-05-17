@@ -88465,6 +88465,300 @@ runtime pass that exercises both backend
 kernels end-to-end against the FIELD-I.13
 fixture.
 
+## FIELD-BEAUTY.3 — CUDA Scalar Field Beauty Mapping (impl, CUDA kernel arm)
+
+**Scope of this slice (per the operator's *FIELD-BEAUTY.3
+— CUDA Scalar Field Beauty Mapping* task brief): open
+the new FIELD-BEAUTY.* arc — the parallel arc to
+FIELD-I.* that lifts the FIELD-I.6 / .9 / .11 task
+briefs' "no field-to-beauty mapping yet" non-goal for
+the FIELD-I.4 `FieldMappingConfig` POD's
+`ColorMultiplier` + `Emission` targets on the CUDA
+path. Mirror the FIELD-I.9 CUDA bridge shape for the
+FieldMappingConfig POD; add the CUDA kernel arm in
+`k_render_scene` that applies the field-mapping
+contribution to the per-pixel beauty result. CUDA-only;
+OptiX deferred to a separate slice. The FIELD-I.7
+diagnostic AOV's write arm is preserved verbatim —
+the AOV continues to write the raw `evaluate(...)`
+output regardless of mapping target.
+
+The referenced `docs/FIELD_SCALAR_BEAUTY_MAPPING_TASK.md`
+task brief was not authored prior to this slice
+(FIELD-BEAUTY.1 + FIELD-BEAUTY.2 slots are unfilled
+in the FIELD-BEAUTY.* ladder). The operator's
+FIELD-BEAUTY.3 prompt body itself is the canonical
+task brief for this slice — five well-specified
+implementation bullets (ColorMultiplier mapping +
+Emission mapping + preservation of default-None
+no-op + disabled-field no-op + default-scenes-
+unchanged + AOV-behavior unchanged). The
+audit-host build was empirically validated under
+this scope: 13/13 ctest PASS audit-host; 14/14 ctest
+PASS OptiX-ON-no-SDK.**
+
+### What ships
+
+- **`src/cuda/CudaScene.cuh` (modified, +43
+  lines).** Adds:
+    - **`rr::field::FieldMappingConfig
+      field_mapping_config{};`** field on
+      `CudaSceneView` (sibling of
+      `scalar_field_config`). Default
+      `disabled_field_mapping_config()` is the
+      target-None no-op anchor; even when the
+      scalar field is engaged, the mapping arm
+      short-circuits.
+    - New `#include "field/FieldMapping.h"`.
+  Doc-comment documents the double-gate
+  contract (`scalar_field_config.enabled` +
+  `field_mapping_config.target`) + the
+  AOV-vs-mapping separation framing.
+
+- **`src/cuda/CudaRenderer.h` (modified, +24
+  lines).** Adds:
+    - **`rr::field::FieldMappingConfig
+      field_mapping_config = {};`** field on
+      `AOVTargets` (sibling of
+      `scalar_field_config`).
+    - New `#include "field/FieldMapping.h"`.
+
+- **`src/cuda/CudaRenderer.cu` (modified, +15
+  lines).** Threads `view.field_mapping_config
+  = targets.field_mapping_config;` inside
+  `render_scene_with_aovs(...)` (sibling of the
+  existing `view.scalar_field_config = ...`
+  thread).
+
+- **`src/cuda/CudaTestKernel.cu` (modified, +71
+  lines).** Adds the FIELD-BEAUTY.3 kernel arm
+  inside the `if (best.hit)` block, immediately
+  after the existing `color = albedo * (direct +
+  ambient) + emission;` / `color = albedo * shade
+  + emission;` computation and BEFORE the closing
+  `}` that transitions to the miss branch. Two
+  hit-only beauty-mapping branches:
+    - **ColorMultiplier**: when
+      `scalar_field_config.enabled` AND
+      `field_mapping_config.target ==
+      ColorMultiplier`: `color = color *
+      evaluate_mapping(field_mapping_config,
+      evaluate(scalar_field_config, hit_pos));`.
+    - **Emission**: when
+      `scalar_field_config.enabled` AND
+      `field_mapping_config.target == Emission`:
+      `color = color + Vec3{mapped, mapped,
+      mapped};` (grayscale additive emission;
+      the FIELD-I.4 `FieldMappingConfig` POD
+      does not carry per-target color today).
+  The mapping is inserted BEFORE the Doppler /
+  searchlight modulation, so the field
+  contribution participates in the standard
+  relativistic pipeline uniformly with material
+  emission. The FIELD-I.7 diagnostic AOV write
+  arm at the post-framebuffer-write block is
+  preserved verbatim — it continues to write the
+  raw `evaluate(scalar_field_config, hit_pos)`
+  output regardless of mapping target,
+  preserving the FIELD-I.4 audit's mapping-vs-
+  diagnostic separation.
+
+### What does NOT ship
+
+- **No OptiX changes.** Operator brief
+  explicitly forbids: "Do not modify OptiX yet".
+  The `src/optix/` tree is byte-identical to the
+  FIELD-I.14 audit baseline. The OptiX-side
+  beauty mapping is reserved for a separate
+  FIELD-BEAUTY.* slice. `git diff
+  8a5dd54..HEAD --name-only -- 'src/optix/'`
+  returns zero hits.
+- **No CLI flag.** No `--field-mapping-*` flag.
+  No `--field-target` flag. No
+  `src/core/CommandLine.cpp` extension. The
+  `AOVTargets::field_mapping_config` is
+  structurally unreachable this slice; every
+  dispatcher caller passes the default
+  `disabled_field_mapping_config()` (target =
+  None). The future CLI bridge slice flips
+  the gate.
+- **No `rr::core::Config` extension.** No
+  `field_mapping_config` field on `Config`.
+- **No dispatcher emit.** No `main.cpp`
+  extension.
+- **No scene-file authoring.** No
+  `field_mapping` block parser on
+  `src/io/SceneLoader.cpp`. The FIELD-I.13
+  `scalar_field` block parser remains as-is.
+- **No diagnostic-AOV behavior change.** The
+  FIELD-I.9 + FIELD-I.11 AOV write arms are
+  preserved verbatim — they continue to write
+  the raw `evaluate(scalar_field_config,
+  hit_pos)` output. The mapping is applied to
+  the beauty pass exclusively (and ONLY when
+  both gates open).
+- **No path-tracer integration.** The CUDA
+  path-tracer kernel
+  (`src/cuda/CudaPathTracer.cu`) is byte-
+  identical. The FIELD-BEAUTY.3 kernel arm
+  is in `k_render_scene` only (which serves
+  `--render-scene` / `--render-aovs` /
+  `--render-mesh-scene` / `--render-material-scene`
+  / `--render-direct-lighting` /
+  `--render-relativistic` actions but NOT
+  `--render-pathtrace`).
+- **No quantum / tensor / curvature
+  simulation.** Operator brief explicitly
+  forbids.
+- **No manifold / observer behaviour changes.**
+  Operator brief explicitly forbids. Every
+  OBSERVER.* + OBS-P.* + OBS-F.* + SCHW.* +
+  PENROSE.* + MANI-I.* arc's verdicts carry
+  forward verbatim. `git diff
+  8a5dd54..HEAD --name-only --
+  'src/manifold/' 'src/relativity/'` returns
+  zero hits.
+- **No fixture extension.** The FIELD-I.13
+  fixture `scenes/test_scalar_field_diagnostic.rrscene`
+  is preserved verbatim. A future fixture
+  slice may author a `field_mapping` block
+  alongside the existing `scalar_field`
+  block to exercise the FIELD-BEAUTY.3
+  surface; deferred.
+- **No test extension.** The kernel arm's
+  empirical behaviour requires SDK-host
+  runtime verification; deferred to a future
+  CLI bridge slice's audit.
+- **No default-scene alteration.** Every
+  existing `.rrscene` fixture is byte-
+  identical to the FIELD-I.14 baseline.
+  `git diff 8a5dd54..HEAD --name-only --
+  'scenes/'` returns zero hits.
+- **No `MODULE_MAP.md` update.**
+- **No `MANIFOLD_INTEGRATION_PLAN.md` update.**
+- **No C4D / server / UI / node-editor
+  touch.**
+- **No `docs/FIELD_SCALAR_BEAUTY_MAPPING_TASK.md`
+  authoring.** The operator's FIELD-BEAUTY.3
+  brief referenced this task doc but it was
+  not pre-authored. This slice operates
+  directly from the prompt body's five
+  implementation bullets (treated as the
+  canonical task brief). A future
+  documentation slice may retroactively
+  author the task brief if the operator
+  wants the standard task-brief precedent
+  restored; deferred.
+
+### Acceptance
+
+- **Compiles with OptiX OFF.** Audit-host build
+  green; full rebuild via `cmake --build
+  /home/user/RelativityRender/build` adds no
+  new warnings on any module. Ctest 13/13 PASS
+  (renderer_tests: 35/35; field_tests: 135/135;
+  cli_tests: 274/274; relativity_tests:
+  841/841; manifold_identity_tests: 408/408;
+  every other suite unchanged).
+- **Compiles with OptiX ON (no SDK fallback).**
+  `cmake --build /tmp/rr_build_optix_no_sdk`
+  succeeds; ctest 14/14 PASS (including
+  optix_tests). The CUDA kernel changes
+  propagate cleanly through the rr_gpu
+  include path.
+- **No behaviour change for existing scenes.**
+  Every existing `--render-*` invocation
+  against any default scene produces
+  byte-identical PPM output to the FIELD-I.14
+  baseline. The new kernel arm is gated on
+  the double-condition
+  `scalar_field_config.enabled` +
+  `field_mapping_config.target` ∈
+  {`ColorMultiplier`, `Emission`}; default
+  state closes both gates.
+- **No FieldScalar AOV behavior change.** The
+  FIELD-I.9 diagnostic AOV write arm is
+  preserved verbatim; it continues to write
+  the raw `evaluate(scalar_field_config,
+  hit_pos)` output on hit + `0.0f` on miss,
+  regardless of mapping target.
+- **Internally consistent.** The new
+  `field_mapping_config` field on
+  `CudaSceneView` + `AOVTargets` mirrors the
+  FIELD-I.9 `scalar_field_config` precedent
+  verbatim (in-class default `{}`; threaded
+  by-value through `render_scene_with_aovs`
+  into the kernel view; same RR_HD inline
+  evaluator from `src/field/FieldMapping.h`).
+  The kernel arm structure (`if (best.hit &&
+  scalar_field_config.enabled) { ... if
+  (target == ...) { ... } }`) mirrors the
+  OBSERVER.13 + ManifoldCoordinates AOV-arm
+  pattern (null/gate-check then per-branch
+  write). The mapping is inserted BEFORE the
+  Doppler / searchlight modulation so the
+  field contribution sees the standard
+  relativistic pipeline uniformly with
+  material emission.
+- **Honest scope.** Master rule #3 ("no fake
+  stubs") satisfied: the kernel arm is fully
+  wired (real `evaluate(...)` invocations;
+  real `evaluate_mapping(...)` invocations;
+  real branches for ColorMultiplier and
+  Emission). The structural unreachability
+  via the double-gate is honest scope framing
+  per the doc-comments. Master rule #11
+  satisfied: the kernel arm's behaviour is
+  documented as contract + structurally
+  rooted in the audit-host-verified FIELD-I.2
+  evaluator + FIELD-I.4 mapping evaluator.
+  Master rule #12 satisfied: scope
+  deliberately narrow to CUDA path only —
+  OptiX deferred; CLI deferred; scene-loader
+  deferred; path-tracer integration
+  deferred. The FIELD-BEAUTY.* arc opens
+  parallel to the FIELD-I.* arc (read-only
+  diagnostic), not in place of it; both
+  arcs coexist.
+
+### Module status changes
+
+`docs/MODULE_MAP.md` is *not* updated by this
+slice. The `rr_gpu` library's module-map
+status carries forward from the FIELD-I.9
+entry unchanged (the FIELD-I.9 + FIELD-BEAUTY.3
+share the same `rr_field` PUBLIC link
+already in place on `rr_gpu`). The
+FIELD-BEAUTY.3 verdict authorises the
+operator to proceed to: **(a)** the
+FIELD-BEAUTY.3 audit (a docs-only verdict
+slice mirroring the FIELD-I.10 / FIELD-I.12
+audit shapes; RECOMMENDED before the next
+impl slot, to lock in the CUDA kernel arm
+contract before the OptiX-side mirror lands);
+**(b)** FIELD-BEAUTY.* — OptiX-side beauty
+mapping (mirrors this slice for the OptiX
+closest-hit program; reads
+`optixLaunchParams.scalar_field_config` +
+`optixLaunchParams.field_mapping_config`;
+applies the same `evaluate_mapping(...)`-
+derived modulation to the beauty pass; same
+single-source-of-truth math leaf for
+cross-backend equivalence by construction);
+**(c)** FIELD-I.15 — CLI + Config + dispatcher
+bridge (the renumbered FIELD-I.* arc slot;
+flips both backend AOV gates reachable
+simultaneously via `--field-debug` AND
+introduces a `--field-mapping-*` CLI surface
+to engage the FIELD-BEAUTY.* arms); **(d)**
+manifold-orthogonal work. The FIELD-BEAUTY.*
+arc's `**Wired**` promotion is reserved for
+the post-CLI-bridge SDK-host runtime pass
+that exercises the beauty-mapping arm
+end-to-end against a fixture that engages
+both `scalar_field` + `field_mapping`
+blocks.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:

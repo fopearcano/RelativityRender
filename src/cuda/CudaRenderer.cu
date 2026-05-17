@@ -344,6 +344,21 @@ CudaRenderer::Result CudaRenderer::render_scene_with_aovs(
     // mapping yet" non-goal is structurally satisfied).
     view.scalar_field_config = targets.scalar_field_config;
 
+    // FIELD-BEAUTY.3 — thread the per-launch field-mapping
+    // config payload. Default `disabled_field_mapping_config()`
+    // (target = None) keeps the kernel's beauty-mapping arm
+    // short-circuited; the beauty pass byte-identical to the
+    // pre-FIELD-BEAUTY.3 baseline. The kernel arm gates on
+    // BOTH `scalar_field_config.enabled` AND
+    // `field_mapping_config.target` ∈ {`ColorMultiplier`,
+    // `Emission`}; both must hold for the mapping to fire on
+    // the per-pixel beauty result. The diagnostic AOV write
+    // arm (FIELD-I.9) does NOT consume this payload — the
+    // diagnostic writes the raw scalar sample regardless of
+    // mapping target, preserving the FIELD-I.4 audit's
+    // mapping-vs-diagnostic separation.
+    view.field_mapping_config = targets.field_mapping_config;
+
     return run_kernel_render(width, height,
         [view](float* device_pixels, int w, int h) {
             launch_render_scene(device_pixels, w, h, view, /*stream=*/nullptr);

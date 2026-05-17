@@ -543,6 +543,79 @@ __global__ void k_render_scene(float* pixels, int width, int height,
             const float shade   = kAmbient + (1.0f - kAmbient) * facing;
             color = albedo * shade + emission;
         }
+
+        // FIELD-BEAUTY.3 — optional scalar-field beauty mapping.
+        // Applied on hit only (the field is sampled at the
+        // world-space hit position, which has no meaning on
+        // miss). Gated on the double-condition: (a) the
+        // scalar-field master switch is open
+        // (`scene.scalar_field_config.enabled == true`) AND
+        // (b) the mapping target is one of the two beauty-
+        // facing channels the FIELD-BEAUTY.3 brief lifts:
+        // ColorMultiplier or Emission.
+        //
+        // Both gates closed by default (the default
+        // `ScalarFieldConfig{}.enabled = false` AND the
+        // default `FieldMappingConfig{}.target =
+        // FieldMappingTarget::None`); the arm short-circuits
+        // and the beauty pass is byte-identical to the pre-
+        // FIELD-BEAUTY.3 baseline. Master rule #3 + #16
+        // satisfied — the default behaviour is the documented
+        // no-op anchor; the operator must explicitly engage
+        // BOTH gates to see any beauty modulation.
+        //
+        // The mapping uses the same `RR_HD inline
+        // evaluate(scalar_field_config, hit_pos)` helper the
+        // FIELD-I.9 diagnostic AOV write arm uses + the
+        // FIELD-I.4 `evaluate_mapping(field_mapping_config,
+        // sample)` evaluator (the single-source-of-truth math
+        // leaves on `src/field/`). The diagnostic AOV's write
+        // arm at the post-framebuffer-write block is NOT
+        // modified — it continues to write the raw
+        // `evaluate(scalar_field_config, hit_pos)` output,
+        // preserving the FIELD-I.4 audit's mapping-vs-
+        // diagnostic separation (the AOV is the
+        // "what is the field at this pixel" diagnostic
+        // independent of how the mapping composes the
+        // sample).
+        //
+        // The mapping is inserted AFTER the material color
+        // combine (`color = albedo * (direct + ambient) +
+        // emission`) but BEFORE the Doppler / searchlight
+        // modulation, so the field contribution participates
+        // in the standard relativistic pipeline (the FIELD-I.6
+        // task brief's §3.1 "beauty output unchanged" anchor
+        // for default state holds; non-default state lets
+        // the field's contribution see the relativistic
+        // perception transforms uniformly with material
+        // emission). For Emission, the mapped scalar
+        // expands to grayscale `(m, m, m)` — the FIELD-I.4
+        // `FieldMappingConfig` POD does not carry a per-
+        // target color today; future FIELD-BEAUTY.* slices
+        // may add a per-mapping color parameter.
+        if (best.hit && scene.scalar_field_config.enabled) {
+            const rr::math::Vec3 hit_pos_v3{
+                best.position.x, best.position.y, best.position.z};
+            const float sample =
+                rr::field::evaluate(scene.scalar_field_config, hit_pos_v3);
+            const float mapped =
+                rr::field::evaluate_mapping(scene.field_mapping_config,
+                                            sample);
+
+            if (scene.field_mapping_config.target
+                  == rr::field::FieldMappingTarget::ColorMultiplier) {
+                color = color * mapped;
+            } else if (scene.field_mapping_config.target
+                  == rr::field::FieldMappingTarget::Emission) {
+                color = color + Vec3{mapped, mapped, mapped};
+            }
+            // target == None: short-circuit (mapping evaluator
+            // returns 0 but neither arm fires — explicit
+            // no-op).
+            // target == DiagnosticAOV: beauty arm is no-op;
+            // the AOV write arm at the post-framebuffer-write
+            // block writes the raw sample regardless.
+        }
     } else {
         const float t = 0.5f * (ray.direction.y + 1.0f);
         color = Vec3{(1.0f - t) * 1.0f + t * 0.5f,

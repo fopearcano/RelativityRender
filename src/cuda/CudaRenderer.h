@@ -1,5 +1,6 @@
 #pragma once
 
+#include "field/FieldMapping.h"        // FIELD-BEAUTY.3: AOVTargets field-mapping config payload
 #include "field/ScalarField.h"         // FIELD-I.9: AOVTargets scalar-field config payload
 #include "image/Image.h"
 #include "manifold/CoordinateChart.h"  // SCHW.5: AOVTargets manifold payload
@@ -258,6 +259,28 @@ public:
         // dispatcher caller passes the default no-op
         // anchor verbatim.
         rr::field::ScalarFieldConfig  scalar_field_config = {};
+
+        // FIELD-BEAUTY.3 — per-launch field-mapping config
+        // payload (the FIELD-I.4 single-target tagged-form
+        // POD). Default `FieldMappingConfig{}` =
+        // `disabled_field_mapping_config()` (target = None,
+        // strength = 0, bias = 0). The CUDA kernel's
+        // FIELD-BEAUTY.3 beauty-mapping arm reads this
+        // alongside `scalar_field_config` and gates on the
+        // double-condition `scalar_field_config.enabled
+        // == true` AND `field_mapping_config.target` ∈
+        // {`ColorMultiplier`, `Emission`}. On the default
+        // (target = None) the arm short-circuits and the
+        // beauty pass is byte-identical to the pre-
+        // FIELD-BEAUTY.3 baseline. The dispatcher
+        // (`main.cpp::run_render_aovs`) will populate this
+        // from `cfg.field_mapping_config` in a future CLI
+        // bridge slice; until that slice lands every
+        // dispatcher caller passes the default
+        // `disabled_field_mapping_config()` verbatim and
+        // the beauty-mapping arm is structurally
+        // unreachable.
+        rr::field::FieldMappingConfig field_mapping_config = {};
     };
 
     [[nodiscard]] static Result render_scene_with_aovs(
