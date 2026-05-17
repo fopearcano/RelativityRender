@@ -87904,6 +87904,297 @@ reserved for the post-CLI-bridge SDK-host
 runtime pass that exercises both backend
 kernels end-to-end.
 
+## FIELD-I.13 — Scalar Field Fixture (impl, scene + parser + companion doc)
+
+**Scope of this slice (per the operator's *FIELD-I.13 —
+Scalar Field Fixture* task brief): land
+`scenes/test_scalar_field_diagnostic.rrscene` (the
+controlled fixture for the FIELD-I.7 diagnostic AOV's
+future SDK-host validation), `docs/FIELD_SCALAR_FIXTURE.md`
+(the companion doc), and the minimal scene-loader
+parser surface needed to engage the fixture's
+`scalar_field` block. Per the operator's "If parser
+support for scalar-field scene fields is incomplete:
+add only minimal parser support for existing scalar
+field config fields. Do not broaden scene format
+beyond fixture needs" rule. No CLI flag; no
+dispatcher wiring; no renderer behaviour change. The
+fixture parses cleanly via `--scene-info` today; the
+parsed `Scene::scalar_field_config` is forward-
+looking authoring data for the future CLI bridge
+slice.**
+
+### What ships
+
+- **`scenes/test_scalar_field_diagnostic.rrscene`
+  (new, 72 lines).** Controlled fixture scene
+  mirroring the OBS-F.2 `test_observer_frame.rrscene`
+  geometry verbatim + adding a non-trivial
+  `scalar_field` block. Authors a Radial scalar
+  field centred at `[0, 0.5, 0]` with `min_radius
+  = 1.0`, `max_radius = 5.0`, `min_value = 0.0`,
+  `max_value = 1.0`, `strength = 1.0`, `falloff =
+  1.0`, `enabled = true`, `kind = "radial"`. The
+  fixture exercises 8 of the 10 ScalarFieldConfig
+  fields (omits `constant_value` since it's
+  Constant-kind only, and omits the procedural-
+  placeholder kind). Geometry: 6 spheres + ground
+  plane + 2 lights (lifted verbatim from OBS-F.2
+  for renderer-infrastructure parity).
+
+- **`docs/FIELD_SCALAR_FIXTURE.md` (new, ~500
+  lines).** Companion doc mirroring the OBSERVER
+  fixture (`docs/OBSERVER_FRAME_FIXTURE.md`)
+  shape. Seven sections:
+    - **§1 Purpose** — three goals (parser smoke
+      test; diagnostic-AOV runtime template;
+      cross-backend equivalence anchor) + honest
+      scope boundaries (no beauty modulation, no
+      mapping authoring).
+    - **§2 Composition** — three layers (geometry
+      lifted from OBS-F.2; scalar-field
+      authoring with safe bounded values;
+      intentional omissions including no
+      `manifold` / `observer` / `field_mapping`
+      blocks).
+    - **§3 Expected visual signature** —
+      per-invocation expected output: default
+      (`--render-aovs` produces 6 AOVs, no
+      field_scalar PPM); with `--field-debug`
+      (7 AOVs, the new PPM encoded with the
+      smoothstep pattern); OptiX path
+      byte-identical.
+    - **§4 Cross-backend equivalence** —
+      references the FIELD-I.12 audit's five-
+      axis symmetry argument; documents the
+      fixture as the canonical empirical
+      verification surface.
+    - **§5 Audit-host smoke transcript** — the
+      `--scene-info` invocation's expected
+      output; confirms parser cleanness on the
+      audit host.
+    - **§6 Runtime SDK-host validation checks
+      (DEFERRED)** — 5 deferred scenarios
+      (default-off bit-identity, disabled-field
+      neutral, Radial smoothstep correctness,
+      composability with `--manifold-debug` +
+      `--observer-debug`, CUDA ↔ OptiX byte-
+      identity). All deferred to the future CLI
+      bridge slice's audit on SDK host.
+    - **§7 References** — master refs, FIELD-I.*
+      arc refs, precedent fixture refs, audited
+      source surface, cross-backend math leaf
+      reference.
+
+- **`src/scene/Scene.h` (modified, +24 lines).**
+  Adds:
+    - **`rr::field::ScalarFieldConfig scalar_field_config;`**
+      field on the `Scene` struct (sibling of
+      `manifold`; immediately before
+      `std::vector<SceneSphere> spheres`).
+    - **`#include "field/ScalarField.h"`** (new).
+  Default `ScalarFieldConfig{}` is the FIELD-I.2
+  no-op anchor. Doc-comment documents the
+  forward-looking parsed-but-not-rendered shape
+  this slice.
+
+- **`src/io/SceneLoader.cpp` (modified, +136
+  lines).** Adds:
+    - **`parse_scalar_field_kind(...)`** local
+      helper — string → `ScalarFieldKind` enum
+      mapping (3 accepted names: "constant",
+      "radial", "procedural-placeholder";
+      mirrors the existing `parse_chart_type`
+      shape).
+    - **`apply_scalar_field(...)`** parser —
+      consumes the `scalar_field` JSON block,
+      applies onto a `ScalarFieldConfig`. Ten
+      supported fields covering every FIELD-I.2
+      POD slot: `enabled`, `strength`, `kind`,
+      `center`, `min_radius` /  `minRadius`,
+      `max_radius` / `maxRadius`, `falloff`,
+      `min_value` / `minValue`, `max_value` /
+      `maxValue`, `constant_value` /
+      `constantValue`. Canonical snake_case +
+      camelCase shorthand mirrors the existing
+      manifold + relativity parsers' precedent.
+    - **`load(...)` body extension** — new
+      `if (const JsonValue* sf_v = root.find("scalar_field"))`
+      block (sibling of the existing
+      `manifold` / `relativity` / `materials`
+      blocks).
+
+- **`CMakeLists.txt` (modified, +6 lines).** Adds
+  `rr_field` as a PUBLIC link dep on `rr_scene`
+  (mirrors the FIELD-I.9 `rr_gpu` PUBLIC
+  precedent + the FIELD-I.11 `rr_optix` PUBLIC
+  precedent). The new `Scene::scalar_field_config`
+  field exposes `rr::field::ScalarFieldConfig` by
+  value; `rr_scene` consumers (rr_io, rr_renderer,
+  rr_gpu, etc.) inherit the include path via the
+  PUBLIC link transitively.
+
+### What does NOT ship
+
+- **No CLI flag.** No `--field-debug` modifier
+  flag. No `--field-*` authoring flag. No
+  `src/core/CommandLine.cpp` extension. The
+  fixture's parsed `Scene::scalar_field_config`
+  is not threaded into any renderer dispatcher
+  this slice — the future CLI bridge slice
+  flips the gate.
+- **No `rr::core::Config` extension.** No
+  `scalar_field_config` field on `Config`. The
+  Config-side CLI authoring surface defers to
+  the next FIELD-I.* impl slot.
+- **No dispatcher emit.** No `main.cpp`
+  extension. The fixture loads cleanly via
+  `--scene-info` but the field config is
+  parsed-but-not-rendered — no PPM file path
+  changes.
+- **No new ctest target.** The fixture is
+  operator-facing; no test harness loads it
+  programmatically. A future test extension
+  may inspect `Scene::scalar_field_config`
+  directly; out of scope here.
+- **No default scene alteration.** Every
+  existing `.rrscene` fixture
+  (`test_camera.rrscene`,
+  `test_full_scene.rrscene`,
+  `test_lights.rrscene`,
+  `test_materials.rrscene`, `test_mesh.rrscene`,
+  `test_observer_frame.rrscene`,
+  `test_penrose_like_manifold.rrscene`,
+  `test_relativity.rrscene`,
+  `test_render_settings.rrscene`,
+  `test_schwarzschild_like_manifold.rrscene`,
+  `test_spheres.rrscene`,
+  `test_textured_material.rrscene`) is
+  byte-identical to the FIELD-I.12 baseline
+  (`505c2b9`). Verified by `git diff
+  505c2b9..HEAD -- 'scenes/'` returning only
+  the new `test_scalar_field_diagnostic.rrscene`
+  file.
+- **No beauty-pass modification.** No kernel
+  arm reads `Scene::scalar_field_config` this
+  slice. The renderer-side wiring (from scene
+  → `AOVTargets` / `OptixRenderer::render_aovs`)
+  is deferred to the future CLI bridge slice.
+  Every existing `--render-*` invocation
+  preserves byte-identical PPM output.
+- **No field-to-color / emission mapping.**
+  Operator brief explicitly forbids; the
+  fixture authors only `ScalarFieldConfig` (not
+  `FieldMappingConfig`).
+- **No quantum / tensor / curvature
+  simulation.** Operator brief explicitly
+  forbids.
+- **No new manifold / observer behaviour.**
+  Operator brief explicitly forbids. The
+  fixture's `scalar_field` block is the only
+  new scene-block; existing OBSERVER.* /
+  OBS-P.* / OBS-F.* / SCHW.* / PENROSE.* /
+  MANI-I.* arc behaviours carry forward
+  unchanged.
+- **No scene-format broadening beyond fixture
+  needs.** The parser supports only the
+  existing FIELD-I.2 `ScalarFieldConfig`
+  fields; no new fields invented. The brief's
+  "Do not broaden scene format beyond fixture
+  needs" rule honoured.
+- **No `MODULE_MAP.md` update.**
+- **No C4D / server / UI / node-editor touch.**
+
+### Acceptance
+
+- **Compiles with OptiX OFF.** Audit-host build
+  green; full rebuild via `cmake --build
+  /home/user/RelativityRender/build` adds no new
+  warnings on any module. Ctest 13/13 PASS
+  (renderer_tests: 35/35, field_tests: 135/135,
+  all other suites unchanged).
+- **Compiles with OptiX ON (no SDK fallback).**
+  `cmake --build /tmp/rr_build_optix_no_sdk`
+  succeeds; ctest 14/14 PASS (including
+  optix_tests). The `rr_field` PUBLIC link on
+  `rr_scene` propagates correctly through the
+  rr_io → rr_scene → rr_field include path.
+- **Fixture parses cleanly.**
+  `RelativityRender --scene-info
+  scenes/test_scalar_field_diagnostic.rrscene`
+  produces no parser errors; loads + logs
+  scene contents. The `scalar_field` block is
+  silently consumed by the new
+  `apply_scalar_field(...)` parser.
+- **No behaviour change for existing scenes.**
+  Every existing `.rrscene` fixture loads
+  byte-identically (no parser regression). No
+  `--render-*` invocation against any existing
+  scene produces different output. The
+  fixture's `scalar_field` block is the only
+  new scene-side authoring; default
+  `Scene{}.scalar_field_config` matches the
+  FIELD-I.2 default in every other scene.
+- **Internally consistent.** The new
+  `apply_scalar_field(...)` parser mirrors the
+  `apply_manifold(...)` shape verbatim
+  (canonical snake_case + camelCase shorthand
+  via `find_or`; per-field error messages with
+  block-prefixed labels; missing-field-tolerant
+  defaults). The fixture's geometry mirrors
+  OBS-F.2 verbatim. The fixture's
+  `scalar_field` block authors values that
+  produce a documented per-pixel AOV
+  signature (per §3 + §6 of the companion
+  doc). The new `rr_field` PUBLIC link on
+  `rr_scene` mirrors both the FIELD-I.9
+  `rr_gpu` precedent + the FIELD-I.11
+  `rr_optix` precedent.
+- **Honest scope.** Master rule #3 ("no fake
+  stubs") satisfied: the parser is fully wired
+  (real `apply_scalar_field` consumed by the
+  main `load(...)` body; real validation
+  errors; tested by the fixture's smoke
+  invocation). Master rule #11 satisfied:
+  the parser's behaviour is documented + the
+  fixture is the empirical exercise of every
+  field path. Master rule #12 satisfied:
+  scope deliberately narrow per the
+  operator's "Do not broaden scene format
+  beyond fixture needs" rule.
+
+### Module status changes
+
+`docs/MODULE_MAP.md` is *not* updated by this
+slice. The `rr_scene` library gains an explicit
+PUBLIC link to `rr_field` (the
+INTERFACE/header-only Field Interpretation
+Layer skeleton); the include path was already
+transitively available via `rr_gpu` /
+`rr_optix`'s PUBLIC links, but the explicit
+`rr_scene` link makes the dependency graph
+honest (the new `Scene::scalar_field_config`
+field is the consumer that justifies it). The
+FIELD-I.13 verdict authorises the operator to
+proceed to: **(a)** the FIELD-I.13 audit (a
+docs-only verdict slice mirroring the
+FIELD-I.12 / FIELD-I.10 / FIELD-I.8 audit-
+slot insertion precedent; RECOMMENDED before
+the next impl slot, to lock in the fixture +
+parser contract); **(b)** FIELD-I.* — CLI +
+Config + dispatcher bridge (the natural next
+impl slice — flips both backend AOV gates
+reachable simultaneously via `--field-debug`
++ threads `cfg.scalar_field_config` /
+`scene.scalar_field_config` into
+`AOVTargets::scalar_field_config` /
+`OptixRenderer::render_aovs(...)` trailing
+parameter); **(c)** manifold-orthogonal work.
+The FIELD-I.* arc's `**Wired**` promotion is
+reserved for the post-CLI-bridge SDK-host
+runtime pass that exercises the fixture
+end-to-end (per §6 of the companion doc).
+
 ## Next stage
 
 When prompted, the natural follow-ups are:

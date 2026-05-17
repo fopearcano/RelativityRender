@@ -1,6 +1,7 @@
 #pragma once
 
 #include "camera/Camera.h"
+#include "field/ScalarField.h"
 #include "geometry/Mesh.h"
 #include "geometry/Sphere.h"
 #include "lighting/Light.h"
@@ -114,6 +115,29 @@ struct Scene {
     // on explicit `--manifold-enable`; scene fills in when the
     // CLI default is in force).
     rr::manifold::ManifoldMode        manifold;
+
+    // FIELD-I.13 — per-scene Scalar Field config authored in the
+    // scene file's optional `scalar_field` block. Default
+    // `ScalarFieldConfig{}` is the disabled / Constant /
+    // strength-0 no-op anchor (matches the FIELD-I.2 default
+    // `disabled_scalar_field_config()`). When the scene file
+    // authors any of the supported fields (`enabled`,
+    // `strength`, `kind`, `center`, `min_radius`,
+    // `max_radius`, `falloff`, `min_value`, `max_value`,
+    // `constant_value`), the value is recorded here. The
+    // FIELD-I.* arc's renderer dispatchers (after the future
+    // CLI bridge slice lands) will merge `scene.scalar_field_config`
+    // with the CLI-side `cfg.scalar_field_config` per the same
+    // policy `scene.manifold` ↔ `cfg.manifold` uses today (CLI
+    // wins on explicit override; scene fills in otherwise).
+    // Until that CLI bridge slice lands the field is parsed +
+    // carried but no renderer dispatcher reads it — the
+    // FIELD-I.6 task brief's "AOV only when requested" anchor
+    // is preserved structurally because no consumer wires the
+    // payload into any `AOVTargets::scalar_field_config` /
+    // `OptixRenderer::render_aovs` trailing parameter this
+    // slice.
+    rr::field::ScalarFieldConfig      scalar_field_config;
 
     std::vector<SceneSphere>          spheres;
 

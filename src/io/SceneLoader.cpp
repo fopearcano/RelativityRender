@@ -933,6 +933,130 @@ bool parse_chart_type(const std::string& s,
 // `origin=(0,0,0)`). Future slices may broaden the scene
 // surface to cover chart parameters; SCHW.9 deliberately
 // scopes to ManifoldMode only.
+// FIELD-I.13 — parse a scalar-field kind string into the
+// `ScalarFieldKind` enum. Three accepted names mirroring the
+// FIELD-I.2 enum:
+//   - `constant`              → `ScalarFieldKind::Constant`
+//   - `radial`                → `ScalarFieldKind::Radial`
+//   - `procedural-placeholder`→ `ScalarFieldKind::ProceduralPlaceholder`
+// The `-placeholder` suffix on the third name mirrors the
+// MANIFOLD.1 `*Like` / `*LikePlaceholder` precedent and the
+// FIELD-I.2 `*Placeholder` naming convention (per master rule
+// #3: the kind exists but the evaluator returns 0 today).
+bool parse_scalar_field_kind(const std::string& s,
+                             rr::field::ScalarFieldKind& out) {
+    using rr::field::ScalarFieldKind;
+    if (s == "constant") {
+        out = ScalarFieldKind::Constant;               return true;
+    }
+    if (s == "radial") {
+        out = ScalarFieldKind::Radial;                 return true;
+    }
+    if (s == "procedural-placeholder") {
+        out = ScalarFieldKind::ProceduralPlaceholder;  return true;
+    }
+    return false;
+}
+
+// FIELD-I.13 — apply the `scalar_field` block onto a
+// `ScalarFieldConfig`. Minimal parser surface, scoped to the
+// FIELD-I.13 fixture-slice needs per the operator's brief: only
+// the FIELD-I.2 `ScalarFieldConfig` POD's existing fields are
+// exposed (no new fields invented). Field-name conventions
+// follow the existing scene-loader precedent — canonical
+// snake_case primary with camelCase shorthand aliases for
+// fields whose CLI / C++ equivalents use the latter form. The
+// supported fields are:
+//
+//   - `enabled` (bool)
+//   - `strength` (float; the universal multiplier)
+//   - `kind` (string: "constant" | "radial" |
+//     "procedural-placeholder")
+//   - `center` (Vec3; the Radial origin)
+//   - `min_radius` / `minRadius` (float; Radial inner radius)
+//   - `max_radius` / `maxRadius` (float; Radial outer radius)
+//   - `falloff` (float; Radial smoothstep exponent)
+//   - `min_value` / `minValue` (float; Radial inner value
+//     + Constant default)
+//   - `max_value` / `maxValue` (float; Radial outer value)
+//   - `constant_value` / `constantValue` (float; Constant
+//     kind's value)
+//
+// Default `ScalarFieldConfig{}` is the disabled / Constant /
+// strength-0 no-op anchor; any field the scene file omits
+// retains the FIELD-I.2 default. Renderer dispatchers (after
+// the future CLI bridge slice lands) may merge
+// `scene.scalar_field_config` with the CLI-side
+// `cfg.scalar_field_config` per the same policy
+// `scene.manifold` ↔ `cfg.manifold` uses today.
+bool apply_scalar_field(const JsonValue& obj,
+                        rr::field::ScalarFieldConfig& cfg,
+                        std::string& err) {
+    if (obj.kind != JsonKind::Object) {
+        err = "'scalar_field' must be a JSON object";
+        return false;
+    }
+
+    if (const auto* v = obj.find("enabled")) {
+        if (!to_bool(*v, cfg.enabled, err,
+                     "scalar_field.enabled")) return false;
+    }
+
+    if (const auto* v = obj.find("strength")) {
+        if (!to_float(*v, cfg.strength, err,
+                      "scalar_field.strength")) return false;
+    }
+
+    if (const auto* v = obj.find("kind")) {
+        std::string kind_str;
+        if (!to_string(*v, kind_str, err,
+                       "scalar_field.kind")) return false;
+        if (!parse_scalar_field_kind(kind_str, cfg.kind)) {
+            err = "scalar_field.kind has unknown value '" + kind_str
+                + "' (expected one of: constant, radial, "
+                  "procedural-placeholder)";
+            return false;
+        }
+    }
+
+    if (const auto* v = obj.find("center")) {
+        if (!to_vec3(*v, cfg.center, err,
+                     "scalar_field.center")) return false;
+    }
+
+    if (const auto* v = obj.find_or("min_radius", "minRadius")) {
+        if (!to_float(*v, cfg.min_radius, err,
+                      "scalar_field.min_radius")) return false;
+    }
+
+    if (const auto* v = obj.find_or("max_radius", "maxRadius")) {
+        if (!to_float(*v, cfg.max_radius, err,
+                      "scalar_field.max_radius")) return false;
+    }
+
+    if (const auto* v = obj.find("falloff")) {
+        if (!to_float(*v, cfg.falloff, err,
+                      "scalar_field.falloff")) return false;
+    }
+
+    if (const auto* v = obj.find_or("min_value", "minValue")) {
+        if (!to_float(*v, cfg.min_value, err,
+                      "scalar_field.min_value")) return false;
+    }
+
+    if (const auto* v = obj.find_or("max_value", "maxValue")) {
+        if (!to_float(*v, cfg.max_value, err,
+                      "scalar_field.max_value")) return false;
+    }
+
+    if (const auto* v = obj.find_or("constant_value", "constantValue")) {
+        if (!to_float(*v, cfg.constant_value, err,
+                      "scalar_field.constant_value")) return false;
+    }
+
+    return true;
+}
+
 bool apply_manifold(const JsonValue& obj,
                     rr::manifold::ManifoldMode& mode,
                     std::string& err) {
@@ -1795,6 +1919,32 @@ LoadResult parse(const std::string& text) {
         std::string apply_err;
         if (!apply_manifold(*mani_v, result.scene.manifold,
                             apply_err)) {
+            result.error_message = apply_err;
+            return result;
+        }
+    }
+
+    // scalar_field (optional). FIELD-I.13 surface: ten
+    // ScalarFieldConfig fields (`enabled`, `strength`, `kind`,
+    // `center`, `min_radius`, `max_radius`, `falloff`,
+    // `min_value`, `max_value`, `constant_value`). Default
+    // `ScalarFieldConfig{}` is the disabled / Constant /
+    // strength-0 no-op anchor (matches the FIELD-I.2
+    // `disabled_scalar_field_config()` factory). Until the
+    // future CLI bridge slice lands, the parsed value is
+    // recorded on `scene.scalar_field_config` but no renderer
+    // dispatcher reads it — the FIELD-I.6 task brief's
+    // "AOV only when requested" anchor is preserved
+    // structurally because no `AOVTargets::scalar_field_config`
+    // / `OptixRenderer::render_aovs` trailing parameter is
+    // populated from the scene this slice. The fixture
+    // `scenes/test_scalar_field_diagnostic.rrscene` exercises
+    // this parser surface as a forward-looking authoring
+    // template.
+    if (const JsonValue* sf_v = root.find("scalar_field")) {
+        std::string apply_err;
+        if (!apply_scalar_field(*sf_v, result.scene.scalar_field_config,
+                                apply_err)) {
             result.error_message = apply_err;
             return result;
         }
