@@ -83653,6 +83653,397 @@ verdicts from
 PASS_WITH_RUNTIME_DEFERRED →
 PASS.
 
+## OBS-F.2 — ObserverFrame Fixture Implementation (impl, scene + companion doc)
+
+**Scope of this slice (per the operator's *OBS-F.2
+— ObserverFrame Fixture Implementation* task brief
++ the OBS-F.1 task doc as canonical reference):
+land the documented fixture scene + companion doc
+without any source-code change. Two new files
+ship:
+`scenes/test_observer_frame.rrscene` (~69 lines)
+and `docs/OBSERVER_FRAME_FIXTURE.md` (~700 lines).
+The fixture uses only the pre-existing `.rrscene`
+parser surface (the legacy Stage 19E.1
+`relativity` block + the camera / materials /
+spheres / meshes / lights blocks); no parser
+extension, no `.rrscene` schema bump. The
+OBSERVER.6 adapter's documented beta-resolution
+priority (CLI overlay > zero-direction fallback >
+legacy `Observer.velocity`) routes the
+scene-authored `(0, 0, -0.5)` velocity onto
+`observer_frame.beta` when the operator engages
+`--observer-perception-mode relativistic` at
+invocation time; the OBS-P.2 kernel ternary
+engages the gated path. Lifts the deferred
+fixture follow-up the OBSERVER.12 task brief §5
++ OBSERVER.15 capstone §10 risk #2 catalogued.**
+
+### What ships
+
+- **`scenes/test_observer_frame.rrscene`
+  (new, 69 lines).** Authored JSON scene mirroring
+  the SCHW.9 + PENROSE.10 fixture shape with
+  one key adjustment — the fixture-specific
+  block is a `relativity` block (Stage 19E.1
+  schema), NOT a `manifold` block. Contents per
+  the OBS-F.1 task brief §2:
+    - Resolution `1280×720`, spp=1, max_depth=1;
+      output path
+      `output/observer_frame_fixture.ppm`.
+    - Camera at `(0, 1.2, 6.0)`, forward
+      `(0, -0.1, -1.0)`, up `(0, 1, 0)`, FoV
+      45°. Forward axis intentionally aligned
+      with the observer's velocity direction
+      so the forward-motion visual signature
+      (blueshift + forward-aberration +
+      searchlight beaming) is visible per-
+      sphere.
+    - `relativity` block:
+      `enabled = true`,
+      `betaVelocity = 0.5`,
+      `velocityDirection = [0, 0, -1]`,
+      `aberrationStrength = 1.0`,
+      `dopplerStrength = 1.0`,
+      `searchlightStrength = 1.0`. Resolves
+      to `scene.observer.velocity = (0, 0, -0.5)`
+      via the existing `apply_relativity(...)`
+      helper.
+    - 6 materials (neutral grey ground + 5
+      distinct bright colours for the
+      sphere markers).
+    - 6 spheres (centre + near-right +
+      near-left + above + in-front +
+      far-centre). Layout designed to make
+      the forward-aberration + forward-
+      blueshift signature visible per-sphere.
+    - 1 ground-plane mesh (12×12 quad on
+      `y = 0`, two-triangle).
+    - 2 lights (warm directional key from
+      upper-front-left + cool environment
+      sky).
+    - NO `manifold` block (keeps the fixture
+      isolated to observer-frame behaviour;
+      the OBSERVER.* arc's per-launch
+      observer-frame field is orthogonal to
+      the per-launch manifold field).
+    - NO `observer` scene block (the
+      OBSERVER.4 `--observer-perception-mode`
+      CLI flag is the operator-facing
+      perception-mode authoring path; no
+      `.rrscene` schema extension needed at
+      OBS-F).
+
+- **`docs/OBSERVER_FRAME_FIXTURE.md` (new,
+  ~700 lines).** Companion doc mirroring the
+  SCHW.9 / PENROSE.10 fixture-companion doc
+  shape verbatim. Seven sections:
+    - **§1 Purpose** — three goals (parser-
+      regression anchor; OBSERVER.* + OBS-P.*
+      arc runtime-validation fixture;
+      convergence-equivalence anchor for the
+      OBS-P.3 audit's check #8 at SDK
+      runtime). Documents the load-bearing
+      design decision: the fixture authors
+      the legacy `relativity` block; the
+      OBSERVER.6 adapter routes the
+      scene-authored beta onto
+      `observer_frame.beta` when the
+      operator engages
+      `--observer-perception-mode
+      relativistic` at invocation time.
+    - **§2 Fixture composition** — nine
+      sub-sections covering render
+      settings, camera, the `relativity`
+      block (the load-bearing fixture-
+      specific content), 6 materials, 6
+      spheres, 1 ground-plane mesh, 2
+      lights, no manifold block, no
+      observer block.
+    - **§3 Expected visual signature** —
+      four sub-sections covering: default
+      invocation (legacy fallback path;
+      kernel reads `scene.observer.velocity`
+      directly); gated invocation (`--observer-
+      perception-mode relativistic`; kernel
+      reads `observer_frame.beta` via the
+      OBS-P.2 ternary; same beta value
+      reaches the SR helpers either way →
+      convergence-equivalent Beauty);
+      OBSERVER.13 debug AOV
+      (`--observer-debug` engages the
+      observer-beta AOV write; documents
+      the PPM clamp behaviour for negative
+      direction components); OptiX cross-
+      backend equivalence (mirrors the
+      CUDA path; structurally byte-
+      identical per OBSERVER.11 +
+      OBS-P.3 audits).
+    - **§4 Cross-backend equivalence** —
+      three sub-sections covering the
+      structural single-source-of-truth
+      guarantee (4 verification points
+      from OBSERVER.11 + OBSERVER.14 +
+      OBS-P.3 audits); the distinction
+      between convergence-equivalent and
+      byte-identical (default vs gated
+      invocations on the same SDK host
+      should be byte-identical, not just
+      convergence-equivalent); the
+      OBSERVER.13 AOV cross-backend
+      byte-identity contract.
+    - **§5 Audit-host smoke-test
+      transcript** — three sub-sections
+      with concrete CLI invocations +
+      observed log output at the
+      OBS-F.2 landing commit `5f8cabc`:
+      `--scene-info <fixture>` confirms
+      JSON parse + `relativity` block
+      resolves `observer_velocity = (0,
+      0, -0.5)`; `--render-aovs
+      --observer-perception-mode
+      relativistic <fixture>` confirms
+      the dispatcher's pre-guard log
+      lines fire correctly + the
+      manifold-mode + observer-config
+      logs follow the MANI-CONSUME.1
+      "log before SDK guard" pattern;
+      composability with
+      `--observer-debug` is verified.
+    - **§6 Runtime SDK-host validation
+      checks** — seven sub-sections
+      enumerating the OBS-F.1 task brief
+      §6.4 deferred checks: default-mode
+      byte-identity (CUDA + OptiX);
+      opt-in path engagement (CUDA);
+      cross-source convergence-
+      equivalence (CUDA `cmp` between
+      default and gated invocations);
+      OBSERVER.13 debug-AOV consistency
+      (verifies the hit-pixel decode);
+      cross-backend AOV equivalence
+      (`cmp` between CUDA and OptiX
+      Beauty + observer-beta AOVs);
+      OptiX path-trace convergence
+      (Stage 20J progressive
+      checkpoints); RelativityParams
+      orthogonality (verifies the
+      OBS-P.3 audit check #6 contract
+      at runtime).
+    - **§7 References** — 21-entry list
+      spanning master instructions,
+      architecture-doc, OBSERVER.1
+      plan, OBSERVER.15 capstone,
+      OBS-F.1 task brief, every
+      relevant OBSERVER.* / OBS-P.*
+      audit, the SCHW.9 + PENROSE.10
+      precedent fixture companion docs,
+      the `test_relativity.rrscene`
+      minimal precedent, every source
+      file the fixture exercises
+      without modifying.
+
+### What does NOT ship
+
+- **No source code.** Nothing in any
+  `src/` subtree is touched (`git diff`
+  outside `docs/` + `scenes/` ⇒ 0
+  bytes). The post-OBS-P.3 HEAD =
+  `dc2869e` baseline is preserved
+  exactly.
+- **No CUDA / OptiX kernel changes.**
+  Operator brief explicitly forbids.
+  Every `.cu` / `.cuh` /
+  `OptixPrograms.cu` /
+  `OptixRenderer.cpp` file is byte-
+  unchanged. The OBS-P.2 kernel surface
+  carries forward verbatim.
+- **No new perception model.** The
+  three existing `PerceptionMode`
+  enumerators preserved verbatim.
+- **No new manifold math.** The fixture
+  explicitly does NOT author a
+  `manifold` block.
+- **No `.rrscene` schema extension.**
+  The fixture uses only pre-existing
+  scene-block fields. The
+  `apply_relativity(...)` helper at
+  `src/io/SceneLoader.cpp` parses the
+  `relativity` block exactly as today;
+  no new field added. NO `observer`
+  scene block at OBS-F (a future arc
+  may add one with its own task-brief
+  discipline).
+- **No new CLI flag.** The OBSERVER.4
+  `--observer-*` surface + the
+  OBSERVER.13 `--observer-debug` flag
+  comprise the entire CLI surface the
+  fixture exercises.
+- **No new AOV.** The OBSERVER.13
+  `observer_beta` debug AOV is the
+  only observer-related AOV; the
+  fixture exercises it through the
+  existing `--observer-debug` gate
+  without any new code.
+- **No `RelativityParams` field
+  change.** The existing six flags
+  are preserved verbatim. The
+  fixture sets the
+  `aberrationStrength = 1.0` +
+  `dopplerStrength = 1.0` +
+  `searchlightStrength = 1.0` fields
+  to their full-effect defaults (via
+  the `apply_relativity` schema's
+  field-to-flag-and-strength mapping).
+- **No new test binary.** ctest set
+  unchanged at 12. Test counts
+  unchanged from the post-OBS-P.3
+  baseline (`relativity_tests:
+  841/841`; `manifold_identity_tests:
+  408/408`; `cli_tests: 274/274`;
+  `renderer_tests: 27/27`).
+- **No CMake change.**
+- **No default-scene modification.**
+  Every existing `scenes/*.rrscene`
+  file (10 pre-OBS-F.2 files:
+  `test_camera.rrscene`,
+  `test_full_scene.rrscene`,
+  `test_lights.rrscene`,
+  `test_materials.rrscene`,
+  `test_mesh.rrscene`,
+  `test_penrose_like_manifold.rrscene`,
+  `test_relativity.rrscene`,
+  `test_render_settings.rrscene`,
+  `test_schwarzschild_like_manifold.rrscene`,
+  `test_spheres.rrscene`,
+  `test_textured_material.rrscene`)
+  is byte-unchanged. Only ONE new
+  fixture file is added.
+- **No prior-doc modification.** Every
+  prior arc document (OBSERVER.1 /
+  .12 / .14 / .15; OBS-P.1 / .2 /
+  .3; OBS-F.1) preserved verbatim.
+- **No `MODULE_MAP.md` update.** The
+  fixture is data + documentation
+  only; no module-map status change.
+  The OBSERVER.* + OBS-P.* arcs'
+  module-map promotion to **Wired**
+  is reserved for the deferred
+  SDK-host runtime pass that
+  exercises the fixture.
+- **No `MANIFOLD_INTEGRATION_PLAN.md`
+  update.**
+- **No `BUILD_PLAN.md` historical
+  rewrite.** Every prior entry stays
+  as-is.
+- **No Kerr / Kruskal work.**
+- **No C4D / server / UI / node-editor
+  touch.**
+- **No new chart family.**
+
+### Acceptance
+
+- **Compiles.** Two new files
+  (`scenes/test_observer_frame.rrscene`
+  + `docs/OBSERVER_FRAME_FIXTURE.md`)
+  added; no source-code change; no
+  CMake change. The audit-host build
+  remains at the post-OBS-P.3
+  baseline (`100% tests passed, 0
+  tests failed out of 12`;
+  `relativity_tests: 841/841
+  passed`;
+  `manifold_identity_tests:
+  408/408`;
+  `cli_tests: 274/274 passed`;
+  `renderer_tests: 27/27 passed`).
+- **Internally consistent.** The
+  fixture scene's JSON structure
+  matches the existing
+  `apply_relativity` /
+  `apply_camera` / `apply_materials`
+  / `apply_spheres` / `apply_meshes`
+  / `apply_lights` parser surface
+  verbatim (no new field; no new
+  block). The companion doc's
+  seven-section structure mirrors
+  the SCHW.9 + PENROSE.10
+  precedent companion docs.
+- **Audit-host smoke test passes.**
+  `RelativityRender --scene-info
+  scenes/test_observer_frame.rrscene`
+  loads the fixture cleanly + prints
+  the expected parsed state
+  (verified at the OBS-F.2 landing
+  commit `5f8cabc`):
+  `observer_velocity = (0.000000,
+  0.000000, -0.500000)`; `|beta| =
+  0.500000`; six materials; six
+  spheres; one ground-plane mesh;
+  two lights. The
+  `--render-aovs --observer-perception-mode
+  relativistic
+  scenes/test_observer_frame.rrscene`
+  invocation reaches the
+  CUDA-required-error path correctly
+  with both the manifold-mode log
+  AND the observer-config log firing
+  before the error (per the
+  MANI-CONSUME.1 + OBSERVER.8
+  "log before SDK guard" pattern).
+- **Verdict honesty.** The
+  fixture is a real authored scene
+  exercising real pre-existing
+  parser surface + real pre-existing
+  kernel reads (per the OBSERVER.6
+  adapter + OBS-P.2 migration); no
+  placeholder code; no fake stub.
+  Master rule #3 satisfied. The
+  companion doc's §6 explicitly
+  enumerates the 7 deferred SDK-host
+  runtime checks; the audit-host
+  cannot verify those (consistent
+  with the OBSERVER.9 / OBSERVER.11
+  / OBSERVER.14 / OBS-P.3
+  PASS_WITH_RUNTIME_DEFERRED
+  pattern).
+
+### Module status changes
+
+`docs/MODULE_MAP.md` is *not* updated
+by this slice. The OBS-F.2 fixture
++ companion doc land; the
+`src/manifold/CameraObserverAdapter.h`
+/ `src/manifold/ObserverFrame.h`
+module-map status remains
+**Skeleton-Plus**. The
+`**Wired**` promotion is reserved
+for the deferred SDK-host runtime
+pass that exercises the fixture
+end-to-end (the OBS-F.1 task brief
+§6.4 + the OBS-F.2 companion doc §6
+enumerate the 7 required checks).
+The OBS-F.2 verdict authorises the
+operator to proceed to **OBS-F.3 —
+fixture audit** (per-slice audit
+verifying the OBS-F.2 surface;
+mirrors the OBSERVER.9 / OBSERVER.11
+/ OBSERVER.14 / OBS-P.3 audit-doc
+shapes) as the next OBS-F slot when
+ready. After OBS-F.3 closes the
+OBS-F arc, the operator may proceed
+to the deferred SDK-host runtime
+pass (converts every OBSERVER.* +
+OBS-P.* + OBS-F.* arc family
+verdict from
+PASS_WITH_RUNTIME_DEFERRED → PASS)
+or to manifold-orthogonal work
+(MANI-I.12 final cross-host audit;
+Field Interpretation Layer Phase 1;
+denoiser integration with chart-
+aware AOVs; path-tracer feature
+breadth).
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
