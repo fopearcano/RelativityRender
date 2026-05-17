@@ -958,6 +958,112 @@ bool parse_scalar_field_kind(const std::string& s,
     return false;
 }
 
+// FIELD-BEAUTY.7 — parse a field-mapping target string
+// into the `FieldMappingTarget` enum. Four accepted names
+// mirroring the FIELD-I.4 enum:
+//   - `none`           → `FieldMappingTarget::None`
+//   - `color-multiplier`→ `FieldMappingTarget::ColorMultiplier`
+//   - `emission`       → `FieldMappingTarget::Emission`
+//   - `diagnostic-aov` → `FieldMappingTarget::DiagnosticAOV`
+// Hyphen-separated names mirror the existing manifold chart
+// names (`schwarzschild-like`, `kruskal-like`, etc.) — the
+// scene-loader's canonical multi-word convention.
+bool parse_field_mapping_target(const std::string& s,
+                                rr::field::FieldMappingTarget& out) {
+    using rr::field::FieldMappingTarget;
+    if (s == "none") {
+        out = FieldMappingTarget::None;            return true;
+    }
+    if (s == "color-multiplier") {
+        out = FieldMappingTarget::ColorMultiplier; return true;
+    }
+    if (s == "emission") {
+        out = FieldMappingTarget::Emission;        return true;
+    }
+    if (s == "diagnostic-aov") {
+        out = FieldMappingTarget::DiagnosticAOV;   return true;
+    }
+    return false;
+}
+
+// FIELD-BEAUTY.7 — apply the `field_mapping` block onto a
+// `FieldMappingConfig`. Minimal parser surface, scoped to the
+// FIELD-BEAUTY.7 fixture-slice needs per the operator's brief:
+// only the FIELD-I.4 `FieldMappingConfig` POD's existing
+// fields are exposed (no new fields invented). Field-name
+// conventions follow the existing scene-loader precedent —
+// canonical snake_case primary with camelCase shorthand
+// aliases for fields whose CLI / C++ equivalents use the
+// latter form. The supported fields are:
+//
+//   - `target` (string: "none" | "color-multiplier" |
+//     "emission" | "diagnostic-aov")
+//   - `strength` (float; the multiplicative scale on the
+//     scalar sample)
+//   - `bias` (float; additive offset applied after the
+//     strength multiplication)
+//   - `min_value` / `minValue` (float; lower clamp bound,
+//     consulted when `clamp_output = true`)
+//   - `max_value` / `maxValue` (float; upper clamp bound,
+//     consulted when `clamp_output = true`)
+//   - `clamp_output` / `clampOutput` (bool; master toggle
+//     for the clamp stage)
+//
+// Default `FieldMappingConfig{}` is the target-None /
+// strength-0 / bias-0 no-op anchor; any field the scene
+// file omits retains the FIELD-I.4 default. Renderer
+// dispatchers (after the future CLI bridge slice lands)
+// may merge `scene.field_mapping_config` with the
+// CLI-side `cfg.field_mapping_config`.
+bool apply_field_mapping(const JsonValue& obj,
+                         rr::field::FieldMappingConfig& cfg,
+                         std::string& err) {
+    if (obj.kind != JsonKind::Object) {
+        err = "'field_mapping' must be a JSON object";
+        return false;
+    }
+
+    if (const auto* v = obj.find("target")) {
+        std::string target_str;
+        if (!to_string(*v, target_str, err,
+                       "field_mapping.target")) return false;
+        if (!parse_field_mapping_target(target_str, cfg.target)) {
+            err = "field_mapping.target has unknown value '"
+                + target_str
+                + "' (expected one of: none, color-multiplier, "
+                  "emission, diagnostic-aov)";
+            return false;
+        }
+    }
+
+    if (const auto* v = obj.find("strength")) {
+        if (!to_float(*v, cfg.strength, err,
+                      "field_mapping.strength")) return false;
+    }
+
+    if (const auto* v = obj.find("bias")) {
+        if (!to_float(*v, cfg.bias, err,
+                      "field_mapping.bias")) return false;
+    }
+
+    if (const auto* v = obj.find_or("min_value", "minValue")) {
+        if (!to_float(*v, cfg.min_value, err,
+                      "field_mapping.min_value")) return false;
+    }
+
+    if (const auto* v = obj.find_or("max_value", "maxValue")) {
+        if (!to_float(*v, cfg.max_value, err,
+                      "field_mapping.max_value")) return false;
+    }
+
+    if (const auto* v = obj.find_or("clamp_output", "clampOutput")) {
+        if (!to_bool(*v, cfg.clamp_output, err,
+                     "field_mapping.clamp_output")) return false;
+    }
+
+    return true;
+}
+
 // FIELD-I.13 — apply the `scalar_field` block onto a
 // `ScalarFieldConfig`. Minimal parser surface, scoped to the
 // FIELD-I.13 fixture-slice needs per the operator's brief: only
@@ -1945,6 +2051,33 @@ LoadResult parse(const std::string& text) {
         std::string apply_err;
         if (!apply_scalar_field(*sf_v, result.scene.scalar_field_config,
                                 apply_err)) {
+            result.error_message = apply_err;
+            return result;
+        }
+    }
+
+    // field_mapping (optional). FIELD-BEAUTY.7 surface: six
+    // FieldMappingConfig fields (`target`, `strength`,
+    // `bias`, `min_value`, `max_value`, `clamp_output`).
+    // Default `FieldMappingConfig{}` is the target-None /
+    // strength-0 / bias-0 no-op anchor (matches the
+    // FIELD-I.4 `disabled_field_mapping_config()` factory).
+    // Until the future CLI bridge slice lands, the parsed
+    // value is recorded on `scene.field_mapping_config` but
+    // no renderer dispatcher reads it — the FIELD-BEAUTY.3 /
+    // FIELD-BEAUTY.5 beauty-mapping arms gate on
+    // `AOVTargets::field_mapping_config` /
+    // `OptixRenderer::render_aovs(...)` trailing param which
+    // is not populated from `scene.field_mapping_config`
+    // this slice. The fixtures
+    // `scenes/test_scalar_field_color_multiplier.rrscene` +
+    // `scenes/test_scalar_field_emission.rrscene` exercise
+    // this parser surface as forward-looking authoring
+    // templates.
+    if (const JsonValue* fm_v = root.find("field_mapping")) {
+        std::string apply_err;
+        if (!apply_field_mapping(*fm_v, result.scene.field_mapping_config,
+                                 apply_err)) {
             result.error_message = apply_err;
             return result;
         }

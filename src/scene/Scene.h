@@ -1,6 +1,7 @@
 #pragma once
 
 #include "camera/Camera.h"
+#include "field/FieldMapping.h"
 #include "field/ScalarField.h"
 #include "geometry/Mesh.h"
 #include "geometry/Sphere.h"
@@ -138,6 +139,41 @@ struct Scene {
     // `OptixRenderer::render_aovs` trailing parameter this
     // slice.
     rr::field::ScalarFieldConfig      scalar_field_config;
+
+    // FIELD-BEAUTY.7 — per-scene field-mapping config
+    // authored in the scene file's optional
+    // `field_mapping` block. Default
+    // `FieldMappingConfig{}` is the target-None /
+    // strength-0 / bias-0 no-op anchor (matches the
+    // FIELD-I.4 default `disabled_field_mapping_config()`
+    // factory). Companion to `scalar_field_config`
+    // above; together they describe **what** the scalar
+    // field is + **how** it maps into a beauty channel.
+    //
+    // When the scene file authors any of the supported
+    // fields (`target`, `strength`, `bias`, `min_value`,
+    // `max_value`, `clamp_output`), the value is
+    // recorded here. The FIELD-BEAUTY.* arc's renderer
+    // dispatchers (after the future CLI bridge slice
+    // lands) will merge `scene.field_mapping_config`
+    // with the CLI-side `cfg.field_mapping_config` per
+    // the same policy `scene.manifold` ↔ `cfg.manifold`
+    // uses today.
+    //
+    // Until that CLI bridge slice lands, the field is
+    // parsed + carried but no renderer dispatcher reads
+    // it — the FIELD-BEAUTY.* arc's beauty-mapping arms
+    // (FIELD-BEAUTY.3 CUDA + FIELD-BEAUTY.5 OptiX) gate
+    // on `view.field_mapping_config.target` /
+    // `optixLaunchParams.field_mapping_config.target`
+    // which is populated from the dispatcher's
+    // `AOVTargets::field_mapping_config` /
+    // `OptixRenderer::render_aovs(...)` trailing param;
+    // neither slot is populated from
+    // `scene.field_mapping_config` this slice. The
+    // FIELD-BEAUTY.7 fixtures are forward-looking
+    // authoring templates.
+    rr::field::FieldMappingConfig     field_mapping_config;
 
     std::vector<SceneSphere>          spheres;
 

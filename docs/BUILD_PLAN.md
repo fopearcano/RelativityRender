@@ -89583,6 +89583,321 @@ mapping arms end-to-end against a fixture
 that engages both `scalar_field` +
 `field_mapping` blocks.
 
+## FIELD-BEAUTY.7 — Scalar Field Beauty Mapping Fixture (impl, scenes + parser + companion doc)
+
+**Scope of this slice (per the operator's *FIELD-BEAUTY.7
+— Scalar Field Beauty Mapping Fixture* task brief):
+land two controlled fixture scenes
+(`scenes/test_scalar_field_color_multiplier.rrscene` +
+`scenes/test_scalar_field_emission.rrscene`), a single
+companion doc (`docs/FIELD_SCALAR_BEAUTY_FIXTURES.md`),
+and the minimal scene-loader parser surface needed to
+engage the fixtures' `field_mapping` block. Per the
+operator's "If parser support for field mapping scene
+fields is incomplete: add only minimal parser support
+for existing field mapping fields. Do not broaden
+scene format beyond fixture needs" rule. No CLI flag;
+no dispatcher wiring; no renderer behaviour change.
+The fixtures parse cleanly via `--scene-info` today;
+the parsed `Scene::field_mapping_config` is forward-
+looking authoring data for the future CLI bridge
+slice.
+
+The referenced `docs/FIELD_SCALAR_BEAUTY_MAPPING_PLAN.md`
++ `docs/FIELD_SCALAR_BEAUTY_MAPPING_TASK.md` task
+briefs remain unfilled (per the FIELD-BEAUTY.3 +
+FIELD-BEAUTY.4 + FIELD-BEAUTY.5 + FIELD-BEAUTY.6
+honest-framing precedent). The operator's
+FIELD-BEAUTY.7 prompt body itself is the canonical
+task brief.**
+
+### What ships
+
+- **`scenes/test_scalar_field_color_multiplier.rrscene`
+  (new, 82 lines).** Controlled fixture mirroring the
+  FIELD-I.13 fixture's geometry + scalar_field block
+  verbatim, adding a `field_mapping` block with
+  `target = "color-multiplier"`, `strength = 1.0`,
+  `bias = 1.0`, `min_value = 1.0`, `max_value = 2.0`,
+  `clamp_output = false`. Structurally bounded
+  output ∈ [1.0, 2.0] (multiplier); when the future
+  CLI bridge slice engages the mapping, the beauty
+  PPM shows × 1.0 at the field centre and × 2.0 at
+  the outer envelope edges (smoothstep-interpolated
+  between).
+
+- **`scenes/test_scalar_field_emission.rrscene` (new,
+  82 lines).** Same geometry + scalar_field as the
+  ColorMultiplier fixture; `field_mapping` block
+  with `target = "emission"`, `strength = 0.5`,
+  `bias = 0.0`, `min_value = 0.0`, `max_value =
+  0.5`, `clamp_output = false`. Structurally
+  bounded output ∈ [0.0, 0.5] (additive
+  grayscale); when the future CLI bridge slice
+  engages the mapping, the beauty PPM shows
+  +0.0 at the field centre and +0.5 at the outer
+  envelope edges.
+
+- **`docs/FIELD_SCALAR_BEAUTY_FIXTURES.md` (new,
+  ~560 lines).** Single companion doc covering
+  both fixtures together. Seven sections:
+    - **§1 Purpose** — three goals (parser smoke
+      test; beauty-mapping runtime template;
+      two-target distinction) + honest scope
+      boundaries (forward-looking; no kernel
+      activation this slice; no FIELD-I.13
+      fixture modification).
+    - **§2 Composition** — three layers (shared
+      geometry from FIELD-I.13; shared
+      scalar_field from FIELD-I.13;
+      target-specific field_mapping with safe
+      bounded values) + intentional omissions
+      (no manifold / observer / field_debug
+      blocks).
+    - **§3 Expected visual signature** —
+      per-fixture expected beauty PPM contents
+      (ColorMultiplier brightening pattern;
+      Emission additive grayscale glow); OptiX
+      byte-identity guarantee per FIELD-BEAUTY.6
+      five-axis symmetry; default invocation
+      behavior today (parser-clean, no kernel
+      arm engagement).
+    - **§4 Cross-backend equivalence** —
+      references the FIELD-BEAUTY.6 five-axis
+      symmetry argument; documents the fixtures
+      as canonical SDK-host validation surface
+      for the FIELD-BEAUTY.4 + FIELD-BEAUTY.6
+      audits' deferred runtime scenarios.
+    - **§5 Audit-host smoke transcript** — both
+      fixtures' `--scene-info` invocation
+      transcripts; confirms parser cleanness.
+    - **§6 Runtime SDK-host validation checks
+      (DEFERRED)** — six deferred scenarios
+      (ColorMultiplier modulation; Emission
+      modulation; disabled-mapping baseline;
+      FIELD-I.7 diagnostic AOV compatibility;
+      cross-fixture beauty diff; Doppler /
+      searchlight interaction). All deferred
+      to the future CLI bridge slice's audit
+      on SDK host.
+    - **§7 References** — master refs, FIELD-I.*
+      arc refs (incl. FIELD-I.13 precedent),
+      FIELD-BEAUTY.* arc refs (with
+      FIELD-BEAUTY.1 + FIELD-BEAUTY.2 honestly
+      marked UNFILLED), audited source surface,
+      cross-backend math leaves.
+
+- **`src/scene/Scene.h` (modified, +33 lines).**
+  Adds:
+    - **`rr::field::FieldMappingConfig
+      field_mapping_config;`** field on the
+      `Scene` struct (sibling of
+      `scalar_field_config`; immediately before
+      `std::vector<SceneSphere> spheres`).
+    - **`#include "field/FieldMapping.h"`** (new).
+  Default `FieldMappingConfig{}` is the FIELD-I.4
+  target-None no-op anchor. Doc-comment documents
+  the forward-looking parsed-but-not-rendered
+  shape this slice.
+
+- **`src/io/SceneLoader.cpp` (modified, +118
+  lines).** Adds:
+    - **`parse_field_mapping_target(...)`** local
+      helper — string → `FieldMappingTarget` enum
+      mapping (4 accepted names: `none` /
+      `color-multiplier` / `emission` /
+      `diagnostic-aov`; hyphen-separated mirrors
+      the existing manifold chart name
+      convention).
+    - **`apply_field_mapping(...)`** parser —
+      consumes the `field_mapping` JSON block,
+      applies onto a `FieldMappingConfig`. Six
+      supported fields covering every FIELD-I.4
+      POD slot: `target`, `strength`, `bias`,
+      `min_value` / `minValue`, `max_value` /
+      `maxValue`, `clamp_output` / `clampOutput`.
+      Canonical snake_case + camelCase shorthand
+      mirrors the existing manifold + relativity
+      + scalar_field parsers' precedent.
+    - **`load(...)` body extension** — new
+      `if (const JsonValue* fm_v = root.find("field_mapping"))`
+      block (sibling of the existing
+      `scalar_field` block consumer at line
+      ~2050).
+
+### What does NOT ship
+
+- **No CLI flag.** No `--field-mapping-target`
+  flag. No `--field-strength` / `--field-bias`
+  / `--field-min-value` / `--field-max-value` /
+  `--field-clamp-output` authoring flags. No
+  `src/core/CommandLine.cpp` extension. The
+  fixtures' parsed
+  `Scene::field_mapping_config` is not threaded
+  into any renderer dispatcher this slice — the
+  future CLI bridge slice flips the gate.
+- **No `rr::core::Config` extension.** No
+  `field_mapping_config` field on `Config`. The
+  Config-side CLI authoring surface defers to
+  the renumbered next FIELD-BEAUTY.* impl slot.
+- **No dispatcher emit.** No `main.cpp`
+  extension. The fixtures load cleanly via
+  `--scene-info` but the field-mapping config
+  is parsed-but-not-rendered — no PPM file
+  path changes.
+- **No new ctest target.** The fixtures are
+  operator-facing; no test harness loads them
+  programmatically. A future test extension
+  may inspect `Scene::field_mapping_config`
+  directly; out of scope here.
+- **No default scene alteration.** Every
+  existing `.rrscene` fixture is byte-identical
+  to the FIELD-BEAUTY.6 baseline (`9efb6a9`).
+  Verified by `git diff 9efb6a9..HEAD
+  --name-only -- 'scenes/'
+  ':(exclude)scenes/test_scalar_field_color_multiplier.rrscene'
+  ':(exclude)scenes/test_scalar_field_emission.rrscene'`
+  returning zero hits. The two new fixtures are
+  purely additive.
+- **No FIELD-I.13 fixture modification.** The
+  `scenes/test_scalar_field_diagnostic.rrscene`
+  fixture is byte-identical. The three fixtures
+  coexist as distinct authoring templates
+  (FIELD-I.13 = diagnostic AOV; FIELD-BEAUTY.7
+  ColorMultiplier; FIELD-BEAUTY.7 Emission).
+- **No beauty-pass modification.** No kernel
+  TU is touched. `git diff 9efb6a9..HEAD
+  --name-only -- 'src/cuda/' 'src/optix/'`
+  returns zero hits. The renderer-side wiring
+  (from scene → `AOVTargets` /
+  `OptixRenderer::render_aovs`) defers to the
+  future CLI bridge slice.
+- **No scene-format broadening beyond fixture
+  needs.** The parser supports only the
+  existing FIELD-I.4 `FieldMappingConfig`
+  fields; no new fields invented. The brief's
+  "Do not broaden scene format beyond fixture
+  needs" rule honoured.
+- **No quantum / tensor / curvature
+  simulation.** Operator brief explicitly
+  forbids.
+- **No new manifold / observer behaviour.**
+  Operator brief explicitly forbids. `git diff
+  9efb6a9..HEAD --name-only --
+  'src/manifold/' 'src/relativity/'` returns
+  zero hits.
+- **No `MODULE_MAP.md` update.**
+- **No C4D / server / UI / node-editor touch.**
+- **No retroactive authoring of the missing
+  task briefs** (`FIELD_SCALAR_BEAUTY_MAPPING_PLAN.md`
+  + `FIELD_SCALAR_BEAUTY_MAPPING_TASK.md`). The
+  honest-framing approach from FIELD-BEAUTY.3 –
+  FIELD-BEAUTY.6 is preserved.
+
+### Acceptance
+
+- **Compiles with OptiX OFF.** Audit-host build
+  green; full rebuild via `cmake --build
+  /home/user/RelativityRender/build` adds no new
+  warnings on any module. Ctest 13/13 PASS
+  (renderer_tests: 35/35; field_tests: 135/135;
+  cli_tests: 274/274; relativity_tests: 841/841;
+  manifold_identity_tests: 408/408; every other
+  suite unchanged).
+- **Compiles with OptiX ON (no SDK fallback).**
+  `cmake --build /tmp/rr_build_optix_no_sdk`
+  succeeds; ctest 14/14 PASS (including
+  optix_tests). The scene-loader extension
+  propagates cleanly through the rr_io → rr_scene
+  → rr_field include path.
+- **Both fixtures parse cleanly.** `--scene-info`
+  smoke verifies:
+    - `RelativityRender --scene-info
+      scenes/test_scalar_field_color_multiplier.rrscene`
+      → no parser errors; loads + logs scene
+      contents.
+    - `RelativityRender --scene-info
+      scenes/test_scalar_field_emission.rrscene`
+      → no parser errors; loads + logs scene
+      contents.
+- **No behaviour change for existing scenes.**
+  Every existing `.rrscene` fixture loads
+  byte-identically. No `--render-*` invocation
+  against any existing scene produces different
+  output.
+- **Internally consistent.** The new
+  `apply_field_mapping(...)` parser mirrors the
+  FIELD-I.13 `apply_scalar_field(...)` shape
+  verbatim (canonical snake_case + camelCase
+  shorthand via `find_or`; per-field error
+  messages with block-prefixed labels;
+  missing-field-tolerant defaults). The new
+  `parse_field_mapping_target(...)` helper
+  mirrors the existing `parse_chart_type(...)`
+  + `parse_scalar_field_kind(...)` patterns
+  (hyphen-separated names; explicit enum
+  mapping; missing-name returns false). Both
+  fixtures' geometry + scalar_field blocks are
+  verbatim from the FIELD-I.13 fixture; only
+  the new `field_mapping` block differs (with
+  target-specific parameter values that
+  produce structurally-bounded output ranges
+  + visually distinct beauty signatures).
+- **Honest scope.** Master rule #3 ("no fake
+  stubs") satisfied: the parser is fully wired
+  (real `apply_field_mapping` consumed by the
+  main `load(...)` body; real validation
+  errors; tested by both fixtures' smoke
+  invocations). Master rule #11 satisfied:
+  the parser's behaviour is documented + the
+  fixtures empirically exercise every field
+  path. Master rule #12 satisfied: scope
+  deliberately narrow per the operator's
+  "Do not broaden scene format beyond fixture
+  needs" rule. The honest framing of the
+  missing FIELD-BEAUTY.1 + FIELD-BEAUTY.2
+  task brief slots is preserved across the
+  FIELD-BEAUTY.* arc.
+
+### Module status changes
+
+`docs/MODULE_MAP.md` is *not* updated by this
+slice. The `rr_scene` library carries forward
+the `rr_field` PUBLIC link from FIELD-I.13
+(the FieldMapping.h is now exposed transitively
+through Scene.h's `Scene::field_mapping_config`
+field). No CMakeLists.txt change required (the
+PUBLIC link from FIELD-I.13 already propagates
+both `field/ScalarField.h` and
+`field/FieldMapping.h` to consumers of
+`rr_scene`). The FIELD-BEAUTY.7 verdict
+authorises the operator to proceed to: **(a)**
+the FIELD-BEAUTY.7 audit (a docs-only verdict
+slice mirroring the FIELD-BEAUTY.6 / FIELD-I.14
+audit-slot insertion precedent; RECOMMENDED
+before the next impl slot); **(b)** FIELD-BEAUTY.*
+— CLI + Config + dispatcher bridge (the
+natural next impl slice; flips both backend
+kernel arms reachable simultaneously via the
+`--field-mapping-target` + per-parameter CLI
+flags; threads BOTH `cfg.field_mapping_config`
+AND `scene.field_mapping_config` from CLI /
+scene loader through both `run_render_aovs`
+AND `run_render_optix_aovs` into the
+respective payload fields; closes the
+FIELD-BEAUTY.4 + FIELD-BEAUTY.6 +
+FIELD-BEAUTY.8 audits' runtime-deferred
+portions on SDK-host); **(c)** manifold-
+orthogonal work; **(d)** RETROACTIVE authoring
+of the missing FIELD-BEAUTY.1 + FIELD-BEAUTY.2
+task briefs (operator discretion). The
+FIELD-BEAUTY.* arc's `**Wired**` promotion is
+reserved for the post-CLI-bridge SDK-host
+runtime pass that exercises both backend
+kernels' beauty-mapping arms end-to-end
+against the FIELD-BEAUTY.7 fixtures (per §6 of
+the companion doc).
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
