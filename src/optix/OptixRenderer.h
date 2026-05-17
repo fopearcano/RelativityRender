@@ -2,6 +2,7 @@
 
 #include "image/Image.h"
 #include "gpu/GpuBuffer.h"  // OptiX Gap A Step 1: GpuBuffer<float> for retained AOV device buffers
+#include "field/ScalarField.h"         // FIELD-I.11: trailing scalar_field_config arg
 #include "manifold/CoordinateChart.h"  // SCHW.7: trailing render_aovs arg
 #include "manifold/ManifoldMode.h"  // MANI-I.5: trailing render_pathtrace_progressive arg
 #include "manifold/ObserverFrame.h"  // OBSERVER.10: trailing observer_frame arg
@@ -445,6 +446,27 @@ public:
         // per pixel; `observer_frame.beta` on hit;
         // `(0, 0, 0)` on miss.
         rr::image::Image observer_beta;
+        // FIELD-I.11: populated only when the operator opts
+        // in via the future `--field-debug` flag (which will
+        // set `cfg.field_debug_visualization = true` →
+        // threaded to `render_aovs(...)`'s trailing
+        // `field_debug` parameter; until the CLI bridge
+        // slice lands every dispatcher caller passes
+        // `false`). Empty `rr::image::Image{}` otherwise
+        // (the OptiX programs null-gate on
+        // `params.aov_field_scalar`, the host allocates the
+        // device buffer only on the opt-in, and the
+        // download skips when the buffer was not
+        // allocated). Encoding matches the CUDA
+        // `aov_field_scalar.ppm` payload: 1-channel scalar
+        // float per pixel, replicated to RGB at download
+        // time via the existing `download_1_replicate`
+        // helper — same shape as the existing `Depth` /
+        // `DopplerFactor` / `SearchlightFactor` 1-channel
+        // AOV save paths. The raw value is the result of
+        // `rr::field::evaluate(scalar_field_config,
+        // hit_pos)` on hit and `0.0f` on miss.
+        rr::image::Image field_scalar;
         float            gpu_time_ms = 0.0f;
     };
 
@@ -509,7 +531,42 @@ public:
         // `AovResult::observer_beta` after the launch.
         // Dispatchers in `main.cpp::run_render_optix_aovs`
         // pass `cfg.observer.debug_visualization` here.
-        bool observer_debug = false) noexcept;
+        bool observer_debug = false,
+        // FIELD-I.11: per-launch scalar-field config
+        // payload (the FIELD-I.4 + FIELD-I.2 tagged-form
+        // POD). Default `ScalarFieldConfig{}` =
+        // `disabled_scalar_field_config()` is the
+        // byte-identity no-op anchor; even when the
+        // FieldScalar AOV pointer is non-null, the OptiX
+        // programs' `evaluate(...)` short-circuits to
+        // `0.0f` at every position (the FIELD-I.3 audit's
+        // three-layer no-op anchor). Threaded into
+        // `OptixLaunchParams::scalar_field_config`. The
+        // OptiX programs read this field exclusively in
+        // the new FieldScalar AOV-write arm (gated on
+        // `field_debug` below + `params.aov_field_scalar
+        // != nullptr`); no other program / arm consumes
+        // it (the FIELD-I.6 task brief's "no field-to-
+        // beauty mapping yet" non-goal).
+        rr::field::ScalarFieldConfig scalar_field_config = {},
+        // FIELD-I.11: opt-in scalar-field diagnostic AOV
+        // gate. Default `false` preserves the pre-
+        // FIELD-I.11 byte-identity baseline (the OptiX
+        // programs' FieldScalar write arm short-circuits
+        // because `params.aov_field_scalar` stays
+        // `nullptr`). When `true`, the implementation
+        // allocates the per-launch `aov_field_scalar`
+        // device buffer, threads the pointer through
+        // `OptixLaunchParams::aov_field_scalar`, and
+        // downloads the buffer into
+        // `AovResult::field_scalar` after the launch.
+        // The future
+        // `main.cpp::run_render_optix_aovs` dispatcher
+        // will pass `cfg.field_debug_visualization`
+        // here; until the CLI bridge slice lands, every
+        // dispatcher caller passes `false` (the AOV is
+        // structurally unreachable).
+        bool field_debug = false) noexcept;
 
     // OptiX Gap A Step 1: durable AOV buffer ownership for
     // the OptiX path. See `docs/OPTIX_GAP_A_POLISH_PLAN.md`

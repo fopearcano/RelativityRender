@@ -632,8 +632,13 @@ if(RR_ENABLE_OPTIX)
     # of rr_optix (RelativityRender executable today) see the
     # manifold header transitively. Header-only INTERFACE
     # link; no .cpp / link-order impact.
+    # FIELD-I.11: rr_optix's `OptixLaunchParams::scalar_field_config`
+    # + `OptixRenderer::AovResult::field_scalar` expose
+    # `rr::field::ScalarFieldConfig` by value (mirrors the
+    # FIELD-I.9 rr_gpu PUBLIC link precedent). PUBLIC-link
+    # rr_field so consumers see the field header transitively.
     target_link_libraries(rr_optix PRIVATE rr_gpu)
-    target_link_libraries(rr_optix PUBLIC  rr_manifold)
+    target_link_libraries(rr_optix PUBLIC  rr_manifold rr_field)
     rr_apply_warnings(rr_optix)
     # PUBLIC so consumers of rr_optix see the same macro state
     # the library was compiled against. Today only OptixBackend.cpp

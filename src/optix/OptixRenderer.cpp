@@ -2531,7 +2531,9 @@ OptixRenderer::render_aovs(
     rr::manifold::ManifoldMode manifold_mode,
     rr::manifold::CoordinateChart coordinate_chart,
     rr::manifold::ObserverFrame observer_frame,
-    bool observer_debug) noexcept {
+    bool observer_debug,
+    rr::field::ScalarFieldConfig scalar_field_config,
+    bool field_debug) noexcept {
     AovResult R;
 
     if (width <= 0 || height <= 0) {
@@ -2695,15 +2697,16 @@ OptixRenderer::render_aovs(
         return true;
     };
 
-    void* d_framebuffer    = nullptr;
-    void* d_aov_beauty     = nullptr;
-    void* d_aov_normal     = nullptr;
-    void* d_aov_depth      = nullptr;
-    void* d_aov_albedo     = nullptr;
-    void* d_aov_doppler    = nullptr;
-    void* d_aov_search     = nullptr;
-    void* d_aov_manifold_c = nullptr;
-    void* d_aov_observer_b = nullptr;
+    void* d_framebuffer       = nullptr;
+    void* d_aov_beauty        = nullptr;
+    void* d_aov_normal        = nullptr;
+    void* d_aov_depth         = nullptr;
+    void* d_aov_albedo        = nullptr;
+    void* d_aov_doppler       = nullptr;
+    void* d_aov_search        = nullptr;
+    void* d_aov_manifold_c    = nullptr;
+    void* d_aov_observer_b    = nullptr;
+    void* d_aov_field_scalar  = nullptr;
     if (!alloc_aov(framebuffer_floats, d_framebuffer)
      || !alloc_aov(aov3_floats,        d_aov_beauty)
      || !alloc_aov(aov3_floats,        d_aov_normal)
@@ -2755,6 +2758,31 @@ OptixRenderer::render_aovs(
             return R;
         }
     }
+    // FIELD-I.11 — opt-in 9th AOV: `aov_field_scalar`.
+    // Allocated only when the trailing `field_debug`
+    // parameter is `true` (a future CLI bridge slice
+    // threads `cfg.field_debug_visualization` here; until
+    // that slice lands, every caller passes `false` and
+    // the AOV is structurally unreachable). When the gate
+    // is off, the device pointer stays `nullptr` and the
+    // OptiX programs' FieldScalar write arms short-
+    // circuit — every existing `--render-optix-aovs`
+    // invocation is byte-identical to the pre-FIELD-I.11
+    // baseline. Single-channel (`aov1_floats`) mirroring
+    // the existing `Depth` / `DopplerFactor` /
+    // `SearchlightFactor` 1-channel AOVs. The three
+    // debug-AOV gates (`manifold_mode.debug_visualization`
+    // + `observer_debug` + `field_debug`) are
+    // orthogonal; all three can be active at the same
+    // launch.
+    if (field_debug) {
+        if (!alloc_aov(aov1_floats, d_aov_field_scalar)) {
+            cleanup();
+            R.message =
+                "render_aovs: cudaMalloc(aov_field_scalar) failed";
+            return R;
+        }
+    }
 
     // Stage 14A.3 / CUDA --render-aovs precedent: set a non-
     // zero observer velocity so the DopplerFactor /
@@ -2793,6 +2821,12 @@ OptixRenderer::render_aovs(
     // to short-circuit the observer_beta write arm.
     params.aov_observer_beta =
         static_cast<float*>(d_aov_observer_b);
+    // FIELD-I.11 — null when the gate is off; allocated
+    // buffer when the trailing `field_debug` parameter is
+    // `true`. The OptiX programs guard on this pointer to
+    // short-circuit the FieldScalar write arm.
+    params.aov_field_scalar =
+        static_cast<float*>(d_aov_field_scalar);
     // SCHW.7 — per-launch manifold/chart payload. Threaded
     // from the host caller so the OptiX kernels can engage
     // the SchwarzschildLike warp arm when the operator
@@ -2813,6 +2847,21 @@ OptixRenderer::render_aovs(
     // re-growing the launch-params POD or the
     // entry-point signature.
     params.observer_frame    = observer_frame;
+    // FIELD-I.11: per-launch scalar-field config
+    // payload. Default
+    // `disabled_scalar_field_config()` is the byte-
+    // identity no-op anchor; even when the FieldScalar
+    // AOV pointer is non-null, the OptiX program arm's
+    // `evaluate(...)` short-circuits to `0.0f` at every
+    // position. The OptiX programs read this field
+    // exclusively in the new FieldScalar AOV-write arm
+    // (gated on `field_debug` above + `params.aov_field_scalar
+    // != nullptr`); the beauty / Normal / Depth /
+    // Albedo / DopplerFactor / SearchlightFactor /
+    // ManifoldCoordinates / ObserverBeta arms do NOT
+    // read this field (the FIELD-I.6 task brief's
+    // "no field-to-beauty mapping yet" non-goal).
+    params.scalar_field_config = scalar_field_config;
 
     {
         const ::cudaError_t e = ::cudaMemcpy(
@@ -2927,6 +2976,24 @@ OptixRenderer::render_aovs(
         R.message =
             "render_aovs: cudaMemcpy(d->h, "
             "aov_observer_beta) failed";
+        return R;
+    }
+    // FIELD-I.11 — only download the field_scalar AOV
+    // when the host allocated the device buffer (i.e.
+    // the trailing `field_debug` parameter was `true`).
+    // On the default path `d_aov_field_scalar` is
+    // `nullptr` and `R.field_scalar` stays as a
+    // default-constructed empty `Image{}`. Single-
+    // channel scalar replicated to RGB at download
+    // time via `download_1_replicate` (same shape as
+    // the existing `Depth` / `DopplerFactor` /
+    // `SearchlightFactor` 1-channel AOVs).
+    if (d_aov_field_scalar != nullptr
+     && !download_1_replicate(d_aov_field_scalar, R.field_scalar)) {
+        cleanup();
+        R.message =
+            "render_aovs: cudaMemcpy(d->h, "
+            "aov_field_scalar) failed";
         return R;
     }
 
@@ -3357,7 +3424,18 @@ OptixRenderer::render_pathtrace_progressive(
     unsigned int /*seed*/,
     const std::vector<int>& /*checkpoint_samples*/,
     float /*firefly_clamp*/,
-    bool  /*enable_nee*/) noexcept {
+    bool  /*enable_nee*/,
+    // FIELD-I.11 prerequisite fix: bring the audit-host stub
+    // signature in line with the header. The MANI-I.5 +
+    // OBSERVER.10 trailing-parameter additions on the SDK
+    // body's signature were not mirrored on this stub
+    // (no `RR_ENABLE_OPTIX=ON` audit run since); this slice
+    // satisfies the operator's "Must compile with OptiX OFF
+    // and ON" rule for the FIELD-I.11 bridge by closing the
+    // pre-existing mismatch. Parameter behaviour unchanged
+    // (stub always returns "requires OptiX SDK" message).
+    rr::manifold::ManifoldMode /*manifold_mode*/,
+    rr::manifold::ObserverFrame /*observer_frame*/) noexcept {
     PathtraceProgressiveResult r;
     r.ok = false;
     r.message =
@@ -3406,7 +3484,11 @@ OptixRenderer::render_aovs(
     int /*width*/,
     int /*height*/,
     rr::manifold::ManifoldMode /*manifold_mode*/,
-    rr::manifold::CoordinateChart /*coordinate_chart*/) noexcept {
+    rr::manifold::CoordinateChart /*coordinate_chart*/,
+    rr::manifold::ObserverFrame /*observer_frame*/,
+    bool /*observer_debug*/,
+    rr::field::ScalarFieldConfig /*scalar_field_config*/,
+    bool /*field_debug*/) noexcept {
     AovResult r;
     r.ok = false;
     r.message =

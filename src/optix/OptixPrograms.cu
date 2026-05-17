@@ -355,6 +355,16 @@ extern "C" __global__ void __miss__radiance() {
             optixLaunchParams.aov_observer_beta[pix_idx_3 + 1] = 0.0f;
             optixLaunchParams.aov_observer_beta[pix_idx_3 + 2] = 0.0f;
         }
+        // FIELD-I.11 — scalar-field diagnostic AOV (miss side).
+        // Writes `0.0f` matching the Depth / DopplerFactor /
+        // SearchlightFactor 1-channel AOVs' miss convention.
+        // Null-gated; see the closest-hit arm for the host-
+        // side allocation status (gated on the trailing
+        // `field_debug` parameter of `render_aovs`). Single-
+        // channel write reusing the local `pix_idx_1` index.
+        if (optixLaunchParams.aov_field_scalar != nullptr) {
+            optixLaunchParams.aov_field_scalar[pix_idx_1] = 0.0f;
+        }
     }
 }
 
@@ -921,6 +931,49 @@ extern "C" __global__ void __closesthit__radiance() {
             optixLaunchParams.observer_frame.beta.y;
         optixLaunchParams.aov_observer_beta[pix_idx_3 + 2] =
             optixLaunchParams.observer_frame.beta.z;
+    }
+    // FIELD-I.11 — scalar-field diagnostic AOV. Writes
+    // `rr::field::evaluate(optixLaunchParams.scalar_field_config,
+    // hit_pos)` per hit pixel. The raw scalar sample is the
+    // AOV's value; no `FieldMappingConfig` transform (no
+    // strength / bias / clamp / target-channel routing) is
+    // applied this slice per the FIELD-I.6 task brief's "no
+    // field-to-beauty mapping yet" non-goal. Mirrors the
+    // CUDA-side FIELD-I.9 arm at `CudaTestKernel.cu` in
+    // shape (null-gated; 1-float-per-pixel write; same
+    // RR_HD inline `evaluate(...)` helper from
+    // `src/field/ScalarField.h` for cross-backend math
+    // equivalence by construction). The world-space hit
+    // position is recomputed locally from the OptiX intrinsic
+    // ray-origin + ray-direction + t (mirrors the
+    // `manifold_coordinates` arm's recompute at this scope).
+    // The host-side `OptixRenderer::render_aovs` allocates
+    // the device buffer only when its trailing `field_debug`
+    // parameter is `true`; until a future CLI bridge slice
+    // flips that gate, every dispatcher caller passes
+    // `false` (the AOV is structurally unreachable). On
+    // the default `disabled_scalar_field_config()` config
+    // the evaluator's `enabled = false` short-circuit
+    // returns `0.0f` at every position; the AOV PPM is
+    // flat black — the documented "field-disabled =
+    // neutral/zero diagnostic" anchor.
+    if (optixLaunchParams.aov_field_scalar != nullptr) {
+        const uint3 idx_fs = optixGetLaunchIndex();
+        const int   x_fs   = static_cast<int>(idx_fs.x);
+        const int   y_fs   = static_cast<int>(idx_fs.y);
+        const int   W_fs   = optixLaunchParams.width;
+        const int   pix_idx_1 = y_fs * W_fs + x_fs;
+        const float3 ro_fs = optixGetWorldRayOrigin();
+        const float3 rd_fs = optixGetWorldRayDirection();
+        const float  t_fs  = optixGetRayTmax();
+        const rr::math::Vec3 hit_pos_v3{
+            ro_fs.x + t_fs * rd_fs.x,
+            ro_fs.y + t_fs * rd_fs.y,
+            ro_fs.z + t_fs * rd_fs.z};
+        optixLaunchParams.aov_field_scalar[pix_idx_1] =
+            rr::field::evaluate(
+                optixLaunchParams.scalar_field_config,
+                hit_pos_v3);
     }
 }
 

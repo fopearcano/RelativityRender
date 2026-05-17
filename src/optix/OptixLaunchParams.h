@@ -2,6 +2,7 @@
 
 #include "camera/CameraRay.h"
 #include "cuda/CudaTexture.cuh"        // Stage 20M: DeviceTextureView
+#include "field/ScalarField.h"         // FIELD-I.11: per-launch scalar-field config payload
 #include "geometry/Triangle.h"         // Stage 20M: per-vertex UV indexing
 #include "lighting/Light.h"            // Stage 20K: Light POD union
 #include "manifold/CoordinateChart.h"  // SCHW.7: per-launch chart payload
@@ -350,6 +351,30 @@ struct OptixLaunchParams {
     // per the OBSERVER.12 task brief §4.2 contract.
     float* aov_observer_beta = nullptr;
 
+    // ---- FIELD-I.11 scalar-field diagnostic AOV ----
+    //
+    // 1 float / pixel (single-channel scalar; the result of
+    // `rr::field::evaluate(scalar_field_config, hit_pos)` on
+    // hit; `0.0f` on miss). Mirrors the CUDA-side
+    // `DeviceAOVView::field_scalar` slot landed at FIELD-I.9.
+    // Default `nullptr` makes the OptiX closest-hit / miss
+    // programs' field_scalar write arms short-circuit,
+    // preserving the pre-FIELD-I.11 pixel output byte-for-
+    // byte. The host-side `OptixRenderer::render_aovs`
+    // allocates a device buffer for this slot only when its
+    // trailing `bool field_debug` parameter is `true` (the
+    // dispatcher will gate allocation on a future
+    // `cfg.field_debug_visualization` field; until that CLI
+    // bridge slice lands, every caller passes `false` and
+    // the AOV is structurally unreachable). Read-only on
+    // the scalar-field payload — no `FieldMappingConfig`
+    // transform is applied per the FIELD-I.6 task brief's
+    // "no field-to-beauty mapping yet" non-goal. The PPM
+    // download path uses the same `download_1_replicate`
+    // helper as the existing `Depth` / `DopplerFactor` /
+    // `SearchlightFactor` 1-channel AOVs.
+    float* aov_field_scalar = nullptr;
+
     // ---- MANI-I.5 manifold rendering mode ----
     //
     // Per-launch Manifold Core mode the renderer reads to
@@ -447,6 +472,45 @@ struct OptixLaunchParams {
     // but is not read by any closest-hit / miss /
     // raygen program.
     rr::manifold::ObserverFrame observer_frame{};
+
+    // ---- FIELD-I.11 per-launch scalar-field config payload ----
+    //
+    // Mirrors the CUDA side's
+    // `CudaSceneView::scalar_field_config` field landed at
+    // FIELD-I.9. The FIELD-I.4 + FIELD-I.2 tagged-form
+    // `rr::field::ScalarFieldConfig` POD; default
+    // `disabled_scalar_field_config()` (= `enabled = false`,
+    // `strength = 0.0f`, `kind = Constant`, all other
+    // defaults = 0). With the default, the OptiX closest-hit
+    // / miss programs' FieldScalar AOV-write arm computes
+    // `rr::field::evaluate(scalar_field_config, hit_pos)`
+    // which short-circuits to `0.0f` at every position (the
+    // FIELD-I.3 audit's three-layer no-op anchor).
+    //
+    // The OptiX programs read this field **only** when the
+    // corresponding `aov_field_scalar` device pointer is
+    // non-null (i.e. when the operator has requested the
+    // diagnostic AOV via the trailing `bool field_debug`
+    // parameter on `OptixRenderer::render_aovs(...)`). No
+    // other program reads this field — the FIELD-I.6 task
+    // brief's "no field-to-beauty mapping yet" non-goal is
+    // satisfied structurally because the beauty / Normal /
+    // Depth / Albedo / DopplerFactor / SearchlightFactor /
+    // ManifoldCoordinates / ObserverBeta arms do NOT read
+    // `scalar_field_config`.
+    //
+    // Populated by `OptixRenderer::render_aovs` from its
+    // trailing-defaulted `scalar_field_config` parameter
+    // (mirrors the OBSERVER.10 / OBSERVER.13 trailing-
+    // defaulted-parameter ABI-extension pattern). Until a
+    // future CLI / scene-loader slice lands the authoring
+    // surface (the renumbered FIELD-I.13 CLI + Config
+    // bridge), every dispatcher call site passes the
+    // default; the AOV write arm therefore writes `0.0f`
+    // per pixel when the AOV is requested (the documented
+    // "field-disabled = neutral/zero diagnostic" anchor
+    // from the FIELD-I.6 task brief's §3.2).
+    rr::field::ScalarFieldConfig scalar_field_config{};
 };
 
 }  // namespace rr::optix

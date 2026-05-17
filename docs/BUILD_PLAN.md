@@ -87345,6 +87345,280 @@ is reserved for the post-CLI-bridge SDK-host
 runtime pass that exercises both kernels
 end-to-end.
 
+## FIELD-I.11 — Scalar Field OptiX Bridge (impl, OptiX launch payload + programs)
+
+**Scope of this slice (per the operator's *FIELD-I.11 —
+Scalar Field OptiX Bridge* task brief): mirror the
+FIELD-I.9 CUDA bridge for the OptiX path. Thread the
+FIELD-I.2 `rr::field::ScalarFieldConfig` POD into the
+OptiX launch payload (`OptixLaunchParams`) and add the
+OptiX closest-hit + miss program arms that consume it
+to write the FIELD-I.7 FieldScalar diagnostic AOV.
+OptiX-only; CUDA path is byte-identical to the FIELD-I.10
+audit baseline. Single-source-of-truth math with the
+FIELD-I.9 CUDA arm — both backends call the same
+`RR_HD inline rr::field::evaluate(...)` helper from
+`src/field/ScalarField.h`. Plus a prerequisite stub
+signature fix for `render_pathtrace_progressive`'s
+audit-host fallback (MANI-I.5 + OBSERVER.10 latent
+mismatch) so the operator's "Must compile with OptiX
+OFF and ON" rule is honoured for the FIELD-I.11 bridge.**
+
+### What ships
+
+- **`src/optix/OptixLaunchParams.h` (modified, +60
+  lines).** Adds:
+    - **`float* aov_field_scalar = nullptr`** — the
+      OptiX-side AOV-pass device buffer pointer
+      (sibling of `aov_observer_beta`). Default
+      `nullptr` makes the closest-hit / miss programs'
+      FieldScalar write arms short-circuit. The
+      host-side allocator gates on the trailing
+      `field_debug` parameter of `render_aovs(...)`.
+    - **`rr::field::ScalarFieldConfig scalar_field_config{}`**
+      — the OptiX-side per-launch field-config payload
+      (sibling of `observer_frame`). Default
+      `disabled_scalar_field_config()` keeps the
+      evaluator short-circuited even when the AOV
+      pointer is non-null.
+  New `#include "field/ScalarField.h"`.
+
+- **`src/optix/OptixRenderer.h` (modified, +55
+  lines).** Adds:
+    - **`rr::image::Image field_scalar`** field on
+      `AovResult` (sibling of `observer_beta`).
+      Encoded as 1-channel scalar replicated to RGB
+      at download time via the existing
+      `download_1_replicate` helper.
+    - **`rr::field::ScalarFieldConfig scalar_field_config = {}`**
+      trailing defaulted parameter on
+      `render_aovs(...)` (after `observer_debug`).
+    - **`bool field_debug = false`** trailing
+      defaulted parameter on `render_aovs(...)` (the
+      AOV opt-in gate; mirrors the OBSERVER.13
+      `observer_debug` shape).
+  Mirrors the OBSERVER.10 / OBSERVER.13 trailing-
+  defaulted-parameter ABI-extension pattern verbatim.
+  New `#include "field/ScalarField.h"`.
+
+- **`src/optix/OptixRenderer.cpp` (modified, +80
+  lines).** SDK-host body extended with:
+    - New `d_aov_field_scalar` device buffer local
+      (sibling of `d_aov_observer_b`).
+    - Opt-in `cudaMalloc` block (mirrors the
+      OBSERVER.13 `if (observer_debug)` block);
+      single-channel (`aov1_floats`) mirroring
+      Depth / DopplerFactor / SearchlightFactor.
+    - `params.aov_field_scalar` assignment from the
+      device buffer pointer.
+    - `params.scalar_field_config` assignment from
+      the trailing parameter.
+    - `download_1_replicate(d_aov_field_scalar,
+      R.field_scalar)` download path (mirrors the
+      OBSERVER.13 `download_3` path shape).
+  Audit-host fallback stub signature updated to
+  match the new header (the trailing
+  `scalar_field_config` + `field_debug` parameters).
+  Plus the prerequisite `render_pathtrace_progressive`
+  audit-host stub signature fix (adds the missing
+  `manifold_mode` + `observer_frame` trailing
+  parameters from the MANI-I.5 + OBSERVER.10 latent
+  mismatch).
+
+- **`src/optix/OptixPrograms.cu` (modified, +52
+  lines).** Adds:
+    - **Miss arm** (`__miss__radiance`): null-gated
+      write of `0.0f` to `aov_field_scalar[pix_idx_1]`
+      (mirrors the OBSERVER.13 + ManifoldCoordinates
+      miss arms; reuses the local `pix_idx_1` index).
+    - **Closest-hit arm** (`__closesthit__radiance`):
+      null-gated write of
+      `rr::field::evaluate(optixLaunchParams.scalar_field_config,
+      hit_pos)` to `aov_field_scalar[pix_idx_1]`.
+      World-space hit position recomputed locally
+      from `optixGetWorldRayOrigin()` +
+      `optixGetWorldRayDirection()` +
+      `optixGetRayTmax()` (mirrors the
+      `manifold_coordinates` arm's recompute pattern
+      because `hit_pos` is locally scoped to that
+      arm). Same RR_HD inline `evaluate(...)` helper
+      as the CUDA arm — single-source-of-truth math.
+  Doc-comments document: the no-mapping contract
+  (per FIELD-I.6 §6 non-goal); the structural
+  unreachability this slice (no caller flips the
+  pointer on); the disabled-field neutral-zero
+  anchor; cross-backend bit-identity via
+  `evaluate(...)` single-source-of-truth.
+
+- **`CMakeLists.txt` (modified, +7 lines).** Adds
+  `rr_field` as a PUBLIC link dep on `rr_optix`
+  (mirrors the FIELD-I.9 `rr_gpu` PUBLIC precedent +
+  the existing `rr_manifold` PUBLIC precedent). The
+  new `OptixLaunchParams::scalar_field_config` +
+  `OptixRenderer::AovResult::field_scalar` fields
+  expose `rr::field::ScalarFieldConfig` by value;
+  rr_optix consumers (RelativityRender,
+  optix_tests) inherit the include path via the
+  PUBLIC link.
+
+### What does NOT ship
+
+- **No CUDA changes.** Operator brief explicitly
+  forbids: "Do not change CUDA unless required by
+  shared type consistency". The `src/cuda/` tree is
+  byte-identical to the FIELD-I.10 audit baseline
+  (`9a12fa9`). The FIELD-I.9 CUDA bridge surface is
+  preserved verbatim; no shared-type adjustment
+  needed (both backends consume the
+  `rr::field::ScalarFieldConfig` POD directly).
+- **No CLI flag.** No `--field-debug` modifier
+  flag. No `--field-*` authoring flag. No
+  `src/core/CommandLine.cpp` extension. The
+  `field_debug` trailing parameter on
+  `render_aovs(...)` is structurally unreachable
+  this slice; every dispatcher caller passes
+  `false` (the default). A future CLI bridge
+  slice flips the gate.
+- **No `rr::core::Config` extension.** No
+  `scalar_field_config` field on `Config`.
+- **No dispatcher emit.** No `main.cpp`
+  extension. No new PPM file path
+  (`output/optix_aov_field_scalar.ppm`).
+- **No fixture scene.**
+- **No companion fixture doc.**
+- **No beauty-pass modification.** Every existing
+  CLI action's beauty output is pixel-bit-identical
+  to the pre-FIELD-I.11 baseline. The new OptiX
+  arms fire ONLY when `aov_field_scalar !=
+  nullptr`, which never holds in any current
+  dispatcher call site.
+- **No observer/manifold behaviour change.** The
+  OBSERVER.* + OBS-P.* + OBS-F.* + SCHW.* +
+  PENROSE.* arcs' verdicts carry forward unchanged.
+- **No `render_pathtrace_progressive` SDK-body
+  modification.** Only the audit-host stub
+  signature is updated (prerequisite to satisfy
+  the operator's "Must compile with OptiX OFF and
+  ON" rule); the SDK body's behaviour is
+  byte-unchanged. No field-config threading on
+  the path-tracer entry; FIELD-I.11 scopes to
+  `render_aovs` only.
+- **No field-to-color / emission mapping.**
+  Operator brief explicitly forbids. The OptiX
+  closest-hit / miss arms read
+  `scalar_field_config` exclusively for the AOV-
+  write path; the beauty-pass arithmetic does NOT
+  consume `scalar_field_config`.
+- **No quantum / tensor / curvature simulation.**
+- **No `.rrscene` schema bump.**
+- **No `MODULE_MAP.md` update.**
+- **No C4D / server / UI / node-editor touch.**
+
+### Acceptance
+
+- **Compiles with OptiX OFF.** Audit-host build
+  green; full rebuild via `cmake --build
+  /home/user/RelativityRender/build` adds no new
+  warnings on any module. Ctest 13/13 PASS
+  (renderer_tests: 35/35, field_tests: 135/135,
+  all other suites unchanged).
+- **Compiles with OptiX ON (no SDK fallback).**
+  `cmake -S . -B /tmp/rr_build_optix_no_sdk
+  -DRR_ENABLE_OPTIX=ON && cmake --build
+  /tmp/rr_build_optix_no_sdk` succeeds. Ctest
+  14/14 PASS (the extra `optix_tests` target
+  added when `RR_ENABLE_OPTIX=ON`). The
+  audit-host stub fallback path is exercised
+  empirically because the SDK is not present;
+  this verifies my FIELD-I.11 stub signature
+  matches the header.
+- **No behaviour change.** No CLI action's
+  output is altered. The OptiX programs' new
+  arms fire only when the AOV pointer is non-
+  null, which is structurally unreachable
+  because no caller passes `field_debug = true`
+  this slice.
+- **Internally consistent.** The new
+  `scalar_field_config` field on
+  `OptixLaunchParams` + the trailing
+  `scalar_field_config` parameter on
+  `render_aovs(...)` follow the OBSERVER.10
+  precedent verbatim. The new
+  `aov_field_scalar` pointer + trailing
+  `field_debug` parameter follow the OBSERVER.13
+  precedent verbatim. The kernel write arms
+  mirror the OBSERVER.13 `observer_beta` arm's
+  shape (null-gated; closest-hit + miss
+  branches; same single-source-of-truth math
+  leaf). The new `rr_field` PUBLIC link on
+  `rr_optix` mirrors both the FIELD-I.9
+  `rr_gpu` precedent + the existing
+  `rr_manifold` PUBLIC precedent on rr_optix.
+- **Cross-backend math equivalence by
+  construction.** The OptiX FieldScalar write
+  arm at `OptixPrograms.cu` calls
+  `rr::field::evaluate(scalar_field_config,
+  hit_pos)` — the same `RR_HD inline` helper
+  the CUDA FIELD-I.9 arm at
+  `CudaTestKernel.cu` calls. Both backends
+  consume the same `rr::field::ScalarFieldConfig`
+  POD definition. Cross-backend bit-identity
+  is structurally guaranteed (not just
+  empirically hoped for).
+- **Honest scope.** Master rule #3 ("no fake
+  stubs") satisfied: the OptiX arms are fully
+  wired (real `evaluate(...)` invocation;
+  real pointer dereferences; real on-hit +
+  on-miss branches). Master rule #11
+  satisfied: the cross-backend equivalence is
+  documented + structurally guaranteed by the
+  shared math leaf. Master rule #12 satisfied:
+  scope deliberately narrow to OptiX bridge
+  only — CLI deferred; dispatcher emit
+  deferred; fixture scene deferred; mapping
+  deferred. The prerequisite
+  `render_pathtrace_progressive` stub fix is
+  bounded — only the audit-host fallback
+  stub signature changes; the SDK body is
+  untouched.
+
+### Module status changes
+
+`docs/MODULE_MAP.md` is *not* updated by this
+slice. The `rr_optix` library gains an explicit
+PUBLIC link to `rr_field` (the
+INTERFACE/header-only Field Interpretation
+Layer skeleton). With FIELD-I.11 in, both
+backends have symmetric FieldScalar AOV
+plumbing: `AOVTargets::field_scalar` (CUDA) +
+`OptixLaunchParams::aov_field_scalar` (OptiX);
+`CudaSceneView::scalar_field_config` (CUDA) +
+`OptixLaunchParams::scalar_field_config`
+(OptiX); both write arms call the same
+`rr::field::evaluate(...)` helper. The
+FIELD-I.11 verdict authorises the operator to
+proceed to: **(a)** the FIELD-I.11 audit (a
+docs-only verdict slice mirroring the
+FIELD-I.10 / FIELD-I.8 audit-slot insertion
+precedent; RECOMMENDED before the next impl
+slot, to lock in the OptiX bridge contract
+before the CLI bridge); **(b)** FIELD-I.* —
+CLI + Config + dispatcher bridge (the natural
+next bridge slice that flips both AOV gates
+on simultaneously via the `--field-debug`
+CLI flag; threads `cfg.scalar_field_config`
+from operator-authoring CLI through
+`run_render_aovs` AND `run_render_optix_aovs`
+into both `AOVTargets::scalar_field_config`
+and `OptixRenderer::render_aovs(...)`'s
+trailing parameter; closes the FIELD-I.10
++ FIELD-I.12 audits' runtime-deferred
+portions on SDK-host); **(c)** manifold-
+orthogonal work. The FIELD-I.* arc's
+`**Wired**` promotion is reserved for the
+post-CLI-bridge SDK-host runtime pass that
+exercises both backend kernels end-to-end.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
