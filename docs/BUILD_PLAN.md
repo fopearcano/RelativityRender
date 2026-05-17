@@ -84044,6 +84044,308 @@ denoiser integration with chart-
 aware AOVs; path-tracer feature
 breadth).
 
+## OBS-F.3 — ObserverFrame Fixture Audit (docs only)
+
+**Scope of this slice (per the operator's *OBS-F.3
+— ObserverFrame Fixture Audit* task brief): write
+`docs/OBSERVER_FRAME_FIXTURE_AUDIT.md`, the
+per-slice verdict document for OBS-F.2
+(`c547f2d`). Verifies the nine items the task
+brief enumerates — fixture scene exists; fixture
+uses non-default ObserverFrame values; perception
+mode is ConstantVelocityMinkowski; values are
+bounded/safe; default scenes remain unchanged;
+parser changes minimal; no CUDA/OptiX kernel
+changes; runtime status; verdict — and produces
+a `PASS` / `REPAIR` / `BLOCKED` verdict with
+check #8 separately recording the runtime
+CUDA/OptiX status (`PASS` / `DEFERRED` /
+`BLOCKED`). Documentation only; no source code,
+no test, no CMake, no scene file, no
+behavioural change.**
+
+### What ships
+
+- **`docs/OBSERVER_FRAME_FIXTURE_AUDIT.md`
+  (new).** Per-slice verdict document mirroring
+  the SCHW.10 / PENROSE.11 (fixture audits) +
+  MANI-I.9 / OBSERVER.9 / OBSERVER.11 /
+  OBSERVER.14 / OBS-P.3 (runtime-deferred
+  audit) shapes:
+    - **§1 VERDICT** — `PASS`. All eight
+      structural checks return `PASS`; check
+      #8 (runtime CUDA/OptiX) is `DEFERRED`
+      on the documented audit-host SDK-
+      absence limitation but recorded as a
+      known scope boundary, not a verdict
+      modifier; check #9 (overall verdict)
+      is `PASS` because the audit-host
+      portion of the OBS-F arc is fully
+      verifiable + verified.
+    - **§2 PER-CHECK RESULTS** — nine-row
+      evidence table. Each row cites
+      concrete file/line observations on
+      the OBS-F.2 surface:
+        - **Check #1** (fixture exists):
+          `scenes/test_observer_frame.rrscene`
+          (72 lines) is valid JSON parsed
+          via existing `rr::io::load(...)`
+          helper without error; companion
+          doc (1175 lines) documents the
+          fixture; both verified by
+          inspection.
+        - **Check #2** (non-default values):
+          four-field verified — `enabled =
+          true`, `betaVelocity = 0.5`,
+          `velocityDirection = [0, 0, -1]`,
+          three strengths at 1.0; scene-
+          loader resolves
+          `observer_velocity = (0, 0, -0.5)`
+          (audit-host smoke transcript
+          confirms).
+        - **Check #3** (perception mode):
+          CLI-engagement verified — the
+          OBSERVER.4
+          `--observer-perception-mode
+          relativistic` CLI flag is the
+          operator-facing path; NO
+          `.rrscene` schema extension
+          (documented design decision from
+          OBS-F.1 §1 / §2.2 / §2.9). Master
+          rule #3 satisfied.
+        - **Check #4** (bounded/safe):
+          five-axis verified — beta within
+          clampBeta cap (0.5 < 0.999999);
+          direction finite + unit-length;
+          camera + spheres + mesh + lights
+          all pass safety gates.
+        - **Check #5** (default scenes
+          unchanged): `git diff
+          5f8cabc..c547f2d --name-only --
+          'scenes/'
+          ':(exclude)scenes/test_observer_frame.rrscene'`
+          returns zero hits. Every
+          existing `.rrscene` file
+          byte-unchanged.
+        - **Check #6** (minimal parser
+          changes): `git diff
+          5f8cabc..c547f2d --name-only --
+          'src/io/'` returns zero hits.
+          ZERO parser extension.
+        - **Check #7** (no CUDA/OptiX
+          kernel changes): `git diff
+          5f8cabc..c547f2d --name-only --
+          'src/*' 'tests/*' 'CMakeLists.txt'`
+          returns zero hits. Pure data +
+          documentation addition; renderer
+          surface byte-unchanged from
+          OBS-P.3 baseline.
+        - **Check #8** (runtime CUDA/OptiX
+          status): `DEFERRED` on audit-host
+          SDK-absence. The 7 SDK-host
+          runtime checks from the OBS-F.2
+          companion doc §6 are enumerated.
+        - **Check #9** (verdict): `PASS`.
+    - **§3 REASONING SUMMARY** — recap of
+      the OBS-F.2 commit's two-file
+      addition (fixture scene + companion
+      doc), per-check reasoning paragraphs
+      tying each verdict back to its
+      evidence, and the explicit framing
+      that the audit-host portion of the
+      OBS-F arc is fully verifiable +
+      verified while the runtime portion
+      is a documented scope boundary.
+    - **§4 NEXT** — three candidate next
+      slots with prioritisation:
+        - **(RECOMMENDED) Deferred
+          SDK-host runtime pass** — run
+          the fixture per the OBS-F.2 §6's
+          7 checks. Converts the entire
+          OBSERVER.* + OBS-P.* + OBS-F.*
+          arc family's verdicts from
+          PASS_WITH_RUNTIME_DEFERRED →
+          PASS (OBSERVER.9 + OBSERVER.11
+          + OBSERVER.14 audits;
+          OBSERVER.15 capstone;
+          OBSERVER.15 §10 risk #2 + #3;
+          OBS-P.3 audit; this OBS-F.3
+          audit's check #8).
+        - **Manifold-orthogonal work**:
+          MANI-I.12 cross-host audit; the
+          Field Interpretation Layer
+          Phase 1; denoiser integration
+          with chart-aware AOVs; path-
+          tracer feature breadth.
+        - **(NOT RECOMMENDED) Observer
+          scene-block parser extension**
+          — separate task brief; not
+          recommended as immediate next
+          slot because the OBSERVER.4
+          CLI surface + OBS-F.2 fixture
+          composition cover the operator's
+          authoring needs.
+    - **§5 REFERENCES** — 23-entry list
+      spanning master instructions,
+      architecture-doc, OBSERVER.1 plan,
+      OBSERVER.15 capstone, OBS-F.1 task
+      brief, OBS-F.2 companion doc, every
+      relevant OBSERVER.* + OBS-P.* /
+      precedent fixture / fixture-audit
+      doc, every source file the
+      fixture exercises without
+      modifying (verified at check #7),
+      every unchanged test file, and
+      both surrounding commit SHAs
+      (`c547f2d` audited / `5f8cabc`
+      baseline).
+
+### What does NOT ship
+
+- **No source code.** Nothing in any
+  `src/` subtree is touched (`git diff`
+  outside `docs/` ⇒ 0 bytes). The
+  post-OBS-F.2 HEAD = `c547f2d`
+  baseline is preserved exactly.
+- **No new test binary.** ctest set
+  unchanged at 12. Test counts
+  unchanged (`relativity_tests:
+  841/841`; `manifold_identity_tests:
+  408/408`; `cli_tests: 274/274`;
+  `renderer_tests: 27/27`).
+- **No CMake change.**
+- **No scene file modification.**
+  Every `.rrscene` file (including
+  the new `test_observer_frame.rrscene`
+  from OBS-F.2) is byte-unchanged.
+- **No `OBSERVER_FRAME_FIXTURE.md`
+  modification.** The OBS-F.2
+  companion doc is preserved verbatim
+  as the historical-snapshot
+  fixture-runtime reference; this
+  audit doc is the per-slice
+  verdict.
+- **No `OBSERVER_FRAME_FIXTURE_TASK.md`
+  modification.** The OBS-F.1 task
+  brief is preserved.
+- **No prior-arc-document
+  modification.** Every OBSERVER.* +
+  OBS-P.* arc document preserved
+  verbatim.
+- **No `MODULE_MAP.md` update.** The
+  fixture's runtime-validation
+  effect on the OBSERVER.* arc's
+  `**Wired**` promotion is reserved
+  for the deferred SDK-host runtime
+  pass; that pass's audit lands the
+  module-map update if appropriate.
+- **No `MANIFOLD_INTEGRATION_PLAN.md`
+  update.**
+- **No `BUILD_PLAN.md` historical
+  rewrite.** Every prior entry
+  stays as-is.
+- **No Kerr / Kruskal work.**
+- **No C4D / server / UI /
+  node-editor touch.**
+
+### Acceptance
+
+- **Compiles.** Documentation-only
+  slice; no build configuration
+  touched. The audit-host build
+  remains at the post-OBS-F.2
+  baseline (`100% tests passed,
+  0 tests failed out of 12`;
+  `relativity_tests: 841/841
+  passed`;
+  `manifold_identity_tests:
+  408/408`;
+  `cli_tests: 274/274 passed`;
+  `renderer_tests: 27/27
+  passed`).
+- **Internally consistent.** The
+  nine-row evidence table cites
+  concrete file/line positions on
+  the OBS-F.2 surface (the
+  fixture's 72 lines + the
+  companion doc's 1175 lines),
+  concrete diff observations
+  (4 `git diff` invocations
+  filtered against scene /
+  parser / source / CMake
+  subtrees, all returning zero
+  hits outside the documented
+  fixture + companion doc +
+  BUILD_PLAN.md changes), and
+  the audit-host
+  `--scene-info` smoke transcript
+  from the OBS-F.2 landing
+  commit. The runtime-status
+  treatment matches the
+  OBSERVER.9 / OBSERVER.11 /
+  OBSERVER.14 / OBS-P.3
+  precedent.
+- **Verdict honesty.** The
+  verdict is `PASS` because the
+  structural checks pass; check
+  #8 records `DEFERRED` honestly
+  as a known scope boundary (the
+  audit-host CAN verify
+  structural correctness; the
+  SDK host must verify runtime
+  behaviour). Master rule #3
+  ("no fake stubs") satisfied:
+  the fixture exercises real
+  pre-existing parser surface +
+  real pre-existing kernel reads;
+  no placeholder; no fake stub.
+  Master rule #12 ("Do not
+  overbuild a later system
+  before the current layer
+  works") satisfied: the OBS-F
+  arc deliberately avoids a
+  scene-file `observer` block
+  extension; the operator's
+  authoring needs are covered
+  by the OBSERVER.4 CLI surface
+  + the OBS-F.2 fixture
+  composition.
+
+### Module status changes
+
+`docs/MODULE_MAP.md` is *not*
+updated by this slice. With
+OBS-F.3 closing the OBS-F arc's
+audit chain, the
+`src/manifold/CameraObserverAdapter.h`
+/ `src/manifold/ObserverFrame.h`
+module-map status remains
+**Skeleton-Plus**. The
+`**Wired**` promotion is
+reserved for the deferred
+SDK-host runtime pass that
+exercises the fixture end-to-end
+(per OBS-F.2 §6's 7 checks). The
+OBS-F.3 verdict authorises the
+operator to proceed to: **(a)**
+the deferred SDK-host runtime
+pass (RECOMMENDED highest
+priority; converts the entire
+OBSERVER.* + OBS-P.* + OBS-F.*
+arc family's verdicts from
+PASS_WITH_RUNTIME_DEFERRED →
+PASS); **(b)** manifold-
+orthogonal work (MANI-I.12 final
+cross-host manifold audit; the
+Field Interpretation Layer Phase
+1; denoiser integration with
+chart-aware AOVs; path-tracer
+feature breadth); **(c)** an
+observer scene-block parser
+extension (NOT recommended;
+operator's CLI authoring is
+sufficient).
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
