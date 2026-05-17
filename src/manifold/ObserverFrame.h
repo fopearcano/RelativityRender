@@ -491,4 +491,88 @@ struct ObserverConfig {
     bool debug_visualization = false;
 };
 
+// OBS-PERCEPT.3 — unified primary-ray aberration helper.
+//
+// Applies observer-frame constant-velocity directional
+// aberration to a single ray direction. The helper takes
+// the `ObserverFrame` POD directly + the ray direction;
+// the three-gate activation logic (per the OBS-PERCEPT.2
+// task brief §2) is internal:
+//
+//   1. **Outer gate**: `obs_frame.perception_mode ==
+//      ConstantVelocityMinkowski`. On any other mode
+//      (Identity, CurvedChartGeodesicPlaceholder), the
+//      helper short-circuits and returns the input
+//      direction unchanged. The kernel arm's call site
+//      dispatches to the legacy
+//      `rr::relativity::aberrateDirection(rel, dir)` path
+//      on the closed-gate else branch (preserving the
+//      post-OBS-P.2 behaviour for the legacy
+//      `--render-relativistic` flow + the default
+//      Identity-mode `--render-*` flows).
+//
+//   2. **Inner gate**: `|obs_frame.beta| > 0`. The helper
+//      checks `beta . beta > 0` to avoid the `sqrt` cost
+//      + makes the |beta|=0 → no-op contract explicit
+//      (the pre-OBS-PERCEPT.3 behaviour at |beta|=0 was
+//      structurally identity because the math leaf
+//      internally short-circuits at `beta_mag <= 1e-12`,
+//      but the gate makes the no-op a documented
+//      contract rather than a math-leaf-incidental
+//      behaviour).
+//
+//   3. **Safe clamp**: `obs_frame.beta` is assumed
+//      already-clamped to `max_beta = 0.999999f` by the
+//      OBSERVER.6 adapter's `clampBeta(...)` second-pass.
+//      The helper does NOT re-clamp; the
+//      `rr::relativity::aberrateDirection(beta, dir)`
+//      math leaf is structurally NaN/Inf-safe at the
+//      clamp shell per the OBSERVER.6 audit's
+//      `clampBeta`-safety test battery.
+//
+// When all three gates open, the helper returns the
+// aberrated direction via the existing
+// `rr::relativity::aberrateDirection(beta_vec, direction)`
+// math leaf (the two-argument form; the helper does NOT
+// take a `PrecomputedRelativity` snapshot so as to avoid
+// coupling the OBS-PERCEPT.3 helper signature to the
+// snapshot type — the per-thread duplicate sqrt cost is
+// minor since the primary-ray site fires once per
+// thread, not per bounce).
+//
+// CUDA-side call site (OBS-PERCEPT.3): replaces the
+// post-OBS-P.2 guarded ternary's true branch at the
+// three primary-ray sites (`k_render_scene`,
+// `k_sphere_relativistic`, `k_pathtrace_sample`). The
+// else branch (legacy `observer.velocity` path) is
+// preserved verbatim at the call site.
+//
+// OptiX-side call site (OBS-PERCEPT.4): mirrors the
+// CUDA-side dispatch. Out of scope for OBS-PERCEPT.3;
+// deferred.
+RR_HD inline rr::math::Vec3 apply_observer_primary_ray_aberration(
+        const ObserverFrame& obs_frame,
+        rr::math::Vec3       direction) {
+    // Outer gate: perception_mode.
+    if (obs_frame.perception_mode !=
+            PerceptionMode::ConstantVelocityMinkowski) {
+        return direction;
+    }
+    // Inner gate: |beta| > 0 (squared-magnitude check
+    // avoids the sqrt cost and is exact at beta=0).
+    const rr::math::Vec3 beta = obs_frame.beta;
+    const float beta2 = beta.x * beta.x
+                      + beta.y * beta.y
+                      + beta.z * beta.z;
+    if (!(beta2 > 0.0f)) {
+        return direction;
+    }
+    // Aberration via the existing math leaf. The
+    // two-argument form computes `gamma` + `beta_mag`
+    // internally; the per-thread duplicate is minor
+    // because the primary-ray site fires once per
+    // pixel-thread, not per bounce.
+    return rr::relativity::aberrateDirection(beta, direction);
+}
+
 }

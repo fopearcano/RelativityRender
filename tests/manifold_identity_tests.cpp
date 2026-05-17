@@ -2012,6 +2012,136 @@ void test_observer_6_proper_time_propagates() {
     RR_CHECK(f_id.proper_time == 0.0f);
 }
 
+// OBS-PERCEPT.3 — unified primary-ray aberration helper tests.
+// Verifies the three-gate activation logic from the
+// OBS-PERCEPT.2 task brief §2 + the no-op invariants from §3.
+void test_obs_percept_3_identity_mode_returns_input_direction() {
+    using rr::manifold::ObserverFrame;
+    using rr::manifold::PerceptionMode;
+    using rr::manifold::apply_observer_primary_ray_aberration;
+    using rr::math::Vec3;
+
+    // Default ObserverFrame carries perception_mode = Identity.
+    // The outer gate closes; the helper returns the input
+    // direction unchanged regardless of beta.
+    ObserverFrame f;
+    f.perception_mode = PerceptionMode::Identity;
+    f.beta            = Vec3{0.5f, 0.0f, 0.0f};  // non-zero, deliberately
+
+    const Vec3 in_dir{0.0f, 0.0f, -1.0f};
+    const Vec3 out_dir =
+        apply_observer_primary_ray_aberration(f, in_dir);
+
+    // Identity gate closes → direction unchanged byte-for-byte.
+    RR_CHECK(out_dir.x == in_dir.x);
+    RR_CHECK(out_dir.y == in_dir.y);
+    RR_CHECK(out_dir.z == in_dir.z);
+}
+
+void test_obs_percept_3_constant_velocity_zero_beta_returns_input() {
+    using rr::manifold::ObserverFrame;
+    using rr::manifold::PerceptionMode;
+    using rr::manifold::apply_observer_primary_ray_aberration;
+    using rr::math::Vec3;
+
+    // ConstantVelocityMinkowski mode + zero beta. Outer gate
+    // opens; inner |beta|>0 gate closes; the helper returns
+    // the input direction unchanged.
+    ObserverFrame f;
+    f.perception_mode = PerceptionMode::ConstantVelocityMinkowski;
+    f.beta            = Vec3{0.0f, 0.0f, 0.0f};
+
+    const Vec3 in_dir{0.0f, 0.0f, -1.0f};
+    const Vec3 out_dir =
+        apply_observer_primary_ray_aberration(f, in_dir);
+
+    // Inner gate closes → direction unchanged byte-for-byte.
+    RR_CHECK(out_dir.x == in_dir.x);
+    RR_CHECK(out_dir.y == in_dir.y);
+    RR_CHECK(out_dir.z == in_dir.z);
+}
+
+void test_obs_percept_3_constant_velocity_nonzero_beta_aberrates() {
+    using rr::manifold::ObserverFrame;
+    using rr::manifold::PerceptionMode;
+    using rr::manifold::apply_observer_primary_ray_aberration;
+    using rr::math::Vec3;
+
+    // ConstantVelocityMinkowski + non-zero beta. Both gates
+    // open; the helper applies the
+    // rr::relativity::aberrateDirection math leaf.
+    ObserverFrame f;
+    f.perception_mode = PerceptionMode::ConstantVelocityMinkowski;
+    f.beta            = Vec3{0.0f, 0.0f, -0.5f};
+
+    // Forward-direction ray (along the observer's velocity axis).
+    const Vec3 in_dir{0.0f, 0.0f, -1.0f};
+    const Vec3 out_dir =
+        apply_observer_primary_ray_aberration(f, in_dir);
+
+    // The aberration math leaf at beta = (0, 0, -0.5) +
+    // direction = (0, 0, -1) returns the same direction
+    // (the ray is anti-parallel to beta, so the boost is
+    // purely along the direction; no transverse aberration).
+    // Net result: out_dir.z stays negative; magnitude stays 1.
+    const float out_mag2 =
+        out_dir.x * out_dir.x +
+        out_dir.y * out_dir.y +
+        out_dir.z * out_dir.z;
+    RR_CHECK(approx(out_mag2, 1.0f, 1.0e-5f));
+    RR_CHECK(out_dir.z < 0.0f);
+
+    // Now a TRANSVERSE direction: ray going along +X while
+    // observer moves along -Z. The aberration leaf should
+    // produce a non-trivial directional change (the X axis
+    // bends toward the direction of motion).
+    const Vec3 transverse_in{1.0f, 0.0f, 0.0f};
+    const Vec3 transverse_out =
+        apply_observer_primary_ray_aberration(f, transverse_in);
+    // Boosted direction still unit-length:
+    const float t_mag2 =
+        transverse_out.x * transverse_out.x +
+        transverse_out.y * transverse_out.y +
+        transverse_out.z * transverse_out.z;
+    RR_CHECK(approx(t_mag2, 1.0f, 1.0e-5f));
+    // And materially different from the input (transverse
+    // aberration bends the direction). We don't pin the
+    // exact value here (the math leaf has its own tests);
+    // we just verify the helper composes the leaf correctly
+    // by asserting a non-trivial change.
+    const bool changed =
+        std::fabs(transverse_out.x - transverse_in.x) > 1.0e-4f ||
+        std::fabs(transverse_out.z - transverse_in.z) > 1.0e-4f;
+    RR_CHECK(changed);
+}
+
+void test_obs_percept_3_curved_placeholder_returns_input() {
+    using rr::manifold::ObserverFrame;
+    using rr::manifold::PerceptionMode;
+    using rr::manifold::apply_observer_primary_ray_aberration;
+    using rr::math::Vec3;
+
+    // CurvedChartGeodesicPlaceholder mode: outer gate
+    // closes (only ConstantVelocityMinkowski opens it);
+    // the helper returns the input direction unchanged.
+    // Master rule #3: the placeholder mode is honestly
+    // documented as no-output-this-slice; the OBS-PERCEPT.3
+    // helper preserves this contract.
+    ObserverFrame f;
+    f.perception_mode = PerceptionMode::CurvedChartGeodesicPlaceholder;
+    f.beta            = Vec3{0.5f, 0.0f, 0.0f};  // non-zero, deliberately
+
+    const Vec3 in_dir{0.0f, 0.0f, -1.0f};
+    const Vec3 out_dir =
+        apply_observer_primary_ray_aberration(f, in_dir);
+
+    // Outer gate closes on the placeholder mode → direction
+    // unchanged byte-for-byte.
+    RR_CHECK(out_dir.x == in_dir.x);
+    RR_CHECK(out_dir.y == in_dir.y);
+    RR_CHECK(out_dir.z == in_dir.z);
+}
+
 }  // namespace
 
 int main() {
@@ -2082,6 +2212,12 @@ int main() {
     test_observer_6_config_direction_normalised();
     test_observer_6_zero_direction_falls_back_to_camera_forward();
     test_observer_6_clamp_beta_safety();
+
+    // OBS-PERCEPT.3: unified primary-ray aberration helper.
+    test_obs_percept_3_identity_mode_returns_input_direction();
+    test_obs_percept_3_constant_velocity_zero_beta_returns_input();
+    test_obs_percept_3_constant_velocity_nonzero_beta_aberrates();
+    test_obs_percept_3_curved_placeholder_returns_input();
     test_observer_6_curved_placeholder_returns_rest_with_tag();
     test_observer_6_tetrad_orthonormal();
     test_observer_6_finite_value_guarantee();

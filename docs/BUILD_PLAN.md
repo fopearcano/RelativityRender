@@ -90651,6 +90651,286 @@ exercises both backend kernels' unified
 perception-transform arms end-to-end against
 the OBS-PERCEPT.6 fixture.
 
+## OBS-PERCEPT.3 — CUDA Primary-Ray Perception Transform (impl, kernel arms + helper)
+
+**Scope of this slice (per the operator's *OBS-PERCEPT.3
+— CUDA Primary-Ray Perception Transform* task brief):
+land the unified primary-ray observer-frame aberration
+helper + the CUDA kernel-arm consolidation at the
+three primary-ray sites (`k_render_scene`,
+`k_sphere_relativistic`, `k_pathtrace_sample`). CUDA-
+only per the operator's brief; OptiX deferred to
+OBS-PERCEPT.4. The helper applies directional aberration
+ONLY when both gates open
+(`perception_mode == ConstantVelocityMinkowski` AND
+`|beta| > 0`); default `Identity` mode + zero-beta
+both short-circuit the helper to identity-behaviour.
+The Doppler / searchlight call sites remain on the
+post-OBS-P.2 guarded ternary verbatim (deferred to
+future OBS-PERCEPT.* sub-slices).**
+
+### What ships
+
+- **`src/manifold/ObserverFrame.h` (modified, +75
+  lines).** Adds the unified
+  `apply_observer_primary_ray_aberration(observer_frame,
+  direction) → Vec3` RR_HD inline helper in the
+  `rr::manifold::` namespace at the end of the file
+  (before the closing `}` of the namespace).
+  Three-gate activation logic verified at the test
+  binary's four new tests below:
+    - **Outer gate**: `obs_frame.perception_mode ==
+      ConstantVelocityMinkowski`. On any other mode
+      the helper short-circuits to identity.
+    - **Inner gate**: `|obs_frame.beta|² > 0`
+      (squared-magnitude check avoids sqrt cost + is
+      exact at beta=0).
+    - **Safe clamp**: relies on the OBSERVER.6
+      adapter's pre-clamped `beta` (the helper does
+      NOT re-clamp).
+  When all three gates open, the helper returns
+  `rr::relativity::aberrateDirection(beta, direction)`
+  via the existing two-argument math-leaf form
+  (which internally computes `gamma` + `beta_mag`;
+  the per-thread duplicate is minor because the
+  helper fires once per pixel-thread, not per
+  bounce).
+
+- **`src/cuda/CudaTestKernel.cu` (modified, +28
+  lines).** Modifies two primary-ray sites:
+    - `k_render_scene` site at line ~239: replace
+      `aberrateDirection(rel, ...)` with dispatch
+      between `apply_observer_primary_ray_aberration(observer_frame,
+      ...)` (on `perception_active`) + the legacy
+      `aberrateDirection(rel, ...)` (on the Identity
+      fallback). Preserves the post-OBS-P.2 else-
+      branch behaviour for `--render-relativistic`
+      flows that don't engage
+      `--observer-perception-mode relativistic`.
+    - `k_sphere_relativistic` site at line ~364:
+      same dispatch shape.
+
+- **`src/cuda/CudaPathTracer.cu` (modified, +20
+  lines).** Adds the helper call at the
+  `k_pathtrace_sample` primary-ray site
+  (immediately after `generate_primary_ray(...)`).
+  The path-tracer kernel had NO pre-existing
+  aberration call (per the OBS-P.3 audit's check #5);
+  this site is a NEW OBS-PERCEPT.3 perception-
+  engaging path. On default `Identity` mode the
+  helper short-circuits (path-tracer baseline byte-
+  identity preserved); on `ConstantVelocityMinkowski`
+  + non-zero beta the path tracer NOW applies
+  primary-ray aberration (the intended OBS-PERCEPT.*
+  arc semantic). Secondary bounce rays are NOT
+  modified (Option A primary-ray-only per the
+  OBS-PERCEPT.1 plan §5.2).
+
+- **`tests/manifold_identity_tests.cpp` (modified,
+  +136 lines).** Adds the OBS-PERCEPT.3 test block
+  with four new test functions covering the
+  three-gate activation + the math-leaf composition:
+    - `test_obs_percept_3_identity_mode_returns_input_direction`
+      (3 RR_CHECKs): Identity-mode + non-zero beta
+      → outer gate closes; direction unchanged
+      byte-for-byte.
+    - `test_obs_percept_3_constant_velocity_zero_beta_returns_input`
+      (3 RR_CHECKs): ConstantVelocityMinkowski + zero
+      beta → inner gate closes; direction unchanged.
+    - `test_obs_percept_3_constant_velocity_nonzero_beta_aberrates`
+      (4 RR_CHECKs): ConstantVelocityMinkowski +
+      non-zero beta + forward direction → boosted-
+      direction is unit-length + non-trivially
+      differs from input on transverse direction.
+    - `test_obs_percept_3_curved_placeholder_returns_input`
+      (3 RR_CHECKs): CurvedChartGeodesicPlaceholder
+      + non-zero beta → outer gate closes;
+      direction unchanged (master rule #3
+      placeholder honesty).
+  Total: 13 new RR_CHECK assertions;
+  `manifold_identity_tests` grows from 408 → 421.
+
+### What does NOT ship
+
+- **No OptiX modifications.** Per the operator's
+  brief "Do not modify OptiX yet". The `src/optix/`
+  tree is byte-identical to the post-OBS-PERCEPT.2
+  baseline (`0bf2bb8`). The OBS-PERCEPT.4 slice
+  mirrors this CUDA slice on the OptiX path.
+- **No secondary-ray transform.** The CUDA path-
+  tracer's bounce-loop secondary rays are NOT
+  modified. Option A primary-ray-only per
+  OBS-PERCEPT.1 §5.2.
+- **No Doppler / searchlight modifications.** The
+  existing OBS-P.2 guarded-ternary continues to
+  feed those call sites verbatim. Future
+  OBS-PERCEPT.* sub-slices may consolidate them
+  into a unified perception transform; out of
+  scope here.
+- **No new CLI flag.** The existing
+  `--observer-perception-mode relativistic` (from
+  OBSERVER.4) is the load-bearing gate. No new
+  `--observer-perception-aberration` or similar
+  this slice.
+- **No new ObserverFrame POD field.** The
+  OBSERVER.2-shipped POD fields are read as-is;
+  no new fields added; no ABI extension.
+- **No new manifold math.** The `src/manifold/`
+  tree is preserved verbatim except for the new
+  helper in `ObserverFrame.h`. The `world_to_chart`
+  / `chart_to_world` / chart-warp helpers
+  (SCHW.* / PENROSE.*) stay unchanged.
+- **No field interpretation changes.** The
+  `src/field/` tree is byte-identical. The
+  FIELD-I.* + FIELD-BEAUTY.* arc surfaces are
+  preserved.
+- **No legacy `observer.velocity` removal.** The
+  legacy `rr::relativity::Observer::velocity`
+  field is preserved on the host-side payload +
+  the post-OBS-P.2 guarded-ternary's else-branch
+  continues to read it on Identity-mode flows
+  (`--render-relativistic` without
+  `--observer-perception-mode`).
+- **No fixture authoring.** The OBS-PERCEPT.6
+  slice lands a fixture; this slice consumes
+  the existing OBS-F.2 fixture
+  (`scenes/test_observer_frame.rrscene`) for
+  its runtime-deferred PPM verification.
+- **No debug AOV.** The OBS-PERCEPT.5 slice lands
+  the perception-transform debug AOV (if
+  authorised); this slice does not.
+- **No new CMake target.** The new tests append
+  to the existing `manifold_identity_tests`
+  binary; no new ctest target.
+- **No `MODULE_MAP.md` update.**
+- **No `MANIFOLD_INTEGRATION_PLAN.md` update.**
+- **No `BUILD_PLAN.md` historical rewrite.**
+- **No C4D / server / UI / node-editor touch.**
+
+### Acceptance
+
+- **Compiles with OptiX OFF.** Audit-host build
+  green; full rebuild via `cmake --build
+  /home/user/RelativityRender/build` adds no new
+  warnings on any module. Ctest 13/13 PASS:
+  `manifold_identity_tests: 421/421 passed`
+  (+13 new RR_CHECK assertions from 408
+  baseline); `relativity_tests: 841/841`;
+  `cli_tests: 274/274`; `renderer_tests: 35/35`;
+  `field_tests: 135/135`; every other suite
+  unchanged.
+- **Compiles with OptiX ON (no SDK fallback).**
+  `cmake --build /tmp/rr_build_optix_no_sdk`
+  succeeds; ctest 14/14 PASS (including
+  optix_tests). The OBS-PERCEPT.3 changes
+  (manifold/ObserverFrame.h helper + CUDA
+  kernel-arm modifications) propagate through
+  the rr_manifold + rr_gpu include paths
+  without touching the rr_optix surface.
+- **No behaviour change for existing scenes
+  (default-state byte identity).** Every
+  existing `--render-*` invocation against any
+  default scene WITHOUT
+  `--observer-perception-mode relativistic`
+  preserves byte-identical PPM output to the
+  post-OBS-PERCEPT.2 baseline. The new helper's
+  outer gate closes on default Identity mode;
+  the legacy `aberrateDirection(rel, ...)` path
+  fires via the dispatch's else branch on the
+  two existing primary-ray sites; the path-
+  tracer site's new helper call is no-op on
+  Identity. Empirical SDK-host verification
+  deferred per §8.5 of the OBS-PERCEPT.2 task
+  brief.
+- **Zero-beta byte identity.** On
+  `--observer-perception-mode relativistic
+  --observer-beta 0` the inner gate closes;
+  output byte-identical to default-state
+  invocation (empirical verification deferred).
+- **Non-zero-beta behavioural divergence on the
+  path tracer (intended).** On
+  `--observer-perception-mode relativistic
+  --observer-beta 0.5` the `--render-pathtrace`
+  path NOW applies primary-ray aberration where
+  it previously did not (per the OBS-P.3 audit's
+  check #5 observation). This is the
+  OBS-PERCEPT.* arc's intended new semantic
+  (the path tracer becomes perception-engaging).
+  Empirical SDK-host verification deferred.
+- **Internally consistent.** The new helper
+  follows the existing manifold-layer
+  `rr::manifold::` namespace convention; uses
+  the existing `rr::relativity::aberrateDirection`
+  math leaf verbatim; mirrors the FIELD-BEAUTY.6
+  five-axis cross-backend symmetry pattern (the
+  OBS-PERCEPT.4 OptiX bridge will inherit the
+  same helper). The kernel-arm dispatch shape
+  preserves the post-OBS-P.2 ternary's else
+  branch on the two existing sites; the path-
+  tracer site has no else branch because there
+  was no pre-existing aberration call to fall
+  back to. The four new test functions cover
+  every gate combination (outer-closed-via-
+  Identity; outer-closed-via-Placeholder;
+  outer-open + inner-closed-via-zero-beta;
+  both-open).
+- **Honest scope.** Master rule #3 satisfied:
+  the placeholder mode's no-transform fallback
+  is honest (the
+  `CurvedChartGeodesicPlaceholder` test
+  empirically verifies the master-rule-#3
+  contract). Master rule #11 satisfied: every
+  documented gate behaviour is tested. Master
+  rule #12 satisfied: scope deliberately narrow
+  to CUDA primary-ray ONLY; OptiX deferred;
+  Doppler/searchlight deferred; per-bounce
+  deferred; debug AOV deferred; fixture deferred.
+  Master rule #16 satisfied: default-off byte
+  identity preserved by the outer-gate +
+  inner-gate composition (Identity mode = outer
+  gate closes; default beta=0 = inner gate
+  closes).
+
+### Module status changes
+
+`docs/MODULE_MAP.md` is *not* updated by this
+slice. The `rr_manifold` library gains the new
+`apply_observer_primary_ray_aberration(...)`
+helper in `ObserverFrame.h`; the library's
+header-only INTERFACE shape is preserved (no
+new TU added). The `rr_gpu` library's
+`CudaTestKernel.cu` + `CudaPathTracer.cu`
+consume the new helper transitively through the
+existing `rr_manifold` PUBLIC link on `rr_gpu`
+(established at OBSERVER.8 / MANI-I.5); no
+CMake change. The OBS-PERCEPT.3 verdict
+authorises the operator to proceed to:
+**(a)** the OBS-PERCEPT.3 audit (a docs-only
+verdict slice mirroring the OBS-P.3 + FIELD-I.10
+audit-slot insertion precedent; RECOMMENDED
+before the next impl slot, to lock in the CUDA
+primary-ray transform's structural contract
+before the OptiX mirror lands);
+**(b)** OBS-PERCEPT.4 — OptiX implementation
+(the renumbered next OBS-PERCEPT.* impl slot;
+mirrors this slice on the OptiX path with the
+same helper at the same kernel sites);
+**(c)** the combined FIELD-* + OBS-PERCEPT CLI
+bridge slice (HIGHLY RECOMMENDED at the
+FIELD-BEAUTY.8 capstone's §4.2 (b) — single
+SDK-host audit closes the entire field-and-
+observer-arc family's runtime-deferred verdict
+tail); **(d)** manifold-orthogonal work;
+**(e)** RETROACTIVE authoring of the missing
+FIELD-BEAUTY.1 + FIELD-BEAUTY.2 +
+FIELD_INTERPRETATION_PHASE1_AUDIT.md slots
+(deferrable to operator discretion). The
+OBS-PERCEPT.* arc's `**Wired**` promotion is
+reserved for the post-OBS-PERCEPT.4 SDK-host
+runtime pass that exercises both backend
+kernels' unified perception-transform arms
+end-to-end.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:

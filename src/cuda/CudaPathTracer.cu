@@ -201,6 +201,25 @@ __global__ void k_pathtrace_sample(float*           pixels,
     rr::camera::CameraRay ray = generate_primary_ray(
         scene.camera, x, y, width, height, jitter.x, jitter.y);
 
+    // OBS-PERCEPT.3 — primary-ray observer-frame aberration.
+    // The helper short-circuits on default Identity
+    // perception_mode (preserves pre-OBS-PERCEPT.3
+    // path-tracer baseline byte-for-byte) and on zero
+    // beta. On `ConstantVelocityMinkowski` perception
+    // mode + non-zero beta, applies Lorentz aberration
+    // to the primary ray direction via the shared
+    // `rr::relativity::aberrateDirection(...)` math leaf.
+    // Secondary bounce rays inside the bounce loop are
+    // NOT modified (Option A primary-ray-only per the
+    // OBS-PERCEPT.1 plan §5.2). The path tracer had NO
+    // pre-existing aberration call (per the OBS-P.3
+    // audit's check #5); this site is a NEW
+    // OBS-PERCEPT.3 perception-engaging path that only
+    // fires when the operator explicitly requests
+    // `--observer-perception-mode relativistic`.
+    ray.direction = rr::manifold::apply_observer_primary_ray_aberration(
+        scene.observer_frame, ray.direction);
+
     Vec3 throughput{1.0f, 1.0f, 1.0f};
     Vec3 radiance{0.0f, 0.0f, 0.0f};
 

@@ -234,10 +234,26 @@ __global__ void k_sphere_relativistic(float* pixels, int width, int height,
     // 1. Camera ray.
     auto ray = rr::camera::generate_camera_ray(cam, x, y, width, height);
 
-    // 2. Aberration.
+    // 2. Aberration. OBS-PERCEPT.3: dispatch between the
+    // unified perception helper (when
+    // `perception_mode == ConstantVelocityMinkowski`)
+    // and the legacy `aberrateDirection(rel, ...)` path
+    // (Identity-mode fallback for backwards compatibility
+    // with `--render-relativistic` flows that don't
+    // engage `--observer-perception-mode relativistic`).
+    // The unified helper applies the inner `|beta| > 0`
+    // gate internally; the legacy path's math leaf
+    // already short-circuits at `beta_mag <= 1e-12` so
+    // both branches are no-op at beta=0.
     if (params.enable_aberration) {
-        ray.direction = rr::relativity::aberrateDirection(rel,
-                                                          ray.direction);
+        if (perception_active) {
+            ray.direction =
+                rr::manifold::apply_observer_primary_ray_aberration(
+                    observer_frame, ray.direction);
+        } else {
+            ray.direction = rr::relativity::aberrateDirection(
+                rel, ray.direction);
+        }
     }
 
     // 3. Sphere intersection.
@@ -359,10 +375,24 @@ __global__ void k_render_scene(float* pixels, int width, int height,
     auto ray = rr::camera::generate_camera_ray(scene.camera,
                                                x, y, width, height);
 
-    // 2. Aberration in the observer's frame.
+    // 2. Aberration in the observer's frame. OBS-PERCEPT.3:
+    // unified perception helper on the
+    // ConstantVelocityMinkowski branch; legacy
+    // `aberrateDirection(rel, ...)` on the Identity
+    // branch (preserves the post-OBS-P.2 fallback for
+    // `--render-relativistic` flows without
+    // `--observer-perception-mode`). See the helper's
+    // doc-comment at `manifold/ObserverFrame.h` for the
+    // three-gate activation logic.
     if (scene.params.enable_aberration) {
-        ray.direction = rr::relativity::aberrateDirection(
-            rel, ray.direction);
+        if (perception_active) {
+            ray.direction =
+                rr::manifold::apply_observer_primary_ray_aberration(
+                    scene.observer_frame, ray.direction);
+        } else {
+            ray.direction = rr::relativity::aberrateDirection(
+                rel, ray.direction);
+        }
     }
 
     // 3. Closest-hit loop. `t_max` tightens as candidates are
