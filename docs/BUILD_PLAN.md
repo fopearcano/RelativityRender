@@ -87619,6 +87619,291 @@ orthogonal work. The FIELD-I.* arc's
 post-CLI-bridge SDK-host runtime pass that
 exercises both backend kernels end-to-end.
 
+## FIELD-I.12 — Scalar Field OptiX Bridge Audit (docs only)
+
+**Scope of this slice (per the operator's *FIELD-I.12 —
+Scalar Field OptiX Bridge Audit* task brief): write
+`docs/FIELD_SCALAR_OPTIX_BRIDGE_AUDIT.md`, the
+per-slice verdict document for FIELD-I.11 (`e15934e`).
+Verifies the nine items the task brief enumerates —
+OptiX scalar-field payload exists if needed; scalar-
+field config reaches OptiX launch params; semantics
+match CUDA scalar-field payload; default disabled
+field remains no-op; no beauty shading changes; no
+observer/manifold behaviour changes; OptiX OFF build
+remains valid; runtime CUDA/OptiX status
+(PASS / DEFERRED / BLOCKED); and the overall verdict
+(PASS / REPAIR / BLOCKED). Documentation only; no
+source code, no test, no CMake, no scene file, no
+behavioural change.**
+
+### What ships
+
+- **`docs/FIELD_SCALAR_OPTIX_BRIDGE_AUDIT.md` (new,
+  ~750 lines).** Per-slice verdict document mirroring
+  the FIELD-I.10 + OBSERVER.14 + MANI-I.9 precedent
+  OptiX-bridge audit shapes:
+    - **§1 VERDICT** — `PASS`. All eight structural /
+      runtime-status checks return their expected
+      verdicts. Check #8 (runtime CUDA/OptiX) is
+      `PASS_WITH_RUNTIME_DEFERRED`. The FIELD-I.10
+      audit's OptiX-side
+      `DEFERRED-FUTURE-WIRING` shape is partially
+      closed: the OptiX kernel arm exists this slice
+      so the OptiX portion converges to the standard
+      runtime-deferred shape (audit-host has no
+      OptiX SDK). The remaining deferral on both
+      backends is the SDK-host runtime pass at the
+      future CLI bridge slice's audit.
+    - **§2 PER-CHECK RESULTS** — nine-row evidence
+      table. Each row cites concrete file / line
+      observations on the FIELD-I.11 surface:
+        - **Check #1** (OptiX scalar-field payload):
+          POD embedded directly on
+          `OptixLaunchParams` at line 513 (POD-
+          trivial + RR_HD-friendly; mirrors
+          FIELD-I.9 CUDA decision verbatim).
+        - **Check #2** (config reaches OptiX launch
+          params): three-layer threading —
+          `render_aovs(...)` trailing param
+          (`OptixRenderer.h:551`) → threading
+          (`OptixRenderer.cpp:2864`) →
+          `OptixLaunchParams` payload field
+          (`OptixLaunchParams.h:513`); matching
+          AOV pointer flows alongside.
+        - **Check #3** (semantics match CUDA
+          payload): five-axis symmetry — same POD
+          type, same default, same null-gate, same
+          math (single-source-of-truth RR_HD inline
+          `evaluate(...)`), same encoding (1-float
+          per pixel via `pix_idx_1`). Cross-backend
+          bit-identity guaranteed by construction;
+          SDK-host runtime equivalence pass
+          deferred.
+        - **Check #4** (default disabled field
+          remains no-op): three-layer anchor —
+          null pointer gate (`field_debug = false`
+          default at `OptixRenderer.h:567`) +
+          disabled-config gate (`scalar_field_config
+          = {}` default at `OptixRenderer.h:551`) +
+          evaluator short-circuit (FIELD-I.3
+          audit's check #2). No caller flips
+          `field_debug = true` this slice.
+        - **Check #5** (no beauty shading changes):
+          new arms positioned at the END of
+          `__miss__radiance` AOV-write block + at
+          the END of `__closesthit__radiance`'s
+          body; per-line diff confirms zero
+          changes inside the beauty-path color
+          computation block.
+        - **Check #6** (no observer/manifold
+          behaviour changes): `git diff
+          9a12fa9..e15934e --name-only --
+          'src/manifold/' 'src/relativity/'`
+          returns zero hits. Existing OBSERVER.13
+          + SCHW.7 + PENROSE.8 + MANI-I.8 arms
+          byte-identical.
+        - **Check #7** (OptiX OFF build remains
+          valid): audit-host `ctest 13/13 PASS`;
+          per-binary counts unchanged from
+          FIELD-I.10. The audit-host build is
+          structurally insulated because
+          `if(RR_ENABLE_OPTIX)` is false so
+          `rr_optix` is not compiled.
+        - **Check #8** (runtime CUDA/OptiX
+          status): `PASS_WITH_RUNTIME_DEFERRED`.
+          Both backends now have kernel arms
+          (CUDA at FIELD-I.9, OptiX at
+          FIELD-I.11); both audit-host build +
+          OptiX-ON-no-SDK build empirically
+          verified (14/14 ctest PASS at FIELD-I.11
+          landing's `/tmp/rr_build_optix_no_sdk`).
+          SDK-host runtime scenarios from
+          FIELD-I.6 §8 all deferred to future CLI
+          bridge slice's audit.
+        - **Check #9** (verdict): `PASS`.
+    - **§3 REASONING SUMMARY** — recap of the
+      FIELD-I.11 commit's six-file shape (4
+      OptiX sources + CMakeLists.txt +
+      BUILD_PLAN.md), per-check reasoning
+      paragraphs tying each verdict back to its
+      evidence, the five-axis cross-backend
+      symmetry argument at §3.4, master-rule
+      satisfaction recap (#3 + #11 + #12 + #16),
+      and the explicit framing that FIELD-I.11 is
+      an OptiX-bridge slice with SDK-host runtime
+      DEFERRED + CUDA path preserved-unchanged.
+    - **§4 NEXT** — documents the renumbered
+      FIELD-I.* sub-slice ladder absorbing the
+      FIELD-I.12 audit slot: FIELD-I.13 = CLI +
+      Config + dispatcher bridge; FIELD-I.14 =
+      CLI bridge audit; FIELD-I.15 = mapping CLI;
+      FIELD-I.16 = mapping CLI audit; FIELD-I.17
+      = mapping kernel pipeline; FIELD-I.18 =
+      mapping pipeline audit; FIELD-I.19 =
+      fixture; FIELD-I.20 = fixture audit;
+      FIELD-I.21 = arc capstone. Three candidate
+      next slots with prioritisation: (a)
+      FIELD-I.13 CLI + Config + dispatcher
+      bridge (RECOMMENDED — flips both backend
+      AOV gates reachable simultaneously); (b)
+      manifold-orthogonal work; (c) direct
+      FIELD-I.4 mapping CLI surface skipping
+      diagnostic AOV CLI (NOT recommended —
+      would author mapping without visual
+      diagnostics).
+    - **§5 REFERENCES** — entry list spanning
+      master instructions, architecture-doc,
+      design-doc §4.6 anchor, FIELD-I.1 plan,
+      FIELD-I.3 + FIELD-I.5 + FIELD-I.6 +
+      FIELD-I.8 + FIELD-I.10 precedent docs,
+      FIELD-I.7 AOV data-model commit,
+      FIELD-I.9 CUDA bridge commit,
+      FIELD-I.11 commit (`e15934e`),
+      FIELD-I.10 baseline commit (`9a12fa9`),
+      the audited 4 OptiX source files +
+      CMakeLists.txt change, every unchanged
+      source / test / build file, OBSERVER.10 +
+      OBSERVER.13 + OBSERVER.14 precedent OptiX-
+      bridge references.
+
+### What does NOT ship
+
+- **No source code.** Nothing in any `src/`
+  subtree is touched. The post-FIELD-I.11 HEAD
+  = `e15934e` baseline is preserved exactly.
+  `git diff e15934e..HEAD -- 'src/'` returns
+  zero hits.
+- **No new test binary.** ctest set unchanged
+  at 13 (audit-host). Test counts unchanged
+  (`relativity_tests: 841/841`;
+  `manifold_identity_tests: 408/408`;
+  `cli_tests: 274/274`;
+  `renderer_tests: 35/35`;
+  `field_tests: 135/135`).
+- **No CMake change.** The `rr_field` PUBLIC
+  link on `rr_optix` from FIELD-I.11 is
+  preserved verbatim.
+- **No `OptixLaunchParams.h` / `OptixRenderer.h`
+  / `OptixRenderer.cpp` / `OptixPrograms.cu`
+  modification.** The FIELD-I.11 OptiX bridge
+  surface is preserved verbatim.
+- **No `FIELD_SCALAR_CUDA_BRIDGE_AUDIT.md`
+  modification.** The FIELD-I.10 precedent is
+  preserved verbatim.
+- **No `FIELD_SCALAR_DIAGNOSTIC_AOV_TASK.md` /
+  `FIELD_SCALAR_DIAGNOSTIC_AOV_AUDIT.md`
+  modification.** The FIELD-I.6 + FIELD-I.8
+  precedents are preserved verbatim.
+- **No `FIELD_INTERPRETATION_PHASE1_PLAN.md`
+  modification.** The FIELD-I.1 plan is the
+  canonical FIELD-I.* arc reference.
+- **No prior-arc-document modification.** Every
+  OBSERVER.* + OBS-P.* + OBS-F.* + FIELD-I.1 –
+  FIELD-I.11 arc document preserved verbatim.
+- **No `MODULE_MAP.md` update.**
+- **No `MANIFOLD_INTEGRATION_PLAN.md` update.**
+- **No `BUILD_PLAN.md` historical rewrite.**
+  Every prior entry stays as-is; the FIELD-I.12
+  entry appends at the end of the FIELD-I.11
+  entry.
+- **No new perception model.**
+- **No quantum / tensor / curvature
+  simulation.**
+- **No C4D / server / UI / node-editor touch.**
+
+### Acceptance
+
+- **Compiles.** Documentation-only slice; no
+  build configuration touched. The audit-host
+  build remains at the post-FIELD-I.11 baseline
+  (`100% tests passed, 0 tests failed out of
+  13`; `renderer_tests: 35/35`;
+  `field_tests: 135/135`;
+  `relativity_tests: 841/841`;
+  `manifold_identity_tests: 408/408`;
+  `cli_tests: 274/274`). The OptiX-ON-no-SDK
+  build remains at the FIELD-I.11 baseline
+  (14/14 ctest PASS).
+- **Internally consistent.** The nine-row
+  evidence table cites concrete file / line
+  positions on the FIELD-I.11 surface (the +64
+  lines on `OptixLaunchParams.h` with explicit
+  line ranges for the new `aov_field_scalar`
+  pointer + `scalar_field_config` POD; the +59
+  lines on `OptixRenderer.h` with line ranges
+  for the new `field_scalar` + trailing-
+  defaulted params; the +106 lines on
+  `OptixRenderer.cpp` with line ranges for the
+  signature extension + alloc + threading +
+  download + stub fixes; the +53 lines on
+  `OptixPrograms.cu` with the miss + closest-hit
+  arms at lines 365-367 + 960-980; the +7 lines
+  on `CMakeLists.txt`), concrete diff
+  observations (two `git diff` invocations
+  filtered against `src/cuda/` and
+  `src/manifold/ src/relativity/`, both
+  returning zero hits), and the audit-host
+  ctest transcript from the FIELD-I.11 landing
+  commit. The five-axis cross-backend symmetry
+  argument at §3.4 introduces a more
+  prescriptive precedent for future bridge
+  audits.
+- **Verdict honesty.** The verdict is `PASS`
+  because: (a) the structural OptiX-bridge
+  surface is well-formed; (b) the
+  cross-backend semantics match CUDA via the
+  five-axis symmetry; (c) the CUDA path is
+  preserved-unchanged per the operator's
+  explicit non-modification rule; (d) the
+  OptiX OFF build is empirically verified
+  (audit-host 13/13 PASS); (e) the OptiX
+  ON-no-SDK build is empirically verified
+  (14/14 PASS at FIELD-I.11 landing). The
+  runtime status's
+  `PASS_WITH_RUNTIME_DEFERRED` is honest: the
+  SDK-host kernel verification scenarios from
+  FIELD-I.6 §8 apply but cannot be exercised
+  this audit because of the SDK absence; the
+  future CLI bridge slice's audit will close
+  the deferrals on an SDK host. Master rule
+  #3 + #11 + #12 + #16 satisfied.
+
+### Module status changes
+
+`docs/MODULE_MAP.md` is *not* updated by this
+slice. The `rr_optix` library's module-map
+status carries forward from the FIELD-I.11
+entry unchanged (with the `rr_field` PUBLIC
+link in place). The FIELD-I.12 audit
+authorises the operator to proceed to:
+**(a)** FIELD-I.13 — CLI + Config + dispatcher
+bridge (the renumbered next FIELD-I.* impl
+slot; RECOMMENDED as natural continuation of
+the FIELD-I.* arc; flips both backend AOV
+gates reachable simultaneously via the
+`--field-debug` CLI flag; threads
+`cfg.scalar_field_config` from CLI through
+both `run_render_aovs` AND
+`run_render_optix_aovs` into their respective
+payload fields; closes the FIELD-I.10 +
+FIELD-I.12 audits' runtime-deferred portions
+on SDK-host); **(b)** manifold-orthogonal
+work (deferred SDK-host runtime pass for the
+OBSERVER.* + OBS-P.* + OBS-F.* arc family;
+MANI-I.12 final cross-host manifold audit;
+denoiser integration with chart-aware AOVs;
+path-tracer feature breadth);
+**(c)** a direct FIELD-I.4 `FieldMappingConfig`
+CLI surface slice skipping the FIELD-I.13
+bridge (NOT recommended — would author the
+mapping CLI without a diagnostic AOV to
+verify mapping behaviour visually). The
+FIELD-I.* arc's `**Wired**` promotion is
+reserved for the post-CLI-bridge SDK-host
+runtime pass that exercises both backend
+kernels end-to-end.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
