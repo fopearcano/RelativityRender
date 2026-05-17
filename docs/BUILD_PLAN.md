@@ -85228,6 +85228,364 @@ reserved for the deferred FIELD-I.6 +
 FIELD-I.7 GPU bridges + the FIELD-I.8
 fixture's SDK-host runtime pass.
 
+## FIELD-I.4 — Field Mapping Config (impl, POD-leaf + tests)
+
+**Scope of this slice (per the operator's *FIELD-I.4 —
+Field Mapping Config* task brief + the FIELD-I.1 plan
+as canonical reference): add the `FieldMappingTarget`
+enum + the single-target tagged-form `FieldMappingConfig`
+POD to `src/field/FieldMapping.h` so the FIELD-I.* arc
+has an artist-authoring mapping record that pairs with
+the FIELD-I.2 `ScalarFieldConfig`. Four target channels
+ship: `None` (the explicit default no-op anchor),
+`ColorMultiplier` (beauty-pass color modulation),
+`Emission` (additive luminance), `DiagnosticAOV`
+(dedicated AOV write). Five shaping parameters per the
+brief: `strength` / `bias` / `min_value` / `max_value`
+/ `clamp_output`. Plus 55 new RR_CHECK assertions
+appended to the existing `tests/field_tests.cpp` binary
+(total now 135 / 135 PASS). Header-only POD-leaf
+change; no CUDA, no OptiX, no renderer integration, no
+new perception model.**
+
+### What ships
+
+- **`src/field/FieldMapping.h` (modified, +176 lines).**
+  Adds (after the existing FIELD.3 multi-channel
+  `FieldMapping` POD + `target_strength(...)` accessor +
+  `disabled_field_mapping()` factory, all preserved
+  verbatim):
+    - **`FieldMappingTarget` enum** (4 enumerators):
+      `None = 0` (the explicit default anchor; a
+      default-constructed `FieldMappingConfig{}` carries
+      this target; `evaluate_mapping(...)` short-
+      circuits to `0.0f` regardless of any other
+      parameter), `ColorMultiplier`, `Emission`,
+      `DiagnosticAOV`. The other FIELD.3
+      `FieldOutputChannel` enumerators (`Distortion`,
+      `Density`, `ChromaticShift`) are intentionally
+      NOT exposed here per the FIELD-I.1 plan §2.3:
+      Phase 1 ships only the three channel targets the
+      brief names. Future FIELD-I.* sub-slices may
+      widen this enum without breaking the no-op
+      anchor.
+    - **`FieldMappingConfig` POD** carrying the
+      operator's brief-specified fields:
+        - `FieldMappingTarget target = None` — active
+          target selector (the no-op anchor when `None`).
+        - `float strength = 0.0f` — multiplicative
+          scale on the raw scalar sample.
+        - `float bias = 0.0f` — additive offset
+          applied after the strength multiplication
+          (useful for re-centering `[-1, 1]`
+          procedurals around a positive emission
+          baseline).
+        - `float min_value = 0.0f` — lower clamp
+          bound. Consulted only when
+          `clamp_output = true`.
+        - `float max_value = 1.0f` — upper clamp
+          bound. Consulted only when
+          `clamp_output = true`. Required
+          `max_value >= min_value` for a non-
+          degenerate range; the evaluator collapses
+          to returning `min_value` on degenerate
+          configs (defence-in-depth against artist
+          authoring errors).
+        - `bool clamp_output = false` — master
+          toggle for the clamp stage. Default
+          `false` (the strength + bias shaping is
+          enough for the common authoring case;
+          clamping is opt-in).
+      Default state is the documented no-op anchor:
+      `disabled_field_mapping_config()` returns
+      `FieldMappingConfig{}` byte-for-byte; every
+      `evaluate_mapping(...)` call site returns
+      `0.0f` because `target = None` short-circuits
+      the evaluator.
+    - **`evaluate_mapping(FieldMappingConfig, float)
+      → float`** RR_HD inline evaluator. When
+      `target == None`, short-circuits to `0.0f`.
+      Otherwise computes `mapped = strength * sample
+      + bias`; when `clamp_output = true`, clamps
+      `mapped` into `[min_value, max_value]` (with
+      degenerate-range defence-in-depth collapsing
+      to `min_value`). Returns the per-channel
+      contribution; the renderer (future FIELD-I.5
+      / FIELD-I.6 kernel bridges) is expected to
+      write the contribution to the channel
+      identified by `mapping.target`.
+    - **`disabled_field_mapping_config()`** factory
+      returning the default no-op anchor. Mirrors
+      the `disabled_scalar_field_config()` factory
+      precedent from FIELD-I.2.
+  Distinct from the FIELD.3 `FieldMapping` POD
+  preserved verbatim above:
+    - **FIELD.3 form** (`FieldMapping`): multi-
+      channel mapping with 5 per-channel strengths
+      (`color_multiplier` / `emission` /
+      `distortion_strength` / `alpha_density` /
+      `diagnostic_aov`); a single mapping
+      contributes to multiple channels
+      simultaneously. Preserved for future multi-
+      channel authoring use cases.
+    - **FIELD-I.4 form** (`FieldMappingConfig`):
+      single-target tagged with richer shaping
+      parameters (strength + bias + clamp range +
+      clamp toggle). The FIELD-I.* arc's authoring
+      + kernel-bridge surface.
+  Both coexist on the same header; the FIELD-I.*
+  arc consumes the FIELD-I.4 form; the legacy
+  FIELD.3 form remains valid.
+
+- **`tests/field_tests.cpp` (modified, +245 lines).**
+  Adds §7 (FieldMappingTarget + FieldMappingConfig)
+  test section with 15 new test functions covering
+  the 55 new RR_CHECK assertions:
+    - `test_field_mapping_target_enumerators_distinct`
+      (pairwise enumerator distinctness +
+      `None = 0` explicit anchor).
+    - `test_disabled_field_mapping_config_factory` (6
+      RR_CHECK on every field's default value).
+    - `test_default_field_mapping_config_default_constructed`
+      (verifies factory output is byte-identical
+      to default-constructed POD).
+    - `test_evaluate_mapping_default_target_none_returns_zero`
+      (4 representative samples on the default
+      config).
+    - `test_evaluate_mapping_target_none_short_circuits`
+      (target = None short-circuits even when every
+      other parameter is dialled to non-default
+      values — the "no-op anchor is load-bearing"
+      check).
+    - `test_evaluate_mapping_color_multiplier_no_clamp`
+      (4 representative samples on the
+      `strength = 2, bias = 1` config; verifies the
+      `mapped = strength * sample + bias` math).
+    - `test_evaluate_mapping_emission_target_routes`
+      (verifies the Emission enumerator follows the
+      same evaluator path — the target selector
+      determines which channel the renderer writes
+      to, not the math).
+    - `test_evaluate_mapping_diagnostic_aov_target_routes`
+      (verifies the DiagnosticAOV enumerator
+      follows the same evaluator path).
+    - `test_evaluate_mapping_zero_strength_returns_bias`
+      ("wired but quiet" anchor: target != None +
+      strength = 0 collapses to just the bias term).
+    - `test_evaluate_mapping_bias_additive` (bias is
+      purely additive; no interaction with
+      strength).
+    - `test_evaluate_mapping_clamp_output_disabled_passes_through`
+      (clamp_output = false → out-of-range output
+      passes through unchanged).
+    - `test_evaluate_mapping_clamp_output_enabled_clamps_high`
+      (above-max output gets clamped to max).
+    - `test_evaluate_mapping_clamp_output_enabled_clamps_low`
+      (below-min output gets clamped to min).
+    - `test_evaluate_mapping_clamp_output_enabled_passes_through_in_range`
+      (in-range output passes through unchanged
+      even with clamp_output = true).
+    - `test_evaluate_mapping_clamp_degenerate_range_returns_min`
+      (defence-in-depth on `max_value < min_value`).
+    - `test_evaluate_mapping_negative_strength`
+      (negative strength inverts the field's
+      contribution — artist may want a "bright
+      field → dark output" map).
+
+### What does NOT ship
+
+- **No renderer integration.** Operator brief
+  explicitly forbids. Nothing in `src/cuda/` /
+  `src/optix/` / `src/pathtracer/` /
+  `src/renderer/` / `src/scene/` / `src/io/`
+  is touched. The `FieldMappingConfig` POD lives
+  on `rr_field` only; no consumer reads it from
+  the launch payload yet.
+- **No CUDA changes.** Operator brief explicitly
+  forbids. The `RR_HD inline` decoration on the
+  new `evaluate_mapping(...)` helper preserves
+  device-callability for future FIELD-I.5 /
+  FIELD-I.6 kernel-bridge consumption, but no
+  CUDA TU consumes the helper this slice.
+- **No OptiX changes.** Operator brief
+  explicitly forbids.
+- **No quantum / tensor / curvature simulation.**
+  Operator brief explicitly forbids. The
+  reserved field types
+  (`Vector` / `Tensor` / `Curvature` /
+  `ProbabilityAmplitudePlaceholder`) remain
+  reserved-but-inert.
+- **No new perception model.** Operator brief
+  explicitly forbids. The three existing
+  `PerceptionMode` enumerators preserved
+  verbatim. The FIELD-I.4 surface does not
+  interact with the OBSERVER.* arc.
+- **No new field type beyond scalar.** Phase 1
+  is scalar-only per the FIELD-I.1 plan §2.1.
+- **No additional target channels beyond the
+  brief's three.** `Distortion` / `Density` /
+  `ChromaticShift` (preserved on the legacy
+  `FieldOutputChannel` enum from FIELD.3)
+  remain reserved-but-not-exposed on the new
+  `FieldMappingTarget` enum.
+- **No `FieldInterpreter` modification.** The
+  FIELD.3 POD with the embedded `FieldMapping`
+  + module-wide `strength` override is
+  preserved verbatim. The FIELD-I.4
+  `FieldMappingConfig` is a parallel surface,
+  not a replacement; the FIELD-I.5 slice (CLI
+  + Config bridge — renumbered from
+  FIELD-I.4 in the FIELD-I.3 audit's NEXT
+  ladder) will decide whether to embed
+  `FieldMappingConfig` directly into
+  `rr::core::Config` or via a
+  `FieldInterpreter` wrapper.
+- **No `FieldType.h` modification.** The
+  existing five-slot enum unchanged.
+- **No CLI flag.** No `--field-*` parser
+  extension. The next FIELD-I.* slice (the
+  renumbered FIELD-I.5) lands the CLI
+  surface.
+- **No `.rrscene` schema bump.** No
+  `fieldMapping` / `fieldInterpreter` scene
+  block parser extension.
+- **No diagnostic AOV.** No
+  `AOVType::FieldScalarDiagnostic`
+  enumerator. The renumbered FIELD-I.6 slice
+  lands the AOV data-model extension.
+- **No GPU launch-params field.** No
+  `CudaSceneView::field_mapping_config` /
+  `OptixLaunchParams::field_mapping_config`
+  slots.
+- **No fixture scene.** No
+  `scenes/test_field_mapping.rrscene`.
+- **No new ctest target.** The new tests
+  append to the existing `field_tests`
+  binary (zero CMake change required); the
+  count grows from 80 → 135 RR_CHECK
+  assertions in the same binary.
+- **No `FIELD_INTERPRETATION_LAYER.md`
+  rewrite.** The existing design doc is
+  preserved verbatim.
+- **No `src/field/README.md` rewrite.** The
+  existing FIELD.* skeleton's status
+  document preserved; the FIELD-I.1 plan
+  is the canonical FIELD-I.* arc
+  reference.
+- **No `MODULE_MAP.md` update.** The
+  `rr_field` skeleton's module-map status
+  carries forward unchanged.
+- **No `MANIFOLD_INTEGRATION_PLAN.md`
+  update.**
+- **No C4D / server / UI / node-editor
+  touch.**
+
+### Acceptance
+
+- **Compiles.** Audit-host build green; full
+  rebuild via `cmake --build
+  /home/user/RelativityRender/build` adds no
+  new warnings on any module.
+- **Tests.** `ctest` returns
+  `100% tests passed, 0 tests failed out of
+  13` (unchanged from FIELD-I.2; same test
+  binary, no new ctest target). The
+  `field_tests` binary now reports
+  `field_tests: 135 / 135 passed` (135 total
+  = 80 FIELD-I.2 + 55 NEW FIELD-I.4). All
+  other test suites unchanged:
+  `relativity_tests: 841/841 passed`;
+  `manifold_identity_tests: 408/408`;
+  `cli_tests: 274/274 passed`;
+  `renderer_tests: 27/27 passed`.
+- **No behaviour change.** No CLI action's
+  output is altered. The new
+  `FieldMappingConfig` POD lives on
+  `rr_field` only; no consumer reads it.
+  The existing rendering pipeline is
+  byte-unchanged.
+- **Internally consistent.** The
+  `FieldMappingTarget` enum mirrors the
+  `ScalarFieldKind` / `CoordinateChartType`
+  / `PerceptionMode` style precedent (`enum
+  class` + explicit `= 0` on the default +
+  comma-separated enumerators). The
+  `FieldMappingConfig` POD carries exactly
+  the fields the operator's brief
+  enumerated (strength / bias / minValue /
+  maxValue / clampOutput) plus the
+  `target` selector. The
+  `evaluate_mapping(...)` helper uses the
+  same `RR_HD inline` signature shape as
+  the existing FIELD-I.2 `evaluate(...)`
+  overloads. Master rule #3 satisfied:
+  every enumerator + parameter slot has a
+  testable, documented behaviour (no
+  reserved-but-undefined slots; the
+  `None` enumerator is the explicit no-op
+  anchor, not a stub). Master rule #11
+  satisfied: every documented behaviour
+  is tested (target dispatch / strength /
+  bias / clamp on / clamp off / clamp
+  high / clamp low / clamp in-range /
+  degenerate range defence / negative
+  strength). Master rule #12 satisfied:
+  scope is deliberately narrow (no
+  renderer integration; no GPU bridge;
+  no CLI; no AOV; no fixture); each of
+  those is a separate FIELD-I.* sub-
+  slice with its own audit gate.
+- **Honest scope.** The four target
+  enumerators are concrete (no
+  `*Placeholder` suffix needed because
+  every target HAS a defined evaluator
+  behaviour today; the future kernel
+  bridge will route the evaluator
+  output to the named channel). The
+  defence-in-depth degenerate-range
+  collapse (`max_value < min_value` →
+  returns `min_value`) is tested
+  explicitly. Master rule #3 + #11
+  satisfied — explicit, testable
+  interfaces.
+
+### Module status changes
+
+`docs/MODULE_MAP.md` is *not* updated by this
+slice. The `rr_field` skeleton's module-map
+status carries forward unchanged (the
+INTERFACE library's link graph + include
+graph are byte-identical to the
+pre-FIELD-I.4 state; only the
+`FieldMapping.h` header content expanded).
+The FIELD-I.4 verdict authorises the
+operator to proceed to: **(a)** the
+FIELD-I.4 audit (a docs-only verdict slice
+that mirrors the FIELD-I.3 + OBS-F.3
+audit-slot insertion precedent;
+RECOMMENDED before continuing to the next
+impl slot, to lock in the host-side
+authoring API surface before the CLI /
+Config bridge lands); **(b)** the next
+renumbered FIELD-I.* impl slot — the CLI
++ Config bridge extending
+`rr::core::Config` with a
+`FieldMappingConfig field_mapping` field
+(or `FieldInterpreter`-wrapped variant —
+TBD) + a `--field-*` CLI flag surface
+mirroring the OBSERVER.4 `--observer-*`
+flag pattern; **(c)** manifold-orthogonal
+work (deferred SDK-host runtime pass for
+the OBSERVER.* + OBS-P.* + OBS-F.* arc
+family; MANI-I.12 final cross-host
+manifold audit; denoiser integration
+with chart-aware AOVs; path-tracer
+feature breadth). The FIELD-I.* arc's
+`**Wired**` promotion is reserved for the
+deferred FIELD-I.* GPU bridges + the
+FIELD-I.* fixture's SDK-host runtime
+pass.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:

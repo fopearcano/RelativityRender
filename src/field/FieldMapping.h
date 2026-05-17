@@ -134,4 +134,172 @@ RR_HD inline FieldMapping disabled_field_mapping() {
     return FieldMapping{};
 }
 
+// --------------------------------------------------------------
+// FIELD-I.4 — single-target tagged-form mapping config
+// --------------------------------------------------------------
+//
+// `FieldMappingConfig` is the FIELD-I.* arc's operator-
+// authoring surface for mapping a single scalar-field sample
+// into a single output channel. Parallel to FIELD-I.2's
+// `ScalarFieldConfig` tagged-union form on `ScalarField.h`:
+//
+//   - `ScalarFieldConfig` answers "what is the field's value at
+//      this position?" (single field, single kind via
+//      `ScalarFieldKind`).
+//   - `FieldMappingConfig` answers "how does that value
+//      contribute to a single render channel?" (single target
+//      via `FieldMappingTarget` + shaping parameters).
+//
+// The Phase 1 pipeline composes them:
+//
+//     sample  = evaluate(scalar_field_config, position);
+//     contrib = evaluate_mapping(mapping_config, sample);
+//     renderer writes `contrib` to the channel identified by
+//     `mapping_config.target`.
+//
+// Distinct from the FIELD.3 `FieldMapping` POD above. The
+// FIELD.3 form carries five per-channel strengths for a
+// multi-channel mapping (one `FieldMapping` → contributions to
+// color / emission / distortion / density / diagnostic AOV
+// simultaneously). The FIELD-I.4 form is single-target with
+// richer shaping parameters (strength + bias + clamp range +
+// clamp toggle). Both coexist; the FIELD-I.4 form is the
+// FIELD-I.* arc's authoring + kernel-bridge surface; the
+// FIELD.3 form is preserved for future multi-channel
+// authoring use cases.
+//
+// Default state is the documented no-op anchor:
+// `disabled_field_mapping_config()` returns
+// `FieldMappingConfig{}` byte-for-byte; every
+// `evaluate_mapping(...)` call site returns `0.0f` because
+// `target = None` short-circuits the evaluator.
+
+// Identifies the single render channel a `FieldMappingConfig`
+// contributes to. Four values:
+//
+//   - `None`             — default no-op anchor. The
+//                          evaluator returns `0.0f`
+//                          regardless of any other parameter.
+//                          A default-constructed
+//                          `FieldMappingConfig{}` carries this
+//                          target so default authoring is a
+//                          guaranteed no-op.
+//   - `ColorMultiplier`  — multiplicatively modulates the
+//                          beauty-pass per-pixel color (design-
+//                          doc §4.1; matches the FIELD.3
+//                          `Color` enumerator).
+//   - `Emission`         — additively contributes to the
+//                          beauty-pass per-pixel emission
+//                          (design-doc §4.2; matches the
+//                          FIELD.3 `Emission` enumerator).
+//   - `DiagnosticAOV`    — writes the mapped value to a
+//                          dedicated AOV pass; no beauty-pass
+//                          modulation (design-doc §4.6;
+//                          matches the FIELD.3 `DiagnosticAOV`
+//                          enumerator).
+//
+// The other FIELD.3 channels (`Distortion`, `Density`,
+// `ChromaticShift`) are intentionally NOT exposed here per
+// the FIELD-I.1 plan §2.3: Phase 1 ships only the three
+// target channels above. Future FIELD-I.* sub-slices may
+// widen this enum without breaking the default-no-op anchor.
+enum class FieldMappingTarget {
+    None            = 0,
+    ColorMultiplier,
+    Emission,
+    DiagnosticAOV,
+};
+
+// Single-target tagged-form mapping config. Carries the
+// active target selector + the five shaping parameters from
+// the FIELD-I.4 task brief.
+//
+// Fields
+// ------
+//   - `target`        active target selector. Default `None`
+//                     (no-op anchor; `evaluate_mapping(...)`
+//                     returns `0.0f` regardless of every other
+//                     field).
+//   - `strength`      multiplicative scale applied to the raw
+//                     scalar sample. Default `0.0f` so even
+//                     `target != None` produces `bias` (or
+//                     clamped `bias`) at the output until the
+//                     artist explicitly dials strength up
+//                     ("wired but quiet" anchor).
+//   - `bias`          additive offset applied after the
+//                     strength multiplication. Default `0.0f`.
+//                     Useful for re-centering a `[-1, 1]`
+//                     procedural sample around a positive
+//                     emission baseline, or for offsetting a
+//                     color multiplier away from neutral.
+//   - `min_value`     lower clamp bound. Default `0.0f`. Only
+//                     consulted when `clamp_output = true`.
+//   - `max_value`     upper clamp bound. Default `1.0f`. Only
+//                     consulted when `clamp_output = true`.
+//                     Required `max_value >= min_value` for a
+//                     non-degenerate clamp range; the
+//                     evaluator returns `min_value` on
+//                     degenerate configs
+//                     (`max_value < min_value`) as defence-in-
+//                     depth against artist authoring errors.
+//   - `clamp_output`  master toggle for the clamp stage.
+//                     Default `false` (the strength + bias
+//                     shaping is enough for the common
+//                     authoring case; clamping is opt-in for
+//                     authors who need a hard output range
+//                     guarantee).
+//
+// The evaluator pipeline (when `target != None`):
+//
+//     mapped = strength * sample + bias;
+//     if (clamp_output) {
+//         mapped = clamp(mapped, min_value, max_value);
+//     }
+//     return mapped;
+//
+// When `target == None`, the evaluator short-circuits and
+// returns `0.0f` regardless of any other field — this is the
+// documented no-op anchor.
+struct FieldMappingConfig {
+    FieldMappingTarget target       = FieldMappingTarget::None;
+    float              strength     = 0.0f;
+    float              bias         = 0.0f;
+    float              min_value    = 0.0f;
+    float              max_value    = 1.0f;
+    bool               clamp_output = false;
+};
+
+// Apply a `FieldMappingConfig` to a raw scalar-field sample
+// and return the per-channel contribution. The evaluator
+// pipeline is documented on the `FieldMappingConfig` struct
+// above. When `target == None` (the default), returns `0.0f`
+// regardless of any other field.
+RR_HD inline float evaluate_mapping(const FieldMappingConfig& m,
+                                    float sample) {
+    if (m.target == FieldMappingTarget::None) {
+        return 0.0f;
+    }
+    float mapped = m.strength * sample + m.bias;
+    if (m.clamp_output) {
+        // Defence-in-depth: degenerate range (max < min)
+        // collapses to `min_value` so the clamp is well-
+        // defined even on inverted artist input.
+        const float lo = m.min_value;
+        const float hi = m.max_value >= m.min_value
+                             ? m.max_value
+                             : m.min_value;
+        if (mapped < lo) mapped = lo;
+        if (mapped > hi) mapped = hi;
+    }
+    return mapped;
+}
+
+// Returns the default no-op mapping config
+// (`FieldMappingConfig{}` byte-for-byte). Matches the factory
+// convention of the other FIELD-I.* tagged-form configs
+// (`disabled_scalar_field_config()` at `ScalarField.h`).
+RR_HD inline FieldMappingConfig disabled_field_mapping_config() {
+    return FieldMappingConfig{};
+}
+
 }

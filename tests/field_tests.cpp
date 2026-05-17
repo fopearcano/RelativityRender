@@ -1,8 +1,13 @@
-// FIELD-I.2 — host-side tests for the tagged-union scalar-field
-// config POD landed at `src/field/ScalarField.h`. Verifies the
-// `ScalarFieldKind` enum + `ScalarFieldConfig` POD + the
-// `evaluate(...)` / `disabled_scalar_field_config()` helpers
-// behave per the design doc + the FIELD-I.1 plan.
+// FIELD-I.2 + FIELD-I.4 — host-side tests for the tagged-form
+// scalar-field config POD landed at `src/field/ScalarField.h`
+// (FIELD-I.2) and the tagged-form mapping config POD landed at
+// `src/field/FieldMapping.h` (FIELD-I.4). Verifies the
+// `ScalarFieldKind` + `ScalarFieldConfig` + `evaluate(...)` +
+// `disabled_scalar_field_config()` helpers (FIELD-I.2) and the
+// `FieldMappingTarget` + `FieldMappingConfig` +
+// `evaluate_mapping(...)` + `disabled_field_mapping_config()`
+// helpers (FIELD-I.4) behave per the design doc + the
+// FIELD-I.1 plan.
 //
 // No test framework in the project — same hand-rolled `RR_CHECK`
 // idiom as `tests/relativity_tests.cpp` and
@@ -13,6 +18,7 @@
 // that pulls in `rr_math`). No CUDA / OptiX dependency; runs on
 // the audit host.
 
+#include "field/FieldMapping.h"
 #include "field/ScalarField.h"
 #include "math/Vec3.h"
 #include "math/Vec4.h"
@@ -465,6 +471,266 @@ void test_vec4_overload_radial_routes_through_spatial_part() {
                     0.5f));
 }
 
+// ---------- 7. FieldMappingTarget + FieldMappingConfig (FIELD-I.4) ----------
+
+void test_field_mapping_target_enumerators_distinct() {
+    using rr::field::FieldMappingTarget;
+    // Defence-in-depth against an accidental enumerator
+    // collision in a future edit (mirrors the
+    // `test_scalar_field_kind_enumerators_distinct`
+    // precedent above).
+    RR_CHECK(FieldMappingTarget::None != FieldMappingTarget::ColorMultiplier);
+    RR_CHECK(FieldMappingTarget::None != FieldMappingTarget::Emission);
+    RR_CHECK(FieldMappingTarget::None != FieldMappingTarget::DiagnosticAOV);
+    RR_CHECK(FieldMappingTarget::ColorMultiplier !=
+             FieldMappingTarget::Emission);
+    RR_CHECK(FieldMappingTarget::ColorMultiplier !=
+             FieldMappingTarget::DiagnosticAOV);
+    RR_CHECK(FieldMappingTarget::Emission !=
+             FieldMappingTarget::DiagnosticAOV);
+    // `None = 0` is the explicit anchor — guarantees the
+    // default-constructed `FieldMappingConfig` carries
+    // `target = None` so default authoring is a guaranteed
+    // no-op.
+    RR_CHECK(static_cast<unsigned>(FieldMappingTarget::None) == 0u);
+}
+
+void test_disabled_field_mapping_config_factory() {
+    using rr::field::FieldMappingConfig;
+    using rr::field::FieldMappingTarget;
+    using rr::field::disabled_field_mapping_config;
+
+    const FieldMappingConfig c = disabled_field_mapping_config();
+    RR_CHECK(c.target       == FieldMappingTarget::None);
+    RR_CHECK(c.strength     == 0.0f);
+    RR_CHECK(c.bias         == 0.0f);
+    RR_CHECK(c.min_value    == 0.0f);
+    RR_CHECK(c.max_value    == 1.0f);
+    RR_CHECK(c.clamp_output == false);
+}
+
+void test_default_field_mapping_config_default_constructed() {
+    using rr::field::FieldMappingConfig;
+    using rr::field::disabled_field_mapping_config;
+
+    const FieldMappingConfig a = disabled_field_mapping_config();
+    const FieldMappingConfig b{};
+    // Factory output is byte-identical to the default-
+    // constructed POD.
+    RR_CHECK(a.target       == b.target);
+    RR_CHECK(a.strength     == b.strength);
+    RR_CHECK(a.bias         == b.bias);
+    RR_CHECK(a.min_value    == b.min_value);
+    RR_CHECK(a.max_value    == b.max_value);
+    RR_CHECK(a.clamp_output == b.clamp_output);
+}
+
+void test_evaluate_mapping_default_target_none_returns_zero() {
+    using rr::field::evaluate_mapping;
+    using rr::field::FieldMappingConfig;
+    // Default config (target = None) must short-circuit to 0
+    // regardless of the sample value.
+    const FieldMappingConfig c{};
+    RR_CHECK(approx(evaluate_mapping(c, 0.0f),   0.0f));
+    RR_CHECK(approx(evaluate_mapping(c, 1.0f),   0.0f));
+    RR_CHECK(approx(evaluate_mapping(c, -1.0f),  0.0f));
+    RR_CHECK(approx(evaluate_mapping(c, 1e6f),   0.0f));
+}
+
+void test_evaluate_mapping_target_none_short_circuits() {
+    using rr::field::evaluate_mapping;
+    using rr::field::FieldMappingConfig;
+    using rr::field::FieldMappingTarget;
+    // Even when every other parameter is dialled to non-
+    // default values, `target = None` must short-circuit
+    // (the no-op anchor is load-bearing).
+    FieldMappingConfig c{};
+    c.target       = FieldMappingTarget::None;
+    c.strength     = 5.0f;
+    c.bias         = 3.0f;
+    c.min_value    = -10.0f;
+    c.max_value    = 10.0f;
+    c.clamp_output = true;
+    RR_CHECK(approx(evaluate_mapping(c, 0.5f), 0.0f));
+    RR_CHECK(approx(evaluate_mapping(c, 100.0f), 0.0f));
+}
+
+void test_evaluate_mapping_color_multiplier_no_clamp() {
+    using rr::field::evaluate_mapping;
+    using rr::field::FieldMappingConfig;
+    using rr::field::FieldMappingTarget;
+    FieldMappingConfig c{};
+    c.target       = FieldMappingTarget::ColorMultiplier;
+    c.strength     = 2.0f;
+    c.bias         = 1.0f;
+    c.clamp_output = false;
+    // mapped = strength * sample + bias = 2 * sample + 1.
+    RR_CHECK(approx(evaluate_mapping(c, 0.0f),   1.0f));
+    RR_CHECK(approx(evaluate_mapping(c, 1.0f),   3.0f));
+    RR_CHECK(approx(evaluate_mapping(c, 3.0f),   7.0f));
+    RR_CHECK(approx(evaluate_mapping(c, -1.0f), -1.0f));
+}
+
+void test_evaluate_mapping_emission_target_routes() {
+    using rr::field::evaluate_mapping;
+    using rr::field::FieldMappingConfig;
+    using rr::field::FieldMappingTarget;
+    FieldMappingConfig c{};
+    c.target   = FieldMappingTarget::Emission;
+    c.strength = 1.0f;
+    c.bias     = 0.0f;
+    // Same evaluator path as ColorMultiplier — the target
+    // selector determines which channel the renderer
+    // writes to, not the math.
+    RR_CHECK(approx(evaluate_mapping(c, 0.42f),  0.42f));
+    RR_CHECK(approx(evaluate_mapping(c, -1.5f), -1.5f));
+}
+
+void test_evaluate_mapping_diagnostic_aov_target_routes() {
+    using rr::field::evaluate_mapping;
+    using rr::field::FieldMappingConfig;
+    using rr::field::FieldMappingTarget;
+    FieldMappingConfig c{};
+    c.target   = FieldMappingTarget::DiagnosticAOV;
+    c.strength = 0.5f;
+    c.bias     = 0.25f;
+    RR_CHECK(approx(evaluate_mapping(c, 0.0f),  0.25f));
+    RR_CHECK(approx(evaluate_mapping(c, 1.0f),  0.75f));
+    RR_CHECK(approx(evaluate_mapping(c, 2.0f),  1.25f));
+}
+
+void test_evaluate_mapping_zero_strength_returns_bias() {
+    using rr::field::evaluate_mapping;
+    using rr::field::FieldMappingConfig;
+    using rr::field::FieldMappingTarget;
+    // "Wired but quiet" anchor: target != None + strength = 0
+    // collapses to just the bias term regardless of sample.
+    FieldMappingConfig c{};
+    c.target   = FieldMappingTarget::ColorMultiplier;
+    c.strength = 0.0f;
+    c.bias     = 0.7f;
+    RR_CHECK(approx(evaluate_mapping(c, 0.0f),   0.7f));
+    RR_CHECK(approx(evaluate_mapping(c, 1e6f),   0.7f));
+    RR_CHECK(approx(evaluate_mapping(c, -1e6f),  0.7f));
+}
+
+void test_evaluate_mapping_bias_additive() {
+    using rr::field::evaluate_mapping;
+    using rr::field::FieldMappingConfig;
+    using rr::field::FieldMappingTarget;
+    // Bias is purely additive; no interaction with strength.
+    FieldMappingConfig c{};
+    c.target   = FieldMappingTarget::ColorMultiplier;
+    c.strength = 1.0f;
+    c.bias     = -0.5f;
+    RR_CHECK(approx(evaluate_mapping(c, 0.5f),  0.0f));
+    RR_CHECK(approx(evaluate_mapping(c, 1.5f),  1.0f));
+    RR_CHECK(approx(evaluate_mapping(c, 0.0f), -0.5f));
+}
+
+void test_evaluate_mapping_clamp_output_disabled_passes_through() {
+    using rr::field::evaluate_mapping;
+    using rr::field::FieldMappingConfig;
+    using rr::field::FieldMappingTarget;
+    // clamp_output = false → strength + bias output passes
+    // through unchanged, even when it lies outside
+    // [min_value, max_value].
+    FieldMappingConfig c{};
+    c.target       = FieldMappingTarget::ColorMultiplier;
+    c.strength     = 1.0f;
+    c.bias         = 0.0f;
+    c.min_value    = 0.0f;
+    c.max_value    = 1.0f;
+    c.clamp_output = false;
+    RR_CHECK(approx(evaluate_mapping(c, 5.0f),  5.0f));   // above max_value
+    RR_CHECK(approx(evaluate_mapping(c, -3.0f), -3.0f));  // below min_value
+}
+
+void test_evaluate_mapping_clamp_output_enabled_clamps_high() {
+    using rr::field::evaluate_mapping;
+    using rr::field::FieldMappingConfig;
+    using rr::field::FieldMappingTarget;
+    FieldMappingConfig c{};
+    c.target       = FieldMappingTarget::Emission;
+    c.strength     = 2.0f;
+    c.bias         = 1.0f;
+    c.min_value    = 0.0f;
+    c.max_value    = 1.0f;
+    c.clamp_output = true;
+    // sample = 3 → mapped = 2*3+1 = 7 → clamped to max = 1.
+    RR_CHECK(approx(evaluate_mapping(c, 3.0f), 1.0f));
+    // Boundary: exactly at max stays at max.
+    RR_CHECK(approx(evaluate_mapping(c, 0.0f), 1.0f));  // 2*0+1 = 1
+}
+
+void test_evaluate_mapping_clamp_output_enabled_clamps_low() {
+    using rr::field::evaluate_mapping;
+    using rr::field::FieldMappingConfig;
+    using rr::field::FieldMappingTarget;
+    FieldMappingConfig c{};
+    c.target       = FieldMappingTarget::Emission;
+    c.strength     = 1.0f;
+    c.bias         = -2.0f;
+    c.min_value    = 0.0f;
+    c.max_value    = 1.0f;
+    c.clamp_output = true;
+    // sample = 0 → mapped = -2 → clamped to min = 0.
+    RR_CHECK(approx(evaluate_mapping(c, 0.0f), 0.0f));
+    // sample = 1 → mapped = -1 → clamped to min = 0.
+    RR_CHECK(approx(evaluate_mapping(c, 1.0f), 0.0f));
+}
+
+void test_evaluate_mapping_clamp_output_enabled_passes_through_in_range() {
+    using rr::field::evaluate_mapping;
+    using rr::field::FieldMappingConfig;
+    using rr::field::FieldMappingTarget;
+    FieldMappingConfig c{};
+    c.target       = FieldMappingTarget::DiagnosticAOV;
+    c.strength     = 1.0f;
+    c.bias         = 0.0f;
+    c.min_value    = 0.0f;
+    c.max_value    = 1.0f;
+    c.clamp_output = true;
+    // In-range sample passes through unchanged.
+    RR_CHECK(approx(evaluate_mapping(c, 0.0f),  0.0f));
+    RR_CHECK(approx(evaluate_mapping(c, 0.5f),  0.5f));
+    RR_CHECK(approx(evaluate_mapping(c, 1.0f),  1.0f));
+}
+
+void test_evaluate_mapping_clamp_degenerate_range_returns_min() {
+    using rr::field::evaluate_mapping;
+    using rr::field::FieldMappingConfig;
+    using rr::field::FieldMappingTarget;
+    // Defence-in-depth: max_value < min_value is artist-
+    // authoring nonsense. The evaluator collapses to
+    // returning `min_value` (well-defined fallback).
+    FieldMappingConfig c{};
+    c.target       = FieldMappingTarget::Emission;
+    c.strength     = 1.0f;
+    c.bias         = 0.0f;
+    c.min_value    = 1.0f;
+    c.max_value    = 0.0f;  // degenerate: max < min
+    c.clamp_output = true;
+    RR_CHECK(approx(evaluate_mapping(c, 0.5f), 1.0f));
+    RR_CHECK(approx(evaluate_mapping(c, 5.0f), 1.0f));
+    RR_CHECK(approx(evaluate_mapping(c, -5.0f), 1.0f));
+}
+
+void test_evaluate_mapping_negative_strength() {
+    using rr::field::evaluate_mapping;
+    using rr::field::FieldMappingConfig;
+    using rr::field::FieldMappingTarget;
+    // Negative strength inverts the field's contribution
+    // (artist may want a "bright field → dark output" map).
+    FieldMappingConfig c{};
+    c.target   = FieldMappingTarget::ColorMultiplier;
+    c.strength = -1.0f;
+    c.bias     = 1.0f;
+    RR_CHECK(approx(evaluate_mapping(c, 0.0f),  1.0f));
+    RR_CHECK(approx(evaluate_mapping(c, 1.0f),  0.0f));
+    RR_CHECK(approx(evaluate_mapping(c, 0.25f), 0.75f));
+}
+
 }  // namespace
 
 int main() {
@@ -496,6 +762,24 @@ int main() {
     // §6 — Vec4 overload routes to spatial Vec3.
     test_vec4_overload_consumes_spatial_part();
     test_vec4_overload_radial_routes_through_spatial_part();
+
+    // §7 — FieldMappingTarget + FieldMappingConfig (FIELD-I.4).
+    test_field_mapping_target_enumerators_distinct();
+    test_disabled_field_mapping_config_factory();
+    test_default_field_mapping_config_default_constructed();
+    test_evaluate_mapping_default_target_none_returns_zero();
+    test_evaluate_mapping_target_none_short_circuits();
+    test_evaluate_mapping_color_multiplier_no_clamp();
+    test_evaluate_mapping_emission_target_routes();
+    test_evaluate_mapping_diagnostic_aov_target_routes();
+    test_evaluate_mapping_zero_strength_returns_bias();
+    test_evaluate_mapping_bias_additive();
+    test_evaluate_mapping_clamp_output_disabled_passes_through();
+    test_evaluate_mapping_clamp_output_enabled_clamps_high();
+    test_evaluate_mapping_clamp_output_enabled_clamps_low();
+    test_evaluate_mapping_clamp_output_enabled_passes_through_in_range();
+    test_evaluate_mapping_clamp_degenerate_range_returns_min();
+    test_evaluate_mapping_negative_strength();
 
     std::printf("field_tests: %d / %d passed\n",
                 g_total - g_failed, g_total);
