@@ -2,6 +2,7 @@
 
 #include "camera/CameraRay.h"
 #include "cuda/CudaTexture.cuh"        // Stage 20M: DeviceTextureView
+#include "field/FieldMapping.h"        // FIELD-BEAUTY.5: per-launch field-mapping config payload
 #include "field/ScalarField.h"         // FIELD-I.11: per-launch scalar-field config payload
 #include "geometry/Triangle.h"         // Stage 20M: per-vertex UV indexing
 #include "lighting/Light.h"            // Stage 20K: Light POD union
@@ -511,6 +512,46 @@ struct OptixLaunchParams {
     // "field-disabled = neutral/zero diagnostic" anchor
     // from the FIELD-I.6 task brief's §3.2).
     rr::field::ScalarFieldConfig scalar_field_config{};
+
+    // ---- FIELD-BEAUTY.5 per-launch field-mapping config payload ----
+    //
+    // Mirrors the CUDA-side
+    // `CudaSceneView::field_mapping_config` field landed at
+    // FIELD-BEAUTY.3. The FIELD-I.4 single-target tagged-form
+    // `rr::field::FieldMappingConfig` POD; default
+    // `disabled_field_mapping_config()` (= `target = None,
+    // strength = 0.0f, bias = 0.0f, min_value = 0.0f,
+    // max_value = 1.0f, clamp_output = false`). Companion to
+    // `scalar_field_config` above; together they describe
+    // **what** the scalar field is + **how** it maps into a
+    // beauty channel.
+    //
+    // The OptiX closest-hit program's FIELD-BEAUTY.5 beauty-
+    // mapping arm gates on the double-condition
+    // `scalar_field_config.enabled == true` AND
+    // `field_mapping_config.target` ∈ {`ColorMultiplier`,
+    // `Emission`}. Default `disabled_field_mapping_config()`
+    // (target = None) preserves byte-identical output by
+    // construction even when `scalar_field_config.enabled =
+    // true` — the target-specific guards skip both
+    // ColorMultiplier and Emission branches.
+    //
+    // The FieldScalar diagnostic AOV's write arm (FIELD-I.11
+    // at `OptixPrograms.cu:960-980`) does NOT consume this
+    // field — the diagnostic AOV writes the raw
+    // `evaluate(scalar_field_config, hit_pos)` output
+    // regardless of mapping target. This preserves the
+    // FIELD-I.4 audit's mapping-vs-diagnostic separation.
+    //
+    // Populated by `OptixRenderer::render_aovs` from its
+    // trailing-defaulted `field_mapping_config` parameter
+    // (mirrors the OBSERVER.10 / OBSERVER.13 / FIELD-I.11
+    // trailing-defaulted-parameter ABI-extension pattern).
+    // Until a future CLI bridge slice flips a non-default
+    // target on, every dispatcher caller passes the default
+    // `disabled_field_mapping_config()`; the beauty-mapping
+    // arm is structurally unreachable.
+    rr::field::FieldMappingConfig field_mapping_config{};
 };
 
 }  // namespace rr::optix

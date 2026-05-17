@@ -745,6 +745,74 @@ extern "C" __global__ void __closesthit__radiance() {
         color.z = 0.5f * n.z + 0.5f;
     }
 
+    // FIELD-BEAUTY.5 — optional scalar-field beauty mapping
+    // (closest-hit / hit side). Mirrors the CUDA-side
+    // FIELD-BEAUTY.3 arm at `CudaTestKernel.cu:597-614`
+    // verbatim. Inserted AFTER the base material/lighting
+    // shading (the lit `color` is computed by the
+    // shading_mode branches above) and BEFORE the Doppler /
+    // searchlight modulation, so the field contribution
+    // participates in the standard relativistic pipeline
+    // uniformly with material emission (matches the CUDA
+    // placement contract). The miss side does NOT engage
+    // this arm — the field is sampled at the world-space
+    // hit position, which has no meaning on miss.
+    //
+    // Two-gate verified per the FIELD-BEAUTY.3 contract:
+    //   (a) outer gate `scalar_field_config.enabled`
+    //   (b) inner gate `field_mapping_config.target` ∈
+    //       {`ColorMultiplier`, `Emission`}
+    // Both must open for any beauty modulation. Defaults
+    // close both gates (FIELD-I.2 `enabled = false` +
+    // FIELD-I.4 `target = None`); the arm short-circuits
+    // and beauty is byte-identical to the pre-FIELD-BEAUTY.5
+    // baseline. Master rule #3 + #16 satisfied — the
+    // documented no-op anchor.
+    //
+    // Cross-backend math equivalence by construction: both
+    // backends call the same RR_HD inline
+    // `rr::field::evaluate(...)` + `evaluate_mapping(...)`
+    // helpers from `src/field/`. The world-space hit
+    // position is recomputed locally from the OptiX
+    // intrinsic ray-origin + ray-direction + tmax (mirrors
+    // the FIELD-I.11 / SCHW.7 arms' recompute pattern at
+    // this closest-hit scope).
+    //
+    // The FIELD-I.11 FieldScalar diagnostic AOV write arm
+    // (later in this body, around line 960) is NOT modified
+    // — the diagnostic continues to write the raw
+    // `evaluate(scalar_field_config, hit_pos)` regardless
+    // of mapping target. FIELD-I.4 audit's mapping-vs-
+    // diagnostic separation preserved.
+    if (optixLaunchParams.scalar_field_config.enabled) {
+        const float3 ro_fb = optixGetWorldRayOrigin();
+        const float3 rd_fb = optixGetWorldRayDirection();
+        const float  t_fb  = optixGetRayTmax();
+        const rr::math::Vec3 hit_pos_fb{
+            ro_fb.x + t_fb * rd_fb.x,
+            ro_fb.y + t_fb * rd_fb.y,
+            ro_fb.z + t_fb * rd_fb.z};
+        const float sample_fb =
+            rr::field::evaluate(optixLaunchParams.scalar_field_config,
+                                hit_pos_fb);
+        const float mapped_fb =
+            rr::field::evaluate_mapping(
+                optixLaunchParams.field_mapping_config, sample_fb);
+
+        if (optixLaunchParams.field_mapping_config.target
+              == rr::field::FieldMappingTarget::ColorMultiplier) {
+            color = color * mapped_fb;
+        } else if (optixLaunchParams.field_mapping_config.target
+              == rr::field::FieldMappingTarget::Emission) {
+            color = color + rr::math::Vec3{mapped_fb, mapped_fb, mapped_fb};
+        }
+        // target == None: short-circuit (the inner gate
+        // doesn't match; mapping evaluator returns 0 anyway).
+        // target == DiagnosticAOV: beauty arm is no-op; the
+        // FIELD-I.11 AOV write arm later in this body writes
+        // the raw sample regardless.
+    }
+
     // Stage 17A.5 / 20H: Doppler colour shift + searchlight
     // beaming applied to the base shade. D is read from
     // payload register 3 (set by raygen) instead of being

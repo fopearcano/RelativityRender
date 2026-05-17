@@ -2533,7 +2533,8 @@ OptixRenderer::render_aovs(
     rr::manifold::ObserverFrame observer_frame,
     bool observer_debug,
     rr::field::ScalarFieldConfig scalar_field_config,
-    bool field_debug) noexcept {
+    bool field_debug,
+    rr::field::FieldMappingConfig field_mapping_config) noexcept {
     AovResult R;
 
     if (width <= 0 || height <= 0) {
@@ -2862,6 +2863,20 @@ OptixRenderer::render_aovs(
     // read this field (the FIELD-I.6 task brief's
     // "no field-to-beauty mapping yet" non-goal).
     params.scalar_field_config = scalar_field_config;
+    // FIELD-BEAUTY.5: per-launch field-mapping config
+    // payload. Default `disabled_field_mapping_config()`
+    // (target = None) is the byte-identity no-op anchor;
+    // the OptiX closest-hit's FIELD-BEAUTY.5 mapping arm
+    // gates on the double-condition
+    // `scalar_field_config.enabled` AND
+    // `field_mapping_config.target` ∈ {`ColorMultiplier`,
+    // `Emission`}; both must hold for any beauty
+    // modulation. The diagnostic AOV write arm (FIELD-I.11)
+    // does NOT consume this field — the diagnostic writes
+    // the raw scalar sample regardless of mapping target,
+    // preserving the FIELD-I.4 audit's mapping-vs-
+    // diagnostic separation.
+    params.field_mapping_config = field_mapping_config;
 
     {
         const ::cudaError_t e = ::cudaMemcpy(
@@ -3488,7 +3503,8 @@ OptixRenderer::render_aovs(
     rr::manifold::ObserverFrame /*observer_frame*/,
     bool /*observer_debug*/,
     rr::field::ScalarFieldConfig /*scalar_field_config*/,
-    bool /*field_debug*/) noexcept {
+    bool /*field_debug*/,
+    rr::field::FieldMappingConfig /*field_mapping_config*/) noexcept {
     AovResult r;
     r.ok = false;
     r.message =

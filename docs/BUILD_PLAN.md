@@ -89022,6 +89022,295 @@ is reserved for the post-CLI-bridge SDK-host
 runtime pass that exercises both backend
 kernels' beauty-mapping arms end-to-end.
 
+## FIELD-BEAUTY.5 — OptiX Scalar Field Beauty Mapping (impl, OptiX program arm)
+
+**Scope of this slice (per the operator's *FIELD-BEAUTY.5
+— OptiX Scalar Field Beauty Mapping* task brief): mirror
+the FIELD-BEAUTY.3 CUDA bridge for the OptiX path.
+Thread the FIELD-I.4 `FieldMappingConfig` POD into
+`OptixLaunchParams` and add the OptiX closest-hit
+program arm that consumes it alongside
+`scalar_field_config` to apply the
+ColorMultiplier / Emission mapping to the per-pixel
+beauty result. OptiX-only; CUDA path is byte-identical
+to the FIELD-BEAUTY.4 audit baseline. Single-source-of-
+truth math with the FIELD-BEAUTY.3 CUDA arm — both
+backends call the same RR_HD inline
+`evaluate(...)` + `evaluate_mapping(...)` helpers from
+`src/field/`.
+
+The referenced `docs/FIELD_SCALAR_BEAUTY_MAPPING_PLAN.md`
++ `docs/FIELD_SCALAR_BEAUTY_MAPPING_TASK.md` task briefs
+were not authored prior to this slice (FIELD-BEAUTY.1
++ FIELD-BEAUTY.2 slots remain unfilled per the
+FIELD-BEAUTY.3 + FIELD-BEAUTY.4 framing). The
+operator's FIELD-BEAUTY.5 prompt body itself is the
+canonical task brief — four well-specified
+implementation bullets (ColorMultiplier mapping +
+Emission mapping + CUDA-semantics match + preservation
+of default-None no-op / disabled-field no-op /
+default-scenes-unchanged / AOV-behavior unchanged).
+The audit-host build was empirically validated under
+this scope: 13/13 ctest PASS audit-host; 14/14 ctest
+PASS OptiX-ON-no-SDK.**
+
+### What ships
+
+- **`src/optix/OptixLaunchParams.h` (modified, +43
+  lines).** Adds:
+    - **`rr::field::FieldMappingConfig
+      field_mapping_config{};`** field on
+      `OptixLaunchParams` (sibling of
+      `scalar_field_config`). Default
+      `disabled_field_mapping_config()` is the
+      target-None no-op anchor; even when the
+      scalar field is engaged, the mapping arm
+      short-circuits.
+    - New `#include "field/FieldMapping.h"`.
+  Doc-comment documents the double-gate contract
+  (`scalar_field_config.enabled` +
+  `field_mapping_config.target`) + the
+  AOV-vs-mapping separation + the cross-backend
+  symmetry with CUDA.
+
+- **`src/optix/OptixRenderer.h` (modified, +28
+  lines).** Adds:
+    - **`rr::field::FieldMappingConfig
+      field_mapping_config = {}`** trailing-defaulted
+      parameter on `render_aovs(...)` (sibling of
+      the existing `scalar_field_config` /
+      `field_debug` trailing params). Mirrors the
+      OBSERVER.10 / OBSERVER.13 / FIELD-I.11
+      trailing-defaulted-parameter ABI-extension
+      pattern.
+    - New `#include "field/FieldMapping.h"`.
+
+- **`src/optix/OptixRenderer.cpp` (modified, +20
+  lines).** SDK-host body:
+    - New `field_mapping_config` parameter in the
+      function signature (after the FIELD-I.11
+      `field_debug` parameter).
+    - New `params.field_mapping_config =
+      field_mapping_config;` threading (sibling of
+      the existing `params.scalar_field_config =
+      ...` thread). Doc-comment documents the
+      double-gate contract + the diagnostic-AOV
+      preservation framing.
+  Audit-host fallback stub: signature updated to
+  match the new header (the trailing
+  `field_mapping_config` parameter).
+
+- **`src/optix/OptixPrograms.cu` (modified, +70
+  lines).** Adds the OptiX FIELD-BEAUTY.5 kernel
+  arm inside `__closesthit__radiance`, after the
+  base material / lighting shading block (the
+  shading_mode branches that produce `color`) and
+  BEFORE the Doppler / searchlight modulation
+  (`apply_doppler_and_searchlight_with_D` at the
+  same place where the CUDA arm sits). Same
+  two-gate structure as the FIELD-BEAUTY.3 CUDA
+  arm:
+    - Outer gate: `if (optixLaunchParams.scalar_field_config.enabled)`.
+    - Inner gates:
+      `if (field_mapping_config.target == ColorMultiplier) { color = color * mapped; }`
+      and
+      `else if (field_mapping_config.target == Emission) { color = color + Vec3{mapped, mapped, mapped}; }`.
+  World-space hit position recomputed locally from
+  `optixGetWorldRayOrigin/Direction/Tmax`
+  (mirrors the FIELD-I.11 / SCHW.7 arms' recompute
+  pattern at this closest-hit scope). The miss
+  side does NOT engage this arm — the field is
+  sampled at the world-space hit position, which
+  has no meaning on miss (matches the CUDA
+  FIELD-BEAUTY.3 `if (best.hit && ...)` scoping).
+
+### What does NOT ship
+
+- **No CUDA changes.** Operator brief explicitly
+  forbids: "Do not change CUDA unless required by
+  shared type consistency". The `src/cuda/` tree
+  is byte-identical to the FIELD-BEAUTY.4 audit
+  baseline (`c5823d9`). The FIELD-BEAUTY.3 CUDA
+  bridge surface is preserved verbatim; no
+  shared-type adjustment needed (both backends
+  consume the `rr::field::FieldMappingConfig` POD
+  directly).
+- **No CLI flag.** No `--field-mapping-target`
+  flag. No `--field-strength` / `--field-bias` /
+  `--field-min-value` / `--field-max-value` /
+  `--field-clamp-output` authoring flags. No
+  `src/core/CommandLine.cpp` extension. The
+  `render_aovs(...)` trailing `field_mapping_config`
+  parameter is structurally unreachable this
+  slice; every dispatcher caller passes the
+  default `disabled_field_mapping_config()`
+  (target = None). The future CLI bridge slice
+  flips the gate.
+- **No `rr::core::Config` extension.** No
+  `field_mapping_config` field on `Config`.
+- **No dispatcher emit.** No `main.cpp` extension.
+- **No scene-file authoring.** No `field_mapping`
+  block parser on `src/io/SceneLoader.cpp`. The
+  FIELD-I.13 `scalar_field` block parser remains
+  as-is.
+- **No diagnostic-AOV behavior change.** The
+  FIELD-I.11 OptiX FieldScalar AOV write arm at
+  `OptixPrograms.cu:960-980` is preserved
+  verbatim. The diagnostic AOV continues to
+  write the raw `evaluate(scalar_field_config,
+  hit_pos)` output regardless of mapping target.
+  FIELD-I.4 audit's mapping-vs-diagnostic
+  separation preserved.
+- **No path-tracer integration.** The OptiX
+  path-tracer entry points (`__raygen__pathtrace`
+  / `__miss__pathtrace` / `__closesthit__pathtrace`)
+  are byte-identical. The FIELD-BEAUTY.5 kernel
+  arm is in `__closesthit__radiance` only —
+  matches the FIELD-BEAUTY.3 CUDA-side scope
+  (`k_render_scene` only).
+- **No quantum / tensor / curvature
+  simulation.** Operator brief explicitly forbids.
+- **No manifold / observer behaviour changes.**
+  Operator brief explicitly forbids. Every
+  OBSERVER.* + OBS-P.* + OBS-F.* + SCHW.* +
+  PENROSE.* + MANI-I.* arc's verdicts carry
+  forward verbatim. `git diff
+  c5823d9..HEAD --name-only --
+  'src/manifold/' 'src/relativity/'` returns
+  zero hits.
+- **No fixture extension.** The FIELD-I.13
+  fixture is preserved verbatim. A future
+  fixture-extension slice may author a
+  `field_mapping` block alongside the existing
+  `scalar_field` block; deferred.
+- **No test extension.** The kernel arm's
+  empirical behaviour requires SDK-host runtime
+  verification; deferred to a future CLI bridge
+  slice's audit.
+- **No default-scene alteration.** Every
+  existing `.rrscene` fixture is byte-identical
+  to the FIELD-BEAUTY.4 baseline.
+- **No `MODULE_MAP.md` update.**
+- **No `MANIFOLD_INTEGRATION_PLAN.md` update.**
+- **No C4D / server / UI / node-editor touch.**
+- **No retroactive authoring of the missing
+  task briefs** (`FIELD_SCALAR_BEAUTY_MAPPING_PLAN.md`
+  + `FIELD_SCALAR_BEAUTY_MAPPING_TASK.md`). The
+  honest-framing approach from FIELD-BEAUTY.3 +
+  FIELD-BEAUTY.4 is preserved.
+
+### Acceptance
+
+- **Compiles with OptiX OFF.** Audit-host build
+  green; full rebuild via `cmake --build
+  /home/user/RelativityRender/build` adds no new
+  warnings on any module. Ctest 13/13 PASS
+  (renderer_tests: 35/35; field_tests: 135/135;
+  cli_tests: 274/274; relativity_tests: 841/841;
+  manifold_identity_tests: 408/408; every other
+  suite unchanged).
+- **Compiles with OptiX ON (no SDK fallback).**
+  `cmake --build /tmp/rr_build_optix_no_sdk`
+  succeeds; ctest 14/14 PASS (including
+  optix_tests). The audit-host stub fallback
+  path is exercised empirically because the SDK
+  is not present; verifies the FIELD-BEAUTY.5
+  stub signature matches the header.
+- **No behaviour change for existing scenes.**
+  No CLI action's output is altered. The OptiX
+  closest-hit program's new arm fires only when
+  the double-gate opens (default
+  `target = None` + default `enabled = false`
+  close both); structurally unreachable.
+- **Internally consistent.** The new
+  `field_mapping_config` field on
+  `OptixLaunchParams` + the trailing
+  `field_mapping_config` parameter on
+  `render_aovs(...)` follow the FIELD-I.11
+  precedent verbatim. The new kernel arm
+  mirrors the FIELD-BEAUTY.3 CUDA arm's shape
+  exactly (same outer/inner gates; same math
+  via the same RR_HD inline helpers; same
+  branch structure). The placement BEFORE
+  Doppler / searchlight matches the CUDA arm's
+  contract (the field contribution participates
+  in the standard relativistic pipeline). The
+  miss-side exclusion matches (no
+  `hit_pos`-bearing branch on miss).
+- **Cross-backend math equivalence by
+  construction.** The OptiX FIELD-BEAUTY.5
+  closest-hit arm calls
+  `rr::field::evaluate(scalar_field_config,
+  hit_pos)` + `rr::field::evaluate_mapping(field_mapping_config,
+  sample)` — the same `RR_HD inline` helpers
+  the CUDA FIELD-BEAUTY.3 arm calls. Both
+  backends consume the same
+  `rr::field::ScalarFieldConfig` /
+  `rr::field::FieldMappingConfig` POD
+  definitions. Cross-backend bit-identity is
+  structurally guaranteed (not just empirically
+  hoped for).
+- **Honest scope.** Master rule #3 ("no fake
+  stubs") satisfied: the OptiX arm is fully
+  wired (real `evaluate(...)` invocations;
+  real `evaluate_mapping(...)` invocations;
+  real ColorMultiplier + Emission branches;
+  real `color` modifications). The structural
+  unreachability via the double-gate is honest
+  scope framing per the doc-comments. Master
+  rule #11 satisfied: the cross-backend
+  symmetry is documented + structurally
+  guaranteed by the shared math leaf. Master
+  rule #12 satisfied: scope deliberately
+  narrow to OptiX bridge only — CUDA
+  byte-unchanged per the operator's "Do not
+  change CUDA unless required by shared type
+  consistency" rule (no shared-type adjustment
+  required since the POD embeds directly on
+  both backends). CLI deferred; dispatcher
+  emit deferred; fixture scene deferred;
+  mapping CLI surface deferred.
+
+### Module status changes
+
+`docs/MODULE_MAP.md` is *not* updated by this
+slice. The `rr_optix` library's module-map
+status carries forward from the FIELD-I.11
+entry unchanged (the `rr_field` PUBLIC link on
+`rr_optix` was added at FIELD-I.11; the
+FIELD-BEAUTY.5 includes use the same link).
+With FIELD-BEAUTY.5 in, both backends have
+symmetric beauty-mapping arms:
+`CudaSceneView::field_mapping_config` (CUDA;
+FIELD-BEAUTY.3) +
+`OptixLaunchParams::field_mapping_config`
+(OptiX; FIELD-BEAUTY.5); both apply
+ColorMultiplier / Emission to per-pixel
+beauty results via the same RR_HD inline
+math leaves. The FIELD-BEAUTY.5 verdict
+authorises the operator to proceed to:
+**(a)** the FIELD-BEAUTY.5 audit (a docs-only
+verdict slice mirroring the FIELD-BEAUTY.4 +
+FIELD-I.12 audit shapes; RECOMMENDED before
+the next impl slot, to lock in the OptiX
+bridge contract); **(b)** FIELD-BEAUTY.7 —
+CLI + Config + dispatcher bridge (lands the
+`--field-mapping-target` + per-parameter CLI
+flags; threads `cfg.field_mapping_config`
+through both `run_render_aovs` AND
+`run_render_optix_aovs` into both backends'
+`field_mapping_config` payload fields;
+closes the FIELD-BEAUTY.4 + FIELD-BEAUTY.6
+audits' runtime-deferred portions on
+SDK-host); **(c)** manifold-orthogonal work;
+**(d)** RETROACTIVE authoring of the missing
+FIELD-BEAUTY.1 + FIELD-BEAUTY.2 task briefs.
+The FIELD-BEAUTY.* arc's `**Wired**`
+promotion is reserved for the post-CLI-bridge
+SDK-host runtime pass that exercises both
+backend kernels' beauty-mapping arms
+end-to-end.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:

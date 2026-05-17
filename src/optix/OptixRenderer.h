@@ -2,6 +2,7 @@
 
 #include "image/Image.h"
 #include "gpu/GpuBuffer.h"  // OptiX Gap A Step 1: GpuBuffer<float> for retained AOV device buffers
+#include "field/FieldMapping.h"        // FIELD-BEAUTY.5: trailing field_mapping_config arg
 #include "field/ScalarField.h"         // FIELD-I.11: trailing scalar_field_config arg
 #include "manifold/CoordinateChart.h"  // SCHW.7: trailing render_aovs arg
 #include "manifold/ManifoldMode.h"  // MANI-I.5: trailing render_pathtrace_progressive arg
@@ -566,7 +567,32 @@ public:
         // here; until the CLI bridge slice lands, every
         // dispatcher caller passes `false` (the AOV is
         // structurally unreachable).
-        bool field_debug = false) noexcept;
+        bool field_debug = false,
+        // FIELD-BEAUTY.5: per-launch field-mapping config
+        // payload (the FIELD-I.4 single-target tagged-form
+        // POD). Default `FieldMappingConfig{}` =
+        // `disabled_field_mapping_config()` (target = None,
+        // strength = 0, bias = 0). Threaded into
+        // `OptixLaunchParams::field_mapping_config`. The
+        // OptiX closest-hit program's FIELD-BEAUTY.5
+        // beauty-mapping arm reads this alongside
+        // `scalar_field_config` and gates on the double-
+        // condition `scalar_field_config.enabled == true`
+        // AND `field_mapping_config.target` ∈
+        // {`ColorMultiplier`, `Emission`}. On the default
+        // (target = None) the arm short-circuits and the
+        // beauty pass is byte-identical to the pre-
+        // FIELD-BEAUTY.5 baseline. The FIELD-I.11
+        // FieldScalar diagnostic AOV write arm does NOT
+        // consume this field — the diagnostic writes the
+        // raw `evaluate(scalar_field_config, hit_pos)`
+        // output regardless of mapping target. Mirrors the
+        // CUDA-side FIELD-BEAUTY.3 contract verbatim;
+        // cross-backend math equivalence by construction
+        // (both backends call the same RR_HD inline
+        // `evaluate_mapping(...)` helper from
+        // `src/field/FieldMapping.h`).
+        rr::field::FieldMappingConfig field_mapping_config = {}) noexcept;
 
     // OptiX Gap A Step 1: durable AOV buffer ownership for
     // the OptiX path. See `docs/OPTIX_GAP_A_POLISH_PLAN.md`
