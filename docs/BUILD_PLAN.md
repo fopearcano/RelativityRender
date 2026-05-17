@@ -87050,6 +87050,301 @@ reserved for the post-CLI-bridge SDK-host
 runtime pass that exercises the kernel
 arm end-to-end.
 
+## FIELD-I.10 — Scalar Field CUDA Bridge Audit (docs only)
+
+**Scope of this slice (per the operator's *FIELD-I.10 —
+Scalar Field CUDA Bridge Audit* task brief): write
+`docs/FIELD_SCALAR_CUDA_BRIDGE_AUDIT.md`, the per-slice
+verdict document for FIELD-I.9 (`e1a42c2`). Verifies
+the nine items the task brief enumerates — CUDA
+scalar-field payload exists if needed; scalar-field
+config reaches CUDA-facing launch/config structures;
+default disabled field remains no-op; no beauty
+shading changes; no observer/manifold behaviour
+changes; OptiX path unchanged; build/test status;
+runtime CUDA status (PASS / DEFERRED / BLOCKED); and
+the overall verdict (PASS / REPAIR / BLOCKED).
+Documentation only; no source code, no test, no
+CMake, no scene file, no behavioural change.**
+
+### What ships
+
+- **`docs/FIELD_SCALAR_CUDA_BRIDGE_AUDIT.md` (new,
+  ~650 lines).** Per-slice verdict document mirroring
+  the precedent CUDA-bridge audit shapes (OBSERVER.9
+  + MANI-I.9 + SCHW.6 + PENROSE.7) combined with the
+  FIELD-I.8 intermediate-shape verdict's transition
+  framing:
+    - **§1 VERDICT** — `PASS`. All eight structural /
+      runtime-status checks pass. Check #8 (runtime
+      CUDA) is `PASS_WITH_RUNTIME_DEFERRED` — the
+      standard CUDA-host deferral pattern; the
+      audit-host has no CUDA SDK so the kernel arm's
+      empirical write cannot be exercised. The
+      FIELD-I.8 intermediate verdict
+      (`PASS_WITH_FUTURE_KERNEL_WIRING_DEFERRED`) is
+      partially closed: the kernel arm exists this
+      slice; the CUDA portion converges to
+      `PASS_WITH_RUNTIME_DEFERRED`; the OptiX portion
+      remains `DEFERRED-FUTURE-WIRING` until the
+      OptiX bridge slice lands.
+    - **§2 PER-CHECK RESULTS** — nine-row evidence
+      table. Each row cites concrete file / line
+      observations on the FIELD-I.9 surface:
+        - **Check #1** (CUDA scalar-field payload
+          exists if needed): the FIELD-I.2
+          `ScalarFieldConfig` POD is trivially
+          copyable + RR_HD-inline-friendly, so it
+          embeds directly on `CudaSceneView` +
+          `AOVTargets` without a shadow struct.
+          Mirrors OBSERVER.8 / SCHW.5 precedent for
+          embedding manifold/observer PODs by-value.
+        - **Check #2** (scalar-field config reaches
+          CUDA-facing launch/config structures):
+          three-layer threading verified —
+          `AOVTargets::scalar_field_config`
+          (`CudaRenderer.h:260`) →
+          `CudaRenderer.cu:345` threading →
+          `CudaSceneView::scalar_field_config`
+          (`CudaScene.cuh:175`). The matching AOV
+          pointer flows alongside.
+        - **Check #3** (default disabled field
+          remains no-op): three-layer no-op anchor —
+          (a) null pointer gate on
+          `targets.field_scalar = nullptr` default;
+          (b) disabled-field-config gate on
+          `targets.scalar_field_config = {}`
+          default; (c) evaluator short-circuit
+          rooted in FIELD-I.3 audit's check #2
+          three-layer no-op anchor. No call site
+          flips the pointer on this slice.
+        - **Check #4** (no beauty shading changes):
+          kernel arm is structurally outside the
+          beauty-pass arithmetic (post-shading
+          AOV-write block at lines 797-805 of
+          `CudaTestKernel.cu`); reads
+          `scalar_field_config` + `best.position`
+          and writes ONLY to
+          `scene.aovs.field_scalar[pix_idx_1]`; no
+          other variable touched; per-line diff
+          confirms zero changes inside the beauty-
+          pass block at lines 450-572.
+        - **Check #5** (no observer/manifold
+          behaviour changes): `git diff
+          7cd4557..e1a42c2 --name-only --
+          'src/manifold/' 'src/relativity/'` returns
+          zero hits. Every OBSERVER.* + OBS-P.* +
+          OBS-F.* + SCHW.* + PENROSE.* + MANI-I.*
+          arc's prior verdict carries forward
+          verbatim.
+        - **Check #6** (OptiX path unchanged): `git
+          diff 7cd4557..e1a42c2 --name-only --
+          'src/optix/'` returns zero hits. The
+          OptiX bridge for FieldScalar is deferred
+          per operator brief's "Do not modify
+          OptiX yet" rule.
+        - **Check #7** (build / test status):
+          audit-host `ctest` returns `100% tests
+          passed, 0 tests failed out of 13`
+          (unchanged from FIELD-I.8;
+          `renderer_tests: 35/35`; `field_tests:
+          135/135`; all other suites unchanged).
+          Full rebuild clean; no new warnings.
+          Empirically verified.
+        - **Check #8** (runtime CUDA status):
+          `PASS_WITH_RUNTIME_DEFERRED`. Host-side
+          data-path verified structurally (clean
+          compile + 13/13 ctest PASS); SDK-host
+          runtime scenarios from FIELD-I.6 task
+          brief §8.1 + §8.3 + §8.4 + §8.5 + §8.6
+          + §8.7 (CUDA portion) deferred to the
+          future CLI-bridge slice's audit.
+        - **Check #9** (verdict): `PASS`.
+    - **§3 REASONING SUMMARY** — recap of the
+      FIELD-I.9 commit's seven-file shape
+      (CMakeLists.txt + 5 CUDA sources +
+      BUILD_PLAN.md), per-check reasoning
+      paragraphs tying each verdict back to its
+      evidence, master-rule satisfaction recap
+      (#3 + #11 + #12 + #16), and the explicit
+      framing that FIELD-I.9 is a CUDA-bridge
+      slice with SDK-host runtime DEFERRED +
+      OptiX path preserved-unchanged.
+    - **§4 NEXT** — documents the renumbered
+      FIELD-I.* sub-slice ladder absorbing the
+      FIELD-I.10 audit slot: FIELD-I.11 = OptiX
+      bridge; FIELD-I.12 = OptiX bridge audit;
+      FIELD-I.13 = CLI + Config + dispatcher
+      bridge; FIELD-I.14 = CLI bridge audit;
+      FIELD-I.15 = mapping CLI bridge;
+      FIELD-I.16 = mapping CLI bridge audit;
+      FIELD-I.17 = mapping kernel pipeline;
+      FIELD-I.18 = mapping kernel pipeline
+      audit; FIELD-I.19 = fixture; FIELD-I.20
+      = fixture audit; FIELD-I.21 = arc
+      capstone. Three candidate next slots with
+      prioritisation: (a) FIELD-I.11 OptiX
+      bridge (RECOMMENDED — closes check #6's
+      OptiX-deferred portion + half of check
+      #8's runtime-deferred portion; pairs
+      symmetrically with the FIELD-I.9 CUDA
+      bridge); (b) manifold-orthogonal work;
+      (c) direct CLI bridge skipping the OptiX
+      bridge (NOT recommended — would create
+      backend asymmetry where the CLI flag
+      flips only CUDA reachable).
+    - **§5 REFERENCES** — entry list spanning
+      master instructions, architecture-doc,
+      design-doc §4.6 anchor, FIELD-I.1 plan,
+      FIELD-I.3 + FIELD-I.5 + FIELD-I.6 +
+      FIELD-I.8 precedent docs, FIELD-I.7
+      AOV data-model commit, FIELD-I.9 commit
+      (`e1a42c2`), FIELD-I.8 baseline commit
+      (`7cd4557`), the audited 5 CUDA source
+      files + CMakeLists.txt change, every
+      unchanged source / test / build file in
+      the `src/` + `tests/` + CMake surface,
+      and the OBSERVER.8 / OBSERVER.13 /
+      MANI-I.8 precedent CUDA-bridge
+      references.
+
+### What does NOT ship
+
+- **No source code.** Nothing in any `src/`
+  subtree is touched. The post-FIELD-I.9 HEAD =
+  `e1a42c2` baseline is preserved exactly.
+  `git diff e1a42c2..HEAD -- 'src/'` returns
+  zero hits.
+- **No new test binary.** ctest set unchanged
+  at 13. Test counts unchanged
+  (`relativity_tests: 841/841`;
+  `manifold_identity_tests: 408/408`;
+  `cli_tests: 274/274`;
+  `renderer_tests: 35/35`;
+  `field_tests: 135/135`).
+- **No CMake change.** The `rr_field` PUBLIC
+  link on `rr_gpu` from FIELD-I.9 is preserved
+  verbatim.
+- **No `CudaScene.cuh` / `CudaAOV.cuh` /
+  `CudaRenderer.h` / `CudaRenderer.cu` /
+  `CudaTestKernel.cu` modification.** The
+  FIELD-I.9 CUDA bridge surface is preserved
+  verbatim.
+- **No `FIELD_SCALAR_DIAGNOSTIC_AOV_TASK.md` /
+  `FIELD_SCALAR_DIAGNOSTIC_AOV_AUDIT.md`
+  modification.** The FIELD-I.6 + FIELD-I.8
+  precedents are preserved verbatim.
+- **No `FIELD_INTERPRETATION_PHASE1_PLAN.md`
+  modification.** The FIELD-I.1 plan is the
+  canonical FIELD-I.* arc reference.
+- **No prior-arc-document modification.** Every
+  OBSERVER.* + OBS-P.* + OBS-F.* + FIELD-I.1 /
+  .2 / .3 / .4 / .5 / .6 / .7 / .8 / .9 arc
+  document preserved verbatim.
+- **No `MODULE_MAP.md` update.**
+- **No `MANIFOLD_INTEGRATION_PLAN.md` update.**
+- **No `BUILD_PLAN.md` historical rewrite.**
+  Every prior entry stays as-is; the FIELD-I.10
+  entry appends at the end of the FIELD-I.9
+  entry.
+- **No new perception model.**
+- **No quantum / tensor / curvature
+  simulation.**
+- **No C4D / server / UI / node-editor touch.**
+
+### Acceptance
+
+- **Compiles.** Documentation-only slice; no
+  build configuration touched. The audit-host
+  build remains at the post-FIELD-I.9 baseline
+  (`100% tests passed, 0 tests failed out of
+  13`; `renderer_tests: 35/35`;
+  `field_tests: 135/135`;
+  `relativity_tests: 841/841`;
+  `manifold_identity_tests: 408/408`;
+  `cli_tests: 274/274`).
+- **Internally consistent.** The nine-row
+  evidence table cites concrete file / line
+  positions on the FIELD-I.9 surface (the +38
+  lines on `CudaScene.cuh` with explicit line
+  ranges for the new `scalar_field_config`
+  field + doc-comment; the +22 lines on
+  `CudaAOV.cuh`; the +35 lines on
+  `CudaRenderer.h`; the +22 lines on
+  `CudaRenderer.cu`; the +32 lines on
+  `CudaTestKernel.cu` with the kernel arm at
+  lines 797-805; the +5 lines on
+  `CMakeLists.txt`), concrete diff
+  observations (two `git diff` invocations
+  filtered against `src/optix/` and
+  `src/manifold/ src/relativity/`, both
+  returning zero hits), and the audit-host
+  ctest transcript from the FIELD-I.9 landing
+  commit. The runtime-status treatment matches
+  the OBSERVER.9 / OBSERVER.11 / OBSERVER.14
+  / OBS-P.3 / MANI-I.* / SCHW.* / PENROSE.*
+  precedent for the
+  `PASS_WITH_RUNTIME_DEFERRED` shape.
+- **Verdict honesty.** The verdict is `PASS`
+  because: (a) the structural CUDA-bridge
+  surface is well-formed (data-path threaded,
+  kernel arm wired, default no-op anchor
+  preserved); (b) the OptiX path is
+  preserved-unchanged per the operator's
+  explicit non-modification rule; (c) the
+  audit-host build is clean. The runtime
+  status's `PASS_WITH_RUNTIME_DEFERRED` is
+  honest: the SDK-host kernel verification
+  scenarios from FIELD-I.6 §8 apply but
+  cannot be exercised this audit because of
+  the SDK absence (audit-host
+  `RR_ENABLE_CUDA=OFF`); the future CLI
+  bridge slice's audit will close the
+  deferrals on an SDK host. Master rule #3
+  ("no fake stubs") satisfied: the audit
+  honestly reports each check's verdict
+  without conflating structural correctness
+  with empirical SDK-host runtime
+  correctness. Master rule #11 ("explicit,
+  testable interfaces") satisfied: every
+  cited file / line position is verifiable
+  by inspection; every cited test count is
+  empirically verified. Master rule #12
+  ("do not overbuild a later system before
+  the current layer works") satisfied:
+  scope deliberately documentation-only.
+
+### Module status changes
+
+`docs/MODULE_MAP.md` is *not* updated by this
+slice. The `rr_gpu` library's module-map
+status carries forward from the FIELD-I.9
+entry unchanged (with the `rr_field` PUBLIC
+link in place). The FIELD-I.10 audit
+authorises the operator to proceed to:
+**(a)** FIELD-I.11 — Scalar Field OptiX
+Bridge (the renumbered next FIELD-I.* impl
+slot; RECOMMENDED as natural continuation of
+the FIELD-I.* arc — mirrors the FIELD-I.9
+CUDA bridge for the OptiX path; pairs
+symmetrically; closes check #6's
+OptiX-deferred portion + half of check #8's
+runtime-deferred portion); **(b)** manifold-
+orthogonal work (deferred SDK-host runtime
+pass for the OBSERVER.* + OBS-P.* + OBS-F.*
+arc family; MANI-I.12 final cross-host
+manifold audit; denoiser integration with
+chart-aware AOVs; path-tracer feature
+breadth); **(c)** a direct CLI bridge slice
+skipping the OptiX bridge (NOT recommended —
+would create CUDA-only AOV asymmetry; the
+cross-backend bit-identity check becomes
+undefined until both bridges are in place).
+The FIELD-I.* arc's `**Wired**` promotion
+is reserved for the post-CLI-bridge SDK-host
+runtime pass that exercises both kernels
+end-to-end.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
