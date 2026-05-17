@@ -86426,6 +86426,350 @@ FIELD-I.* arc's `**Wired**` promotion is
 reserved for the FIELD-I.* kernel-bridge
 slices' SDK-host runtime pass.
 
+## FIELD-I.8 — Scalar Field Diagnostic AOV Audit (docs only)
+
+**Scope of this slice (per the operator's *FIELD-I.8 —
+Scalar Field Diagnostic AOV Audit* task brief): write
+`docs/FIELD_SCALAR_DIAGNOSTIC_AOV_AUDIT.md`, the
+per-slice verdict document for FIELD-I.7 (`181a579`).
+Verifies the nine items the task brief enumerates —
+fieldScalar diagnostic AOV exists; beauty output
+unchanged by default; default disabled field
+diagnostic is neutral; AOV generation is optional;
+CUDA path status; OptiX path status; no
+field-to-beauty mapping yet; runtime status
+(PASS / DEFERRED / BLOCKED); and the overall verdict
+(PASS / REPAIR / BLOCKED). Documentation only; no
+source code, no test, no CMake, no scene file, no
+behavioural change. The FIELD-I.8 slot is inserted
+between the FIELD-I.7 impl slice and the subsequent
+FIELD-I.9 (kernel-bridge implementation) impl slice;
+subsequent FIELD-I.* sub-slices renumber by one
+(mirrors the FIELD-I.5 / FIELD-I.3 / OBS-F.3 / OBSERVER.3
+/ .5 / .7 / .9 / .11 / .14 / OBS-P.3 audit-slot
+insertion precedent).**
+
+### What ships
+
+- **`docs/FIELD_SCALAR_DIAGNOSTIC_AOV_AUDIT.md` (new,
+  ~640 lines).** Per-slice verdict document mirroring
+  the host-side data-model audit shape (FIELD-I.3 /
+  FIELD-I.5 / OBSERVER.3 / .5 / .7) combined with the
+  runtime-deferred audit shape (OBSERVER.9 / .11 /
+  .14 / OBS-P.3 / OBS-F.3):
+    - **§1 VERDICT** — `PASS`. All seven structural
+      checks (#1, #2, #3, #4, #7) PASS. Checks #5 +
+      #6 (CUDA / OptiX path status) PASS on the
+      structural side (data-model entry well-formed)
+      with runtime DEFERRED to the future kernel-
+      bridge slice (the natural consumer). Check #8
+      (runtime status) is
+      `PASS_WITH_FUTURE_KERNEL_WIRING_DEFERRED` —
+      a third intermediate shape between
+      FIELD-I.3's host-side-POD-leaf `PASS` and
+      OBSERVER.9's wired-kernel-but-no-SDK
+      `PASS_WITH_RUNTIME_DEFERRED`. The data-model
+      surface is verified end-to-end by the
+      audit-host `renderer_tests` binary; the
+      future kernel-bridge slice's audit will
+      exercise the runtime PPM scenarios.
+    - **§2 PER-CHECK RESULTS** — nine-row
+      evidence table. Each row cites concrete
+      file / line observations on the FIELD-I.7
+      surface:
+        - **Check #1** (fieldScalar diagnostic
+          AOV exists): `src/renderer/AOV.h:143`
+          defines `FieldScalar = 8`;
+          `src/renderer/AOV.cpp:17 + :36 +
+          :112-119` carry the matching component
+          count + name + factory; verified by
+          8 RR_CHECK assertions across 3 test
+          functions.
+        - **Check #2** (beauty output unchanged):
+          `git diff 193d306..181a579 --name-only
+          -- 'src/cuda/' 'src/optix/'` returns
+          zero hits; no kernel TU touched; no
+          consumer of the new enumerator value;
+          existing 8 AOV slots' enumerator
+          values preserved (Beauty = 0 ...
+          ObserverBeta = 7).
+        - **Check #3** (default disabled field
+          diagnostic neutral): rooted in the
+          FIELD-I.2 `ScalarFieldConfig` POD's
+          evaluator semantics (the
+          `enabled = false` short-circuit
+          returns `0.0f`; empirically verified
+          at the FIELD-I.3 audit's check #2);
+          documented as contract on the AOV
+          enumerator's doc-comment at
+          `src/renderer/AOV.h:106-114`. The
+          future kernel arm will call
+          `rr::field::evaluate(config, hit_pos)`
+          and write the result; with the
+          default disabled config every pixel
+          writes `0.0f` (flat black PPM).
+        - **Check #4** (AOV generation
+          optional): three-layer verified —
+          (a) no kernel consumer exists this
+          slice; (b) no `--field-debug` CLI
+          flag exists this slice; (c) the
+          future two-flag gate
+          (`--render-aovs --field-debug` /
+          `--render-optix-aovs --field-debug`)
+          will be the only entry point, matching
+          the existing `--manifold-debug` /
+          `--observer-debug` precedent.
+        - **Check #5** (CUDA path status):
+          PASS structural / DEFERRED runtime.
+          No CUDA kernel arm was wired this
+          slice; the future kernel arm's
+          contract is documented at
+          `src/renderer/AOV.h:106-141` + the
+          FIELD-I.6 task brief's §4.1.
+        - **Check #6** (OptiX path status):
+          PASS structural / DEFERRED runtime.
+          Same shape as check #5; the OptiX
+          kernel-arm contract follows the same
+          single-source-of-truth math leaf
+          (`rr::field::evaluate(...)` from
+          `src/field/ScalarField.h`).
+        - **Check #7** (no field-to-beauty
+          mapping): three-layer verified —
+          (a) no consumer of FIELD-I.4
+          `FieldMappingConfig` exists in the
+          renderer / kernels; (b) FIELD-I.7
+          commit adds zero new consumers;
+          (c) explicit doc-comment statement
+          at `src/renderer/AOV.h:131-134`.
+        - **Check #8** (runtime status):
+          `PASS_WITH_FUTURE_KERNEL_WIRING_DEFERRED`.
+          Audit-host `renderer_tests` reports
+          35 / 35 PASS (+8 NEW FIELD-I.7); all
+          other suites unchanged. The
+          FIELD-I.6 task brief's §8.1 – §8.7
+          SDK-host runtime scenarios are
+          enumerated; all 7 are DEFERRED to
+          the future kernel-bridge slice
+          (none apply this slice because no
+          kernel arm exists yet).
+        - **Check #9** (verdict): `PASS`.
+    - **§3 REASONING SUMMARY** — recap of the
+      FIELD-I.7 commit's four-file shape
+      (`src/renderer/AOV.h` extension,
+      `src/renderer/AOV.cpp` extension,
+      `tests/renderer_tests.cpp` extension,
+      `docs/BUILD_PLAN.md` entry), per-check
+      reasoning paragraphs tying each verdict
+      back to its evidence, master-rule
+      satisfaction recap (#3 + #11 + #12 +
+      #16), and the explicit framing that
+      FIELD-I.7 is a host-side data-model
+      slice with future-kernel-wiring DEFERRED
+      — an intermediate shape between the
+      FIELD-I.3 / FIELD-I.5 host-side POD-leaf
+      `PASS` and the OBSERVER.9 / .11 / .14
+      wired-but-SDK-deferred
+      `PASS_WITH_RUNTIME_DEFERRED`.
+    - **§4 NEXT** — documents the renumbered
+      FIELD-I.* sub-slice ladder absorbing the
+      FIELD-I.8 audit slot: FIELD-I.9 =
+      kernel-bridge implementation;
+      FIELD-I.10 = kernel-bridge audit;
+      FIELD-I.11 = mapping CLI + Config
+      bridge; FIELD-I.12 = mapping bridge
+      audit; FIELD-I.13 = mapping kernel
+      pipeline; FIELD-I.14 = mapping kernel
+      pipeline audit; FIELD-I.15 = fixture
+      scene + companion doc; FIELD-I.16 =
+      fixture audit; FIELD-I.17 = arc
+      capstone. Three candidate next slots
+      with prioritisation: (a) FIELD-I.9
+      kernel-bridge implementation
+      (RECOMMENDED — natural continuation of
+      the FIELD-I.* arc); (b) manifold-
+      orthogonal work (deferred SDK-host
+      runtime pass for the OBSERVER /
+      OBS-P / OBS-F arc family; MANI-I.12
+      final cross-host manifold audit;
+      denoiser integration with chart-aware
+      AOVs; path-tracer feature breadth);
+      (c) direct full FIELD-I.4
+      `FieldMappingConfig` CLI surface slice
+      skipping the kernel-bridge (NOT
+      recommended — would author without
+      diagnostics).
+    - **§5 REFERENCES** — entry list spanning
+      master instructions, architecture-doc,
+      design-doc §4.6 diagnostic-AOV anchor,
+      FIELD-I.1 plan, FIELD-I.3 + FIELD-I.5
+      precedent audit docs, FIELD-I.6 task
+      brief, FIELD-I.7 commit (`181a579`),
+      FIELD-I.6 baseline commit (`193d306`),
+      MANI-I.7 + MANI-I.9 + OBSERVER.12 +
+      OBSERVER.14 precedent AOV-extension
+      pairs, the audited `src/renderer/AOV.h`
+      + `src/renderer/AOV.cpp` surfaces, the
+      extended `tests/renderer_tests.cpp`
+      binary, every unchanged source / test /
+      build file in the `src/` + `tests/` +
+      CMake surface.
+
+### What does NOT ship
+
+- **No source code.** Nothing in any `src/`
+  subtree is touched. The post-FIELD-I.7
+  HEAD = `181a579` baseline is preserved
+  exactly. `git diff 181a579..HEAD --
+  'src/'` returns zero hits.
+- **No new test binary.** ctest set unchanged
+  at 13. Test counts unchanged
+  (`relativity_tests: 841/841`;
+  `manifold_identity_tests: 408/408`;
+  `cli_tests: 274/274`;
+  `renderer_tests: 35/35`;
+  `field_tests: 135/135`).
+- **No CMake change.**
+- **No `AOV.h` / `AOV.cpp` modification.**
+  The FIELD-I.7 surface is preserved
+  verbatim.
+- **No `tests/renderer_tests.cpp`
+  modification.**
+- **No `FIELD_SCALAR_DIAGNOSTIC_AOV_TASK.md`
+  modification.** The FIELD-I.6 task brief
+  is preserved verbatim.
+- **No `FIELD_INTERPRETATION_PHASE1_PLAN.md`
+  modification.** The FIELD-I.1 plan is the
+  canonical FIELD-I.* arc reference.
+- **No prior-arc-document modification.**
+  Every OBSERVER.* + OBS-P.* + OBS-F.* +
+  FIELD-I.1 / .2 / .3 / .4 / .5 / .6 / .7
+  arc document preserved verbatim.
+- **No `MODULE_MAP.md` update.** The
+  `rr_renderer` library's module-map status
+  carries forward from the FIELD-I.7 entry
+  unchanged.
+- **No `MANIFOLD_INTEGRATION_PLAN.md`
+  update.**
+- **No `BUILD_PLAN.md` historical rewrite.**
+  Every prior entry stays as-is; the FIELD-I.8
+  entry appends at the end of the FIELD-I.7
+  entry.
+- **No new perception model.** No
+  `PerceptionMode` enumerator added.
+- **No quantum / tensor / curvature
+  simulation.**
+- **No C4D / server / UI / node-editor
+  touch.**
+
+### Acceptance
+
+- **Compiles.** Documentation-only slice;
+  no build configuration touched. The
+  audit-host build remains at the post-
+  FIELD-I.7 baseline (`100% tests passed,
+  0 tests failed out of 13`;
+  `renderer_tests: 35/35`;
+  `field_tests: 135/135`;
+  `relativity_tests: 841/841`;
+  `manifold_identity_tests: 408/408`;
+  `cli_tests: 274/274`).
+- **Internally consistent.** The nine-row
+  evidence table cites concrete file / line
+  positions on the FIELD-I.7 surface (the
+  +54 lines on `src/renderer/AOV.h` with
+  explicit line ranges for the new
+  enumerator + doc-comment + factory
+  declaration; the +11 lines on
+  `src/renderer/AOV.cpp` with explicit line
+  ranges for the new switch cases + factory
+  body; the +54 lines on
+  `tests/renderer_tests.cpp` with the three
+  new test functions covering 8 RR_CHECK
+  assertions), concrete diff observations
+  (three `git diff` invocations filtered
+  against `src/`, `src/cuda/`, `src/optix/`,
+  all returning zero hits outside the
+  documented FIELD-I.7 changes), and the
+  audit-host ctest transcript from the
+  FIELD-I.7 landing commit. The runtime-
+  status treatment matches the OBSERVER.9
+  / OBSERVER.11 / OBSERVER.14 / OBS-P.3
+  precedent for the deferral framing but
+  introduces an intermediate shape
+  (`PASS_WITH_FUTURE_KERNEL_WIRING_DEFERRED`)
+  that honestly captures the FIELD-I.7
+  slice's data-model-only scope.
+- **Verdict honesty.** The verdict is
+  `PASS` because the FIELD-I.7 surface
+  itself is fully verified end-to-end. The
+  checks #5 + #6 split into "PASS
+  (structural) + DEFERRED (runtime to
+  future kernel-bridge slice)" honestly
+  captures the intermediate shape: the
+  data-model entry is well-formed, the
+  kernel arm that would exercise it does
+  not exist yet, the future kernel-bridge
+  slice's audit will close the runtime
+  deferrals. Master rule #3 ("no fake
+  stubs") satisfied: the AOV data-model
+  entry is fully wired (enum / name /
+  component count / factory all produce
+  well-formed values; 8 RR_CHECK
+  assertions verify them empirically);
+  the doc-comment block on the enumerator
+  documents the future kernel-arm
+  contract honestly; no fake stub
+  pretending the kernel arm exists. The
+  narrow-scope alignment with the
+  operator's FIELD-I.7 three-bullet brief
+  is explicit at §3.10 (the broader
+  FIELD-I.6 task brief envisioned a
+  15-file surface but the operator's
+  FIELD-I.7 brief authorised only the
+  AOV data-model entry; this audit
+  reflects the narrow shape's PASS-
+  ability without conflating it with the
+  broader task brief's wider deferrals).
+  Master rule #11 ("explicit, testable
+  interfaces") satisfied: every
+  documented data-model behaviour is
+  tested empirically. Master rule #12
+  ("do not overbuild a later system
+  before the current layer works")
+  satisfied: scope deliberately narrow.
+
+### Module status changes
+
+`docs/MODULE_MAP.md` is *not* updated by this
+slice. The `rr_renderer` library's module-
+map status carries forward from the FIELD-I.7
+entry unchanged. The FIELD-I.8 audit
+authorises the operator to proceed to:
+**(a)** FIELD-I.9 — kernel-bridge
+implementation (the renumbered next
+FIELD-I.* impl slot; RECOMMENDED as natural
+continuation of the FIELD-I.* arc; consumes
+the FIELD-I.7 AOV data-model entry +
+lands the kernel arms + `--field-debug`
+CLI flag + payload fields + dispatcher
+emit per the FIELD-I.6 task brief's §4 +
+§5; closes the FIELD-I.7 audit's checks
+#5 + #6 + #8 runtime-deferred portions
+when its own audit runs); **(b)** manifold-
+orthogonal work (deferred SDK-host runtime
+pass for the OBSERVER.* + OBS-P.* + OBS-F.*
+arc family; MANI-I.12 final cross-host
+manifold audit; denoiser integration with
+chart-aware AOVs; path-tracer feature
+breadth); **(c)** a direct full FIELD-I.4
+`FieldMappingConfig` CLI surface slice
+skipping the kernel-bridge (NOT
+recommended — would author without
+diagnostics). The FIELD-I.* arc's
+`**Wired**` promotion is reserved for the
+FIELD-I.9 kernel-bridge slice's SDK-host
+runtime pass.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
