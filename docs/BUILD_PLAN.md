@@ -90149,6 +90149,252 @@ verification of the primary-hit arm;
 **(f) DEFERRABLE** retroactive task brief
 authoring (operator discretion).
 
+## OBS-PERCEPT.1 — Observer-Space Perception Transform Plan (docs only)
+
+**Scope of this slice (per the operator's *OBS-PERCEPT.1
+— Observer-Space Perception Transform Plan* task
+brief): write
+`docs/OBSERVER_SPACE_PERCEPTION_PLAN.md`, the
+canonical design document for the OBS-PERCEPT.* arc
+— the first true observer-dependent perception
+transform layer in the renderer. The arc closes the
+OBSERVER.15 capstone audit's `PASS_WITH_RUNTIME_DEFERRED`
+future-kernel-migration risk #1 ("subsequent slice
+will gate the SR-helper call sites on
+`observer_frame.perception_mode` and key the existing
+aberration / Doppler / searchlight helpers on
+`observer_frame.beta` instead of the legacy
+`observer.velocity`") and operationalises the
+architecture doc §7.2 concept ("the existing helpers
+become the Minkowski + constant-velocity-frame
+specialisation of observer-frame Lorentz boost of the
+tetrad → aberration of the primary direction in
+tetrad-local coordinates"). Documentation only; no
+source code, no test, no CMake, no scene file, no
+behavioural change.**
+
+### What ships
+
+- **`docs/OBSERVER_SPACE_PERCEPTION_PLAN.md` (new,
+  ~700 lines).** Arc-opening design document
+  mirroring the FIELD-I.1 plan + OBSERVER.1 plan
+  shapes:
+    - **§1 Purpose** — two-arc separation framing
+      (today's distributed SR pipeline → unified
+      perception transform abstraction);
+      "observer-space" naming anchor + the
+      architecture doc §7.2 quote rooting the
+      tetrad-local Lorentz boost; relationship to
+      OBSERVER.* + OBS-P.* + OBS-F.* arc family
+      with a per-arc role table.
+    - **§2 Initial scope** — six explicit
+      scope-bounds: constant-velocity Minkowski
+      observer only; directional aberration;
+      Doppler basis shift; searchlight intensity
+      modulation; no acceleration; no GR
+      geodesics.
+    - **§3 Relationship to existing relativistic
+      code** — three-section migration plan
+      mapping each legacy `src/relativity/`
+      helper to its observer-space transform role;
+      ObserverFrame becomes runtime source of
+      truth; no new SR math leaves.
+    - **§4 Relationship to manifold system** —
+      four-section composability framing
+      (manifold warps space; observer transforms
+      perception basis; both layers composable;
+      no new manifold-observer coupling).
+    - **§5 GPU integration strategy** —
+      four-section deployment plan (primary-ray
+      basis transform; optional secondary-ray
+      policy with Option A primary-ray-only
+      [RECOMMENDED] vs Option B per-bounce
+      [DEFERRED]; default observer remains no-op;
+      shared math leaves on both backends).
+    - **§6 Safety constraints** — five-section
+      safety discipline (bounded transforms;
+      beta clamp inherited from OBSERVER.6; no
+      NaN/Inf via existing math leaves;
+      default-off byte identity; single source of
+      truth on ObserverFrame).
+    - **§7 Proposed slices** — six-slice ladder
+      with full per-slice scope + acceptance +
+      "does not ship" framing: OBS-PERCEPT.2
+      primary-ray transform task brief;
+      OBS-PERCEPT.3 CUDA implementation;
+      OBS-PERCEPT.4 OptiX implementation;
+      OBS-PERCEPT.5 debug AOV;
+      OBS-PERCEPT.6 fixture;
+      OBS-PERCEPT.7 arc capstone audit.
+    - **§8 Explicit non-goals** — nine
+      enumerated non-goals (no Kerr / Kruskal;
+      no accelerating observers; no full GR
+      tetrad transport; no quantum observer
+      effects; no path-tracer per-bounce
+      perception [Option B deferred]; no new
+      CLI flag families; no new ObserverFrame
+      POD fields; no C4D / server / UI /
+      node-editor; no legacy
+      `observer.velocity` removal — the host-
+      side payload preserves it for
+      backwards-compatibility with non-
+      perception-mode CLI flows).
+    - **§9 References** — five-section reference
+      list spanning master instructions,
+      architecture doc §7.2, every OBSERVER.* +
+      OBS-P.* + OBS-F.* precedent (OBSERVER.1
+      plan + OBSERVER.3 / .5 / .7 / .9 / .11 /
+      .14 audits + OBSERVER.15 capstone + OBS-P.3
+      audit + OBS-F.3 audit), parallel-arc
+      references (FIELD-I.1 plan + FIELD-BEAUTY.8
+      capstone), source-surface inventory the
+      arc will touch (relativity math leaves
+      + ObserverFrame + CUDA / OptiX kernels +
+      AOV.h + fixture), and an explicit
+      non-touched-surfaces section (Manifold
+      Core other than ObserverFrame reads;
+      `src/field/` orthogonal family;
+      SceneLoader.cpp; Config; DCC surfaces).
+    - **§10 Constraints carried forward** — the
+      core engineering rules applied at the
+      arc scope.
+    - **§11 Verdict** — explicit "planning slice
+      produces no verdict; the arc capstone
+      (OBS-PERCEPT.7) does" framing.
+
+### What does NOT ship
+
+- **No source code.** Nothing in any `src/`
+  subtree is touched. The post-FIELD-BEAUTY.8
+  HEAD = `bda382c` baseline is preserved
+  exactly. `git diff bda382c..HEAD -- 'src/'`
+  returns zero hits.
+- **No new test binary.** ctest set unchanged
+  at 13 (audit-host) / 14 (OptiX-ON-no-SDK).
+  Test counts unchanged.
+- **No CMake change.**
+- **No relativity math leaf modification.** The
+  existing `aberrateDirection` / `dopplerFactor`
+  / `searchlightFactor` / `applyDopplerColor` /
+  `PrecomputedRelativity` helpers preserved
+  verbatim; the OBS-PERCEPT.3 / .4 slices may
+  add a new composing helper, but the leaves
+  themselves stay unchanged.
+- **No ObserverFrame POD modification.** The
+  OBS-PERCEPT.* arc reads the existing
+  OBSERVER.2-shipped fields verbatim; no new
+  fields added.
+- **No kernel arm modification.** The
+  OBS-PERCEPT.3 / .4 slices land the kernel
+  arms; this OBS-PERCEPT.1 planning slice does
+  not.
+- **No fixture authoring.** The OBS-PERCEPT.6
+  slice authors the fixture; this slice does
+  not.
+- **No CLI flag addition.** The OBS-PERCEPT.*
+  arc reuses the OBSERVER.4 `--observer-*` CLI
+  surface verbatim (the
+  `--observer-perception-mode relativistic`
+  gate already exists); no new flag family.
+- **No prior-arc-document modification.** Every
+  OBSERVER.* + OBS-P.* + OBS-F.* + FIELD-I.* +
+  FIELD-BEAUTY.* arc document preserved
+  verbatim.
+- **No `MODULE_MAP.md` update.**
+- **No `MANIFOLD_INTEGRATION_PLAN.md` update.**
+- **No `BUILD_PLAN.md` historical rewrite.**
+  Every prior entry stays as-is; the
+  OBS-PERCEPT.1 entry appends at the end of
+  the FIELD-BEAUTY.8 entry.
+- **No new perception model beyond the planned
+  ConstantVelocityMinkowski specialisation.**
+  The `CurvedChartGeodesicPlaceholder` enum
+  slot remains reserved per master rule #3;
+  future arcs may lift.
+- **No quantum / tensor / curvature simulation
+  on the perception path.**
+- **No C4D / server / UI / node-editor touch.**
+
+### Acceptance
+
+- **Compiles.** Documentation-only slice; no
+  build configuration touched. The audit-host
+  build remains at the post-FIELD-BEAUTY.8
+  baseline (`100% tests passed, 0 tests failed
+  out of 13`; `renderer_tests: 35/35`;
+  `field_tests: 135/135`;
+  `relativity_tests: 841/841`;
+  `manifold_identity_tests: 408/408`;
+  `cli_tests: 274/274`).
+- **Internally consistent.** The 11-section
+  plan structure mirrors the FIELD-I.1 plan
+  shape verbatim (which mirrors the OBSERVER.1
+  plan + the architecture doc §7.2 framing);
+  every cited prior-arc reference exists in
+  the tree at the cited path; every cited
+  source file exists at the path; the six-
+  slice ladder mirrors the FIELD-I.* +
+  FIELD-BEAUTY.* arc decomposition pattern
+  (planning slice → task brief → CUDA impl →
+  OptiX impl → debug AOV → fixture → capstone
+  audit). The cross-arc framing (parallel to
+  FIELD-I.* + FIELD-BEAUTY.*; composable with
+  manifold layer) is structurally honest +
+  rooted in the architecture doc §7.2.
+- **Plan honesty.** Master rule #3 satisfied —
+  every non-goal is explicit; every
+  scope-bounded slice has documented
+  "does not ship" framing; the
+  `CurvedChartGeodesicPlaceholder` honest-
+  scope fallback is preserved; no fake stub.
+  Master rule #11 satisfied — every proposed
+  slice has explicit acceptance criteria.
+  Master rule #12 satisfied — the arc opens
+  narrow (constant-velocity Minkowski only;
+  primary-ray-only via Option A); the broader
+  per-bounce Option B + curved-chart future
+  arcs are explicitly deferred.
+
+### Module status changes
+
+`docs/MODULE_MAP.md` is *not* updated by this
+slice. The OBSERVER.* + OBS-P.* + OBS-F.* arc
+family's module-map statuses carry forward
+from OBSERVER.14 + OBS-P.3 + OBS-F.3
+unchanged. The OBS-PERCEPT.1 plan slice
+authorises the operator to proceed to:
+**(a)** OBS-PERCEPT.2 — primary-ray transform
+task brief (the renumbered next OBS-PERCEPT.*
+docs-only slot; lands the operator-facing task
+brief the OBS-PERCEPT.3 implementation slice
+will read; RECOMMENDED as natural
+continuation); **(b)** the combined FIELD-* +
+OBS-PERCEPT CLI bridge slice (HIGHLY
+RECOMMENDED at the FIELD-BEAUTY.8 capstone's
+§4.2 (b) — could merge FIELD-BEAUTY.9 +
+FIELD-I.15 + future OBS-PERCEPT.7 runtime
+verification into one CLI bridge slice that
+closes the entire field-and-observer-arc
+family's runtime-deferred verdict tail in one
+SDK-host audit; OBS-PERCEPT.* slices would
+follow after the CLI bridge lands);
+**(c)** manifold-orthogonal work (deferred
+SDK-host runtime pass for the OBSERVER.* +
+OBS-P.* + OBS-F.* arc family; MANI-I.12 final
+cross-host manifold audit; denoiser
+integration with chart-aware AOVs;
+path-tracer feature breadth);
+**(d)** RETROACTIVE authoring of the missing
+FIELD-BEAUTY.1 + FIELD-BEAUTY.2 +
+FIELD_INTERPRETATION_PHASE1_AUDIT.md task
+brief / audit slots (deferrable to operator
+discretion). The OBS-PERCEPT.* arc's
+`**Wired**` promotion is reserved for the
+post-OBS-PERCEPT.4 SDK-host runtime pass
+that exercises both backend kernels'
+unified perception-transform arms end-to-end
+against the OBS-PERCEPT.6 fixture.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
