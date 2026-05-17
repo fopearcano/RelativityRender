@@ -85865,6 +85865,288 @@ reserved for the deferred FIELD-I.* GPU
 bridges + the FIELD-I.* fixture's SDK-host
 runtime pass.
 
+## FIELD-I.6 — Scalar Field Diagnostic AOV Task (docs only)
+
+**Scope of this slice (per the operator's *FIELD-I.6 —
+Scalar Field Diagnostic AOV Task* task brief): write
+`docs/FIELD_SCALAR_DIAGNOSTIC_AOV_TASK.md`, the
+operator-facing brief that defines the work for the
+subsequent FIELD-I.7 impl slice (the renumbered
+diagnostic-AOV impl, formerly the FIELD-I.6 CLI +
+Config bridge per the FIELD-I.5 audit's §4.1 ladder —
+the operator's FIELD-I.6 task brief reorders the ladder
+so the diagnostic AOV ships before the CLI + Config
+bridge, since the AOV impl already needs a minimal CLI
+surface to engage the field config). Documentation
+only; no source code, no test, no CMake, no scene
+file, no behavioural change. The FIELD-I.6 task brief
+is the FIELD-I.* analogue of the MANI-I.7
+`MANIFOLD_DEBUG_AOV_TASK.md` + OBSERVER.12
+`OBSERVER_DEBUG_AOV_TASK.md` precedents.**
+
+### What ships
+
+- **`docs/FIELD_SCALAR_DIAGNOSTIC_AOV_TASK.md` (new,
+  ~860 lines).** Operator-facing task brief
+  mirroring the OBSERVER.12 8-section layout
+  verbatim:
+    - **§1 Exact goal** — expose the per-pixel raw
+      scalar-field sample
+      (`evaluate(ScalarFieldConfig, hit_position)`)
+      as an optional diagnostic AOV output, gated
+      on a new `--field-debug` CLI flag. Read-only
+      diagnostic; no beauty modulation; no
+      FieldMappingConfig consumption.
+    - **§2 Proposed AOV** — `fieldScalar` (1-float
+      / pixel; PascalCase enum
+      `AOVType::FieldScalar = 8`; snake_case name
+      `"field_scalar"`; factory
+      `make_field_scalar(...)`). Scope-locked to
+      a single channel per the operator's brief.
+      Default neutral / zero value when field is
+      disabled.
+    - **§3 Expected behaviour** — three load-
+      bearing invariants: (a) beauty output
+      byte-identical pre/post-engagement; (b)
+      default disabled-field config (`enabled =
+      false`) produces `0.0` at every pixel;
+      (c) two-flag gate composition
+      (`--render-aovs --field-debug` /
+      `--render-optix-aovs --field-debug`)
+      controls AOV pass allocation.
+    - **§4 CUDA / OptiX interaction** — read
+      `scalar_field_config` only; no
+      `FieldMappingConfig` consumed; no beauty
+      modulation; single-source-of-truth math
+      via the FIELD-I.2 RR_HD inline
+      `evaluate(...)` helper on both backends.
+    - **§5 Files likely involved** — 15-row
+      table covering the AOV data model
+      (AOV.h / .cpp), core config
+      (Config.h, CommandLine.cpp), CUDA-side
+      (CudaScene.cuh / CudaAOV.cuh /
+      CudaRenderer.h / .cu / CudaTestKernel.cu),
+      OptiX-side (OptixLaunchParams.h /
+      OptixRenderer.h / .cpp / OptixPrograms.cu),
+      dispatcher (main.cpp), tests
+      (renderer_tests.cpp + cli_tests.cpp), and
+      docs (BUILD_PLAN.md + fixture +
+      companion). Includes the minimal CLI
+      authoring surface (`--field-enable` +
+      `--field-kind` + `--field-strength` +
+      Constant + Radial parameter flags)
+      needed so the AOV has something to
+      visualise.
+    - **§6 What must not be touched** — 14
+      non-goals: no beauty-pass modulation; no
+      change to existing 8 AOV slots' enum
+      values; no FIELD-I.4 mapping pipeline
+      engagement; no per-pixel field state;
+      no scene-file schema bump; no
+      `--render-*` action; no denoiser
+      modification; no field offset shifts
+      predating OBSERVER.13; no existing PPM
+      filename change; no multi-channel field
+      AOVs; no full FIELD-I.4 mapping CLI;
+      no kernel-side mapping migration; no
+      C4D / server / UI / node-editor surface
+      change; no legacy FIELD.3 POD touch.
+    - **§7 PASS criteria** — four-section
+      acceptance gate: structural (18
+      checkboxes covering enum slot,
+      component count, name, factory, config
+      fields, CLI flags, CUDA + OptiX
+      payload fields, gated kernel arms,
+      PPM emission), behavioural (6
+      checkboxes covering default neutral,
+      Constant non-default, Radial non-
+      default, off-path bit-identity,
+      cross-backend equivalence, beauty
+      preservation), test surface (4
+      checkboxes covering ctest 13/13,
+      cli_tests + renderer_tests additions,
+      standalone compile), documentation (4
+      checkboxes covering BUILD_PLAN.md
+      entry + fixture + companion doc).
+    - **§8 Runtime-deferred CUDA / OptiX
+      checks** — 7 deferred SDK-host
+      verification scenarios: §8.1 + §8.2
+      neutral diagnostic on both backends;
+      §8.3 + §8.4 non-default Constant +
+      Radial visualisation on both backends;
+      §8.5 off-path bit-identity; §8.6
+      composability with `--manifold-debug`
+      + `--observer-debug` (three orthogonal
+      debug AOVs simultaneously);
+      §8.7 cross-backend equivalence
+      (`cmp` exit status 0).
+    - **§9 Cross-references** — 20-entry
+      list spanning master instructions,
+      architecture-doc, FIELD-I.1 plan,
+      FIELD-I.3 + FIELD-I.5 audits,
+      MANI-I.7 + OBSERVER.12 precedent
+      task briefs, MANI-I.9 + OBSERVER.14
+      precedent audit shapes, every source
+      file the impl slice will touch
+      (AOV.h / .cpp, ScalarField.h,
+      FieldMapping.h, Config.h,
+      CommandLine.cpp, CudaScene.cuh /
+      CudaAOV.cuh / CudaRenderer.h / .cu /
+      CudaTestKernel.cu, OptixLaunchParams.h
+      / OptixRenderer.h / .cpp /
+      OptixPrograms.cu, main.cpp),
+      precedent fixture, and BUILD_PLAN.md.
+
+### What does NOT ship
+
+- **No source code.** Nothing in any `src/`
+  subtree is touched. The post-FIELD-I.5
+  HEAD = `ba79e6e` baseline is preserved
+  exactly. `git diff ba79e6e..HEAD --
+  'src/'` returns zero hits.
+- **No new test binary.** ctest set unchanged
+  at 13. Test counts unchanged
+  (`relativity_tests: 841/841`;
+  `manifold_identity_tests: 408/408`;
+  `cli_tests: 274/274`;
+  `renderer_tests: 27/27`;
+  `field_tests: 135/135`).
+- **No CMake change.**
+- **No AOV.h / AOV.cpp modification.** The
+  new `AOVType::FieldScalar = 8` enumerator
+  + `make_field_scalar(...)` factory are
+  reserved for the FIELD-I.7 impl slice.
+- **No `ScalarField.h` / `FieldMapping.h`
+  modification.** Both POD surfaces
+  preserved verbatim.
+- **No `OBSERVER_DEBUG_AOV_TASK.md` /
+  `MANIFOLD_DEBUG_AOV_TASK.md` modification.**
+  The precedent task briefs are preserved
+  verbatim as the structural reference.
+- **No `FIELD_INTERPRETATION_PHASE1_PLAN.md`
+  modification.** The FIELD-I.1 plan is the
+  canonical FIELD-I.* arc reference; this
+  task brief consumes it without modifying
+  it. A `LANDED-update` rewrite is reserved
+  for the FIELD-I.7 impl slice's commit
+  (optional per §7.4 of the new task brief).
+- **No prior-arc-document modification.**
+  Every OBSERVER.* + OBS-P.* + OBS-F.* +
+  FIELD-I.1 / .2 / .3 / .4 / .5 arc
+  document preserved verbatim.
+- **No `MODULE_MAP.md` update.** The
+  `rr_field` skeleton's module-map status
+  carries forward from the FIELD-I.5 entry
+  unchanged.
+- **No `MANIFOLD_INTEGRATION_PLAN.md` update.**
+- **No `BUILD_PLAN.md` historical rewrite.**
+  Every prior entry stays as-is; the FIELD-I.6
+  entry appends at the end of the FIELD-I.5
+  entry.
+- **No fixture file.** No
+  `scenes/test_field_diagnostic.rrscene` —
+  reserved for the FIELD-I.7 impl slice (or
+  a separate fixture slice, at the impl
+  slice's discretion).
+- **No companion fixture doc.** No
+  `docs/FIELD_DIAGNOSTIC_FIXTURE.md` —
+  reserved for the FIELD-I.7 impl slice.
+- **No new perception model.** No
+  `PerceptionMode` enumerator added.
+- **No quantum / tensor / curvature
+  simulation.**
+- **No C4D / server / UI / node-editor
+  touch.**
+
+### Acceptance
+
+- **Compiles.** Documentation-only slice; no
+  build configuration touched. The audit-host
+  build remains at the post-FIELD-I.5 baseline
+  (`100% tests passed, 0 tests failed out of
+  13`; `field_tests: 135/135`;
+  `relativity_tests: 841/841`;
+  `manifold_identity_tests: 408/408`;
+  `cli_tests: 274/274`;
+  `renderer_tests: 27/27`).
+- **Internally consistent.** The task brief's
+  eight sections mirror the OBSERVER.12 +
+  MANI-I.7 precedent layout verbatim. Every
+  cited source file exists today (verified by
+  inspection at task-brief authoring time);
+  every cited precedent audit doc exists in
+  the FIELD-I.3 + FIELD-I.5 + OBSERVER.* +
+  MANI-I.* chain. The new `AOVType::FieldScalar
+  = 8` value extends the AOV.h enum (currently
+  ending at `ObserverBeta = 7`) by exactly one
+  enumerator at the end, preserving every
+  pre-FIELD-I.7 value. The single-source-of-
+  truth math leaf (`evaluate(ScalarFieldConfig,
+  Vec3)` from the FIELD-I.2 surface) is the
+  same RR_HD inline helper both backends will
+  consume — the cross-backend equivalence is
+  structurally guaranteed (not just an
+  empirical hope).
+- **Brief honesty.** The task brief is
+  scope-locked to a single MVP AOV
+  (`fieldScalar`); no alternative channels
+  enumerated per the operator's brief.
+  Master rule #3 satisfied: the AOV is
+  documented honestly as a read-only
+  diagnostic on a payload field that exists
+  today (the FIELD-I.2
+  `ScalarFieldConfig`); no fake stub.
+  Master rule #12 satisfied: scope
+  deliberately narrow to AOV plumbing + the
+  minimal CLI authoring needed to engage it;
+  the full FIELD-I.4 `FieldMappingConfig`
+  CLI surface + the mapping kernel
+  pipeline + the multi-channel field AOVs +
+  the scene-file schema bump are all
+  explicitly deferred to later FIELD-I.*
+  slices per §6 non-goals. The renumbered
+  ladder reorders FIELD-I.6 (was CLI +
+  Config bridge per the FIELD-I.5 audit's
+  §4.1) → FIELD-I.6 = diagnostic AOV task
+  (this slice) + FIELD-I.7 = diagnostic AOV
+  impl (the operator's reordering is
+  documented explicitly in this entry's
+  scope paragraph).
+
+### Module status changes
+
+`docs/MODULE_MAP.md` is *not* updated by this
+slice. The `rr_field` skeleton's module-map
+status carries forward from the FIELD-I.5
+entry unchanged. The FIELD-I.6 task brief
+authorises the operator to proceed to:
+**(a)** FIELD-I.7 — Scalar Field Diagnostic
+AOV Implementation (the impl slice consuming
+this task brief as its canonical reference;
+RECOMMENDED as the natural next slot;
+reorders the FIELD-I.5 audit's §4.1 ladder
+so the diagnostic AOV lands before the full
+CLI + Config bridge — the AOV impl already
+needs a minimal CLI surface to engage the
+field config); **(b)** manifold-orthogonal
+work (deferred SDK-host runtime pass for the
+OBSERVER.* + OBS-P.* + OBS-F.* arc family;
+MANI-I.12 final cross-host manifold audit;
+denoiser integration with chart-aware AOVs;
+path-tracer feature breadth);
+**(c)** a separate full FIELD-I.* CLI +
+Config bridge slice covering the
+`FieldMappingConfig` CLI surface (NOT
+recommended as the immediate next slot —
+the minimal field-authoring CLI surface in
+the FIELD-I.7 impl is sufficient for the
+diagnostic AOV; the full mapping CLI is
+naturally paired with the mapping kernel
+pipeline slice that follows). The FIELD-I.*
+arc's `**Wired**` promotion is reserved for
+the FIELD-I.7 SDK-host runtime pass plus
+the FIELD-I.* mapping-kernel-bridge slices.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
