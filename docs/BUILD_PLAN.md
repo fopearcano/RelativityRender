@@ -90395,6 +90395,262 @@ that exercises both backend kernels'
 unified perception-transform arms end-to-end
 against the OBS-PERCEPT.6 fixture.
 
+## OBS-PERCEPT.2 — Primary-Ray Perception Transform Task (docs only)
+
+**Scope of this slice (per the operator's *OBS-PERCEPT.2
+— Primary-Ray Perception Transform Task* task brief):
+write `docs/OBSERVER_PRIMARY_RAY_TRANSFORM_TASK.md`,
+the operator-facing task brief the OBS-PERCEPT.3
+implementation slice will read. Defines the
+primary-ray directional aberration component of the
+unified perception transform — the Lorentz boost of
+the primary camera ray's direction into the
+observer's tetrad-local frame. CUDA-first scope per
+the operator's brief; the OBS-PERCEPT.4 slice will
+mirror on OptiX. Documentation only; no source code,
+no test, no CMake, no scene file, no behavioural
+change.**
+
+### What ships
+
+- **`docs/OBSERVER_PRIMARY_RAY_TRANSFORM_TASK.md`
+  (new, ~860 lines).** Operator-facing task brief
+  mirroring the OBSERVER.12 + FIELD-I.6 +
+  FIELD-BEAUTY.* task brief shapes verbatim. Nine
+  sections per the operator's 8-section enumeration
+  plus cross-references:
+    - **§1 Exact goal** — apply observer-frame
+      constant-velocity directional aberration to
+      the primary camera ray, in both CUDA's
+      primary-hit `k_render_scene` and the OBS-P.2
+      + OBS-P.2-extended pathtracer entry's
+      camera-ray-generation site, before
+      intersection. The aberration math leaf is
+      preserved verbatim; the operative change is
+      the **input source discipline** (the unified
+      helper reads `ObserverFrame` directly + the
+      gate logic is internal) and the **activation
+      gate discipline** (explicit `|beta| > 0`
+      inner gate makes zero-beta = no-op a
+      documented contract). The slice is CUDA-only;
+      OptiX mirror at OBS-PERCEPT.4.
+    - **§2 Activation** — three load-bearing
+      conditions:
+      (a) `perception_mode ==
+          ConstantVelocityMinkowski` (outer gate);
+      (b) `|beta| > 0` (inner gate, new explicit
+          contract);
+      (c) `beta safely clamped` (inherited from
+          OBSERVER.6 adapter; kernel does NOT
+          re-clamp).
+    - **§3 Default invariants** — three:
+      (a) default observer remains no-op (every
+          existing `--render-*` action without
+          `--observer-perception-mode relativistic`
+          preserves byte-identical PPM output);
+      (b) `beta = 0` remains no-op (under
+          `ConstantVelocityMinkowski`; new explicit
+          inner-gate contract);
+      (c) existing default scenes remain
+          byte-identical (verified empirically at
+          SDK-host audit).
+    - **§4 CUDA-first scope** — three subsections:
+      primary rays only (CudaTestKernel:k_render_scene
+      + k_sphere_relativistic + CudaPathTracer:k_pathtrace_sample
+      primary-ray sites); no secondary bounce
+      transform (per OBS-PERCEPT.1 §5.2 Option A);
+      no new Doppler / searchlight math (those
+      sites remain on post-OBS-P.2 guarded
+      ternary).
+    - **§5 Future OptiX mirror** — four invariants
+      OBS-PERCEPT.4 must preserve: same math leaf
+      (shared `aberrateDirection(...)` from
+      `src/relativity/RelativityMath.h`); same
+      activation rules (three-condition gate);
+      same default-state byte identity; same
+      kernel-arm placement (AFTER camera-ray
+      generation, BEFORE intersection).
+    - **§6 Files likely involved** — 7-row table
+      covering the relativity math (the OPTIONAL
+      new unified helper at `RelativityMath.h`),
+      CUDA `CudaTestKernel.cu` (2 primary-ray
+      sites), CUDA `CudaPathTracer.cu` (1
+      primary-ray site), tests
+      `relativity_tests.cpp` (+4 RR_CHECKs),
+      BUILD_PLAN.md, future per-slice audit doc,
+      and zero CMake changes.
+    - **§7 What must not be touched** — 9
+      non-goals: no new manifold math; no field
+      interpretation changes; no C4D / server /
+      UI / node-editor touch; no full GR tetrad
+      solver; no legacy `observer.velocity`
+      removal; no new CLI flag; no new
+      ObserverFrame POD field; no debug AOV
+      (deferred to OBS-PERCEPT.5); no fixture
+      authoring (deferred to OBS-PERCEPT.6).
+    - **§8 PASS criteria** — five subsections:
+      structural (10 checkboxes covering the
+      unified helper + per-site consolidation +
+      no-secondary-ray + no-OptiX + no-manifold-
+      change + no-CLI-flag + no-POD-field + no-
+      new-test-binary); behavioural (4 checkboxes
+      covering default state byte identity +
+      zero-beta byte identity + non-zero beta
+      structural equivalence + OBS-F.2 fixture
+      runtime consistency + cross-backend
+      structural byte-identity guarantee); test
+      surface (6 checkboxes: ctest 13/13 +
+      relativity_tests +4 RR_CHECKs + cli_tests
+      / renderer_tests / field_tests /
+      manifold_identity_tests counts unchanged);
+      documentation (2 checkboxes: BUILD_PLAN.md
+      entry + OPTIONAL OBS-PERCEPT.1 plan §7
+      landed-surface rewrite); runtime CUDA /
+      OptiX deferral (5 deferred SDK-host
+      scenarios: default-state PPM cmp;
+      zero-beta byte identity; non-zero-beta
+      consistency; OBS-F.2 fixture runtime;
+      path-tracer primary-ray verification).
+    - **§9 Cross-references** — entry list
+      spanning master instructions, architecture-
+      doc §7.2 anchor, every OBSERVER.* +
+      OBS-P.* + OBS-F.* precedent (OBSERVER.1
+      plan; OBSERVER.15 capstone whose risk #1
+      the OBS-PERCEPT.3 closes on CUDA primary-
+      ray; OBS-P.1 task brief precedent; OBS-P.3
+      audit precedent; OBS-F.2 fixture the
+      acceptance gate consumes), and the
+      relevant source-surface inventory
+      (`src/relativity/RelativityMath.h` +
+      `src/manifold/ObserverFrame.h` +
+      `src/cuda/CudaTestKernel.cu` +
+      `src/cuda/CudaPathTracer.cu` +
+      BUILD_PLAN.md).
+
+### What does NOT ship
+
+- **No source code.** Nothing in any `src/`
+  subtree is touched. The post-OBS-PERCEPT.1 HEAD
+  = `8db1f9c` baseline is preserved exactly.
+  `git diff 8db1f9c..HEAD -- 'src/'` returns zero
+  hits.
+- **No new test binary.** ctest set unchanged at
+  13 (audit-host) / 14 (OptiX-ON-no-SDK). Test
+  counts unchanged.
+- **No CMake change.**
+- **No relativity math leaf modification.** The
+  existing `aberrateDirection` /
+  `precompute_relativity` helpers are preserved
+  verbatim. The OBS-PERCEPT.3 implementation slice
+  may ADD a new composing helper, but this
+  OBS-PERCEPT.2 docs-only slice does not.
+- **No kernel arm modification.** The
+  OBS-PERCEPT.3 implementation lands the kernel
+  arms; this docs-only slice does not.
+- **No CLI flag addition.** The existing
+  `--observer-perception-mode relativistic` (from
+  OBSERVER.4) is the gate; no new flag this slice.
+- **No prior-arc-document modification.** Every
+  OBSERVER.* + OBS-P.* + OBS-F.* + FIELD-I.* +
+  FIELD-BEAUTY.* + OBS-PERCEPT.1 arc document
+  preserved verbatim.
+- **No `MODULE_MAP.md` update.**
+- **No `MANIFOLD_INTEGRATION_PLAN.md` update.**
+- **No `BUILD_PLAN.md` historical rewrite.**
+  Every prior entry stays as-is; the
+  OBS-PERCEPT.2 entry appends at the end of the
+  OBS-PERCEPT.1 entry.
+- **No new perception model beyond the planned
+  ConstantVelocityMinkowski specialisation.**
+- **No quantum / tensor / curvature simulation.**
+- **No C4D / server / UI / node-editor touch.**
+
+### Acceptance
+
+- **Compiles.** Documentation-only slice; no
+  build configuration touched. The audit-host
+  build remains at the post-OBS-PERCEPT.1
+  baseline (`100% tests passed, 0 tests failed
+  out of 13`; `renderer_tests: 35/35`;
+  `field_tests: 135/135`;
+  `relativity_tests: 841/841`;
+  `manifold_identity_tests: 408/408`;
+  `cli_tests: 274/274`).
+- **Internally consistent.** The 9-section task
+  brief structure mirrors the OBSERVER.12 +
+  FIELD-I.6 task brief shape verbatim
+  (mirroring established at FIELD-BEAUTY.* arc).
+  Every cited source file + line refs are
+  inspectable on the current tree (the existing
+  primary-ray sites at `CudaTestKernel.cu:239`
+  + `:364` are verified via grep). Every cited
+  cross-reference exists in the tree at the
+  cited path. The acceptance gate's
+  byte-identity claims are anchored in the
+  pre-existing OBS-P.2 + FIELD-BEAUTY.3 +
+  OBSERVER.6 contracts (which guarantee the
+  underlying math leaves' identity behaviour
+  at `beta = 0` and the `clampBeta`-shell
+  safety).
+- **Brief honesty.** Master rule #3 satisfied —
+  every non-goal is explicit; every scope-bounded
+  paragraph has documented "does not ship"
+  framing; the deferred OBS-PERCEPT.4 OptiX
+  mirror is honestly enumerated as a separate
+  slice with its own task brief; the deferred
+  Doppler / searchlight migration is honestly
+  enumerated as out-of-scope-this-slice (future
+  sub-slices within OBS-PERCEPT.3 may lift, or
+  separate OBS-PERCEPT.3a / .3b slices may
+  ship). Master rule #11 satisfied — the PASS
+  criteria are 27 explicit checkboxes across
+  5 subsections + 5 deferred SDK-host scenarios.
+  Master rule #12 satisfied — the brief scopes
+  to CUDA primary-ray ONLY; OptiX deferred;
+  per-bounce deferred; Doppler / searchlight
+  deferred; debug AOV deferred; fixture
+  authoring deferred.
+
+### Module status changes
+
+`docs/MODULE_MAP.md` is *not* updated by this
+slice. The OBS-PERCEPT.* arc's module-map status
+carries forward from OBSERVER.* + OBS-P.* +
+OBS-F.* + OBS-PERCEPT.1 unchanged. The
+OBS-PERCEPT.2 task brief authorises the operator
+to proceed to: **(a)** OBS-PERCEPT.3 — CUDA
+implementation (the renumbered next OBS-PERCEPT.*
+impl slot; consumes this task brief as canonical
+reference; lands the unified
+`apply_observer_primary_ray_aberration(...)`
+helper + the CUDA kernel arm consolidation at
+the three primary-ray sites; CUDA-only;
+RECOMMENDED as natural continuation);
+**(b)** OBS-PERCEPT.4 — OptiX implementation (the
+renumbered next OBS-PERCEPT.* impl slot on the
+OptiX side; mirrors OBS-PERCEPT.3 once it
+lands); **(c)** the combined FIELD-* +
+OBS-PERCEPT CLI bridge slice (HIGHLY RECOMMENDED
+at the FIELD-BEAUTY.8 capstone's §4.2 (b) —
+single SDK-host audit closes the entire field-
+and-observer-arc family's runtime-deferred
+verdict tail); **(d)** manifold-orthogonal work
+(deferred SDK-host runtime pass for the
+OBSERVER.* + OBS-P.* + OBS-F.* arc family;
+MANI-I.12 final cross-host manifold audit;
+denoiser integration with chart-aware AOVs;
+path-tracer feature breadth); **(e)**
+RETROACTIVE authoring of the missing
+FIELD-BEAUTY.1 + FIELD-BEAUTY.2 +
+FIELD_INTERPRETATION_PHASE1_AUDIT.md task
+brief / audit slots (deferrable to operator
+discretion). The OBS-PERCEPT.* arc's
+`**Wired**` promotion is reserved for the
+post-OBS-PERCEPT.4 SDK-host runtime pass that
+exercises both backend kernels' unified
+perception-transform arms end-to-end against
+the OBS-PERCEPT.6 fixture.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
