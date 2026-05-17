@@ -84346,6 +84346,293 @@ extension (NOT recommended;
 operator's CLI authoring is
 sufficient).
 
+## FIELD-I.1 — Field Interpretation Phase 1 Plan (docs only)
+
+**Scope of this slice (per the operator's *FIELD-I.1
+— Field Interpretation Layer Plan* task brief):
+write `docs/FIELD_INTERPRETATION_PHASE1_PLAN.md`,
+the design document for **Phase 1 of the Field
+Interpretation Layer** — the optional perceptual
+transcoding layer that sits above the Manifold
+Core + Observer Frame and maps non-light fields
+into the renderer's visible output channels. The
+arc this plan covers consumes the existing
+`src/field/` skeleton (FIELD.1 / .2 / .3
+header-only POD surface; ~465 lines across 4
+headers + README) and lifts it into a working
+Phase 1: real interpretation pipeline + CUDA +
+OptiX bridges + diagnostic AOV + fixture +
+arc-level audit. Documentation only — no source
+code, no implementation, no test binary changes.
+Authorised by the OBSERVER.15 capstone's §9
+"manifold-orthogonal work" recommendation
+(Field Interpretation Layer Phase 1 named as
+one of three candidate next slots).**
+
+### What ships
+
+- **`docs/FIELD_INTERPRETATION_PHASE1_PLAN.md`
+  (new).** Seven-section design doc covering
+  the five operator-specified sections plus
+  Naming-Convention + Non-goals + References
+  appendices:
+    - **Naming convention** — documents the
+      distinction between FIELD.* (legacy
+      data-model skeleton; already landed at
+      FIELD.1 / .2 / .3) and FIELD-I.* (this
+      new arc; the working interpretation
+      pipeline). The `-I` infix mirrors the
+      MANI-I.* pattern; stands for
+      "Interpretation".
+    - **§1 Purpose** — maps non-light fields
+      into visible render channels as an
+      OPTIONAL perceptual transcoding step;
+      NOT a core physics substrate
+      addition. Four motivating use cases
+      enumerated (energy/temperature
+      visualisation; probability-amplitude
+      placeholder; diagnostic AOVs for non-
+      rendered scene state; scientific-
+      visualisation overlays).
+    - **§2 Phase 1 scope** — six sub-sections:
+      scalar fields only; three concrete
+      kinds (constant; radial procedural;
+      sinusoidal3D procedural); map to
+      color / emission / AOV (3 of 6
+      channels); no quantum simulation; no
+      tensor solver; no new perception
+      model.
+    - **§3 Relationship to manifold core** —
+      three sub-sections: sampling
+      coordinate space (new
+      `FieldSamplingSpace` enum:
+      WorldSpace / ChartSpace /
+      ObserverRelative); manifold-transform
+      composition (ChartSpace invokes
+      existing `world_to_chart(...)`); no
+      new manifold math.
+    - **§4 Relationship to observer frame**
+      — three sub-sections: observer-
+      relative sampling
+      (`ObserverRelative` mode subtracts
+      observer's position4); observer-
+      mediated chromatic shift (FUTURE);
+      default observer = neutral mapping.
+    - **§5 Proposed slices** — seven
+      sub-slices: FIELD-I.2 scalar field
+      model audit/update; FIELD-I.3 field
+      mapping config + CLI flags;
+      FIELD-I.4 scalar diagnostic AOV
+      data model; FIELD-I.5 CUDA bridge;
+      FIELD-I.6 OptiX bridge; FIELD-I.7
+      fixture scene + companion doc;
+      FIELD-I.8 arc capstone audit.
+    - **§6 Non-goals** — 13 explicit
+      non-goals carried forward from the
+      existing
+      `docs/FIELD_INTERPRETATION_LAYER.md`
+      §7 + the operator's brief
+      (no quantum dynamics; no tensor
+      solver; no SampledScalarField
+      backend; no Distortion / Density /
+      ChromaticShift channels; no manifold
+      core modification; no OBSERVER.* arc
+      family modification; no path-tracer
+      bounce-loop modification; no
+      denoiser modification; no Camera
+      ABI change; no C4D / server / UI /
+      node-editor; no new RelativityParams
+      flag; no per-pixel field state; no
+      Phase 2 multi-module composition).
+    - **§7 References** — 22-entry list
+      spanning master instructions, the
+      architecture doc, the existing
+      Field Interpretation Layer design
+      doc + skeleton README, every
+      relevant precedent doc
+      (OBSERVER.1 plan + OBSERVER.15
+      capstone + OBS-P.3 audit +
+      OBSERVER.12-OBSERVER.14
+      AOV-arc + OBS-F.1/F.3 fixture-arc
+      + SCHW.1 chart-arc-plan), every
+      source file the FIELD-I.* arc
+      extends.
+
+### What does NOT ship
+
+- **No source code.** Nothing in any
+  `src/` subtree is touched
+  (`git diff` outside `docs/` ⇒ 0
+  bytes). The existing `src/field/`
+  FIELD.1 / .2 / .3 skeleton stays
+  exactly as previously landed.
+- **No new test binary.** ctest set
+  unchanged at 12. Test counts
+  unchanged
+  (`relativity_tests: 841/841`;
+  `manifold_identity_tests:
+  408/408`; `cli_tests: 274/274`;
+  `renderer_tests: 27/27`).
+- **No CMake change.**
+- **No FIELD-I.2-FIELD-I.8
+  implementation.** This is the
+  planning slice ONLY. FIELD-I.2
+  (scalar field model audit/update)
+  is the first impl slice and ships
+  separately when the operator
+  prompts for it.
+- **No new POD types yet.** The plan
+  proposes `RadialScalarField` +
+  `ProceduralScalarField` +
+  `FieldSamplingSpace` enum (§2.2 +
+  §3.1) but lands NO header
+  modification.
+- **No new CLI flag yet.** The plan
+  enumerates the
+  `--field-*` flag surface (§5
+  FIELD-I.3) but lands NO parser
+  extension.
+- **No new AOV yet.** The plan
+  proposes `AOVType::FieldScalarDiagnostic
+  = 8` (§5 FIELD-I.4) but lands NO
+  enum addition.
+- **No GPU launch-params field
+  yet.** The plan proposes
+  `CudaSceneView::field_interpreter`
+  + `OptixLaunchParams::field_interpreter`
+  (§5 FIELD-I.5 / FIELD-I.6) but
+  lands NO field addition.
+- **No `FIELD_INTERPRETATION_LAYER.md`
+  rewrite.** The existing 737-line
+  design doc is preserved verbatim
+  as the canonical Phase 1
+  reference; this FIELD-I.1 plan
+  is additive (it documents the
+  IMPLEMENTATION arc that builds
+  on the existing design doc).
+- **No `src/field/README.md`
+  rewrite.** The existing FIELD.*
+  skeleton's status document
+  preserved.
+- **No `MODULE_MAP.md` update.**
+  The `rr_field` skeleton's
+  module-map status carries
+  forward unchanged.
+- **No `MANIFOLD_INTEGRATION_PLAN.md`
+  update.** The integration plan's
+  §11 MANI-I.12 slot remains the
+  documented next manifold-arc
+  step; FIELD-I.* is orthogonal.
+- **No prior-arc-document
+  modification.** Every
+  OBSERVER.* + OBS-P.* + OBS-F.*
+  arc document preserved
+  verbatim.
+- **No quantum / tensor /
+  curvature work.** Operator
+  brief + existing design doc §7
+  non-goals explicitly forbid.
+- **No Kerr / Kruskal work.**
+- **No C4D / server / UI /
+  node-editor touch.**
+
+### Acceptance
+
+- **Compiles.** Documentation-only
+  slice; no build configuration
+  touched. The audit-host build
+  remains at the post-OBS-F.3
+  baseline (`100% tests passed,
+  0 tests failed out of 12`;
+  `relativity_tests: 841/841
+  passed`;
+  `manifold_identity_tests:
+  408/408`;
+  `cli_tests: 274/274 passed`;
+  `renderer_tests: 27/27
+  passed`).
+- **Internally consistent.** The
+  five operator-specified sections
+  are present in the operator's
+  order (Purpose / Phase 1 scope /
+  Relationship to manifold core /
+  Relationship to observer frame /
+  Proposed slices); the
+  Naming-Convention appendix
+  documents the FIELD.* vs
+  FIELD-I.* distinction
+  explicitly; the §6 Non-goals +
+  §7 References mirror the
+  OBSERVER.1 plan precedent
+  shape verbatim. The seven
+  FIELD-I.2 → FIELD-I.8 sub-
+  slices follow the OBSERVER.* /
+  OBS-P.* / OBS-F.* arc cadence
+  precedent (data-model first;
+  CLI bridge; AOV data model;
+  CUDA bridge; OptiX bridge;
+  fixture; capstone audit).
+- **Verdict honesty.** Every
+  claim in the plan is backed by
+  a cross-reference to a prior
+  landed slice (the existing
+  FIELD.* skeleton; the
+  OBSERVER.* foundation; the
+  OBS-P.* perception migration;
+  the OBS-F.* fixture; the
+  SCHW.* / PENROSE.* / MANI-I.*
+  precedent arcs) or to the
+  existing
+  `docs/FIELD_INTERPRETATION_LAYER.md`
+  design doc that established
+  the Phase 1 contract years
+  ago. Master rule #3 ("no fake
+  stubs") satisfied: the
+  FIELD-I.* arc consumes
+  existing infrastructure (the
+  FIELD.* skeleton's POD surface
+  + the OBSERVER.* + OBS-P.*
+  payload-bridge precedents);
+  no fake stub anywhere. Master
+  rule #12 ("Do not overbuild a
+  later system before the
+  current layer works")
+  satisfied: scope is
+  deliberately narrow (scalar
+  only; 3 of 6 channels; no
+  field dynamics; no tensor
+  solver; no perception model
+  extension); the seven
+  sub-slices each have a
+  documented per-slice audit
+  gate option.
+
+### Module status changes
+
+`docs/MODULE_MAP.md` is *not*
+updated by this slice. The
+existing `rr_field` skeleton's
+module-map status carries
+forward unchanged. The FIELD-I.1
+planning verdict authorises the
+operator to proceed to
+**FIELD-I.2 — scalar field
+model audit/update** (the first
+impl slice) as the next slot
+when ready. The FIELD-I.*
+arc closes with FIELD-I.8 arc
+capstone audit; the arc's
+verdict converts from
+PASS_WITH_RUNTIME_DEFERRED →
+PASS when the deferred SDK-host
+runtime pass exercises the
+FIELD-I.7 fixture (which can
+fold into the existing
+OBSERVER.* + OBS-P.* + OBS-F.*
+SDK-host pass enumerated at
+those arcs' deferred-check
+lists).
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
