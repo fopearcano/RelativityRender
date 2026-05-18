@@ -94123,6 +94123,280 @@ implementation. The OBS-DOP.\* arc's `**Wired**`
 promotion remains reserved for the post-OBS-DOP.6
 capstone + post-CLI-bridge SDK-host runtime pass.
 
+## OBS-DOP.6 — Observer Doppler/Searchlight Capstone Audit (docs only)
+
+**Scope of this slice (per the operator's *OBS-DOP.6
+— Observer Doppler/Searchlight Capstone Audit* task
+brief): write `docs/OBSERVER_DOPPLER_SEARCHLIGHT_ARC_AUDIT.md`,
+the arc-level capstone verdict for the OBS-DOP.\*
+arc (OBS-DOP.1 – OBS-DOP.5). Verifies the eleven
+items the operator's brief enumerates — CUDA
+Doppler/searchlight uses `ObserverFrame`; OptiX
+Doppler/searchlight mirrors CUDA; activation
+requires `ConstantVelocityMinkowski`; activation
+requires `beta > 0`; `beta = 0` no-op; default
+observer no-op; legacy relativity config remains
+adapter / input only; existing math preserved;
+runtime CUDA / OptiX validation status; remaining
+risks; recommended next safe stage — and produces
+one of four verdicts (`PASS` /
+`PASS_WITH_RUNTIME_DEFERRED` / `REPAIR` /
+`BLOCKED`). Documentation only; no source code, no
+test, no CMake, no scene file, no behavioural
+change.**
+
+### What ships
+
+- **`docs/OBSERVER_DOPPLER_SEARCHLIGHT_ARC_AUDIT.md`
+  (new, ~986 lines).** Arc-level capstone verdict
+  document mirroring the OBS-PERCEPT.10 +
+  FIELD-BEAUTY.8 capstone audit shapes, adapted for
+  the OBS-DOP.\* arc's Doppler / searchlight scope.
+  Five sections:
+    - **§1 VERDICT** — `PASS_WITH_RUNTIME_DEFERRED`.
+      All ten structural / runtime-status checks
+      pass on the audit-host side. The seven SDK-
+      host runtime scenarios (from OBS-DOP.3 §3.9
+      + OBS-DOP.5 §3.9 + OBS-DOP.1 task brief §5.5)
+      defer to the future combined FIELD-\* +
+      OBS-PERCEPT + OBS-DOP CLI bridge slice's
+      audit on a CUDA + OptiX-SDK host. The verdict
+      honestly captures "the arc's structural
+      surface is complete + verified on audit-host"
+      + "the kernel arms' empirical PPM outputs are
+      deferred to SDK host". Two documented
+      remaining risks: SDK-host runtime validation
+      requires SDK availability + future CLI
+      bridge; per-bounce Option B Doppler /
+      searchlight transform deferred to future
+      FRAME-PROPAGATION.\* arc.
+    - **§2 PER-CHECK RESULTS** — eleven-row
+      evidence table. Each row cites the per-slice
+      audit reference + concrete file/line
+      evidence: check #1 cites OBS-DOP.3 (CUDA
+      dispatch sites at `CudaTestKernel.cu:291-300`
+      + `:308-318` + `:694-703` + `:714-726`);
+      check #2 cites OBS-DOP.5 (OptiX shim at
+      `OptixPrograms.cu:120-176` + three program
+      consumers at `:378` + `:899` + `:1592` + 1
+      delegation fallback at `:217`; five-axis
+      symmetry framework verified); check #3 cites
+      the unified helpers' outer gate at
+      `ObserverFrame.h:636-639` + `:689-692`;
+      check #4 cites the inner gate at
+      `ObserverFrame.h:642-647` + `:694-699` with
+      NaN-safe squared-magnitude form; check #5
+      cites the three-layer / six-layer no-op
+      anchor; check #6 cites the legacy fallback
+      dispatch's preservation; check #7 cites the
+      legacy config preservation (3 observations:
+      `src/relativity/` byte-unchanged + OBSERVER.6
+      adapter unchanged + kernel-side legacy
+      fallback dispatch); check #8 cites math leaf
+      preservation (`git diff -- 'src/relativity/'`
+      zero hits + composition tests); check #9
+      enumerates seven deferred SDK-host scenarios;
+      check #10 documents two remaining risks (CLI
+      bridge not landed; no path-tracer per-bounce
+      Doppler / searchlight integration); check
+      #11 recommends combined FIELD-\* + OBS-PERCEPT
+      + OBS-DOP CLI bridge as the next safe stage.
+    - **§3 REASONING SUMMARY** — twelve subsections
+      covering: arc shape recap (5 slices over 5
+      per-slice commits; ~242 net source lines +
+      ~222 test lines + ~4856 doc lines + 0 CMake
+      change); per-check reasoning paragraphs;
+      master-rule satisfaction recap (#1 + #3 +
+      #11 + #12 + #16); **§3.11 OBSERVER.15
+      capstone closure recap** (the OBSERVER.15
+      capstone audit's §10 risk #1 is fully
+      resolved structurally with this OBS-DOP.6
+      capstone — every classical SR helper is
+      migrated onto observer-frame runtime reads
+      on both backends; closure table); **§3.12
+      honest scope recap**.
+    - **§4 NEXT** — documents the four-arc family
+      ladder status (FIELD-I.\* + FIELD-BEAUTY.\*
+      + OBS-PERCEPT.\* + OBS-DOP.\* all
+      structurally complete on audit-host; single
+      load-bearing follow-up: combined CLI bridge
+      slice). Five candidate next slots with
+      prioritisation: (a) HIGHLY RECOMMENDED
+      combined FIELD-\* + OBS-PERCEPT + OBS-DOP
+      CLI bridge slice (closes 12+ runtime-
+      deferred verdicts in one SDK-host audit;
+      best converging-leverage option);
+      (b) RECOMMENDED OBS-PERCEPT.11 debug-AOV
+      kernel-arm bridge implementation; (c)
+      manifold-orthogonal work; (d) NOT
+      RECOMMENDED FRAME-PROPAGATION.\* arc before
+      empirical SDK-host verification;
+      (e) DEFERRABLE retroactive task brief
+      authoring.
+    - **§5 REFERENCES** — entry list spanning
+      master instructions, architecture-doc
+      §7.2 anchor, OBS-DOP.\* arc references
+      (OBS-DOP.1 + OBS-DOP.3 + OBS-DOP.5),
+      OBS-PERCEPT.\* + OBSERVER.\* + OBS-P.\* +
+      OBS-F.\* arc references (with explicit
+      citations of OBS-PERCEPT.10 capstone +
+      OBSERVER.15 capstone whose §10 risk #1 is
+      fully resolved + OBS-P.3 audit + OBS-F.3
+      audit), parallel-arc references
+      (FIELD-BEAUTY.8 + FIELD-I.12 +
+      FIELD-BEAUTY.6), an arc-wide source surface
+      inventory table (4-row table; ~242 net
+      source lines across 3 source files + 1 test
+      file + 0 CMake change), an arc-wide
+      documentation surface inventory table,
+      surrounding commit SHAs (`b334237` →
+      `49eae42` → `319e438` → `5662e1a` →
+      `3256a01`), audit-host empirical state
+      (ctest counts + `git diff` zero-hit
+      verifications), and the single-source-of-
+      truth math leaf inventory + the **two new
+      unified helpers** (`apply_observer_doppler_color`
+      + `apply_observer_searchlight_scale`)
+      composing the existing leaves.
+
+### What does NOT ship
+
+- **No source code.** Nothing in any `src/`
+  subtree is touched. The post-OBS-DOP.5 HEAD =
+  `3256a01` baseline is preserved exactly.
+  `git diff 3256a01..HEAD -- 'src/'` returns zero
+  hits.
+- **No new test binary.** ctest set unchanged at
+  13 (audit-host) / 14 (OptiX-ON-no-SDK). Test
+  counts unchanged from OBS-DOP.5.
+- **No CMake change.**
+- **No OBS-DOP.\* per-slice source file
+  modification.** The OBS-DOP.2 CUDA arms + helpers
+  preserved verbatim. The OBS-DOP.4 OptiX shim
+  preserved verbatim. The OBS-DOP.2 test
+  extensions preserved verbatim.
+- **No OBS-DOP.3 / OBS-DOP.5 audit-doc
+  modification.** The per-slice audits are the
+  evidence basis this capstone synthesises; the
+  documents themselves are preserved verbatim.
+- **No prior-arc-document modification.** Every
+  OBSERVER.\* + OBS-P.\* + OBS-F.\* + FIELD-I.\* +
+  FIELD-BEAUTY.\* + OBS-PERCEPT.\* + OBS-DOP.1 +
+  OBS-DOP.3 + OBS-DOP.5 arc document preserved
+  verbatim.
+- **No `MODULE_MAP.md` update.**
+- **No `MANIFOLD_INTEGRATION_PLAN.md` update.**
+- **No `BUILD_PLAN.md` historical rewrite.** Every
+  prior entry stays as-is; the OBS-DOP.6 entry
+  appends at the end of the OBS-DOP.5 entry.
+- **No new perception model.**
+- **No quantum / tensor / curvature simulation.**
+- **No C4D / server / UI / node-editor touch.**
+
+### Acceptance
+
+- **Compiles.** Documentation-only slice; no
+  build configuration touched. The audit-host
+  build remains at the post-OBS-DOP.5 baseline
+  (`100% tests passed, 0 tests failed out of 13`;
+  `manifold_identity_tests: 437/437`;
+  `renderer_tests: 51/51`;
+  `field_tests: 135/135`;
+  `relativity_tests: 841/841`;
+  `cli_tests: 274/274`). The OptiX-ON-no-SDK
+  build remains at the OBS-DOP.4 baseline (14/14
+  ctest PASS including `optix_tests`).
+- **Internally consistent.** The eleven-row
+  evidence table cites the per-slice audit
+  references (OBS-DOP.3 + OBS-DOP.5) for the
+  structural checks + concrete file/line evidence
+  on the OBS-DOP.2 + OBS-DOP.4 surfaces. The
+  arc-shape recap at §3.1 cites the aggregate
+  diff stat (~242 net source lines + ~222 test
+  lines + ~4856 doc lines + 0 CMake change). The
+  five-axis cross-backend symmetry argument is
+  inherited from the OBS-DOP.5 §3.7 + OBS-PERCEPT.6
+  §3.7 frameworks + cited at this capstone's
+  check #2 + §3.2. The runtime-status framing
+  matches the OBS-DOP.3 + OBS-DOP.5 per-slice
+  precedent applied at arc scope. The OBSERVER.15
+  capstone closure recap at §3.11 establishes
+  that every classical SR helper is migrated onto
+  observer-frame runtime reads on both backends.
+- **Verdict honesty.** `PASS_WITH_RUNTIME_DEFERRED`
+  is the honest verdict — every structural check
+  passes on the audit-host side; the runtime
+  portion is honestly deferred to the future
+  combined FIELD-\* + OBS-PERCEPT + OBS-DOP CLI
+  bridge slice's audit on a CUDA + OptiX-SDK host.
+  Master rule #1 + #3 + #11 + #12 + #16 satisfied
+  across the arc (recap at §3.10 of the audit
+  doc). The OBSERVER.15 capstone audit's §10 risk
+  #1 (kernel-side perception-transform migration
+  deferred) is now closed structurally on both
+  backends across every post-shading SR site
+  (acknowledged at §3.11 of the audit doc). The
+  two remaining risks at check #10 are documented
+  as scope-deferral (not bugs).
+
+### Module status changes
+
+`docs/MODULE_MAP.md` is *not* updated by this
+slice. With the OBS-DOP.6 capstone, the OBS-DOP.\*
+arc's per-slice gate chain is closed; the
+arc-level structural surface is verified PASS.
+The `rr_manifold` + `rr_gpu` + `rr_optix`
+libraries' module-map statuses carry forward from
+the OBS-DOP.2 + OBS-DOP.4 entries unchanged (the
+OBS-DOP.\* arc added two new helpers inside the
+existing `rr_manifold` PUBLIC link surface; no new
+link added).
+
+The OBS-DOP.\* arc's `**Wired**` promotion remains
+reserved for the post-CLI-bridge SDK-host runtime
+pass that exercises both backend kernels'
+Doppler / searchlight arms end-to-end against the
+OBS-PERCEPT.9 fixture (and the OBS-F.2 fixture
+for cross-fixture comparison). The combined
+FIELD-\* + OBS-PERCEPT + OBS-DOP CLI bridge slice
+is the single load-bearing follow-up that converts
+**12 runtime-deferred verdicts** (FIELD-I.10 + .12
++ .14 + FIELD-BEAUTY.4 + .6 + .8 + OBS-PERCEPT.4
++ .6 + .10 + OBS-DOP.3 + .5 + .6) to PASS in one
+SDK-host audit.
+
+With OBS-DOP.6 in, the **four-arc family**
+(FIELD-I.\* + FIELD-BEAUTY.\* + OBS-PERCEPT.\* +
+OBS-DOP.\*) is **structurally complete on the
+audit-host side**. The OBSERVER.15 capstone's §10
+risk #1 is fully resolved structurally — every
+classical SR helper (`aberrateDirection`,
+`applyDopplerColor`, `searchlightFactor`,
+`dopplerFactor`, `precompute_relativity`) is
+migrated onto observer-frame runtime reads on
+both backends.
+
+The OBS-DOP.6 capstone authorises the operator to
+proceed to: **(a)** HIGHLY RECOMMENDED combined
+FIELD-\* + OBS-PERCEPT + OBS-DOP CLI bridge slice
+(per OBS-PERCEPT.10 §4.2 (a) extended; closes 12+
+runtime-deferred verdicts in one SDK-host audit
+operation; the canonical converging-leverage
+closure); **(b)** RECOMMENDED OBS-PERCEPT.11 —
+debug AOV kernel-arm bridge implementation
+(still authorised per OBS-PERCEPT.10 §4.2 (b);
+the OBS-DOP.\* arc preserves the OBS-PERCEPT.8
+data-model entries verbatim); **(c)** manifold-
+orthogonal work (MANI-I.12 final cross-host
+manifold audit; denoiser integration; path-tracer
+feature breadth); **(d)** NOT RECOMMENDED
+FRAME-PROPAGATION.\* arc (per-bounce Option B
+Doppler / searchlight + aberration) before
+empirical SDK-host verification of the existing
+Option A primary-ray-only contract;
+**(e)** DEFERRABLE retroactive task brief
+authoring (operator discretion).
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
