@@ -575,4 +575,133 @@ RR_HD inline rr::math::Vec3 apply_observer_primary_ray_aberration(
     return rr::relativity::aberrateDirection(beta, direction);
 }
 
+// OBS-DOP.2 — unified Doppler color shift helper.
+//
+// Applies observer-frame constant-velocity Doppler color
+// shift to a single per-pixel RGB color. The helper takes
+// the `ObserverFrame` POD directly + the input color + the
+// pre-computed Doppler factor `D` + the per-launch strength
+// scalar. The three-gate activation logic (per the
+// OBS-DOP.1 task brief §1.2 + §6) is internal — identical
+// to the OBS-PERCEPT.3 helper above:
+//
+//   1. **Outer gate**: `obs_frame.perception_mode ==
+//      ConstantVelocityMinkowski`. On any other mode
+//      (Identity, CurvedChartGeodesicPlaceholder), the
+//      helper short-circuits and returns the input color
+//      unchanged. The kernel arm's call site dispatches to
+//      the legacy `rr::relativity::applyDopplerColor(rgb,
+//      D, strength)` math leaf on the closed-gate else
+//      branch (preserving the post-OBS-P.2 behaviour for
+//      the legacy `--render-relativistic` flow + the
+//      default Identity-mode `--render-*` flows).
+//
+//   2. **Inner gate**: `|obs_frame.beta| > 0`. Squared-
+//      magnitude check (NaN-safe via the explicit
+//      `!(beta2 > 0.0f)` form) avoids the sqrt cost; makes
+//      the |beta|=0 → no-op contract explicit. The
+//      `applyDopplerColor` math leaf at D=1 is already
+//      identity (the input color is returned unchanged
+//      when `tanh(0.5 * log(1)) = 0`), so the gate makes
+//      the no-op a documented contract.
+//
+//   3. **Safe clamp**: `obs_frame.beta` is already
+//      pre-clamped by the OBSERVER.6 adapter. The helper
+//      does NOT re-clamp.
+//
+// The caller is responsible for computing `D` once per
+// pixel via
+// `rr::relativity::dopplerFactor(rel, ray.direction)`
+// (matching the OBS-P.2-shaped `rel` snapshot consumed by
+// the pre-existing call sites). Passing the pre-computed
+// `D` preserves the once-per-pixel D-compute discipline
+// that minimises per-pixel SR helper cost (matches the
+// OptiX `apply_doppler_and_searchlight_with_D(...)` shim's
+// existing pattern at `OptixPrograms.cu:99-124`).
+//
+// CUDA-side call site (OBS-DOP.2): replaces the
+// post-shading `applyDopplerColor(...)` call's true branch
+// at the two CUDA sites (`k_sphere_relativistic`,
+// `k_render_scene`). The else branch (legacy path) is
+// preserved verbatim at the call site.
+//
+// OptiX-side call site (OBS-DOP.3): mirrors the CUDA-side
+// dispatch. Out of scope for OBS-DOP.2; deferred.
+RR_HD inline rr::math::Vec3 apply_observer_doppler_color(
+        const ObserverFrame& obs_frame,
+        rr::math::Vec3       rgb,
+        float                D,
+        float                strength) {
+    // Outer gate: perception_mode.
+    if (obs_frame.perception_mode !=
+            PerceptionMode::ConstantVelocityMinkowski) {
+        return rgb;
+    }
+    // Inner gate: |beta|^2 > 0 (squared-magnitude check
+    // avoids the sqrt cost + is exact at beta=0; NaN-safe
+    // `!(beta2 > 0.0f)` form catches NaN beta).
+    const rr::math::Vec3 beta = obs_frame.beta;
+    const float beta2 = beta.x * beta.x
+                      + beta.y * beta.y
+                      + beta.z * beta.z;
+    if (!(beta2 > 0.0f)) {
+        return rgb;
+    }
+    // Apply Doppler color shift via the existing math leaf.
+    return rr::relativity::applyDopplerColor(rgb, D, strength);
+}
+
+// OBS-DOP.2 — unified searchlight intensity scale helper.
+//
+// Applies observer-frame constant-velocity searchlight
+// (bolometric `D^4`) intensity modulation to a single
+// per-pixel scale value. The helper takes the
+// `ObserverFrame` POD + the pre-computed Doppler factor
+// `D` + the per-launch strength scalar; returns the linear
+// scale (`1 + (D^4 - 1) * strength`) the caller multiplies
+// the per-pixel color by.
+//
+// Three-gate activation identical to
+// `apply_observer_doppler_color` above. When either gate
+// closes, the helper returns `1.0f` (identity scale).
+//
+// The caller multiplies the per-pixel color by the
+// returned scale:
+//
+//     const float scale =
+//         apply_observer_searchlight_scale(observer_frame,
+//                                          D, strength);
+//     color = color * scale;
+//
+// CUDA-side call site (OBS-DOP.2): replaces the
+// post-shading searchlight scale computation's true branch
+// at the two CUDA sites. The else branch (legacy
+// `1 + (searchlightFactor(D) - 1) * strength` computation)
+// is preserved verbatim at the call site.
+//
+// OptiX-side call site (OBS-DOP.3): mirrors the CUDA-side
+// dispatch. Out of scope for OBS-DOP.2; deferred.
+RR_HD inline float apply_observer_searchlight_scale(
+        const ObserverFrame& obs_frame,
+        float                D,
+        float                strength) {
+    // Outer gate: perception_mode.
+    if (obs_frame.perception_mode !=
+            PerceptionMode::ConstantVelocityMinkowski) {
+        return 1.0f;
+    }
+    // Inner gate: |beta|^2 > 0.
+    const rr::math::Vec3 beta = obs_frame.beta;
+    const float beta2 = beta.x * beta.x
+                      + beta.y * beta.y
+                      + beta.z * beta.z;
+    if (!(beta2 > 0.0f)) {
+        return 1.0f;
+    }
+    // Apply searchlight D^4 scaling via the existing math
+    // leaf.
+    const float D4 = rr::relativity::searchlightFactor(D);
+    return 1.0f + (D4 - 1.0f) * strength;
+}
+
 }

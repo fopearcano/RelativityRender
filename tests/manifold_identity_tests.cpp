@@ -2142,6 +2142,217 @@ void test_obs_percept_3_curved_placeholder_returns_input() {
     RR_CHECK(out_dir.z == in_dir.z);
 }
 
+// OBS-DOP.2 — unified Doppler color shift helper tests.
+// Verifies the three-gate activation logic from the
+// OBS-DOP.1 task brief §1.2 + §6 + the no-op invariants
+// from §2.
+void test_obs_dop_2_doppler_color_identity_mode_returns_input() {
+    using rr::manifold::ObserverFrame;
+    using rr::manifold::PerceptionMode;
+    using rr::manifold::apply_observer_doppler_color;
+    using rr::math::Vec3;
+
+    // Default ObserverFrame carries perception_mode = Identity.
+    // The outer gate closes; the helper returns the input
+    // color unchanged regardless of beta or D.
+    ObserverFrame f;
+    f.perception_mode = PerceptionMode::Identity;
+    f.beta            = Vec3{0.5f, 0.0f, 0.0f};  // non-zero, deliberately
+
+    const Vec3  in_rgb{0.3f, 0.6f, 0.9f};
+    const float D        = 2.0f;  // strong blueshift
+    const float strength = 0.5f;
+    const Vec3  out_rgb =
+        apply_observer_doppler_color(f, in_rgb, D, strength);
+
+    // Identity gate closes → color unchanged byte-for-byte.
+    RR_CHECK(out_rgb.x == in_rgb.x);
+    RR_CHECK(out_rgb.y == in_rgb.y);
+    RR_CHECK(out_rgb.z == in_rgb.z);
+}
+
+void test_obs_dop_2_doppler_color_constant_velocity_zero_beta_returns_input() {
+    using rr::manifold::ObserverFrame;
+    using rr::manifold::PerceptionMode;
+    using rr::manifold::apply_observer_doppler_color;
+    using rr::math::Vec3;
+
+    // ConstantVelocityMinkowski mode + zero beta. Outer gate
+    // opens; inner |beta|>0 gate closes; the helper returns
+    // the input color unchanged.
+    ObserverFrame f;
+    f.perception_mode = PerceptionMode::ConstantVelocityMinkowski;
+    f.beta            = Vec3{0.0f, 0.0f, 0.0f};
+
+    const Vec3  in_rgb{0.3f, 0.6f, 0.9f};
+    const float D        = 2.0f;
+    const float strength = 0.5f;
+    const Vec3  out_rgb =
+        apply_observer_doppler_color(f, in_rgb, D, strength);
+
+    // Inner gate closes → color unchanged byte-for-byte.
+    RR_CHECK(out_rgb.x == in_rgb.x);
+    RR_CHECK(out_rgb.y == in_rgb.y);
+    RR_CHECK(out_rgb.z == in_rgb.z);
+}
+
+void test_obs_dop_2_doppler_color_constant_velocity_nonzero_beta_shifts() {
+    using rr::manifold::ObserverFrame;
+    using rr::manifold::PerceptionMode;
+    using rr::manifold::apply_observer_doppler_color;
+    using rr::math::Vec3;
+
+    // ConstantVelocityMinkowski + non-zero beta. Both gates
+    // open; the helper applies the
+    // rr::relativity::applyDopplerColor math leaf.
+    ObserverFrame f;
+    f.perception_mode = PerceptionMode::ConstantVelocityMinkowski;
+    f.beta            = Vec3{0.0f, 0.0f, -0.5f};
+
+    const Vec3  in_rgb{0.5f, 0.5f, 0.5f};
+    const float D        = 2.0f;   // non-trivial blueshift
+    const float strength = 0.8f;
+    const Vec3  out_rgb =
+        apply_observer_doppler_color(f, in_rgb, D, strength);
+
+    // The math leaf at D > 1 + strength > 0 produces a
+    // non-trivial color modulation (toward a cool tint;
+    // verified by `tests/relativity_tests.cpp`'s
+    // `applyDopplerColor` battery). We don't pin the exact
+    // value here (the math leaf has its own tests); we just
+    // verify the helper composes the leaf correctly by
+    // asserting a non-trivial change vs the input.
+    const bool changed =
+        std::fabs(out_rgb.x - in_rgb.x) > 1.0e-4f ||
+        std::fabs(out_rgb.y - in_rgb.y) > 1.0e-4f ||
+        std::fabs(out_rgb.z - in_rgb.z) > 1.0e-4f;
+    RR_CHECK(changed);
+
+    // And verify the exact composition: the helper's output
+    // must match a direct call to the math leaf.
+    const Vec3 expected =
+        rr::relativity::applyDopplerColor(in_rgb, D, strength);
+    RR_CHECK(approx(out_rgb, expected, 1.0e-5f));
+}
+
+void test_obs_dop_2_doppler_color_curved_placeholder_returns_input() {
+    using rr::manifold::ObserverFrame;
+    using rr::manifold::PerceptionMode;
+    using rr::manifold::apply_observer_doppler_color;
+    using rr::math::Vec3;
+
+    // CurvedChartGeodesicPlaceholder mode: outer gate
+    // closes; helper returns input color unchanged. Master
+    // rule #3 placeholder honesty preserved.
+    ObserverFrame f;
+    f.perception_mode = PerceptionMode::CurvedChartGeodesicPlaceholder;
+    f.beta            = Vec3{0.5f, 0.0f, 0.0f};  // non-zero, deliberately
+
+    const Vec3  in_rgb{0.3f, 0.6f, 0.9f};
+    const float D        = 2.0f;
+    const float strength = 0.5f;
+    const Vec3  out_rgb =
+        apply_observer_doppler_color(f, in_rgb, D, strength);
+
+    RR_CHECK(out_rgb.x == in_rgb.x);
+    RR_CHECK(out_rgb.y == in_rgb.y);
+    RR_CHECK(out_rgb.z == in_rgb.z);
+}
+
+// OBS-DOP.2 — unified searchlight intensity scale helper tests.
+void test_obs_dop_2_searchlight_scale_identity_mode_returns_unity() {
+    using rr::manifold::ObserverFrame;
+    using rr::manifold::PerceptionMode;
+    using rr::manifold::apply_observer_searchlight_scale;
+    using rr::math::Vec3;
+
+    // Default ObserverFrame carries perception_mode = Identity.
+    // The outer gate closes; the helper returns 1.0f
+    // (identity scale) regardless of beta or D.
+    ObserverFrame f;
+    f.perception_mode = PerceptionMode::Identity;
+    f.beta            = Vec3{0.5f, 0.0f, 0.0f};
+
+    const float D        = 2.0f;   // non-trivial blueshift
+    const float strength = 0.7f;
+    const float scale =
+        apply_observer_searchlight_scale(f, D, strength);
+
+    // Identity gate closes → scale = 1.0f byte-for-byte.
+    RR_CHECK(scale == 1.0f);
+}
+
+void test_obs_dop_2_searchlight_scale_constant_velocity_zero_beta_returns_unity() {
+    using rr::manifold::ObserverFrame;
+    using rr::manifold::PerceptionMode;
+    using rr::manifold::apply_observer_searchlight_scale;
+    using rr::math::Vec3;
+
+    // ConstantVelocityMinkowski mode + zero beta. Outer gate
+    // opens; inner |beta|>0 gate closes; the helper returns
+    // 1.0f (identity scale).
+    ObserverFrame f;
+    f.perception_mode = PerceptionMode::ConstantVelocityMinkowski;
+    f.beta            = Vec3{0.0f, 0.0f, 0.0f};
+
+    const float D        = 2.0f;
+    const float strength = 0.7f;
+    const float scale =
+        apply_observer_searchlight_scale(f, D, strength);
+
+    RR_CHECK(scale == 1.0f);
+}
+
+void test_obs_dop_2_searchlight_scale_constant_velocity_nonzero_beta_scales() {
+    using rr::manifold::ObserverFrame;
+    using rr::manifold::PerceptionMode;
+    using rr::manifold::apply_observer_searchlight_scale;
+    using rr::math::Vec3;
+
+    // ConstantVelocityMinkowski + non-zero beta. Both gates
+    // open; the helper applies the
+    // rr::relativity::searchlightFactor math leaf and
+    // composes `1 + (D^4 - 1) * strength`.
+    ObserverFrame f;
+    f.perception_mode = PerceptionMode::ConstantVelocityMinkowski;
+    f.beta            = Vec3{0.0f, 0.0f, -0.5f};
+
+    const float D        = 2.0f;   // D^4 = 16
+    const float strength = 0.5f;
+    const float scale =
+        apply_observer_searchlight_scale(f, D, strength);
+
+    // Expected: 1 + (D^4 - 1) * strength = 1 + (16 - 1) * 0.5
+    //         = 1 + 7.5 = 8.5
+    const float D4       = rr::relativity::searchlightFactor(D);
+    const float expected = 1.0f + (D4 - 1.0f) * strength;
+    RR_CHECK(approx(scale, expected, 1.0e-5f));
+    // Sanity: scale is materially different from unity at
+    // non-zero strength + D != 1.
+    RR_CHECK(scale > 1.0f);
+}
+
+void test_obs_dop_2_searchlight_scale_curved_placeholder_returns_unity() {
+    using rr::manifold::ObserverFrame;
+    using rr::manifold::PerceptionMode;
+    using rr::manifold::apply_observer_searchlight_scale;
+    using rr::math::Vec3;
+
+    // CurvedChartGeodesicPlaceholder mode: outer gate
+    // closes; helper returns identity scale. Master rule #3
+    // placeholder honesty preserved.
+    ObserverFrame f;
+    f.perception_mode = PerceptionMode::CurvedChartGeodesicPlaceholder;
+    f.beta            = Vec3{0.5f, 0.0f, 0.0f};
+
+    const float D        = 2.0f;
+    const float strength = 0.7f;
+    const float scale =
+        apply_observer_searchlight_scale(f, D, strength);
+
+    RR_CHECK(scale == 1.0f);
+}
+
 }  // namespace
 
 int main() {
@@ -2218,6 +2429,17 @@ int main() {
     test_obs_percept_3_constant_velocity_zero_beta_returns_input();
     test_obs_percept_3_constant_velocity_nonzero_beta_aberrates();
     test_obs_percept_3_curved_placeholder_returns_input();
+
+    // OBS-DOP.2: unified Doppler color shift + searchlight
+    // scale helpers.
+    test_obs_dop_2_doppler_color_identity_mode_returns_input();
+    test_obs_dop_2_doppler_color_constant_velocity_zero_beta_returns_input();
+    test_obs_dop_2_doppler_color_constant_velocity_nonzero_beta_shifts();
+    test_obs_dop_2_doppler_color_curved_placeholder_returns_input();
+    test_obs_dop_2_searchlight_scale_identity_mode_returns_unity();
+    test_obs_dop_2_searchlight_scale_constant_velocity_zero_beta_returns_unity();
+    test_obs_dop_2_searchlight_scale_constant_velocity_nonzero_beta_scales();
+    test_obs_dop_2_searchlight_scale_curved_placeholder_returns_unity();
     test_observer_6_curved_placeholder_returns_rest_with_tag();
     test_observer_6_tetrad_orthonormal();
     test_observer_6_finite_value_guarantee();

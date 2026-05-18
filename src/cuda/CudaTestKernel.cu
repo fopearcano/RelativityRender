@@ -279,15 +279,41 @@ __global__ void k_sphere_relativistic(float* pixels, int width, int height,
     const float D = rr::relativity::dopplerFactor(rel, ray.direction);
 
     // 6. Doppler colour shift (artistic approximation).
+    //    OBS-DOP.2: dispatch between the unified helper
+    //    (when `perception_mode == ConstantVelocityMinkowski`)
+    //    and the legacy `applyDopplerColor(...)` path
+    //    (Identity-mode fallback for backwards compatibility
+    //    with `--render-relativistic` flows that don't
+    //    engage `--observer-perception-mode relativistic`).
+    //    The unified helper applies the inner `|beta| > 0`
+    //    gate internally; the legacy math leaf at `D = 1`
+    //    is identity so both branches no-op at beta=0.
     if (params.enable_doppler) {
-        color = rr::relativity::applyDopplerColor(color, D,
-                                                  params.doppler_color_strength);
+        if (perception_active) {
+            color = rr::manifold::apply_observer_doppler_color(
+                observer_frame, color, D,
+                params.doppler_color_strength);
+        } else {
+            color = rr::relativity::applyDopplerColor(
+                color, D, params.doppler_color_strength);
+        }
     }
 
-    // 7. Searchlight / relativistic beaming.
+    // 7. Searchlight / relativistic beaming. OBS-DOP.2:
+    //    same dispatch pattern as the Doppler block above.
+    //    The unified helper returns the final scale (`1 +
+    //    (D^4 - 1) * strength`); the legacy branch computes
+    //    it inline. Both branches no-op (scale = 1) at
+    //    beta=0 / Identity mode.
     if (params.enable_searchlight) {
-        const float D4    = rr::relativity::searchlightFactor(D);
-        const float scale = 1.0f + (D4 - 1.0f) * params.searchlight_strength;
+        float scale;
+        if (perception_active) {
+            scale = rr::manifold::apply_observer_searchlight_scale(
+                observer_frame, D, params.searchlight_strength);
+        } else {
+            const float D4 = rr::relativity::searchlightFactor(D);
+            scale = 1.0f + (D4 - 1.0f) * params.searchlight_strength;
+        }
         color = color * scale;
     }
 
@@ -658,19 +684,45 @@ __global__ void k_render_scene(float* pixels, int width, int height,
     //    cost is a `dot` + a few flops, not another `sqrt` pair.
     const float D = rr::relativity::dopplerFactor(rel, ray.direction);
 
-    // 6. Doppler colour shift.
+    // 6. Doppler colour shift. OBS-DOP.2: dispatch between
+    //    the unified helper (when `perception_mode ==
+    //    ConstantVelocityMinkowski`) and the legacy
+    //    `applyDopplerColor(...)` path (Identity-mode
+    //    fallback). Same dispatch shape as the
+    //    `k_sphere_relativistic` block + the OBS-PERCEPT.3
+    //    primary-ray aberration dispatch at line 248-258.
     if (scene.params.enable_doppler) {
-        color = rr::relativity::applyDopplerColor(
-            color, D, scene.params.doppler_color_strength);
+        if (perception_active) {
+            color = rr::manifold::apply_observer_doppler_color(
+                scene.observer_frame, color, D,
+                scene.params.doppler_color_strength);
+        } else {
+            color = rr::relativity::applyDopplerColor(
+                color, D, scene.params.doppler_color_strength);
+        }
     }
 
     // 7. Searchlight / beaming. Stage 14A.3: compute D^4 unconditionally
     // so the searchlight_factor AOV always sees the raw physical value
     // regardless of whether the beauty pass actually applies the
-    // beaming scale.
+    // beaming scale. The AOV write at line 731 consumes this `D4` as
+    // a raw diagnostic; OBS-DOP.2 preserves this behaviour verbatim
+    // (the AOV is a physical-math read-only view, NOT a function of
+    // the perception transform — matches the OBSERVER.13
+    // `ObserverBeta` AOV's read-only contract per OBS-DOP.1 §4.8).
     const float D4 = rr::relativity::searchlightFactor(D);
     if (scene.params.enable_searchlight) {
-        const float scale = 1.0f + (D4 - 1.0f) * scene.params.searchlight_strength;
+        // OBS-DOP.2: dispatch between the unified helper
+        // (on `perception_active`) and the legacy
+        // `1 + (D^4 - 1) * strength` formula.
+        float scale;
+        if (perception_active) {
+            scale = rr::manifold::apply_observer_searchlight_scale(
+                scene.observer_frame, D,
+                scene.params.searchlight_strength);
+        } else {
+            scale = 1.0f + (D4 - 1.0f) * scene.params.searchlight_strength;
+        }
         color = color * scale;
     }
 

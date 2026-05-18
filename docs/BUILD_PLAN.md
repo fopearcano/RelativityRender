@@ -93024,6 +93024,305 @@ Doppler / searchlight arms end-to-end against
 the OBS-PERCEPT.9 fixture (and the OBS-F.2
 fixture for cross-fixture comparison).
 
+## OBS-DOP.2 — CUDA Observer Doppler/Searchlight Migration (impl, kernel arms + helpers)
+
+**Scope of this slice (per the operator's *OBS-DOP.2
+— CUDA Observer Doppler/Searchlight Migration* task
+brief): migrate the per-pixel Doppler color shift +
+searchlight intensity modulation runtime reads at the
+two CUDA kernel sites onto the `ObserverFrame` POD,
+behind the same three-gate activation contract the
+OBS-PERCEPT.3 primary-ray aberration helper
+established. Lands the two unified helpers
+(`apply_observer_doppler_color(...)` +
+`apply_observer_searchlight_scale(...)`) in
+`src/manifold/ObserverFrame.h` (mirroring the
+OBS-PERCEPT.3 helper's location + RR_HD inline
+signature shape; precomputed-D Option B form per the
+OBS-DOP.1 task brief §7.1 RECOMMENDATION). Replaces
+the two CUDA post-shading sites (`k_render_scene`
+lines 656-687; `k_sphere_relativistic` lines 277-307)
+with the §6.5 dispatch pattern. CUDA-only scope per
+the operator's brief; the OptiX mirror lands at
+OBS-DOP.3. No new physics math; no manifold/field
+changes; no C4D/server/UI/node-editor touch.**
+
+### What ships
+
+- **`src/manifold/ObserverFrame.h` (+128 lines).** Two
+  new RR_HD inline helpers landed at lines 578+ (right
+  after the OBS-PERCEPT.3 helper, before the closing
+  `}` of the `rr::manifold` namespace):
+    - **`apply_observer_doppler_color(obs_frame, rgb,
+      D, strength) → Vec3`**: three-gate Doppler color
+      shift. Outer gate (`perception_mode ==
+      ConstantVelocityMinkowski`); inner gate
+      (`|beta|² > 0`, NaN-safe squared-magnitude form
+      mirroring OBS-PERCEPT.3's helper at line 564-567);
+      safe-clamp (relies on OBSERVER.6 adapter pre-
+      clamping, no kernel re-clamp). When both gates
+      open: invokes `rr::relativity::applyDopplerColor(rgb,
+      D, strength)` math leaf verbatim. When either
+      gate closes: returns input `rgb` unchanged.
+    - **`apply_observer_searchlight_scale(obs_frame,
+      D, strength) → float`**: three-gate `D⁴`
+      intensity scaling. Same three-gate structure;
+      when both gates open returns `1 + (D⁴ - 1) *
+      strength` where `D⁴ = rr::relativity::searchlightFactor(D)`.
+      When either gate closes returns `1.0f` (identity
+      scale).
+    - **Precomputed-D Option B** per OBS-DOP.1 §7.1:
+      both helpers accept the per-pixel `D` already
+      computed by the caller via
+      `rr::relativity::dopplerFactor(rel, direction)`.
+      Preserves the once-per-pixel D-compute discipline
+      that minimises per-pixel SR helper cost (matches
+      the existing OptiX
+      `apply_doppler_and_searchlight_with_D(...)`
+      shim's pattern at `OptixPrograms.cu:99-124`).
+    - **Doc-comment scope**: 60+ lines of doc-comment
+      per helper documenting the three-gate logic,
+      caller responsibility for pre-computing `D`, the
+      CUDA-side call-site cross-reference, and the
+      OptiX-side deferred-to-OBS-DOP.3 framing.
+
+- **`src/cuda/CudaTestKernel.cu` (+50 lines net).**
+  Two post-shading sites migrated to the §6.5 dispatch
+  pattern, mirroring the OBS-PERCEPT.3 dispatch shape
+  at line 248-258 verbatim:
+    - **`k_sphere_relativistic`** Doppler / searchlight
+      block at lines 277-307. The pre-existing
+      `if (params.enable_doppler) { applyDopplerColor(...) }`
+      and `if (params.enable_searchlight) { ... D⁴ ... }`
+      blocks now dispatch between the unified helpers
+      (on `perception_active`) and the legacy math leaf
+      path. The `perception_active` boolean reuses the
+      OBS-P.2 ternary's scope-uniform value at line
+      226-228 verbatim; no recomputation.
+    - **`k_render_scene`** Doppler / searchlight
+      block at lines 656-687. Same dispatch pattern;
+      the Stage 14A.3 AOV-uniform `D⁴` computation
+      (line 671) is preserved verbatim (the AOV writes
+      the raw physical `searchlightFactor(D)` value
+      regardless of perception engagement; the
+      OBSERVER.13 `ObserverBeta` AOV's read-only
+      contract is mirrored for the searchlight AOV).
+      Inline-comment at line 670-678 documents this
+      AOV-uniform discipline preservation explicitly.
+
+- **`tests/manifold_identity_tests.cpp` (+184 lines).**
+  Eight new test functions covering the three-gate
+  activation logic of both unified helpers
+  (`test_obs_dop_2_*` family). +16 new RR_CHECK
+  assertions; `manifold_identity_tests` grows 421 →
+  437. Each helper has four tests covering:
+    - **Identity mode + non-zero beta**: outer gate
+      closes; helper returns identity result.
+    - **ConstantVelocityMinkowski + zero beta**: inner
+      gate closes; helper returns identity result.
+    - **ConstantVelocityMinkowski + non-zero beta**:
+      both gates open; helper composes the math leaf
+      with `observer_frame.beta` as the source;
+      output matches a direct math-leaf call bit-
+      identical (verified via `approx(...)`).
+    - **CurvedChartGeodesicPlaceholder + non-zero
+      beta**: outer gate closes; helper returns
+      identity result (master rule #3 placeholder
+      honesty preserved).
+  Test functions registered in `main()` after the
+  OBS-PERCEPT.3 test registrations; mirrors the
+  OBS-PERCEPT.3 test-pinning precedent verbatim.
+
+- **`docs/BUILD_PLAN.md` (this entry).**
+
+### What does NOT ship
+
+- **No OptiX modification.** `src/optix/OptixPrograms.cu`
+  is byte-identical to the post-OBS-DOP.1 baseline
+  (`b334237`). The four OptiX post-shading sites
+  (`__raygen__pinhole` line 215+ / 258+;
+  `__closesthit__radiance` / `__miss__radiance` via
+  the shared `apply_doppler_and_searchlight_with_D(...)`
+  shim at lines 99-124; `__raygen__pathtrace` line
+  1538+) continue to use the pre-OBS-DOP.2 baseline
+  shape. Migration deferred to OBS-DOP.3 per the
+  OBS-DOP.1 §9 sub-slice ladder.
+- **No CudaPathTracer.cu modification.** The CUDA path
+  tracer has no pre-existing Doppler / searchlight
+  call site (per the OBS-P.3 audit's 5-site scope
+  correction); preserved verbatim across this slice.
+- **No `src/relativity/` math leaf modification.** The
+  existing `dopplerFactor` / `applyDopplerColor` /
+  `searchlightFactor` / `precompute_relativity`
+  helpers stay verbatim across the arc. The unified
+  helpers compose them via RR_HD inline calls.
+- **No `src/manifold/` modification outside
+  `ObserverFrame.h`.** No chart / metric / geodesic /
+  field surface touched.
+- **No `src/field/` modification.** The FIELD-I.\* +
+  FIELD-BEAUTY.\* arc family's surfaces preserved
+  verbatim.
+- **No new test binary.** ctest set unchanged at 13
+  (audit-host) / 14 (OptiX-ON-no-SDK). The existing
+  `manifold_identity_tests` target gains the new
+  RR_CHECK assertions.
+- **No CMake change.**
+- **No new CLI flag.** The existing
+  `--observer-perception-mode relativistic` flag (from
+  OBSERVER.4) is the load-bearing gate; no
+  `--observer-perception-doppler` or similar.
+- **No new ObserverFrame POD field.** The
+  OBSERVER.2-shipped nine fields read as-is.
+- **No legacy `observer.velocity` removal.** The
+  legacy field is preserved verbatim on the host-side
+  payload structures; the legacy fallback dispatch
+  branch reads it directly when the outer gate
+  closes (via the OBS-P.2 ternary's else-branch
+  feeding the `rel` snapshot consumed by the legacy
+  math leaf path).
+- **No new debug AOV.** The OBSERVER.13 `ObserverBeta`
+  AOV preserves verbatim; no new Doppler-magnitude
+  / searchlight-factor diagnostic AOV (out of scope
+  per OBS-DOP.1 §4.8; deferred to a future
+  `OBS-DOP-AOV.*` arc if authorised).
+- **No fixture authoring.** The OBS-F.2 +
+  OBS-PERCEPT.9 fixtures are sufficient for the
+  arc's runtime validation; no new `.rrscene` file
+  this slice.
+- **No `MODULE_MAP.md` update.**
+- **No `MANIFOLD_INTEGRATION_PLAN.md` update.**
+- **No `BUILD_PLAN.md` historical rewrite.** Every
+  prior entry stays as-is; the OBS-DOP.2 entry
+  appends at the end of the OBS-DOP.1 entry.
+- **No C4D / server / UI / node-editor touch.**
+
+### Acceptance
+
+- **Compiles with OptiX OFF.** Audit-host build
+  green (`cmake --build build -j`). Full rebuild
+  adds no new warnings. Ctest `100% tests passed,
+  0 tests failed out of 13`:
+    - `manifold_identity_tests: 437 / 437 checks
+      passed` (+16 NEW from 421 baseline; from the
+      eight new `test_obs_dop_2_*` functions).
+    - `renderer_tests: 51 / 51 passed` (unchanged
+      from OBS-PERCEPT.10).
+    - `relativity_tests: 841 / 841 passed`
+      (unchanged).
+    - `field_tests: 135 / 135 passed` (unchanged).
+    - `cli_tests: 274 / 274 passed` (unchanged).
+    - Every other suite unchanged.
+- **Compiles with OptiX ON (no SDK fallback).**
+  `/tmp/rr_build_optix_no_sdk` build clean; ctest
+  14/14 PASS (including `optix_tests`). The
+  `ObserverFrame.h` header change (helper additions)
+  is consumed by the OptiX TUs without modification;
+  the OptiX-side `OptixPrograms.cu` remains
+  byte-identical to the post-OBS-DOP.1 baseline.
+- **Default-state byte identity (structural).** The
+  unified helpers' three-gate logic + the dispatch
+  shape preserve byte-identical PPM output to the
+  pre-OBS-DOP.2 baseline for every `--render-*`
+  invocation WITHOUT `--observer-perception-mode
+  relativistic`. The default `ObserverFrame{}`
+  carries `perception_mode = Identity`; the outer
+  gate closes on both helpers; the dispatch's
+  else-branch fires the legacy `applyDopplerColor` /
+  `searchlightFactor` chain reading the OBS-P.2
+  ternary's `observer.velocity` fallback path —
+  byte-identical to the post-OBS-PERCEPT.10
+  baseline. Empirical SDK-host PPM-cmp verification
+  deferred per §5.5 of the OBS-DOP.1 task brief.
+- **`beta = 0` no-op (structural).** When
+  `--observer-perception-mode relativistic
+  --observer-beta 0` is engaged, the unified
+  helpers' inner gate closes (`|beta|² > 0` short-
+  circuit at line 588-590 / 631-633); both helpers
+  return identity results. Empirically pinned by
+  `test_obs_dop_2_doppler_color_constant_velocity_zero_beta_returns_input`
+  + `test_obs_dop_2_searchlight_scale_constant_velocity_zero_beta_returns_unity`.
+- **Non-zero beta consistency (structural).** On
+  `--observer-perception-mode relativistic
+  --observer-beta 0.5 --observer-direction 1,0,0`,
+  the unified helpers compose the same math leaves
+  with the same `observer_frame.beta` source the
+  OBS-P.2 ternary used at the gated path; output
+  is structurally bit-identical to the
+  post-OBS-PERCEPT.10 baseline on the same CLI
+  invocation. Empirically pinned by
+  `test_obs_dop_2_doppler_color_constant_velocity_nonzero_beta_shifts`
+  (verifies the helper output equals
+  `applyDopplerColor(in_rgb, D, strength)` directly
+  via `approx(out_rgb, expected, 1.0e-5f)`) +
+  `test_obs_dop_2_searchlight_scale_constant_velocity_nonzero_beta_scales`
+  (verifies the helper output equals
+  `1 + (searchlightFactor(D) - 1) * strength`
+  directly).
+- **Master-rule compliance.** Master rule #1
+  ("Build incrementally") satisfied — CUDA-only
+  scope; OptiX deferred to OBS-DOP.3. Master rule
+  #3 ("no fake stubs") satisfied — the helpers
+  ship with real arithmetic + real branches; the
+  `CurvedChartGeodesicPlaceholder` no-op fallback
+  is honest. Master rule #11 ("explicit, testable
+  interfaces") satisfied — the unified helpers are
+  empirically pinned by 16 RR_CHECK assertions
+  covering each three-gate path. Master rule #12
+  ("do not overbuild") satisfied — only the two
+  CUDA sites are migrated; OptiX deferred;
+  Doppler/searchlight is added on the unified
+  abstraction without touching aberration (already
+  unified at OBS-PERCEPT.3); no new math leaves;
+  no debug AOV; no fixture; no CLI flag. Master
+  rule #16 ("default-off / reasoning-traceable
+  defaults") satisfied — default `ObserverFrame{}`
+  carries `perception_mode = Identity`; the
+  dispatch's else-branch preserves the legacy
+  behaviour byte-identical to the
+  pre-OBS-DOP.2 baseline.
+
+### Module status changes
+
+`docs/MODULE_MAP.md` is *not* updated by this
+slice. The `rr_manifold` library's status carries
+forward from OBS-PERCEPT.10 unchanged (the two new
+unified helpers land inside the existing
+`ObserverFrame.h` PUBLIC link surface; no new
+header / module / link added). The `rr_gpu`
+library's CUDA TU absorbs the dispatch-shape
+modification at the two `CudaTestKernel.cu` sites
+(consumes the existing `rr_manifold` PUBLIC link
+introduced at OBSERVER.2; no new link).
+
+The OBS-DOP.\* arc's `**Wired**` promotion is
+reserved for the post-OBS-DOP.5 capstone +
+post-CLI-bridge SDK-host runtime pass that
+exercises both backend kernels' Doppler /
+searchlight arms end-to-end against the
+OBS-PERCEPT.9 fixture.
+
+The OBS-DOP.2 verdict authorises the operator to
+proceed to: **(a)** OBS-DOP.3 — OptiX implementation
+(the renumbered next OBS-DOP.\* impl slot;
+consumes the OBS-DOP.2 unified helpers + lands the
+four OptiX post-shading site consolidations in
+`OptixPrograms.cu`; mirrors the OBS-PERCEPT.5
+OptiX-mirror pattern); **(b)** in-band OBS-DOP.3
+audit slot (per the OBS-PERCEPT.4 / OBS-PERCEPT.6
+audit-slot insertion ladder discipline);
+**(c)** HIGHLY RECOMMENDED combined FIELD-\* +
+OBS-PERCEPT + OBS-DOP CLI bridge slice (per
+OBS-PERCEPT.10 §4.2 (a) extended; single SDK-host
+audit closes the entire field-and-observer-arc
+family's runtime-deferred verdict tail including
+the new OBS-DOP.2 + future OBS-DOP.3 verdicts);
+**(d)** manifold-orthogonal work;
+**(e)** OBS-PERCEPT.11 — debug AOV kernel-arm
+bridge implementation (still authorised per
+OBS-PERCEPT.10 §4.2 (b); the OBS-DOP.2 helpers
+preserve the OBS-PERCEPT.8 data-model entries
+verbatim).
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
