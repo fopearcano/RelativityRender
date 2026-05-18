@@ -91158,6 +91158,260 @@ runtime pass that exercises both backend
 kernels' unified perception-transform arms
 end-to-end.
 
+## OBS-PERCEPT.5 — OptiX Primary-Ray Perception Transform (impl, OptiX program arms)
+
+**Scope of this slice (per the operator's *OBS-PERCEPT.5
+— OptiX Primary-Ray Perception Transform* task brief):
+mirror the OBS-PERCEPT.3 CUDA primary-ray aberration
+dispatch on the OptiX path. Apply the unified
+`rr::manifold::apply_observer_primary_ray_aberration(...)`
+helper (shared from `rr_manifold`, landed at
+OBS-PERCEPT.3) at the two OptiX raygen sites:
+`__raygen__pinhole` + `__raygen__pathtrace`. OptiX-
+only; CUDA byte-identical to the OBS-PERCEPT.4 audit
+baseline. Single-source-of-truth math: both backends
+consume the same `rr_manifold` helper + the same
+`rr_relativity` math leaves; cross-backend bit-
+identity guaranteed by construction.**
+
+### What ships
+
+- **`src/optix/OptixPrograms.cu` (modified, +52
+  lines).** Modifies two OptiX raygen sites:
+    - **`__raygen__pinhole`** site at line ~222:
+      `if (params.enable_aberration) { if (perception_active_pinhole)
+      { ray.direction = rr::manifold::apply_observer_primary_ray_aberration(observer_frame,
+      ray.direction); } else { ray.direction =
+      rr::relativity::aberrateDirection(rel,
+      ray.direction); } }`. Replaces the existing
+      unconditional `aberrateDirection(rel, ...)` call
+      with the dispatch shape. Preserves the legacy
+      else-branch for the post-OBS-P.2 Identity / non-
+      perception-mode fallback (legacy
+      `--render-optix-relativistic` flows that don't
+      engage `--observer-perception-mode relativistic`
+      continue to fire `aberrateDirection(rel, ...)`
+      reading `observer.velocity`).
+    - **`__raygen__pathtrace`** site at line ~1226:
+      same dispatch shape on the path-tracer raygen
+      (uses `perception_active_pt` instead of
+      `perception_active_pinhole`; both refer to the
+      same per-thread snapshot of
+      `observer_frame.perception_mode ==
+      ConstantVelocityMinkowski`). Secondary bounce
+      rays inside the per-spp loop are NOT modified
+      (Option A primary-ray-only per the
+      OBS-PERCEPT.1 plan §5.2).
+  Doc-comments at both sites document the
+  cross-backend bit-identity guarantee + the
+  preserved legacy fallback contract.
+
+### What does NOT ship
+
+- **No CUDA modifications.** The OBS-PERCEPT.3
+  CUDA-side surface is preserved verbatim. `git
+  diff 40bb476..HEAD --name-only -- 'src/cuda/'`
+  returns zero hits.
+- **No `rr_manifold` helper modification.** The
+  unified
+  `apply_observer_primary_ray_aberration(observer_frame,
+  direction)` helper at `ObserverFrame.h:553+`
+  shipped at OBS-PERCEPT.3 is preserved verbatim.
+  The OBS-PERCEPT.5 slice consumes it from both
+  raygen sites — same RR_HD inline helper on
+  both backends; cross-backend bit-identity by
+  construction.
+- **No secondary-ray transform.** The OptiX path-
+  tracer's per-spp bounce loop at
+  `__raygen__pathtrace:1232+` is byte-identical
+  to the OBS-PERCEPT.4 baseline. The closest-hit
+  / miss programs are unchanged. Option A
+  primary-ray-only per the OBS-PERCEPT.1 plan
+  §5.2.
+- **No new Doppler / searchlight changes.** The
+  Doppler-factor computation at
+  `__raygen__pinhole:235+` (`const float D =
+  rr::relativity::dopplerFactor(rel,
+  ray.direction);`) reads from the same `rel`
+  snapshot the OBS-P.2 ternary built; the
+  closest-hit Doppler-color-shift + searchlight
+  blocks are byte-identical. OBS-PERCEPT.5 scope
+  is the aberration site only.
+- **No new CLI flag.** The existing
+  `--observer-perception-mode relativistic` (from
+  OBSERVER.4) is the load-bearing gate.
+- **No new ObserverFrame POD field / no
+  OptixLaunchParams field-offset change.** The
+  OBS-PERCEPT.5 slice consumes the existing
+  OBSERVER.10 `optixLaunchParams.observer_frame`
+  payload field verbatim. No ABI extension.
+- **No `OptixRenderer.cpp` / `OptixRenderer.h`
+  modification.** No new trailing parameter on
+  `render_aovs(...)` / `render_pathtrace_progressive(...)`.
+  The OBS-PERCEPT.5 changes are entirely
+  internal to `OptixPrograms.cu` (the kernel
+  surface).
+- **No manifold math changes.** `src/manifold/`
+  byte-identical to OBS-PERCEPT.4 baseline.
+- **No field interpretation changes.** `src/field/`
+  byte-identical.
+- **No legacy `observer.velocity` removal.**
+- **No fixture authoring.** The OBS-PERCEPT.9
+  slice authors the fixture (or operator may
+  reuse OBS-F.2 for runtime verification).
+- **No debug AOV.** The OBS-PERCEPT.7 slice
+  lands the perception-transform debug AOV.
+- **No `MODULE_MAP.md` update.**
+- **No `MANIFOLD_INTEGRATION_PLAN.md` update.**
+- **No new ctest target / test extension.** The
+  OBS-PERCEPT.3 audit's 13 NEW RR_CHECK
+  assertions on the shared helper already cover
+  the three-gate activation logic; the OptiX-side
+  consumption uses the same helper, so no
+  additional host-side test surface is needed.
+  (The empirical OptiX kernel-arm verification
+  is deferred to SDK-host audit per check #9
+  below.)
+- **No C4D / server / UI / node-editor touch.**
+
+### Acceptance
+
+- **Compiles with OptiX OFF.** Audit-host build
+  green; full rebuild via `cmake --build
+  /home/user/RelativityRender/build` adds no
+  new warnings on any module. Ctest 13/13 PASS:
+  `manifold_identity_tests: 421/421 passed`
+  (unchanged from OBS-PERCEPT.4 — no test
+  extension); `relativity_tests: 841/841`;
+  `cli_tests: 274/274`; `renderer_tests: 35/35`;
+  `field_tests: 135/135`; every other suite
+  unchanged.
+- **Compiles with OptiX ON (no SDK fallback).**
+  `cmake --build /tmp/rr_build_optix_no_sdk`
+  succeeds; ctest 14/14 PASS (including
+  optix_tests). The OBS-PERCEPT.5 changes
+  compile cleanly through the OptiX-ON-no-SDK
+  build path — both raygen programs' new
+  dispatch + helper consumption pass the
+  CUDA-as-C++ host compile.
+- **No behaviour change for existing scenes
+  (default-state byte identity).** Every
+  existing `--render-optix-*` invocation
+  against any scene WITHOUT
+  `--observer-perception-mode relativistic`
+  preserves byte-identical PPM output to the
+  OBS-PERCEPT.4 baseline. The new dispatch's
+  else-branch fires on default Identity mode;
+  the legacy `aberrateDirection(rel, ...)` path
+  fires reading `observer.velocity`;
+  byte-identical to the post-OBSERVER.10 + OBS-P.2
+  + FIELD-BEAUTY.5 baseline. Empirical SDK-host
+  verification deferred.
+- **Zero-beta byte identity.** On
+  `--observer-perception-mode relativistic
+  --observer-beta 0` the helper's inner gate
+  closes; output byte-identical to
+  `--observer-perception-mode default` on the
+  same scene. Empirical verification deferred.
+- **Non-zero-beta cross-backend consistency.** On
+  `--observer-perception-mode relativistic
+  --observer-beta 0.5 --observer-direction
+  1,0,0` the helper's both gates open; the
+  primary ray is aberrated via the shared
+  helper. The OptiX-side aberration is
+  byte-identical to the CUDA-side aberration
+  (both invoke the same
+  `rr::relativity::aberrateDirection(beta,
+  direction)` math leaf through the same shared
+  helper). The OBS-PERCEPT.5 slice's
+  cross-backend bit-identity is structurally
+  guaranteed by construction (mirrors the
+  FIELD-BEAUTY.6 + FIELD-I.12 audits' five-axis
+  symmetry argument applied to the
+  OBS-PERCEPT.* helper).
+- **Internally consistent.** The two new
+  dispatch blocks at
+  `__raygen__pinhole` + `__raygen__pathtrace`
+  mirror the OBS-PERCEPT.3 CUDA dispatches
+  shape-for-shape (same outer-perception-active
+  / inner-helper / else-legacy structure). The
+  consumed helper is the same
+  `rr::manifold::apply_observer_primary_ray_aberration(...)`
+  the CUDA arms consume; cross-backend semantic
+  equivalence is structural. The OptiX path-
+  tracer's secondary-ray block is byte-
+  identical to the OBS-PERCEPT.4 baseline; the
+  closest-hit / miss / shadow-ray programs are
+  byte-identical.
+- **Honest scope.** Master rule #3 ("no fake
+  stubs") satisfied: the kernel arms are fully
+  wired (real helper invocation; real else-
+  branch dispatch; real per-thread snapshot
+  consumption). The OBS-PERCEPT.* arc's
+  cross-backend symmetry framing is preserved.
+  Master rule #11 satisfied: the shared helper's
+  behavior is documented + tested via the
+  OBS-PERCEPT.3-landed 13 RR_CHECK assertions;
+  the OBS-PERCEPT.5 OptiX consumption sites
+  inherit the same contract structurally.
+  Master rule #12 satisfied: scope deliberately
+  narrow to OptiX primary-ray ONLY — CUDA
+  preserved verbatim; secondary-ray transform
+  deferred; Doppler / searchlight migration
+  deferred; debug AOV deferred (OBS-PERCEPT.7);
+  fixture authoring deferred (OBS-PERCEPT.9).
+  Master rule #16 satisfied: default-off byte
+  identity preserved by the outer-gate + inner-
+  gate composition (Identity mode = outer gate
+  closes; default beta=0 = inner gate closes;
+  both backends have identical default
+  behavior).
+
+### Module status changes
+
+`docs/MODULE_MAP.md` is *not* updated by this
+slice. The `rr_optix` library's module-map
+status carries forward from FIELD-BEAUTY.6
+unchanged (the `rr_manifold` PUBLIC link
+already in place; the OBS-PERCEPT.3 helper at
+`ObserverFrame.h:553+` is consumed
+transitively via the existing include chain).
+No CMakeLists.txt change required.
+
+With OBS-PERCEPT.5 in, **both backends have
+symmetric primary-ray observer-frame aberration
+arms** (CUDA at `CudaTestKernel.cu` +
+`CudaPathTracer.cu`; OptiX at `OptixPrograms.cu`
+`__raygen__pinhole` + `__raygen__pathtrace`).
+The OBSERVER.15 capstone audit's
+`PASS_WITH_RUNTIME_DEFERRED` future-kernel-
+migration risk #1 is now closed on BOTH backends.
+The OBS-PERCEPT.5 verdict authorises the operator
+to proceed to: **(a)** the OBS-PERCEPT.5 audit (a
+docs-only verdict slice mirroring the
+OBS-PERCEPT.4 / FIELD-BEAUTY.6 / FIELD-I.12
+audit-slot insertion precedent; RECOMMENDED
+before the next impl slot); **(b)** HIGHLY
+RECOMMENDED combined FIELD-* + OBS-PERCEPT CLI
+bridge slice (single SDK-host audit closes the
+entire field-and-observer-arc family's runtime-
+deferred verdict tail — FIELD-I.10 + .12 +
+.14 + FIELD-BEAUTY.4 + .6 + .8 + OBS-PERCEPT.4
++ OBS-PERCEPT.6 deferred verdicts all convert to
+PASS); **(c)** manifold-orthogonal work
+(deferred SDK-host runtime pass for the entire
+arc family; MANI-I.12 final cross-host manifold
+audit; denoiser integration; path-tracer
+feature breadth); **(d)** OBS-PERCEPT.7 — debug
+AOV (NOT recommended before the OptiX bridge
+audit; better to lock in the CUDA + OptiX
+parity first); **(e)** DEFERRABLE retroactive
+task brief authoring. The OBS-PERCEPT.* arc's
+`**Wired**` promotion is reserved for the
+post-OBS-PERCEPT.5 SDK-host runtime pass that
+exercises both backend kernels' unified
+perception-transform arms end-to-end.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:

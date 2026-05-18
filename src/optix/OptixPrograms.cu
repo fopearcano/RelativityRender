@@ -219,9 +219,32 @@ extern "C" __global__ void __raygen__pinhole() {
         ? optixLaunchParams.observer_frame.beta
         : optixLaunchParams.observer.velocity;
     const auto rel = rr::relativity::precompute_relativity(beta_source_pinhole);
+    // OBS-PERCEPT.5 — primary-ray observer-frame aberration
+    // dispatch (OptiX side mirror of OBS-PERCEPT.3 CUDA
+    // arm). On `perception_active_pinhole`, route through
+    // the unified
+    // `rr::manifold::apply_observer_primary_ray_aberration(...)`
+    // helper (which applies the explicit `|beta|>0` inner
+    // gate + the `perception_mode` outer gate); on the
+    // Identity / placeholder else branch, fall through to
+    // the legacy `aberrateDirection(rel, ...)` path
+    // (preserves the post-OBS-P.2 behaviour for
+    // `--render-optix-relativistic` flows that don't
+    // engage `--observer-perception-mode relativistic`).
+    // Same dispatch shape as the CUDA OBS-PERCEPT.3 arm at
+    // `CudaTestKernel.cu:k_render_scene`; cross-backend
+    // bit-identity guaranteed by construction (both
+    // backends consume the same `rr_manifold` helper +
+    // same `rr_relativity` math leaves).
     if (optixLaunchParams.params.enable_aberration) {
-        ray.direction = rr::relativity::aberrateDirection(
-            rel, ray.direction);
+        if (perception_active_pinhole) {
+            ray.direction =
+                rr::manifold::apply_observer_primary_ray_aberration(
+                    optixLaunchParams.observer_frame, ray.direction);
+        } else {
+            ray.direction = rr::relativity::aberrateDirection(
+                rel, ray.direction);
+        }
     }
 
     // Stage 20H: compute Doppler factor for the (possibly
@@ -1223,9 +1246,34 @@ extern "C" __global__ void __raygen__pathtrace() {
         auto ray = rr::camera::generate_camera_ray(
             optixLaunchParams.camera, x, y, W, H);
 
+        // OBS-PERCEPT.5 — primary-ray observer-frame
+        // aberration dispatch (OptiX path-tracer side
+        // mirror of OBS-PERCEPT.3 CUDA arm at
+        // `CudaPathTracer.cu:k_pathtrace_sample`).
+        // Identical dispatch shape: on `perception_active_pt`,
+        // route through the unified
+        // `rr::manifold::apply_observer_primary_ray_aberration(...)`
+        // helper; on the else branch, fall through to the
+        // legacy `aberrateDirection(rel, ...)` path
+        // (preserves the post-OBS-P.2 ternary behaviour
+        // for legacy `--render-optix-pathtrace` flows
+        // without `--observer-perception-mode
+        // relativistic`). Secondary bounce rays inside
+        // this raygen's per-spp loop are NOT modified
+        // (Option A primary-ray-only per the
+        // OBS-PERCEPT.1 plan §5.2; the loop body's
+        // closest-hit-payload-based shading + Doppler /
+        // searchlight post-shading modulation are
+        // preserved verbatim).
         if (optixLaunchParams.params.enable_aberration) {
-            ray.direction = rr::relativity::aberrateDirection(
-                rel, ray.direction);
+            if (perception_active_pt) {
+                ray.direction =
+                    rr::manifold::apply_observer_primary_ray_aberration(
+                        optixLaunchParams.observer_frame, ray.direction);
+            } else {
+                ray.direction = rr::relativity::aberrateDirection(
+                    rel, ray.direction);
+            }
         }
         primary_dir = ray.direction;
 
