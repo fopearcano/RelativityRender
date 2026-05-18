@@ -92671,6 +92671,359 @@ primary-ray perception arms + the diagnostic
 AOVs end-to-end against the OBS-PERCEPT.9
 fixture.
 
+## OBS-DOP.1 — Observer Doppler/Searchlight Migration Task (docs only)
+
+**Scope of this slice (per the operator's *OBS-DOP.1
+— Observer Doppler/Searchlight Migration Task* task
+brief): write `docs/OBSERVER_DOPPLER_SEARCHLIGHT_TASK.md`,
+the operator-facing task brief that opens the
+OBS-DOP.\* arc — the migration of the per-pixel
+Doppler color shift + searchlight intensity
+modulation runtime reads onto the `ObserverFrame`
+POD, behind the same three-gate activation contract
+the OBS-PERCEPT.3 primary-ray aberration helper
+established. The OBS-PERCEPT.10 capstone audit's
+check #7 honestly deferred this consolidation to a
+"future OBS-PERCEPT.\* sub-slice"; this OBS-DOP.\*
+arc IS that sub-slice family. Defines the exact goal
++ required behavior + scope + non-goals + PASS
+criteria + activation logic + cross-backend
+symmetry framework + sub-slice ladder. Documentation
+only; no source code, no test, no CMake, no scene
+file, no behavioural change.**
+
+### What ships
+
+- **`docs/OBSERVER_DOPPLER_SEARCHLIGHT_TASK.md`
+  (new, ~1552 lines).** Operator-facing task brief
+  mirroring the OBS-PERCEPT.2 + OBSERVER.12 +
+  FIELD-I.6 task brief shapes verbatim. Thirteen
+  sections per the operator's 5-required-topic
+  enumeration plus the supporting activation-logic
+  + files / symmetry / sub-slice / non-goals /
+  cross-references / constraints / verdict
+  sections:
+    - **§1 Exact goal** — four subsections covering:
+      (a) Doppler / searchlight runtime reads from
+      `ObserverFrame.beta` exclusively (no
+      fallback to `observer.velocity` AFTER the
+      unified helper engages); (b) activation
+      gated by `perception_mode ==
+      ConstantVelocityMinkowski` AND `|beta|² > 0`
+      (mirrors the OBS-PERCEPT.3 helper's three-
+      gate logic); (c) three-effect scope
+      (`dopplerFactor`, `applyDopplerColor`,
+      `searchlightFactor` + linear modulation);
+      (d) math leaves preserved verbatim (no
+      `src/relativity/` modification).
+    - **§2 Required behavior** — four subsections:
+      (a) default observer (Identity perception
+      mode) remains no-op (dispatch's else-branch
+      fires; legacy chain runs reading OBS-P.2
+      ternary's `observer.velocity` fallback path
+      → byte-identical to pre-OBS-DOP.\*
+      baseline); (b) `beta = 0` remains no-op
+      (inner gate closes; helper returns
+      identity); (c) existing legacy config
+      (`Observer::velocity`,
+      `RelativityParams.enable_*`, strength
+      scalars) preserved as adapter / input only;
+      (d) CUDA + OptiX semantics must match (the
+      five-axis cross-backend symmetry framework
+      inherited from OBS-PERCEPT.6 §3.7).
+    - **§3 Scope** — six subsections: (a) Doppler
+      factor (the per-pixel `D` compute, once-per-
+      pixel discipline preserved); (b) searchlight
+      factor (the `D⁴` scaling); (c) color /
+      intensity modulation (both the Doppler color
+      shift AND the searchlight intensity scaling);
+      (d) no new physics model (existing artistic
+      `applyDopplerColor` + bolometric `D⁴`
+      preserved verbatim); (e) no quantum effects;
+      (f) no path-tracer per-bounce Doppler
+      (Option A primary-ray-only preserved).
+    - **§4 What must not be touched** — nine
+      non-goals: (a) no new manifold math (only
+      `ObserverFrame.h` touched; rationale: the
+      same `rr_manifold` PUBLIC-deps-on-
+      `rr_relativity` constraint OBS-PERCEPT.3
+      honored); (b) no secondary-ray policy
+      change unless already present in the
+      pre-OBS-DOP.\* baseline (the existing
+      single-application-per-pixel pattern at the
+      five post-shading sites is preserved); (c)
+      no field interpretation changes (FIELD-I.\*
+      + FIELD-BEAUTY.\* surfaces preserved
+      verbatim); (d) no C4D / server / UI /
+      node-editor touch; (e) no new CLI flag (the
+      existing `--observer-perception-mode
+      relativistic` is the gate); (f) no new
+      ObserverFrame POD field; (g) no legacy
+      `observer.velocity` removal; (h) no new
+      debug AOV (deferred to future
+      `OBS-DOP-AOV.*` arc); (i) no fixture
+      authoring (OBS-F.2 + OBS-PERCEPT.9
+      sufficient).
+    - **§5 PASS criteria** — five subsections:
+      structural (~14 checkboxes covering the
+      unified helpers + per-site consolidation +
+      no-secondary-ray + no-manifold-change-
+      outside-ObserverFrame.h + no-relativity-
+      math-change + no-CLI-flag + no-POD-field +
+      no-new-test-binary); behavioral (~5
+      checkboxes covering default-state byte
+      identity + zero-beta byte identity + non-
+      zero-beta consistency + OBS-PERCEPT.9
+      fixture + cross-backend bit-identity);
+      test surface (~7 checkboxes: ctest 13/13 +
+      `manifold_identity_tests +~8` RR_CHECKs +
+      other suites unchanged + OptiX-ON-no-SDK
+      14/14 PASS); documentation (~3 checkboxes:
+      per-sub-slice BUILD_PLAN entries + per-
+      sub-slice audit docs + arc capstone audit
+      doc); runtime CUDA / OptiX deferral (7
+      deferred SDK-host scenarios: default-state
+      cmp; zero-beta byte identity; non-zero-
+      beta consistency; OBS-PERCEPT.9 fixture
+      runtime; cross-backend cmp; path-tracer
+      post-spp Doppler; OBSERVER.13 AOV
+      interaction).
+    - **§6 Activation logic** — five subsections
+      documenting the three-gate kernel-arm
+      discipline verbatim from OBS-PERCEPT.3:
+      outer gate (perception_mode); inner gate
+      (`|beta|² > 0` NaN-safe squared-magnitude);
+      math leaf invocation; three-layer no-op
+      anchor (helper inner gate + math leaf
+      identity + OBSERVER.6 adapter); dispatch
+      shape (the `if (enable_*) { if
+      (perception_active) { unified helper }
+      else { legacy } }` pattern at the call
+      sites mirroring `CudaTestKernel.cu:248-258`
+      verbatim).
+    - **§7 Files likely involved** — 10-row table
+      covering the manifold helper
+      (`src/manifold/ObserverFrame.h`, +50-100
+      lines), CUDA kernels
+      (`src/cuda/CudaTestKernel.cu`, +20-40
+      lines), OptiX programs
+      (`src/optix/OptixPrograms.cu`, +30-60
+      lines), tests
+      (`tests/manifold_identity_tests.cpp`,
+      +~70-120 lines), BUILD_PLAN.md, three audit
+      doc placeholders (CUDA / OptiX / capstone),
+      and zero CMake changes. Sub-section §7.1
+      enumerates three helper signature options
+      (A self-contained / B precomputed-D /
+      C combined); RECOMMENDED Option B
+      (precomputed-D; matches the OptiX
+      `apply_doppler_and_searchlight_with_D(...)`
+      shim's existing shape).
+    - **§8 Cross-backend symmetry framework** —
+      explicit five-axis symmetry table (POD
+      type; shared helper; dispatch shape; math
+      leaf; gate semantics) inherited verbatim
+      from OBS-PERCEPT.6 §3.7 applied to the
+      Doppler / searchlight scope. Cross-backend
+      bit-identity structurally guaranteed by
+      construction.
+    - **§9 Sub-slice ladder** — four sub-slices:
+      OBS-DOP.2 (CUDA impl); OBS-DOP.3 (OptiX
+      impl); OBS-DOP.4 (per-slice audit slots,
+      docs only); OBS-DOP.5 (arc capstone audit,
+      docs only). Per-slice gate audits may be
+      inserted in-band per the standing OBS-
+      PERCEPT.\* arc precedent.
+    - **§10 Explicit non-goals** — twelve non-
+      goals: no spectral Doppler; no frame-
+      dragging Doppler; no accelerating
+      observers; no retarded-time approximation;
+      no per-bounce Doppler; no quantum
+      observer effects; no new CLI flag family;
+      no new ObserverFrame POD fields; no
+      C4D / server / UI / node-editor; no
+      legacy `observer.velocity` removal; no
+      new diagnostic AOV; no fixture extension.
+    - **§11 Cross-references** — entry list
+      spanning master instructions, architecture-
+      doc §7.2 anchor, every OBS-PERCEPT.\* per-
+      slice precedent (OBS-PERCEPT.1 plan;
+      OBS-PERCEPT.2 task brief shape mirror;
+      OBS-PERCEPT.4 CUDA audit shape;
+      OBS-PERCEPT.6 OptiX audit + §3.7 five-
+      axis symmetry framework; OBS-PERCEPT.9
+      fixture; OBS-PERCEPT.10 capstone whose
+      check #7 honestly deferred this arc),
+      every OBSERVER.\* + OBS-P.\* + OBS-F.\*
+      precedent (OBSERVER.1 plan; OBSERVER.3
+      data-model audit; OBSERVER.7 adapter audit;
+      OBSERVER.9 + OBSERVER.11 payload audits;
+      OBSERVER.14 debug AOV audit; OBSERVER.15
+      capstone whose risk #1 OBS-DOP.\* closes
+      for the post-shading sites; OBS-P.3 audit
+      noting the 5-site CUDA scope correction;
+      OBS-F.3 fixture audit), parallel-arc
+      references (FIELD-I.1 plan; FIELD-BEAUTY.8
+      capstone shape mirror), the source-surface
+      inventory the arc will exercise, and the
+      non-touched-surfaces list.
+    - **§12 Constraints carried forward** —
+      master rule #1 + #3 + #11 + #12 + #16
+      satisfaction recap; CPU vs GPU
+      separation; core-modules independence.
+    - **§13 Verdict** — task-definition slice
+      produces no verdict; the OBS-DOP.5 arc
+      capstone audit produces the
+      PASS / PASS_WITH_RUNTIME_DEFERRED /
+      REPAIR / BLOCKED verdict.
+
+### What does NOT ship
+
+- **No source code.** Nothing in any `src/`
+  subtree is touched. The post-OBS-PERCEPT.10
+  HEAD = `0fcdd84` baseline is preserved
+  exactly. `git diff 0fcdd84..HEAD -- 'src/'`
+  returns zero hits.
+- **No new test binary.** ctest set unchanged at
+  13 (audit-host) / 14 (OptiX-ON-no-SDK). Test
+  counts unchanged from OBS-PERCEPT.10.
+- **No CMake change.**
+- **No relativity math leaf modification.** The
+  existing `dopplerFactor` / `applyDopplerColor`
+  / `searchlightFactor` / `precompute_relativity`
+  helpers are preserved verbatim. The OBS-DOP.2
+  implementation slice may ADD composing helpers
+  in `manifold/ObserverFrame.h`, but this
+  OBS-DOP.1 docs-only slice does not.
+- **No kernel arm modification.** The OBS-DOP.2
+  + OBS-DOP.3 implementation slices land the
+  kernel arms; this docs-only slice does not.
+- **No new CLI flag.** The existing
+  `--observer-perception-mode relativistic`
+  (from OBSERVER.4) is the gate; no new flag
+  this slice.
+- **No `ObserverFrame.h` helper additions.**
+  The OBS-PERCEPT.3 helper at
+  `src/manifold/ObserverFrame.h:553+` is
+  preserved verbatim; the OBS-DOP.\* unified
+  helpers land in OBS-DOP.2 alongside.
+- **No prior-arc-document modification.** Every
+  OBSERVER.\* + OBS-P.\* + OBS-F.\* +
+  FIELD-I.\* + FIELD-BEAUTY.\* + OBS-PERCEPT.\*
+  arc document preserved verbatim.
+- **No `MODULE_MAP.md` update.**
+- **No `MANIFOLD_INTEGRATION_PLAN.md` update.**
+- **No `BUILD_PLAN.md` historical rewrite.**
+  Every prior entry stays as-is; the OBS-DOP.1
+  entry appends at the end of the OBS-PERCEPT.10
+  entry.
+- **No fixture authoring.** The existing OBS-F.2
+  + OBS-PERCEPT.9 fixtures are sufficient for
+  the OBS-DOP.\* arc's runtime validation; no
+  new `.rrscene` file this arc.
+- **No new debug AOV.** The OBSERVER.13
+  `ObserverBeta` AOV continues to visualise the
+  payload verbatim; no new Doppler-magnitude /
+  searchlight-factor diagnostic AOV (deferred to
+  future `OBS-DOP-AOV.*` arc).
+- **No new perception model beyond the planned
+  ConstantVelocityMinkowski specialisation.**
+- **No quantum / tensor / curvature simulation.**
+- **No C4D / server / UI / node-editor touch.**
+
+### Acceptance
+
+- **Compiles.** Documentation-only slice; no
+  build configuration touched. The audit-host
+  build remains at the post-OBS-PERCEPT.10
+  baseline (`100% tests passed, 0 tests failed
+  out of 13`; `renderer_tests: 51/51`;
+  `field_tests: 135/135`;
+  `relativity_tests: 841/841`;
+  `manifold_identity_tests: 421/421`;
+  `cli_tests: 274/274`). The OptiX-ON-no-SDK
+  build remains at the OBS-PERCEPT.8 baseline
+  (14/14 ctest PASS); OBS-PERCEPT.9 +
+  OBS-PERCEPT.10 + OBS-DOP.1 added no source
+  code change so the build is preserved verbatim.
+- **Internally consistent.** The 13-section task
+  brief structure mirrors the OBS-PERCEPT.2 +
+  OBSERVER.12 + FIELD-I.6 task brief shape
+  verbatim. Every cited source file + line ref
+  is inspectable on the current tree (the
+  existing CUDA Doppler / searchlight sites at
+  `CudaTestKernel.cu:277-292` +
+  `CudaTestKernel.cu:656-675`; the existing
+  OptiX sites at `OptixPrograms.cu:99-124` +
+  `:215-221` + `:258` + `:1538`; the existing
+  shared math leaves at `RelativityMath.h:76-99`
+  + `:160-202` + `:219-230`). Every cited
+  cross-reference exists in the tree at the
+  cited path. The acceptance gate's byte-
+  identity claims are anchored in the pre-
+  existing OBS-P.2 + OBS-PERCEPT.3 + OBSERVER.6
+  contracts (which guarantee the underlying
+  math leaves' identity behaviour at `beta = 0`
+  and the `clampBeta`-shell safety). The
+  five-axis cross-backend symmetry argument is
+  inherited from OBS-PERCEPT.6 §3.7 and applied
+  to the Doppler / searchlight scope verbatim.
+- **Brief honesty.** Master rule #3 satisfied —
+  every non-goal is explicit; every scope-
+  bounded paragraph has documented "does not
+  ship" language; the deferral pattern (the
+  combined FIELD-\* + OBS-PERCEPT + OBS-DOP CLI
+  bridge slice's converging-leverage closure)
+  is enumerated. Master rule #12 satisfied — the
+  arc is deliberately narrow (no overbuilding;
+  no field-mapping changes; no manifold math
+  changes; no new debug AOV; no fixture
+  extension). Master rule #16 satisfied — the
+  arc preserves default-off byte identity. The
+  `CurvedChartGeodesicPlaceholder` perception
+  mode's no-transform fallback is honest
+  (master rule #3: the helper short-circuits to
+  identity; future arcs lift with documented
+  contracts). The OBS-PERCEPT.10 capstone's
+  check #7 honest-deferral of the Doppler /
+  searchlight consolidation is preserved
+  verbatim; this OBS-DOP.\* arc operationalises
+  that deferral.
+
+### Module status changes
+
+`docs/MODULE_MAP.md` is *not* updated by this
+slice. No source code touched; module-map status
+carries forward from OBS-PERCEPT.10 unchanged.
+
+The OBS-DOP.1 verdict authorises the operator to
+proceed to: **(a)** OBS-DOP.2 — CUDA implementation
+(the unified Doppler / searchlight helpers in
+`src/manifold/ObserverFrame.h` + the two CUDA
+post-shading kernel-arm consolidations in
+`CudaTestKernel.cu`; mirrors the OBS-PERCEPT.3
+staged-impl pattern at this arc's scope);
+**(b)** OBS-DOP.3 — OptiX implementation (the
+four OptiX post-shading site consolidations in
+`OptixPrograms.cu`; mirrors the OBS-PERCEPT.5
+OptiX-mirror pattern); **(c)** RECOMMENDED
+combined FIELD-\* + OBS-PERCEPT + OBS-DOP CLI
+bridge slice (per OBS-PERCEPT.10 §4.2 (a)
+extended to also close the OBS-DOP.\* arc's
+future runtime-deferred verdict tail);
+**(d)** manifold-orthogonal work;
+**(e)** OBS-PERCEPT.11 — debug AOV kernel-arm
+bridge implementation (still authorised per
+OBS-PERCEPT.10 §4.2 (b); the OBS-DOP.\* arc
+preserves the OBS-PERCEPT.8 data-model entries
+verbatim). The OBS-DOP.\* arc's `**Wired**`
+promotion is reserved for the post-OBS-DOP.5
+capstone + post-CLI-bridge SDK-host runtime
+pass that exercises both backend kernels'
+Doppler / searchlight arms end-to-end against
+the OBS-PERCEPT.9 fixture (and the OBS-F.2
+fixture for cross-fixture comparison).
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
