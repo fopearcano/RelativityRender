@@ -92100,6 +92100,257 @@ reserved for the post-kernel-bridge SDK-host
 runtime pass that exercises the diagnostic
 AOVs end-to-end against the OBS-F.2 fixture.
 
+## OBS-PERCEPT.9 — Observer Perception Fixture (impl, fixture + companion doc)
+
+**Scope of this slice (per the operator's *OBS-PERCEPT.9
+— Observer Perception Fixture* task brief): land
+`scenes/test_observer_primary_ray_perception.rrscene`
++ `docs/OBSERVER_PRIMARY_RAY_PERCEPTION_FIXTURE.md`,
+the controlled fixture + companion doc for the
+OBS-PERCEPT.* arc's CUDA + OptiX primary-ray
+perception transform's runtime-deferred SDK-host
+validation. Fixture-only narrow scope; no source
+code, no parser extension (the existing
+`apply_relativity(...)` parser handles the
+fixture's `relativity` block verbatim), no
+behavioural change.**
+
+### What ships
+
+- **`scenes/test_observer_primary_ray_perception.rrscene`
+  (new, 65 lines).** Controlled fixture scene
+  mirroring the OBS-F.2 + FIELD-I.13 +
+  FIELD-BEAUTY.7 geometry verbatim (6 spheres +
+  ground plane + 2 lights). Distinguishes from
+  OBS-F.2 via **two variables**:
+    - **Camera FOV = 60°** (vs OBS-F.2's 45°).
+      Wider FOV brings more transverse pixels
+      into view; makes the oblique-direction
+      aberration's asymmetric pattern more
+      visible across the framebuffer.
+    - **Oblique beta direction `[0.6, -0.8,
+      0.0]`** (vs OBS-F.2's axis-aligned `[0,
+      0, -1]`). The oblique unit vector in the
+      camera's screen-relative XY plane
+      produces an asymmetric per-pixel
+      aberration pattern that distinguishes
+      visually from OBS-F.2's
+      camera-forward-aligned symmetric pattern.
+      Parsed `observer.velocity = 0.5 × [0.6,
+      -0.8, 0.0] = [0.3, -0.4, 0.0]`; |beta|
+      = 0.5.
+  Standard `relativity` block authoring
+  (`enabled = true`, `betaVelocity = 0.5`,
+  `velocityDirection = [0.6, -0.8, 0.0]`,
+  `aberrationStrength = dopplerStrength =
+  searchlightStrength = 1.0`). No `manifold`
+  block, no `scalar_field` block, no
+  `field_mapping` block (per the operator's
+  brief: "no manifold chart required unless
+  already useful"; the fixture isolates the
+  observer-perception variable from every
+  other arc family's authoring surface).
+
+- **`docs/OBSERVER_PRIMARY_RAY_PERCEPTION_FIXTURE.md`
+  (new, ~470 lines).** Companion doc mirroring
+  the FIELD-I.13 + FIELD-BEAUTY.7 fixture-
+  companion-doc shape verbatim. Seven sections:
+    - **§1 Purpose** — three goals (parser smoke
+      test against the oblique direction;
+      perception-transform runtime template for
+      SDK-host validation; oblique-direction
+      distinction from OBS-F.2's axis-aligned
+      precedent) + honest scope boundaries (no
+      `scalar_field` / `field_mapping` /
+      `manifold` engagement; isolates the
+      observer variable).
+    - **§2 Composition** — three layers
+      (geometry lifted from OBS-F.2; camera
+      with wider 60° FOV; relativity block
+      with oblique beta direction) +
+      intentional omissions (no manifold; no
+      field blocks).
+    - **§3 Expected visual signature** —
+      per-invocation signatures: aberration
+      pattern (asymmetric across screen-XY
+      due to oblique beta), Doppler +
+      searchlight pattern (asymmetric
+      blueshift/redshift), default invocation
+      behaviour (post-OBS-P.2 ternary fires
+      legacy `aberrateDirection(rel, ...)` path
+      using `observer.velocity`), relativistic-
+      mode invocation (OBS-PERCEPT.3/.5
+      unified helper fires; byte-identical to
+      default mode because both consume the
+      same beta value via different payload
+      fields), OptiX cross-backend byte-
+      identity.
+    - **§4 Cross-backend equivalence** — five
+      inherited guarantees from OBS-PERCEPT.6
+      §3.7 (same POD; same shared helper; same
+      math leaf; same dispatch shape; same
+      operator semantics).
+    - **§5 Audit-host smoke transcript** —
+      `--scene-info` invocation transcript with
+      empirical verification of camera FOV
+      = 60°, observer_velocity = [0.3, -0.4,
+      0.0], |beta| = 0.5.
+    - **§6 Runtime SDK-host validation checks
+      (DEFERRED)** — 4 deferred scenarios
+      (default-invocation byte identity;
+      relativistic-mode byte identity;
+      CLI-override beta direction; diagnostic
+      AOV runtime — double-deferred behind
+      SDK-host + future kernel-arm bridge
+      slice).
+    - **§7 References** — master + architecture
+      §7.2 + every OBS-PERCEPT.* arc precedent
+      + precedent fixture-companion-doc shapes
+      (OBS-F.2 + FIELD-I.13 +
+      FIELD-BEAUTY.7) + the audited source
+      surface + the cross-fixture distinction
+      table.
+
+### What does NOT ship
+
+- **No source code.** Nothing in any `src/`
+  subtree is touched. The post-OBS-PERCEPT.8
+  HEAD = `95d56d5` baseline is preserved
+  exactly. `git diff 95d56d5..HEAD -- 'src/'`
+  returns zero hits.
+- **No parser extension.** The existing
+  `apply_relativity(...)` parser at
+  `src/io/SceneLoader.cpp:731+` handles the
+  fixture's `relativity` block verbatim
+  (`enabled` / `betaVelocity` /
+  `velocityDirection` / per-effect strength
+  fields all parsed by the OBSERVER.4-shipped
+  surface). No new parser code required.
+- **No new test binary.** ctest set unchanged
+  at 13 (audit-host) / 14 (OptiX-ON-no-SDK).
+  Test counts unchanged from OBS-PERCEPT.8.
+- **No CMake change.**
+- **No default scene alteration.** Every
+  existing `.rrscene` fixture is byte-identical
+  to the OBS-PERCEPT.8 baseline. `git diff
+  95d56d5..HEAD --name-only -- 'scenes/'
+  ':(exclude)scenes/test_observer_primary_ray_perception.rrscene'`
+  returns zero hits.
+- **No new perception math.** The OBS-PERCEPT.3
+  shared helper at `ObserverFrame.h:553+`
+  preserved verbatim; no helper modifications.
+- **No CLI flag.** The fixture is engageable via
+  the existing OBSERVER.4-shipped
+  `--observer-perception-mode relativistic`
+  flag; no new flag required.
+- **No `MODULE_MAP.md` update.**
+- **No `MANIFOLD_INTEGRATION_PLAN.md` update.**
+- **No `BUILD_PLAN.md` historical rewrite.**
+- **No quantum / tensor / curvature simulation.**
+- **No C4D / server / UI / node-editor touch.**
+
+### Acceptance
+
+- **Compiles with OptiX OFF.** Audit-host build
+  green; full rebuild adds no new warnings.
+  Ctest 13/13 PASS (renderer_tests 51/51,
+  field_tests 135/135, relativity_tests
+  841/841, manifold_identity_tests 421/421,
+  cli_tests 274/274, every other suite
+  unchanged).
+- **Compiles with OptiX ON (no SDK fallback).**
+  Inherits from the OBS-PERCEPT.8 baseline
+  (14/14 ctest PASS); no source-code change
+  this slice means the OBS-PERCEPT.8 OptiX-
+  ON-no-SDK build is preserved verbatim.
+- **Fixture parses cleanly via `--scene-info`.**
+  Empirically verified at the OBS-PERCEPT.9
+  landing: the parser correctly extracts the
+  oblique beta direction → `observer_velocity
+  = [0.3, -0.4, 0.0]`; the wider FOV 60°; all
+  seven relativity parameters.
+- **No default scene alteration.** Every
+  existing fixture (`test_camera.rrscene`,
+  `test_full_scene.rrscene`,
+  `test_lights.rrscene`,
+  `test_materials.rrscene`, `test_mesh.rrscene`,
+  `test_observer_frame.rrscene`,
+  `test_penrose_like_manifold.rrscene`,
+  `test_relativity.rrscene`,
+  `test_render_settings.rrscene`,
+  `test_scalar_field_color_multiplier.rrscene`,
+  `test_scalar_field_diagnostic.rrscene`,
+  `test_scalar_field_emission.rrscene`,
+  `test_schwarzschild_like_manifold.rrscene`,
+  `test_spheres.rrscene`,
+  `test_textured_material.rrscene`) is
+  byte-identical to the OBS-PERCEPT.8
+  baseline.
+- **Internally consistent.** The fixture's
+  geometry layer mirrors OBS-F.2 verbatim
+  (one-variable-difference principle preserved
+  across the fixture family). The relativity
+  block uses only existing OBSERVER.4-shipped
+  parser surface fields. The companion doc's
+  cross-fixture distinction table at §7.6
+  documents the variable each fixture isolates
+  (relativity / scalar_field / field_mapping /
+  manifold). Master rule #3 + #11 + #12 + #16
+  satisfied.
+- **Honest scope.** The fixture is honestly
+  scoped to runtime-deferred SDK-host
+  validation (the OBS-PERCEPT.* arc's CUDA +
+  OptiX kernel arms ARE in; the fixture's
+  visible signature requires an SDK-host
+  runtime pass that this audit cannot
+  execute). The companion doc's §6
+  enumerates four deferred scenarios; the
+  fourth (diagnostic AOV) is double-deferred
+  behind both SDK-host AND the future
+  kernel-arm bridge slice. Master rule #3
+  satisfied (the OBS-PERCEPT.8 AOV data-model
+  entries are honestly named as
+  bridge-pending). Master rule #12 satisfied
+  (no parser extension; no manifold
+  engagement; isolates one variable).
+
+### Module status changes
+
+`docs/MODULE_MAP.md` is *not* updated by this
+slice. No source code touched; module-map
+status carries forward from OBS-PERCEPT.8
+unchanged.
+
+The OBS-PERCEPT.9 verdict authorises the
+operator to proceed to: **(a)** OBS-PERCEPT.10
+audit (a docs-only verdict slice; OPTIONAL
+per the standing in-band audit-slot
+insertion discipline; mirrors the OBS-F.3 +
+FIELD-I.14 + FIELD-BEAUTY.7-audit precedent
+shapes applied to the new fixture);
+**(b)** OBS-PERCEPT.11 — debug AOV kernel-arm
+bridge implementation (the renumbered next
+OBS-PERCEPT.* impl slot; consumes the
+OBS-PERCEPT.8 AOV data-model entries + adds
+the CUDA + OptiX kernel write arms + the
+payload-field plumbing + the dispatcher
+allocation + the PPM save sites; mirrors the
+FIELD-I.9 + FIELD-I.11 staged-impl pattern);
+**(c)** HIGHLY RECOMMENDED combined FIELD-* +
+OBS-PERCEPT CLI bridge slice (per
+FIELD-BEAUTY.8 §4.2 (b); single SDK-host
+audit closes the entire field-and-observer-
+arc family's runtime-deferred verdict tail);
+**(d)** manifold-orthogonal work;
+**(e)** DEFERRABLE retroactive task brief
+authoring (operator discretion). The
+OBS-PERCEPT.* arc's `**Wired**` promotion is
+reserved for the post-kernel-bridge SDK-host
+runtime pass that exercises the diagnostic
+AOVs end-to-end against the OBS-PERCEPT.9
+fixture (and the OBS-F.2 fixture for
+cross-fixture comparison).
+
 ## Next stage
 
 When prompted, the natural follow-ups are:

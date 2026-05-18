@@ -1,0 +1,72 @@
+{
+  "version": "1.0.0",
+
+  "render_settings": {
+    "width":             1280,
+    "height":            720,
+    "samples_per_pixel": 1,
+    "max_depth":         1,
+    "output_path":       "output/observer_primary_ray_perception_fixture.ppm"
+  },
+
+  "camera": {
+    "position":    [0.0, 1.2, 6.0],
+    "forward":     [0.0, -0.1, -1.0],
+    "up":          [0.0, 1.0, 0.0],
+    "fovDegrees":  60.0
+  },
+
+  "relativity": {
+    "enabled":             true,
+    "betaVelocity":        0.5,
+    "velocityDirection":   [0.6, -0.8, 0.0],
+    "aberrationStrength":  1.0,
+    "dopplerStrength":     1.0,
+    "searchlightStrength": 1.0
+  },
+
+  "materials": [
+    { "id": 0, "name": "ground",   "baseColor": [0.55, 0.55, 0.60] },
+    { "id": 1, "name": "marker-r", "baseColor": [0.90, 0.20, 0.20] },
+    { "id": 2, "name": "marker-g", "baseColor": [0.20, 0.85, 0.30] },
+    { "id": 3, "name": "marker-b", "baseColor": [0.20, 0.30, 0.95] },
+    { "id": 4, "name": "marker-y", "baseColor": [0.95, 0.85, 0.30] },
+    { "id": 5, "name": "marker-w", "baseColor": [0.95, 0.95, 0.95] }
+  ],
+
+  "spheres": [
+    { "name": "centre",     "center": [ 0.0,  0.5,  0.0], "radius": 0.5, "materialId": 5 },
+    { "name": "near-right", "center": [ 1.5,  0.5,  0.0], "radius": 0.4, "materialId": 1 },
+    { "name": "near-left",  "center": [-1.5,  0.5,  0.0], "radius": 0.4, "materialId": 2 },
+    { "name": "above",      "center": [ 0.0,  2.0,  0.0], "radius": 0.4, "materialId": 3 },
+    { "name": "in-front",   "center": [ 0.0,  0.5,  1.5], "radius": 0.4, "materialId": 4 },
+    { "name": "far-centre", "center": [ 0.0,  0.5, -3.0], "radius": 0.6, "materialId": 5 }
+  ],
+
+  "meshes": [
+    {
+      "name":       "ground-plane",
+      "materialId": 0,
+      "vertices": [
+        { "position": [-6.0, 0.0, -6.0], "normal": [0.0, 1.0, 0.0], "uv": [0.0, 0.0] },
+        { "position": [ 6.0, 0.0, -6.0], "normal": [0.0, 1.0, 0.0], "uv": [1.0, 0.0] },
+        { "position": [ 6.0, 0.0,  6.0], "normal": [0.0, 1.0, 0.0], "uv": [1.0, 1.0] },
+        { "position": [-6.0, 0.0,  6.0], "normal": [0.0, 1.0, 0.0], "uv": [0.0, 1.0] }
+      ],
+      "triangles": [
+        [0, 1, 2],
+        [0, 2, 3]
+      ]
+    }
+  ],
+
+  "lights": [
+    { "type": "directional", "name": "key",
+      "direction": [-0.3, -0.7, -0.5],
+      "color":     [1.00, 0.95, 0.85],
+      "intensity": 0.9 },
+    { "type": "environment", "name": "sky",
+      "color":     [0.35, 0.45, 0.60],
+      "intensity": 0.4 }
+  ]
+}
