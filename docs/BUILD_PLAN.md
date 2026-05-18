@@ -91412,6 +91412,232 @@ post-OBS-PERCEPT.5 SDK-host runtime pass that
 exercises both backend kernels' unified
 perception-transform arms end-to-end.
 
+## OBS-PERCEPT.6 — OptiX Primary-Ray Perception Transform Audit (docs only)
+
+**Scope of this slice (per the operator's *OBS-PERCEPT.6
+— OptiX Primary-Ray Perception Transform Audit* task
+brief): write
+`docs/OBSERVER_PRIMARY_RAY_OPTIX_AUDIT.md`, the
+per-slice verdict document for OBS-PERCEPT.5
+(`1dbeb23`). Verifies the eleven items the task brief
+enumerates — OptiX primary-ray aberration exists;
+activation gates; beta=0 + default observer no-ops;
+CUDA/OptiX math + activation rules match; secondary
+rays + Doppler/searchlight unchanged; OptiX OFF build
+valid; runtime status; verdict. Documentation only.**
+
+### What ships
+
+- **`docs/OBSERVER_PRIMARY_RAY_OPTIX_AUDIT.md` (new,
+  ~1040 lines).** Per-slice verdict document
+  mirroring the OBS-PERCEPT.4 + FIELD-BEAUTY.6 +
+  FIELD-I.12 audit precedent shapes, applied to the
+  OBS-PERCEPT.5 OptiX-side bridge:
+    - **§1 VERDICT** — `PASS`. All ten structural /
+      runtime-status checks pass. Check #10
+      (runtime CUDA/OptiX) is
+      `PASS_WITH_RUNTIME_DEFERRED` — audit-host has
+      neither CUDA nor OptiX SDK; structural data-
+      path verified by 13/13 audit-host + 14/14
+      OptiX-ON-no-SDK ctest PASS at OBS-PERCEPT.5
+      landing.
+    - **§2 PER-CHECK RESULTS** — eleven-row evidence
+      table:
+        - **Check #1** (OptiX primary-ray
+          aberration exists): two raygen-site
+          dispatches at `OptixPrograms.cu:239-249`
+          (`__raygen__pinhole`) + `:1268-1277`
+          (`__raygen__pathtrace`) consume the
+          shared OBS-PERCEPT.3 helper.
+        - **Check #2** (perception_mode gate):
+          shared helper's outer gate at
+          `ObserverFrame.h:559-562`; identical to
+          CUDA-side activation (verified at
+          OBS-PERCEPT.4 audit's check #2).
+        - **Check #3** (beta > 0 gate): shared
+          helper's inner gate at
+          `ObserverFrame.h:565-571`.
+        - **Check #4** (beta = 0 no-op): three-
+          layer anchor inherited from OBS-PERCEPT.3.
+        - **Check #5** (default observer no-op):
+          three-layer on OptiX (default Identity
+          + dispatch else-branch + closest-hit /
+          miss programs byte-identical).
+        - **Check #6** (CUDA/OptiX semantics
+          match): **five-axis symmetry** — same
+          POD type, same shared helper, same
+          dispatch shape, same math leaf, same
+          gate semantics. Cross-backend
+          bit-identity by construction.
+        - **Check #7** (secondary rays unchanged):
+          per-line diff confirms bounce loop +
+          closest-hit + miss + shadow programs
+          byte-identical.
+        - **Check #8** (Doppler / searchlight
+          unchanged): per-line diff confirms
+          zero changes in those blocks; post-
+          OBS-P.2 ternary preserved.
+        - **Check #9** (OptiX OFF build valid):
+          audit-host 13/13 PASS; build
+          structurally insulated; no CMake change.
+        - **Check #10** (runtime status):
+          `PASS_WITH_RUNTIME_DEFERRED`. Seven
+          SDK-host scenarios enumerated; deferred
+          to combined CLI bridge slice.
+        - **Check #11** (verdict): PASS.
+    - **§3 REASONING SUMMARY** — recap of the
+      OBS-PERCEPT.5 commit's two-file shape +
+      per-check reasoning paragraphs (with
+      especially detailed §3.7 five-axis symmetry
+      verification) + master-rule satisfaction
+      recap (#3 + #11 + #12 + #16) + honest-scope
+      recap.
+    - **§4 NEXT** — documents the renumbered
+      OBS-PERCEPT.* sub-slice ladder
+      (OBS-PERCEPT.7 = debug AOV;
+      OBS-PERCEPT.8 = debug AOV audit;
+      OBS-PERCEPT.9 = fixture; OBS-PERCEPT.10
+      = fixture audit; OBS-PERCEPT.11 = arc
+      capstone). Five candidate next slots with
+      prioritisation: (a) HIGHLY RECOMMENDED
+      combined FIELD-* + OBS-PERCEPT CLI bridge
+      slice (single SDK-host audit closes entire
+      field-and-observer-arc family's runtime-
+      deferred verdict tail); (b) RECOMMENDED
+      OBS-PERCEPT.7 debug AOV; (c) manifold-
+      orthogonal work; (d) NOT RECOMMENDED
+      direct OBS-PERCEPT.9 fixture before debug
+      AOV; (e) DEFERRABLE retroactive task brief
+      authoring.
+    - **§5 REFERENCES** — master + architecture
+      §7.2 + OBS-PERCEPT.1/.2/.4 + every
+      OBSERVER.* + OBS-P.* + OBS-F.* precedent +
+      parallel-arc FIELD-BEAUTY.8 + FIELD-I.12 +
+      FIELD-BEAUTY.6 (five-axis symmetry source)
+      + source-surface inventory + commit SHAs +
+      unchanged files.
+
+### What does NOT ship
+
+- **No source code.** Nothing in any `src/`
+  subtree is touched. The post-OBS-PERCEPT.5
+  HEAD = `1dbeb23` baseline is preserved
+  exactly. `git diff 1dbeb23..HEAD -- 'src/'`
+  returns zero hits.
+- **No new test binary.** ctest set unchanged
+  at 13 (audit-host) / 14 (OptiX-ON-no-SDK).
+  Test counts unchanged.
+- **No CMake change.**
+- **No OptixPrograms.cu modification.** The
+  OBS-PERCEPT.5 OptiX raygen-site changes are
+  preserved verbatim.
+- **No `OptixRenderer.cpp` / `OptixRenderer.h`
+  modification.** The OBS-PERCEPT.5 changes
+  were kernel-arm-internal; the host-side
+  OptiX renderer surface is byte-identical.
+- **No `ObserverFrame.h` helper modification.**
+  The OBS-PERCEPT.3-landed shared helper is
+  preserved verbatim.
+- **No prior-arc-document modification.** Every
+  OBSERVER.* + OBS-P.* + OBS-F.* + FIELD-I.* +
+  FIELD-BEAUTY.* + OBS-PERCEPT.1 / .2 / .3 / .4
+  / .5 arc document preserved verbatim.
+- **No `MODULE_MAP.md` update.**
+- **No `MANIFOLD_INTEGRATION_PLAN.md` update.**
+- **No `BUILD_PLAN.md` historical rewrite.**
+- **No quantum / tensor / curvature simulation.**
+- **No C4D / server / UI / node-editor touch.**
+
+### Acceptance
+
+- **Compiles.** Documentation-only slice; no
+  build configuration touched. The audit-host
+  build remains at the post-OBS-PERCEPT.5
+  baseline (`100% tests passed, 0 tests failed
+  out of 13`; `manifold_identity_tests:
+  421/421`; `renderer_tests: 35/35`;
+  `field_tests: 135/135`;
+  `relativity_tests: 841/841`;
+  `cli_tests: 274/274`). The OptiX-ON-no-SDK
+  build remains at the OBS-PERCEPT.5 baseline
+  (14/14 ctest PASS).
+- **Internally consistent.** The eleven-row
+  evidence table cites concrete file / line
+  positions on the OBS-PERCEPT.5 surface (the
+  two raygen-site dispatches at lines 239-249 +
+  1268-1277; the shared helper at lines 553+ of
+  ObserverFrame.h read but unmodified by this
+  slice; the host-side perception_active_*
+  computations at lines 215-217 + 1216-1218
+  unmodified). The five-axis symmetry argument
+  at §3.7 explicitly verifies axis-by-axis (POD
+  type, shared helper, dispatch shape, math
+  leaf, gate semantics) with concrete line
+  references to both backends. The runtime-
+  status treatment matches the FIELD-BEAUTY.6 +
+  FIELD-I.12 precedent for the
+  `PASS_WITH_RUNTIME_DEFERRED` shape applied
+  to cross-backend-symmetric kernel arms.
+- **Verdict honesty.** The verdict is `PASS`
+  because: (a) the structural OptiX raygen-arm
+  surface is well-formed (both dispatches
+  consume the shared OBS-PERCEPT.3 helper;
+  legacy else-branch preserved); (b) the
+  cross-backend semantics match via the five-
+  axis symmetry; (c) the CUDA path is
+  preserved-unchanged per the operator's
+  explicit non-modification rule; (d) the
+  secondary-ray + Doppler / searchlight
+  preservations are structural (per-line diff);
+  (e) the OptiX OFF build is empirically
+  verified (audit-host 13/13 PASS); (f) the
+  OptiX ON-no-SDK build is empirically verified
+  (14/14 PASS at OBS-PERCEPT.5 landing). The
+  runtime status's `PASS_WITH_RUNTIME_DEFERRED`
+  is honest: the SDK-host scenarios from §3.11
+  require a CUDA + OptiX-SDK host. Master rule
+  #3 + #11 + #12 + #16 satisfied.
+
+### Module status changes
+
+`docs/MODULE_MAP.md` is *not* updated by this
+slice. The `rr_optix` library's module-map
+status carries forward from OBS-PERCEPT.5
+unchanged. With OBS-PERCEPT.6 in, both
+backends' primary-ray observer-frame aberration
+arms are audited (OBS-PERCEPT.4 CUDA +
+OBS-PERCEPT.6 OptiX). The OBSERVER.15 capstone
+audit's `PASS_WITH_RUNTIME_DEFERRED` future-
+kernel-migration risk #1 is now closed on BOTH
+backends + audited.
+
+The OBS-PERCEPT.6 audit authorises the operator
+to proceed to: **(a)** HIGHLY RECOMMENDED
+combined FIELD-* + OBS-PERCEPT CLI bridge slice
+(single SDK-host audit closes the entire field-
+and-observer-arc family's runtime-deferred
+verdict tail — FIELD-I.10 + .12 + .14 +
+FIELD-BEAUTY.4 + .6 + .8 + OBS-PERCEPT.4 + .6
+deferred verdicts all convert to PASS once
+both arcs' kernel surfaces are reachable on
+SDK host); **(b)** RECOMMENDED OBS-PERCEPT.7
+debug AOV (the renumbered next OBS-PERCEPT.*
+impl slot; adds the perception-transform
+diagnostic AOV); **(c)** manifold-orthogonal
+work (deferred SDK-host runtime pass for the
+OBSERVER.* + OBS-P.* + OBS-F.* + FIELD-I.* +
+FIELD-BEAUTY.* + OBS-PERCEPT.* arc family;
+MANI-I.12 final cross-host manifold audit;
+denoiser integration with chart-aware AOVs;
+path-tracer feature breadth);
+**(d)** NOT RECOMMENDED direct OBS-PERCEPT.9
+fixture authoring before debug AOV;
+**(e)** DEFERRABLE retroactive task brief
+authoring (operator discretion). The
+OBS-PERCEPT.* arc's `**Wired**` promotion is
+reserved for the post-CLI-bridge SDK-host
+runtime pass.
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
