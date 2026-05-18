@@ -91638,6 +91638,228 @@ OBS-PERCEPT.* arc's `**Wired**` promotion is
 reserved for the post-CLI-bridge SDK-host
 runtime pass.
 
+## OBS-PERCEPT.7 — Observer Perception Debug AOV Task (docs only)
+
+**Scope of this slice (per the operator's *OBS-PERCEPT.7
+— Observer Perception Debug AOV Task* task brief):
+write `docs/OBSERVER_PERCEPTION_DEBUG_AOV_TASK.md`,
+the operator-facing task brief that defines the
+work for the OBS-PERCEPT.9 implementation slice (the
+renumbered next impl slot after the OBS-PERCEPT.8
+audit). The brief defines three diagnostic AOV
+channels (one NEW + one preserved EXISTING + one
+LIFTED-from-OBSERVER.12-FUTURE), the activation
+contract, the kernel-arm shape, and the deferred
+SDK-host runtime checks. Documentation only; no
+source code, no test, no CMake, no scene file, no
+behavioural change.**
+
+### What ships
+
+- **`docs/OBSERVER_PERCEPTION_DEBUG_AOV_TASK.md`
+  (new, ~860 lines).** Operator-facing task brief
+  mirroring the OBSERVER.12 + FIELD-I.6 task-brief
+  shapes verbatim. Nine sections:
+    - **§1 Exact goal** — expose observer
+      perception-transform per-pixel diagnostics
+      via three AOVs gated on the existing
+      `--observer-debug` flag (from OBSERVER.13).
+      Read-only diagnostics; no perception-
+      transform behaviour change.
+    - **§2 Proposed AOVs** — three channels:
+      - **`observerAberrationMagnitude`** (NEW;
+        `AOVType::ObserverAberrationMagnitude
+        = 9`; 1 float/pixel) — magnitude of the
+        per-pixel aberration delta (`|post_dir -
+        pre_dir|`). Most informative single-
+        channel diagnostic for "did the
+        perception transform fire on this pixel,
+        and by how much?".
+      - **`ObserverBeta`** (EXISTING — preserved
+        verbatim from OBSERVER.13; documented
+        for completeness; the OBS-PERCEPT.9
+        impl slice does NOT modify this AOV).
+      - **`observerDirection`** (NEW;
+        `AOVType::ObserverDirection = 10`;
+        3 floats/pixel) — LIFTED from
+        OBSERVER.12 §2.2 deferred-FUTURE slot;
+        writes `normalize(observer_frame.beta)`
+        per pixel; sentinel `(0, 0, 0)` at
+        zero-beta.
+    - **§3 Expected behaviour** — three load-
+      bearing invariants: (a) beauty unchanged
+      unless perception transform is active
+      (the AOVs are read-only sinks); (b)
+      default observer = neutral diagnostics
+      (all three AOVs decode to zero on
+      Identity / zero-beta); (c) AOV only
+      generated when requested (two-flag gate:
+      `--render-aovs --observer-debug` /
+      `--render-optix-aovs --observer-debug`;
+      no new CLI flag).
+    - **§4 CUDA/OptiX interaction** — read
+      ObserverFrame payload; capture pre-
+      aberration direction snapshot before the
+      OBS-PERCEPT.3 / .5 dispatch; compute
+      `magnitude` + `normalize(beta)` per pixel;
+      write the three diagnostic AOVs. No new
+      perception math; cross-backend math
+      consistency via the same RR_HD inline
+      math + shared payload.
+    - **§5 Files likely involved** — 13-row
+      table covering the AOV data model
+      (AOV.h / .cpp), tests (renderer_tests
+      +6 RR_CHECKs), CUDA-side (CudaAOV.cuh +
+      CudaRenderer.h / .cu + CudaTestKernel.cu
+      + CudaPathTracer.cu), OptiX-side
+      (OptixLaunchParams.h + OptixRenderer.h /
+      .cpp + OptixPrograms.cu), dispatcher
+      (main.cpp), docs (BUILD_PLAN), and zero
+      CMake changes.
+    - **§6 What must not be touched** — 12
+      non-goals: no new perception math; no
+      new ObserverFrame POD field; no new CLI
+      flag; no change to existing ObserverBeta
+      AOV; no modification to existing AOV
+      slots; no new scene-file schema; no new
+      manifold math; no field interpretation
+      changes; no new perception transform
+      behaviour; no C4D/server/UI/node-editor
+      touch; no legacy observer.velocity
+      removal; no path-tracer secondary-ray
+      diagnostic.
+    - **§7 PASS criteria** — 4 subsections /
+      ~25 checkboxes (structural + behavioural
+      + test surface + documentation).
+    - **§8 Runtime-deferred CUDA/OptiX checks**
+      — 7 deferred SDK-host scenarios:
+      default-observer neutral PPMs;
+      non-default perception magnitude
+      visualisation; non-default direction
+      visualisation; oblique direction
+      visualisation; cross-backend equivalence;
+      composability with other debug AOVs
+      (manifold + field); off-path bit-
+      identity.
+    - **§9 Cross-references** — master +
+      architecture-doc §7.2 + every
+      OBS-PERCEPT.* + OBSERVER.12 + OBSERVER.14
+      + FIELD-I.6 + FIELD-I.8 precedent + the
+      audited source surface + dispatcher +
+      fixture references.
+
+### What does NOT ship
+
+- **No source code.** Nothing in any `src/`
+  subtree is touched. The post-OBS-PERCEPT.6
+  HEAD = `3d125ad` baseline is preserved
+  exactly. `git diff 3d125ad..HEAD -- 'src/'`
+  returns zero hits.
+- **No new test binary.** ctest set unchanged
+  at 13 (audit-host) / 14 (OptiX-ON-no-SDK).
+  Test counts unchanged.
+- **No CMake change.**
+- **No AOV.h / AOV.cpp / Renderer / Programs
+  modification.** The diagnostic AOV
+  implementation lands at OBS-PERCEPT.9.
+- **No prior-arc-document modification.** Every
+  OBSERVER.* + OBS-P.* + OBS-F.* + FIELD-I.* +
+  FIELD-BEAUTY.* + OBS-PERCEPT.1 – .6 arc
+  document preserved verbatim.
+- **No `MODULE_MAP.md` update.**
+- **No `MANIFOLD_INTEGRATION_PLAN.md` update.**
+- **No `BUILD_PLAN.md` historical rewrite.**
+- **No quantum / tensor / curvature simulation.**
+- **No C4D / server / UI / node-editor touch.**
+
+### Acceptance
+
+- **Compiles.** Documentation-only slice; no
+  build configuration touched. The audit-host
+  build remains at the post-OBS-PERCEPT.6
+  baseline (`100% tests passed, 0 tests failed
+  out of 13`; `manifold_identity_tests:
+  421/421`; `renderer_tests: 35/35`;
+  `field_tests: 135/135`;
+  `relativity_tests: 841/841`;
+  `cli_tests: 274/274`). The OptiX-ON-no-SDK
+  build remains at the OBS-PERCEPT.5 landing's
+  14/14 ctest PASS.
+- **Internally consistent.** The 9-section
+  task-brief structure mirrors OBSERVER.12 +
+  FIELD-I.6 verbatim. Every cited source file
+  exists at the cited path; every cited
+  precedent task brief / audit doc exists in
+  the tree; the new
+  `ObserverAberrationMagnitude = 9` +
+  `ObserverDirection = 10` enumerator values
+  extend the existing nine-slot
+  `AOVType` enum (ending at `FieldScalar = 8`)
+  by exactly two enumerators at the end,
+  preserving every pre-OBS-PERCEPT.9 value.
+  The cross-backend symmetry framing inherits
+  from the FIELD-BEAUTY.6 / OBS-PERCEPT.6
+  five-axis pattern; same POD on both
+  backends; same math leaf; structurally
+  guaranteed bit-identity.
+- **Brief honesty.** Master rule #3 ("no fake
+  stubs") satisfied: the
+  `observerAberrationMagnitude` AOV is
+  documented as a real diagnostic computing
+  `|post_dir - pre_dir|` from the pre-
+  aberration snapshot — not a placeholder.
+  The `observerDirection` AOV is the
+  OBSERVER.12 §2.2 deferred-FUTURE slot
+  honestly LIFTED into this brief's scope.
+  Master rule #12 satisfied: scope
+  deliberately narrow per the operator's
+  brief (three AOVs only; existing
+  `--observer-debug` gate; no new CLI;
+  no manifold/field changes); the
+  Doppler/searchlight + secondary-ray
+  diagnostics + perception-mode-tag AOV are
+  all explicitly deferred (per §6 non-goals
+  + the OBSERVER.12 §2.3 `observerPerceptionMode
+  (FUTURE)` deferred slot which this brief
+  does NOT lift).
+
+### Module status changes
+
+`docs/MODULE_MAP.md` is *not* updated by this
+slice. The OBS-PERCEPT.* arc's module-map
+status carries forward from OBS-PERCEPT.6
+unchanged. The OBS-PERCEPT.7 task brief
+authorises the operator to proceed to:
+**(a)** OBS-PERCEPT.8 — task brief audit (a
+docs-only audit gate; OPTIONAL per the
+standing in-band audit-slot insertion
+discipline; mirrors the OBSERVER.13 task-brief
+audit precedent shape but applied to the
+OBS-PERCEPT.7 task surface itself);
+**(b)** OBS-PERCEPT.9 — debug AOV
+implementation (consumes this task brief as
+canonical reference; lands the AOV.h enumerator
++ factory + CUDA + OptiX kernel write arms +
+dispatcher allocation; RECOMMENDED as natural
+continuation if the operator wants to land
+the impl directly); **(c)** HIGHLY RECOMMENDED
+combined FIELD-* + OBS-PERCEPT CLI bridge
+slice (per FIELD-BEAUTY.8 §4.2 (b); single
+SDK-host audit closes the entire field-and-
+observer-arc family's runtime-deferred verdict
+tail); **(d)** manifold-orthogonal work
+(deferred SDK-host runtime pass; MANI-I.12
+final cross-host manifold audit; denoiser
+integration; path-tracer feature breadth);
+**(e)** DEFERRABLE retroactive task brief
+authoring. The OBS-PERCEPT.* arc's `**Wired**`
+promotion is reserved for the post-CLI-bridge
+SDK-host runtime pass that exercises the
+debug AOVs (when OBS-PERCEPT.9 lands) +
+both kernel arms (already in) end-to-end.
+
+## Next stage
+
 ## Next stage
 
 When prompted, the natural follow-ups are:
