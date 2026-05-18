@@ -91858,7 +91858,247 @@ SDK-host runtime pass that exercises the
 debug AOVs (when OBS-PERCEPT.9 lands) +
 both kernel arms (already in) end-to-end.
 
-## Next stage
+## OBS-PERCEPT.8 — Observer Perception Debug AOV Implementation (impl, AOV data model only)
+
+**Scope of this slice (per the operator's *OBS-PERCEPT.8
+— Observer Perception Debug AOV Implementation* task
+brief): land the AOV data-model entries for the two
+NEW observer perception debug AOVs
+(`observerAberrationMagnitude` +
+`observerDirection`) defined in the OBS-PERCEPT.7
+task brief. The third AOV the operator's brief lists
+(`observerBeta`) was already shipped at OBSERVER.13
+(`AOVType::ObserverBeta = 7`); preserved verbatim
+this slice. Data-model-only narrow scope (mirrors
+the FIELD-I.7 + OBSERVER.13 staged-impl precedent):
+ships enum slots + factories + names + component
+counts + tests. The kernel arms, payload threading,
+dispatcher allocation, and PPM emit are deferred to
+follow-up slices (renumbered OBS-PERCEPT.10+ in the
+post-audit ladder).**
+
+### What ships
+
+- **`src/renderer/AOV.h` (modified, +73 lines).**
+  Adds (after the existing FIELD-I.7
+  `FieldScalar = 8` enumerator):
+    - **`AOVType::ObserverAberrationMagnitude = 9`**
+      enumerator with extensive doc-comment
+      documenting: the per-pixel encoding contract
+      (single-float magnitude of the per-pixel
+      aberration delta `|post_dir - pre_dir|`); the
+      default-observer + zero-beta neutral anchor
+      (= 0 at every pixel); the future kernel-arm
+      gate (`--observer-debug` from OBSERVER.13;
+      same flag the existing `ObserverBeta` AOV
+      uses); the staged-impl framing ("data-model
+      only this slice; kernel arms deferred").
+    - **`AOVType::ObserverDirection = 10`**
+      enumerator with doc-comment documenting: the
+      LIFTED OBSERVER.12 §2.2 deferred-FUTURE slot
+      framing; the Vec3 encoding contract
+      (`normalize(observer_frame.beta)`); the zero-
+      magnitude sentinel anchor (`(0, 0, 0)`).
+    - **`AOV::make_observer_aberration_magnitude(...)`**
+      + **`AOV::make_observer_direction(...)`**
+      factory declarations.
+
+- **`src/renderer/AOV.cpp` (modified, +25 lines).**
+  Adds:
+    - `aov_component_count(ObserverAberrationMagnitude)
+      → 1` + `aov_component_count(ObserverDirection)
+      → 3` switch cases.
+    - `aov_type_name(ObserverAberrationMagnitude) →
+      "observer_aberration_magnitude"` +
+      `aov_type_name(ObserverDirection) →
+      "observer_direction"` switch cases (snake_case
+      mirrors the existing convention; produces the
+      future PPM filenames
+      `output/aov_observer_aberration_magnitude.ppm`
+      + `output/aov_observer_direction.ppm` /
+      `optix_aov_*.ppm` once the kernel-arm +
+      dispatcher slices land).
+    - Two factory body implementations mirroring
+      the `make_observer_beta(...)` /
+      `make_field_scalar(...)` precedent shape
+      verbatim.
+
+- **`tests/renderer_tests.cpp` (modified, +110
+  lines).** Adds two test trios (6 test functions
+  total; 16 new RR_CHECK assertions across the
+  two new AOVs):
+    - **`ObserverAberrationMagnitude` test trio (3
+      tests, 8 RR_CHECKs):**
+      `test_obs_percept_8_aberration_magnitude_aov_type`
+      (3 RR_CHECKs — enum value, name, component
+      count); `test_obs_percept_8_aberration_magnitude_factory_default_name`
+      (3 RR_CHECKs — factory type, name, component
+      count member); `test_obs_percept_8_aberration_magnitude_factory_custom_name`
+      (2 RR_CHECKs — factory caller-supplied name
+      passes through).
+    - **`ObserverDirection` test trio (3 tests, 8
+      RR_CHECKs):** same shape; mirrors the
+      `ObserverAberrationMagnitude` trio
+      verbatim.
+  `renderer_tests` grows from 35 → 51 total
+  (+16 NEW).
+
+### What does NOT ship
+
+- **No kernel arm.** No CUDA write site at
+  `src/cuda/CudaTestKernel.cu` or
+  `CudaPathTracer.cu`. No OptiX write site at
+  `src/optix/OptixPrograms.cu`. The operator
+  brief's "if feasible" hedge + the FIELD-I.7
+  precedent's staged-impl shape make this
+  data-model-only scope honest.
+- **No `CudaSceneView` / `OptixLaunchParams`
+  payload field.** No new `aov_observer_aberration_magnitude`
+  / `aov_observer_direction` pointer fields on
+  either backend's launch payload. Deferred.
+- **No `DeviceAOVView` / `AOVTargets`
+  extension.** No new pointer slots on the
+  CUDA host-side AOV-target struct. Deferred.
+- **No `OptixRenderer::AovResult` extension.**
+  No new `Image observer_aberration_magnitude`
+  / `Image observer_direction` fields.
+  Deferred.
+- **No dispatcher emit.** No `main.cpp` extension;
+  no PPM save sites for the new AOVs. The
+  `--observer-debug` flag continues to allocate
+  only the existing OBSERVER.13 `ObserverBeta`
+  AOV.
+- **No CLI flag.** No `--observer-perception-debug`
+  modifier. The future kernel-bridge slice
+  reuses the existing OBSERVER.13
+  `--observer-debug` flag.
+- **No new ObserverFrame POD field.** No
+  modification to OBSERVER.2-shipped fields.
+- **No change to `ObserverBeta` AOV.** The
+  OBSERVER.13 `AOVType::ObserverBeta = 7` +
+  `make_observer_beta(...)` factory + kernel
+  write arm at `CudaTestKernel.cu:760-774` +
+  `OptixPrograms.cu:912-924` preserved
+  verbatim. The operator's brief lists
+  ObserverBeta as one of the three diagnostic
+  AOVs but it's already shipped; no work
+  required this slice.
+- **No fixture.** The OBS-F.2 fixture
+  (`scenes/test_observer_frame.rrscene`)
+  remains the canonical runtime-deferred
+  validation input.
+- **No quantum / tensor / curvature
+  simulation.**
+- **No manifold math changes.**
+- **No field interpretation changes.**
+- **No C4D / server / UI / node-editor touch.**
+- **No `MODULE_MAP.md` update.**
+- **No `MANIFOLD_INTEGRATION_PLAN.md` update.**
+
+### Acceptance
+
+- **Compiles with OptiX OFF.** Audit-host build
+  green; full rebuild adds no new warnings.
+  Ctest 13/13 PASS: `renderer_tests: 51/51
+  passed` (+16 NEW vs the 35 baseline);
+  `manifold_identity_tests: 421/421`;
+  `relativity_tests: 841/841`;
+  `cli_tests: 274/274`; `field_tests: 135/135`;
+  every other suite unchanged.
+- **Compiles with OptiX ON (no SDK fallback).**
+  `cmake --build /tmp/rr_build_optix_no_sdk`
+  succeeds; ctest 14/14 PASS (including
+  optix_tests).
+- **No behaviour change.** No CLI action's
+  output is altered. The new AOV enumerators
+  live on the data-model surface only; no
+  consumer reads them. Every existing
+  `--render-*` invocation preserves byte-
+  identical PPM output to the OBS-PERCEPT.6
+  baseline.
+- **Default-observer neutral diagnostic
+  contract preserved by absence.** With the
+  kernel arms deferred, no PPM is produced
+  for the new AOVs from any CLI invocation;
+  the "default-observer = neutral" anchor
+  holds trivially (no AOV → no value → no
+  observable behavior). When the future
+  kernel-bridge slice lands, the contract
+  becomes empirical: on default Identity
+  mode, the helper short-circuits → magnitude
+  = 0 / direction = (0,0,0).
+- **Internally consistent.** The new
+  enumerator values (9 + 10) continue the
+  append-at-end discipline (mirrors FIELD-I.7
+  + OBSERVER.13 + MANI-I.8 precedents); the
+  existing nine enumerator values (Beauty=0
+  ... FieldScalar=8) are preserved verbatim.
+  The factory + name + component count
+  follow the FIELD-I.7
+  `make_field_scalar(...)` /
+  `make_observer_beta(...)` precedent shape
+  verbatim. The single-channel /
+  three-channel encoding decisions match the
+  task brief's §2.1 / §2.3 specifications.
+- **Honest scope.** Master rule #3 ("no fake
+  stubs") satisfied: the AOV data-model
+  entries are fully wired (enum / name /
+  component count / factory all produce
+  well-formed values; 16 NEW RR_CHECK
+  assertions verify them empirically). The
+  doc-comment blocks on the enumerators
+  document the future kernel-arm contract
+  honestly; no fake stub pretending the
+  kernel arms exist. The "data-model only
+  this slice" framing is explicit in both
+  doc-comments. Master rule #11 satisfied:
+  every documented data-model behaviour is
+  tested empirically. Master rule #12
+  satisfied: scope deliberately narrow per
+  the operator's brief; the kernel arm +
+  payload field + dispatcher + fixture
+  pieces are reserved for follow-up slices
+  with their own audit gates. Master rule #16
+  satisfied: no observable behaviour change
+  (the new AOVs are unreachable from any CLI
+  invocation today).
+
+### Module status changes
+
+`docs/MODULE_MAP.md` is *not* updated by this
+slice. The `rr_renderer` library's module-map
+status carries forward from FIELD-I.7
+unchanged (AOV.h / AOV.cpp extension is
+internal to the existing library; no new
+export, no new TU, no new dep).
+
+The OBS-PERCEPT.8 verdict authorises the
+operator to proceed to: **(a)** the
+OBS-PERCEPT.8 audit (a docs-only verdict
+slice; OPTIONAL per the standing in-band
+audit-slot insertion discipline; mirrors the
+FIELD-I.8 / OBSERVER.14 audit-slot precedents
+applied to a data-model-only impl);
+**(b)** OBS-PERCEPT.10 — kernel-arm bridge
+implementation (the renumbered next
+OBS-PERCEPT.* impl slot; consumes the
+OBS-PERCEPT.8 AOV data-model entries + adds
+the CUDA + OptiX kernel write arms + the
+payload-field plumbing + the dispatcher
+allocation + the PPM save sites; mirrors the
+FIELD-I.9 + FIELD-I.11 staged-impl
+pattern); **(c)** HIGHLY RECOMMENDED combined
+FIELD-* + OBS-PERCEPT CLI bridge slice (per
+FIELD-BEAUTY.8 §4.2 (b); single SDK-host
+audit closes the entire field-and-observer-
+arc family's runtime-deferred verdict tail);
+**(d)** manifold-orthogonal work;
+**(e)** DEFERRABLE retroactive task brief
+authoring (operator discretion). The
+OBS-PERCEPT.* arc's `**Wired**` promotion is
+reserved for the post-kernel-bridge SDK-host
+runtime pass that exercises the diagnostic
+AOVs end-to-end against the OBS-F.2 fixture.
 
 ## Next stage
 

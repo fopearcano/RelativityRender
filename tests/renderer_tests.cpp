@@ -233,6 +233,103 @@ void test_field_i_7_field_scalar_factory_custom_name() {
     RR_CHECK(aov.name() == "custom_field_dbg");
 }
 
+// OBS-PERCEPT.8 — observer aberration-magnitude diagnostic
+// AOV type registration. Mirrors the FIELD-I.7 + OBSERVER.13
+// AOV-data-model test trio verbatim; verifies the new
+// `AOVType::ObserverAberrationMagnitude = 9` enumerator +
+// the `make_observer_aberration_magnitude(...)` factory
+// per the OBS-PERCEPT.7 task brief §7.1 structural PASS
+// criteria.
+void test_obs_percept_8_aberration_magnitude_aov_type() {
+    using rr::renderer::AOV;
+    using rr::renderer::AOVType;
+
+    // Enumerator value is 9 (appended at the end of the
+    // enum after `FieldScalar = 8`; preserves the offsets
+    // of every pre-OBS-PERCEPT.8 enumerator).
+    RR_CHECK(static_cast<unsigned>(AOVType::ObserverAberrationMagnitude) == 9u);
+
+    // Component count is 1 (single-float per-pixel
+    // magnitude scalar; mirrors the `Depth` /
+    // `DopplerFactor` / `SearchlightFactor` /
+    // `FieldScalar` 1-channel encoding precedent).
+    RR_CHECK(rr::renderer::aov_component_count(
+                 AOVType::ObserverAberrationMagnitude) == 1);
+
+    // Stable lowercase snake_case name for filenames + log
+    // output. The PPM file naming follows the existing
+    // convention (`aov_observer_aberration_magnitude.ppm`
+    // / `optix_aov_observer_aberration_magnitude.ppm` once
+    // the kernel-arm + dispatcher slices land).
+    RR_CHECK(rr::renderer::aov_type_name(
+                 AOVType::ObserverAberrationMagnitude) ==
+             "observer_aberration_magnitude");
+}
+
+void test_obs_percept_8_aberration_magnitude_factory_default_name() {
+    using rr::renderer::AOV;
+    using rr::renderer::AOVType;
+
+    AOV aov = AOV::make_observer_aberration_magnitude();
+    RR_CHECK(aov.type()            == AOVType::ObserverAberrationMagnitude);
+    RR_CHECK(aov.name()            == "observer_aberration_magnitude");
+    RR_CHECK(aov.component_count() == 1);
+}
+
+void test_obs_percept_8_aberration_magnitude_factory_custom_name() {
+    using rr::renderer::AOV;
+    using rr::renderer::AOVType;
+
+    AOV aov = AOV::make_observer_aberration_magnitude("custom_aberration_dbg");
+    RR_CHECK(aov.type() == AOVType::ObserverAberrationMagnitude);
+    RR_CHECK(aov.name() == "custom_aberration_dbg");
+}
+
+// OBS-PERCEPT.8 — observer direction diagnostic AOV type
+// registration. The OBSERVER.12 §2.2 deferred-FUTURE
+// slot, LIFTED into this slice. Mirrors the FIELD-I.7 +
+// OBSERVER.13 + ObserverAberrationMagnitude AOV-data-
+// model test trio verbatim.
+void test_obs_percept_8_observer_direction_aov_type() {
+    using rr::renderer::AOV;
+    using rr::renderer::AOVType;
+
+    // Enumerator value is 10 (appended at the end of the
+    // enum after `ObserverAberrationMagnitude = 9`).
+    RR_CHECK(static_cast<unsigned>(AOVType::ObserverDirection) == 10u);
+
+    // Component count is 3 (Vec3 per pixel — the
+    // `normalize(observer_frame.beta)` direction vector;
+    // mirrors the `ObserverBeta` Vec3 encoding precedent).
+    RR_CHECK(rr::renderer::aov_component_count(
+                 AOVType::ObserverDirection) == 3);
+
+    // Stable lowercase snake_case name for filenames + log
+    // output.
+    RR_CHECK(rr::renderer::aov_type_name(
+                 AOVType::ObserverDirection) ==
+             "observer_direction");
+}
+
+void test_obs_percept_8_observer_direction_factory_default_name() {
+    using rr::renderer::AOV;
+    using rr::renderer::AOVType;
+
+    AOV aov = AOV::make_observer_direction();
+    RR_CHECK(aov.type()            == AOVType::ObserverDirection);
+    RR_CHECK(aov.name()            == "observer_direction");
+    RR_CHECK(aov.component_count() == 3);
+}
+
+void test_obs_percept_8_observer_direction_factory_custom_name() {
+    using rr::renderer::AOV;
+    using rr::renderer::AOVType;
+
+    AOV aov = AOV::make_observer_direction("custom_observer_dir_dbg");
+    RR_CHECK(aov.type() == AOVType::ObserverDirection);
+    RR_CHECK(aov.name() == "custom_observer_dir_dbg");
+}
+
 }  // namespace
 
 int main() {
@@ -254,6 +351,16 @@ int main() {
     test_field_i_7_field_scalar_aov_type();
     test_field_i_7_field_scalar_factory_default_name();
     test_field_i_7_field_scalar_factory_custom_name();
+
+    // OBS-PERCEPT.8: observer aberration-magnitude diagnostic AOV.
+    test_obs_percept_8_aberration_magnitude_aov_type();
+    test_obs_percept_8_aberration_magnitude_factory_default_name();
+    test_obs_percept_8_aberration_magnitude_factory_custom_name();
+
+    // OBS-PERCEPT.8: observer direction diagnostic AOV.
+    test_obs_percept_8_observer_direction_aov_type();
+    test_obs_percept_8_observer_direction_factory_default_name();
+    test_obs_percept_8_observer_direction_factory_custom_name();
 
     std::printf("renderer_tests: %d / %d passed\n",
                 g_total - g_failed, g_total);

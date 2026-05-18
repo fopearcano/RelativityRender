@@ -15,6 +15,8 @@ int aov_component_count(AOVType type) noexcept {
         case AOVType::ManifoldCoordinates: return 3;
         case AOVType::ObserverBeta:        return 3;
         case AOVType::FieldScalar:         return 1;
+        case AOVType::ObserverAberrationMagnitude: return 1;
+        case AOVType::ObserverDirection:           return 3;
     }
     // Unknown enumerator. Returning 0 keeps the eventual renderer-
     // integration sub-stage's "size a buffer of N components"
@@ -34,6 +36,8 @@ std::string_view aov_type_name(AOVType type) noexcept {
         case AOVType::ManifoldCoordinates: return "manifold_coordinates";
         case AOVType::ObserverBeta:        return "observer_beta";
         case AOVType::FieldScalar:         return "field_scalar";
+        case AOVType::ObserverAberrationMagnitude: return "observer_aberration_magnitude";
+        case AOVType::ObserverDirection:           return "observer_direction";
     }
     return "unknown";
 }
@@ -114,6 +118,24 @@ AOV AOV::make_field_scalar(std::string name) {
     aov.type_ = AOVType::FieldScalar;
     aov.name_ = name.empty()
                   ? std::string(aov_type_name(AOVType::FieldScalar))
+                  : std::move(name);
+    return aov;
+}
+
+AOV AOV::make_observer_aberration_magnitude(std::string name) {
+    AOV aov;
+    aov.type_ = AOVType::ObserverAberrationMagnitude;
+    aov.name_ = name.empty()
+                  ? std::string(aov_type_name(AOVType::ObserverAberrationMagnitude))
+                  : std::move(name);
+    return aov;
+}
+
+AOV AOV::make_observer_direction(std::string name) {
+    AOV aov;
+    aov.type_ = AOVType::ObserverDirection;
+    aov.name_ = name.empty()
+                  ? std::string(aov_type_name(AOVType::ObserverDirection))
                   : std::move(name);
     return aov;
 }

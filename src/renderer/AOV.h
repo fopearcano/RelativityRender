@@ -141,6 +141,82 @@ enum class AOVType : std::uint32_t {
     // enumerator + factory and wires them through the
     // kernels.
     FieldScalar = 8,
+    // OBS-PERCEPT.8 — observer perception-transform
+    // aberration-magnitude diagnostic AOV. Writes a
+    // 1-component (single float) per-pixel value carrying
+    // the magnitude of the per-pixel aberration delta
+    // applied by the OBS-PERCEPT.3 / OBS-PERCEPT.5 unified
+    // `rr::manifold::apply_observer_primary_ray_aberration(...)`
+    // helper: `|post_dir - pre_dir|` where `pre_dir` is the
+    // camera-generated primary ray direction and `post_dir`
+    // is the helper's return value. On the default
+    // `Identity` perception mode (the outer gate closes)
+    // OR on zero beta (the inner gate closes), the helper
+    // returns the input direction unchanged → magnitude =
+    // 0; the saved PPM is flat black (the documented
+    // "default-observer = neutral/zero diagnostic"
+    // anchor). On `ConstantVelocityMinkowski` + non-zero
+    // beta, the magnitude varies smoothly across the
+    // framebuffer per the Lorentz aberration's
+    // direction-dependent boost strength (pixels
+    // longitudinal to the beta direction experience
+    // smaller aberration; transverse pixels experience
+    // larger aberration). The PPM encoder replicates the
+    // single float to RGB at save time (mirrors the
+    // existing `Depth` / `DopplerFactor` /
+    // `SearchlightFactor` / `FieldScalar` 1-channel AOV
+    // encoding precedent). Opt-in: a future kernel-bridge
+    // slice gates write-site engagement on the existing
+    // `--observer-debug` CLI flag (the same flag the
+    // OBSERVER.13 `observer_beta` AOV uses; see
+    // `docs/OBSERVER_PERCEPTION_DEBUG_AOV_TASK.md` for the
+    // canonical OBS-PERCEPT.7 brief defining the kernel-arm
+    // shape + the pre-aberration snapshot discipline).
+    // Read-only diagnostic: the kernel does NOT modify the
+    // perception transform's behaviour; the AOV visualises
+    // the existing transform's per-pixel state.
+    //
+    // OBS-PERCEPT.8 ships only the data-model entry: the
+    // enumerator, the component count, the lowercase name,
+    // and the `make_observer_aberration_magnitude(...)`
+    // factory. No CUDA kernel arm, no OptiX program arm, no
+    // `CudaSceneView::observer_aberration_magnitude`
+    // payload field, no
+    // `OptixLaunchParams::aov_observer_aberration_magnitude`
+    // payload field, no dispatcher emit, no fixture scene.
+    // Those land in follow-up slices that consume this
+    // enumerator + factory and wire them through the
+    // kernels (mirrors the FIELD-I.7 → FIELD-I.9 →
+    // FIELD-I.11 staged-impl precedent).
+    ObserverAberrationMagnitude = 9,
+    // OBS-PERCEPT.8 — observer direction diagnostic AOV.
+    // LIFTED from the OBSERVER.12 task brief's §2.2
+    // `observerDirection (FUTURE)` deferred slot. Writes a
+    // 3-component (Vec3) per-pixel value carrying the
+    // normalised observer-frame beta vector
+    // (`normalize(view.observer_frame.beta)` on CUDA;
+    // `normalize(optixLaunchParams.observer_frame.beta)`
+    // on OptiX). When `|beta| > 0`, the direction is the
+    // unit-length 3-vector along beta. When `|beta| == 0`
+    // (the Identity default OR the explicit zero-beta
+    // non-default state), the encoding is `(0, 0, 0)` —
+    // the documented "no direction" sentinel (matches the
+    // `ObserverConfig::direction` zero-sentinel convention
+    // from OBSERVER.4). Flat per-pixel value across the
+    // framebuffer (the observer is per-launch); the
+    // diagnostic is most useful when paired with
+    // `ObserverAberrationMagnitude` (which is per-pixel) to
+    // distinguish "what is the observer's motion direction"
+    // vs "how much aberration does that motion produce per
+    // pixel". Opt-in: same future `--observer-debug` CLI
+    // gate as the OBSERVER.13 `observer_beta` AOV +
+    // `ObserverAberrationMagnitude`.
+    //
+    // OBS-PERCEPT.8 ships only the data-model entry; the
+    // kernel-arm + payload-field + dispatcher landing is
+    // deferred to subsequent slices per the OBSERVER.13 +
+    // FIELD-I.7 precedent shape.
+    ObserverDirection = 10,
 };
 
 // Number of float channels an `AOVType` writes per pixel. Used by
@@ -210,6 +286,22 @@ public:
     // component count is the only behavioural difference
     // (vs the Vec3 ObserverBeta).
     [[nodiscard]] static AOV make_field_scalar(std::string name = {});
+    // OBS-PERCEPT.8 — observer aberration-magnitude
+    // diagnostic AOV factory. Returns an `AOV` with
+    // `type() == AOVType::ObserverAberrationMagnitude`
+    // and `name() == "observer_aberration_magnitude"` (or
+    // the caller-supplied name). Mirrors the
+    // `make_field_scalar(...)` factory shape verbatim;
+    // single-float component count.
+    [[nodiscard]] static AOV make_observer_aberration_magnitude(std::string name = {});
+    // OBS-PERCEPT.8 — observer direction diagnostic AOV
+    // factory. Returns an `AOV` with
+    // `type() == AOVType::ObserverDirection` and
+    // `name() == "observer_direction"` (or the caller-
+    // supplied name). Mirrors the
+    // `make_observer_beta(...)` factory shape verbatim;
+    // Vec3 component count (3 floats / pixel).
+    [[nodiscard]] static AOV make_observer_direction(std::string name = {});
 
     [[nodiscard]] AOVId              id()              const noexcept { return id_; }
     [[nodiscard]] AOVType            type()            const noexcept { return type_; }
