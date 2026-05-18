@@ -93,30 +93,83 @@ __device__ __forceinline__ float read_payload_doppler() {
 // Stage 20H: apply Doppler colour shift + searchlight beaming
 // to a base colour using a precomputed D. Functionally
 // equivalent to the 2-arg version below, just skips the
-// per-shader D recomputation. The math leaf's
-// `applyDopplerColor` and `searchlightFactor` calls are
-// identical.
+// per-shader D recomputation.
+//
+// OBS-DOP.4: the shared shim is the **OptiX-side dispatch
+// site** for the OBS-DOP.\* arc's Doppler/searchlight
+// consolidation. Three OptiX programs call this shim
+// (`__miss__radiance` at line ~325; `__closesthit__radiance`
+// at line ~846; `__raygen__pathtrace` at line ~1539); each
+// inherits the dispatch automatically. Mirrors the CUDA-side
+// OBS-DOP.2 dispatch at `CudaTestKernel.cu:291-300` +
+// `:694-703` (Doppler) + `:308-318` + `:714-726` (searchlight)
+// verbatim. On `perception_active` (the gated path), route
+// through the unified `rr::manifold::apply_observer_doppler_color(...)`
+// + `apply_observer_searchlight_scale(...)` helpers (which
+// apply the explicit `|beta|>0` inner gate + the
+// `perception_mode` outer gate); on the Identity / placeholder
+// else branch, fall through to the legacy
+// `rr::relativity::applyDopplerColor(...)` + `searchlightFactor(D)`
+// path (preserves the post-OBS-P.2 + post-OBS-PERCEPT.5
+// behaviour for `--render-optix-relativistic` flows that don't
+// engage `--observer-perception-mode relativistic`). Cross-
+// backend bit-identity guaranteed by construction (both
+// backends consume the same `rr_manifold` helpers + same
+// `rr_relativity` math leaves).
 __device__ __forceinline__ rr::math::Vec3
 apply_doppler_and_searchlight_with_D(rr::math::Vec3 base_color,
                                      float          D) {
     using rr::math::Vec3;
 
-    const auto& par = optixLaunchParams.params;
+    const auto& par       = optixLaunchParams.params;
+    const auto& obs_frame = optixLaunchParams.observer_frame;
+
+    // OBS-DOP.4 perception-mode gate. Computed once for both
+    // effect blocks; warp-uniform because `perception_mode` is
+    // per-launch (set by the host dispatcher from the
+    // OBSERVER.6 adapter output).
+    const bool perception_active =
+        (obs_frame.perception_mode ==
+            rr::manifold::PerceptionMode::ConstantVelocityMinkowski);
 
     Vec3 color = base_color;
 
     // Doppler colour shift (artistic approximation).
+    // OBS-DOP.4: dispatch between the unified helper (when
+    // `perception_mode == ConstantVelocityMinkowski`) and the
+    // legacy `applyDopplerColor(...)` math leaf path
+    // (Identity-mode fallback for backwards compatibility).
+    // The unified helper applies the inner `|beta| > 0` gate
+    // internally; the legacy math leaf at `D = 1` is identity
+    // so both branches no-op at beta=0.
     if (par.enable_doppler) {
-        color = rr::relativity::applyDopplerColor(color, D,
-                                                  par.doppler_color_strength);
+        if (perception_active) {
+            color = rr::manifold::apply_observer_doppler_color(
+                obs_frame, color, D, par.doppler_color_strength);
+        } else {
+            color = rr::relativity::applyDopplerColor(color, D,
+                                                      par.doppler_color_strength);
+        }
     }
 
     // Searchlight / relativistic beaming. `lerp(1, D^4, strength)`
     // keeps `searchlight_strength` a true [0, 1] dial: 0 -> no
     // beaming, 1 -> full D^4.
+    //
+    // OBS-DOP.4: same dispatch pattern as the Doppler block
+    // above. The unified helper returns the final scale (`1 +
+    // (D^4 - 1) * strength`); the legacy branch computes it
+    // inline. Both branches no-op (scale = 1) at beta=0 /
+    // Identity mode.
     if (par.enable_searchlight) {
-        const float D4    = rr::relativity::searchlightFactor(D);
-        const float scale = 1.0f + (D4 - 1.0f) * par.searchlight_strength;
+        float scale;
+        if (perception_active) {
+            scale = rr::manifold::apply_observer_searchlight_scale(
+                obs_frame, D, par.searchlight_strength);
+        } else {
+            const float D4 = rr::relativity::searchlightFactor(D);
+            scale = 1.0f + (D4 - 1.0f) * par.searchlight_strength;
+        }
         color = color * scale;
     }
 
